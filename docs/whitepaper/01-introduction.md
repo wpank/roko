@@ -22,22 +22,25 @@ sequential or integrative work.
 
 A frontier model writes the plan: small tasks, each with the commands that prove it done. The Graph engine
 (`crates/roko-graph/src/engine.rs`) runs it as a dependency graph with durable checkpoints and resume
-(WIRED@41228d7b2), and each task's verify commands decide its verdict (WIRED@41228d7b2), though the dashboard
-still counts a task without any as passed (PARTIAL@41228d7b2, spec-e9d7ec). Roko is designed to run independent tasks in parallel on
+(WIRED@a43288b5f), and each task's verify commands decide its verdict, which every surface now reports as recorded
+(WIRED@a43288b5f, spec-e9d7ec). Roko is designed to run independent tasks in parallel on
 the cheapest model that passes, escalate on failure, merge and check the whole plan, and regulate itself: keep cost
 per verified task and the share of wrong passes in bounds, and audit its own regulators. Today, independent
 tasks run in parallel when they declare their files, a role and tier ladder places each task and escalates it after
-two failures, and per-task worktrees merge through a whole-plan check (WIRED@41228d7b2; spec-a78d57, spec-98f76d,
-spec-a0e40a), though no real run has used the cheap rungs yet and the shared checkout stays the default; the regulators
-and audits are MISSING@41228d7b2, while the learning loops that run
-(PARTIAL@41228d7b2) have no measured benefit (spec-6ac537).
+two failures, and each task works in its own worktree, merged through a whole-plan check (WIRED@a43288b5f;
+spec-a78d57, spec-98f76d, spec-a0e40a). One small live run on cheap models used all of it, but its failure paths
+broke: provider adapters, failover, the circuit breaker and budgets are PARTIAL@a43288b5f, and output screening is
+BROKEN@a43288b5f (gap-625195, gap-e00238). The regulators and audits are MISSING@a43288b5f, while the learning
+loops that run (PARTIAL@a43288b5f) have no measured benefit (spec-6ac537).
 
 ## 1.3 The evidence so far
 
 Roko ran most of the build of its own web portal: 16 plans and 173 tasks, 168 gate-verified, for $174.87 of
 recorded agent spend.[^1-portal] Since a verdict fix on 2026-09-28, 0 of 151 recorded passes had a failing gate, against
 101 of 373 before it.[^1-verdicts] Two facts limit what this shows. All 210 attempts pinned one mid-tier model,
-`claude-sonnet-4-6`, so the cheap-model half of the thesis is UNPROVEN@41228d7b2 (spec-567e52). And supervising
+`claude-sonnet-4-6`. A first capped live run on cheap models, two five-task plans in a test repository for about
+$1.2–1.4, verified all ten tasks, seven of them on gpt-oss-120b, but needed six operator interventions,[^1-live] so
+the cheap-model half of the thesis is UNPROVEN@a43288b5f (spec-567e52). And supervising
 frontier-model Claude Code sessions wrote and audited the plans, fixed engine defects, set up worktrees, merged by
 hand and checked the assembled product (§7), costing an estimated 16–20× Roko's recorded spend over the same
 days.[^1-operator] Across 42 captured runs, Roko recovered from a failure by itself twice and people stepped in
@@ -70,3 +73,8 @@ days.[^1-operator] Across 42 captured runs, Roko recovered from a failure by its
 [^1-autonomy]: Field rollup 2026-09-29T14:37:51, corrected by bug-7b37c4, frozen as
     `evidence/2026-09-29-field-rollup.md` (sha256 `7bade1532a6d`), "Totals": 42 runs from 2026-08-22, 124 notes.
     Index: automatic recoveries over automatic recoveries plus interventions. Observational.
+
+[^1-live]: The live run of 2026-10-02, frozen as `evidence/2026-10-02-live-cheap-model-run.md` (sha256
+    `813172c96b88`), "TL;DR", "The runs", "Cost" and "Operator interventions": a binary built at `a43288b5f`, a $5
+    cap, one seed and no comparison arm. The root causes of its defects:
+    `evidence/2026-10-02-live-defect-root-causes.md` (sha256 `5df7d5221539`).

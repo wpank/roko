@@ -14,8 +14,8 @@ EXECUTION PATH
 
 CONTROL STACK (reads the records, acts on the path)     ● wired  ◐ partial  ○ not working
   6 second-order audits   ○ random audits  ○ loop audit  ○ guarded commit
-  5 slow regulators       ● health  ● budgets  ● retry budgets  ● playbooks
-                          ◐ router  ◐ experiments  ○ knowledge  ◐ failure memory  ○ controller
+  5 slow regulators       ◐ health  ◐ budgets  ◐ retry budgets  ● playbooks
+                          ◐ router  ◐ experiments  ◐ knowledge  ◐ failure memory  ○ controller
   4 fast regulators       ● retry  ● escalation  ○ split or replan
   3 comparators           ● visible verify  ● tamper diff  ○ hidden tests
   2 sensors               ● telemetry  ◐ attempt records  ◐ costs

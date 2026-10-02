@@ -97,6 +97,59 @@ pub enum ExecutionCommandKind {
     /// Uses the same receipt-preserving rules as repair-clean: committed
     /// receipts are never erased.
     Reset,
+    /// Give the next task of `plan_id` to start an operator directive or
+    /// context, sent with `roko inject` (gap-f118b3).
+    Inject {
+        /// A directive to follow, or context to keep in mind.
+        kind: InjectedKind,
+        /// The operator's text, which no log shows.
+        text: InjectedText,
+    },
+}
+
+/// What an [`ExecutionCommandKind::Inject`] gives the next task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InjectedKind {
+    /// An instruction from the operator.
+    Directive,
+    /// Information from the operator.
+    Context,
+}
+
+impl InjectedKind {
+    /// Lower-case name, as `roko inject --kind` takes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Directive => "directive",
+            Self::Context => "context",
+        }
+    }
+}
+
+/// Operator text a command carries. It may be sensitive, so its `Debug`
+/// gives only its length, and a logged command never shows it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct InjectedText(String);
+
+impl InjectedText {
+    /// Wrap `text`.
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    /// The text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for InjectedText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{} bytes withheld>", self.0.len())
+    }
 }
 
 impl fmt::Display for ExecutionCommandKind {
@@ -117,6 +170,7 @@ impl fmt::Display for ExecutionCommandKind {
                 reason,
             } => write!(f, "reject-approval({}, {})", approval_id, reason),
             Self::Reset => write!(f, "reset"),
+            Self::Inject { kind, .. } => write!(f, "inject({})", kind.as_str()),
         }
     }
 }

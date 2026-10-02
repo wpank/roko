@@ -1709,6 +1709,21 @@ async fn run_graph_plan_body(
     let mut controls = std::collections::HashMap::<String, PlanControl>::new();
     // A TUI skip stops one task's running agent (gap-c002bb).
     let task_stops = graph_task_dispatcher.operator_stops();
+    // `roko inject` reaches the run through a socket of its own, and what it
+    // sends is routed like a TUI command (gap-f118b3).
+    let operator_directives = graph_task_dispatcher.operator_directives();
+    let (inject_sender, mut inject_rx, inject_ack_tx, inject_acks) =
+        ExecutionCommandSender::channel("graph-engine");
+    let inject_target = Arc::clone(&graph_task_dispatcher);
+    let inject_server = crate::inject::listen_for_inject(
+        workdir,
+        crate::inject::InjectLink {
+            commands: inject_sender,
+            acks: inject_acks,
+            target: Arc::new(move |session: &str| inject_target.inject_target(session)),
+            answer_timeout: crate::inject::INJECT_ANSWER_TIMEOUT,
+        },
+    );
     // Plans the operator asked to run again, until they start, and whether
     // any was: the run then settles by each plan's last run.
     let mut pending_reruns = std::collections::HashMap::<String, PlanRerun>::new();
@@ -1732,14 +1747,24 @@ async fn run_graph_plan_body(
             scheduler.stop();
         }
         forward_control_file(&control_state_dir, &control_file_sender);
-        let routed = route_execution_commands(
+        let mut routed = route_execution_commands(
             &mut exec_cmd_rx,
             &tui_ack_tx,
             &controls,
             &mut scheduler,
             &shared_pause_flag,
             &task_stops,
+            &operator_directives,
         );
+        routed.merge(route_execution_commands(
+            &mut inject_rx,
+            &inject_ack_tx,
+            &controls,
+            &mut scheduler,
+            &shared_pause_flag,
+            &task_stops,
+            &operator_directives,
+        ));
         for plan_id in routed.cancelled_before_start {
             graph_tui_bridge.log_event(
                 "graph.plan_cancelled",
@@ -1838,14 +1863,20 @@ async fn run_graph_plan_body(
     }
 
     // Commands that arrived after the last plan finished have nothing left
-    // to act on.
-    while let Ok(cmd) = exec_cmd_rx.try_recv() {
-        let ack = ack_for(
-            &cmd,
-            CommandAckStatus::Rejected,
-            Some("the plan run has finished".into()),
-        );
-        let _ = tui_ack_tx.try_send(ack);
+    // to act on. The inject socket stops listening first.
+    drop(inject_server);
+    for (commands, acks) in [
+        (&mut exec_cmd_rx, &tui_ack_tx),
+        (&mut inject_rx, &inject_ack_tx),
+    ] {
+        while let Ok(cmd) = commands.try_recv() {
+            let ack = ack_for(
+                &cmd,
+                CommandAckStatus::Rejected,
+                Some("the plan run has finished".into()),
+            );
+            let _ = acks.try_send(ack);
+        }
     }
     // A conductor `Fail` stopped the run: it fails, naming the watcher.
     if let Some(stop) = conductor_stop.lock().take() {
@@ -2611,6 +2642,15 @@ struct RoutedCommands {
     reruns: Vec<(String, PlanRerun)>,
 }
 
+impl RoutedCommands {
+    /// Add what another channel's routing changed.
+    fn merge(&mut self, other: Self) {
+        self.cancelled_before_start
+            .extend(other.cancelled_before_start);
+        self.reruns.extend(other.reruns);
+    }
+}
+
 /// How one plan's run ended.
 struct PlanRunResult {
     outcome: PlanOutcome,
@@ -2690,6 +2730,8 @@ fn report_blocked_plan(
 ///   task fails as stopped by the operator, and its plan runs on.
 /// - Soft retry, repair and reset run again a plan that failed or was
 ///   cancelled earlier in this run ([`PlanRerun`]).
+/// - Inject (`roko inject`) queues an operator directive or context for the
+///   next task of the running plan it names (`directives`, gap-f118b3).
 ///
 /// Every other command, and one these cannot carry out, is rejected with
 /// the reason ([`reject_command`]): none is acknowledged and then dropped.
@@ -2700,6 +2742,7 @@ fn route_execution_commands(
     scheduler: &mut PlanSetScheduler,
     pause: &AtomicBool,
     task_stops: &crate::graph_task_dispatch::OperatorStops,
+    directives: &crate::graph_task_dispatch::OperatorDirectives,
 ) -> RoutedCommands {
     let mut routed = RoutedCommands::default();
     while let Ok(cmd) = commands.try_recv() {
@@ -2772,6 +2815,19 @@ fn route_execution_commands(
                     &format!("{plan_id}/{task_id} has no running agent to stop"),
                 ),
                 _ => reject_command(&cmd, "name the plan and task whose agent to stop"),
+            },
+            ExecutionCommandKind::Inject { kind, text } => match cmd.plan_id.as_deref() {
+                Some(plan_id) if controls.contains_key(plan_id) => {
+                    match directives.queue(plan_id, &cmd.command_id, *kind, text.as_str()) {
+                        Ok(_) => (
+                            CommandAckStatus::Accepted,
+                            Some(format!("waits for the next task of plan '{plan_id}' to start")),
+                        ),
+                        Err(reason) => reject_command(&cmd, &reason),
+                    }
+                }
+                Some(plan_id) => reject_command(&cmd, &format!("plan '{plan_id}' is not running")),
+                None => reject_command(&cmd, "name the running plan to send it to"),
             },
             ExecutionCommandKind::Approve { .. } | ExecutionCommandKind::RejectApproval { .. } => {
                 reject_command(
@@ -5518,6 +5574,8 @@ exec sleep 60
         acks: Vec<crate::execution_control::CommandAck>,
         /// Whether `01-run` was asked to cancel.
         run_cancelled: bool,
+        /// What inject commands queued.
+        directives: crate::graph_task_dispatch::OperatorDirectives,
     }
 
     /// Route `commands`, each a kind, the plan it names and the task, through
@@ -5559,6 +5617,7 @@ exec sleep 60
         let running = PlanControl::default();
         let controls = HashMap::from([("01-run".to_string(), running.clone())]);
         let pause = AtomicBool::new(false);
+        let directives = crate::graph_task_dispatch::OperatorDirectives::default();
         let routed = route_execution_commands(
             &mut receiver,
             &ack_tx,
@@ -5566,12 +5625,85 @@ exec sleep 60
             &mut scheduler,
             &pause,
             task_stops,
+            &directives,
         );
         RoutedTui {
             routed,
             acks: CommandAckReceiver::new(ack_rx).drain(),
             run_cancelled: running.cancel.load(Ordering::Acquire),
+            directives,
         }
+    }
+
+    /// Run `f` under a subscriber that records every log line, at every
+    /// level; return what was logged, and what `f` returned.
+    fn captured_logs<T>(f: impl FnOnce() -> T) -> (String, T) {
+        #[derive(Clone, Default)]
+        struct Buffer(Arc<parking_lot::Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Buffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buffer {
+            type Writer = Self;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buffer = Buffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .finish();
+        let result = tracing::subscriber::with_default(subscriber, f);
+        let logs = String::from_utf8_lossy(&buffer.0.lock()).into_owned();
+        (logs, result)
+    }
+
+    /// gap-f118b3: an inject command queues its text for the next task of
+    /// the running plan it names, acknowledged as accepted; one for a plan
+    /// that is not running is rejected; no log line, and neither `Debug` nor
+    /// `Display` of the command, shows the text.
+    #[test]
+    fn inject_commands_queue_for_the_running_plan_and_never_log_their_text() {
+        let inject = |plan_id: &'static str| {
+            let kind = ExecutionCommandKind::Inject {
+                kind: crate::execution_control::InjectedKind::Directive,
+                text: crate::execution_control::InjectedText::new("SECRET-71d0: ship it"),
+            };
+            (kind, Some(plan_id), None::<&str>)
+        };
+
+        let (logs, seen) = captured_logs(|| {
+            route_tui_commands(
+                vec![inject("01-run"), inject("02-wait")],
+                &crate::graph_task_dispatch::OperatorStops::default(),
+            )
+        });
+
+        let statuses: Vec<_> = seen.acks.iter().map(|ack| ack.status).collect();
+        assert_eq!(
+            statuses,
+            [CommandAckStatus::Accepted, CommandAckStatus::Rejected]
+        );
+        let section = seen.directives.take_section("01-run").expect("queued");
+        assert_eq!(section.matches("SECRET-71d0").count(), 1, "{section}");
+        assert!(seen.directives.take_section("02-wait").is_none());
+        assert!(!logs.contains("SECRET-71d0"), "{logs}");
+        let (kind, _, _) = inject("01-run");
+        let shown = format!("{kind:?} {kind}");
+        assert!(!shown.contains("SECRET-71d0"), "{shown}");
     }
 
     /// gap-c002bb: a Graph run rejects, with its reason, every TUI command

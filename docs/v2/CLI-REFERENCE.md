@@ -849,8 +849,8 @@ ended, `roko plan run --resume-plan` re-runs the tasks that did not pass.
 <details>
 <summary>Modal and dialog keybindings</summary>
 
-**Inject mode** is not available yet: no transport reaches a running session, so `i` shows a
-warning instead of collecting a directive (see `roko inject`).
+**Inject mode** is not available in the TUI yet: `i` shows a warning instead of collecting a
+directive. `roko inject` delivers one to a running plan.
 
 **Filter mode** (entered via `/` in Plans or Logs tab):
 
@@ -2178,9 +2178,22 @@ roko replay <hash> [--workdir <path>] [--forensic] [--as-of <step>] [--format tr
 
 ### `roko inject`
 
-Inject a signal into a running session. No transport reaches a running session yet, so the
-command validates its arguments, writes nothing, and exits non-zero with
-`inject_transport_unavailable` (with `--json`, one object with `code`, `message` and `hint`).
+Send a directive, context or abort to a running `roko plan run`. Each plan run listens on an
+owner-only socket of its own, `.roko/runtime/inject/<pid>.sock`, and a client must first present
+the token the run wrote beside it. The session names a running plan, by its id or by its Graph
+checkpoint run. The command exits 0 only once that run has acknowledged the request:
+
+- a `directive` or `context` is added, once, to the prompt of the next task of that plan to
+  start, under an "Operator directive" or "Operator context" heading. A text may be up to 8 KiB,
+  and a plan holds at most 8 waiting texts;
+- an `abort` cancels that plan, and only it.
+
+A request sent again under the same request ID is answered again rather than delivered twice.
+Otherwise the command exits non-zero, writes nothing, and says why:
+`inject_transport_unavailable` (no plan run is listening), `inject_unknown_session` (no
+listening run has that plan) or `inject_rejected` (the run refused it, did not answer in time, or
+has finished). With `--json` it prints one object with `code` and `message`, plus `hint` on a
+failure.
 
 ```
 roko inject <session> <payload> [--kind directive|abort|context] [--workdir <path>]
@@ -2188,8 +2201,8 @@ roko inject <session> <payload> [--kind directive|abort|context] [--workdir <pat
 
 | Arg/Flag | Default | Description |
 |---|---|---|
-| `<session>` | required | Target session ID. |
-| `<payload>` | required | Payload text. |
+| `<session>` | required | A running plan's ID, or its checkpoint run ID. |
+| `<payload>` | required | The text; empty for `abort`. |
 | `--kind <kind>` | `directive` | Kind of signal to inject: `directive`, `abort`, `context`. |
 
 ### `roko completions`

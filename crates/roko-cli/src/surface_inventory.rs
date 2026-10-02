@@ -302,9 +302,10 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
     ));
     v.push(SurfaceEntry::cli(
         "inject",
-        SurfaceStatus::Stub,
+        SurfaceStatus::Wired,
         "roko-cli inject",
-        "Validates the request, then fails closed: no transport reaches a running session yet",
+        "Delivers to a running plan through its plan run's owner-only socket; exits 0 only on \
+         the run's acknowledgement",
     ));
     v.push(SurfaceEntry::cli(
         "plan list",

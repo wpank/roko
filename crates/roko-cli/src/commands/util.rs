@@ -1555,9 +1555,13 @@ pub(crate) async fn cmd_replay(
     }
 }
 
-/// What `roko inject` tells the operator while no transport delivers it.
+/// What `roko inject` tells the operator when no plan run answers.
 const INJECT_UNAVAILABLE_HINT: &str =
-    "No live command transport is installed; use plan pause/cancel controls where applicable.";
+    "No plan run in this workspace is listening; start one with `roko plan run`.";
+
+/// What `roko inject` tells the operator when a plan run refuses.
+const INJECT_REFUSED_HINT: &str =
+    "Name a running plan, or its checkpoint run, from `roko plan status`.";
 
 pub(crate) async fn cmd_inject(
     cli: &Cli,
@@ -1571,27 +1575,60 @@ pub(crate) async fn cmd_inject(
     let request = InjectRequest::new(session.clone(), inject_kind.clone(), payload, wd);
 
     // Validation errors (empty session, empty payload for directive/context) remain
-    // more specific than the transport-unavailable error below.
+    // more specific than the delivery errors below.
     request.validate().map_err(|e| anyhow!("{e}"))?;
 
-    // No transport reaches a live executor yet, and nothing reads a file
-    // written here, so a valid request fails closed and writes nothing: a
-    // command that delivered nothing never reports success (#325). Delivery
-    // that waits for the executor's acknowledgement is gap-f118b3.
+    // The plan run that runs the plan, or the checkpoint run, `session`
+    // names must acknowledge the request: nothing else counts as delivered,
+    // and nothing is written here (#325, gap-f118b3).
+    let wire = request.to_wire();
+    let reply = roko_cli::inject::deliver(&request.workdir, &wire).await;
+    let (code, message) = match reply {
+        Some(reply) if reply.outcome == roko_cli::inject::InjectOutcome::Accepted => {
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "code": "inject_accepted",
+                        "message": reply.message,
+                        "kind": inject_kind.as_str(),
+                        "session": session,
+                        "request_id": wire.request_id,
+                    })
+                );
+            } else {
+                println!("Injected {inject_kind} -> {session}: {}", reply.message);
+            }
+            return Ok(EXIT_SUCCESS);
+        }
+        Some(reply) if reply.outcome == roko_cli::inject::InjectOutcome::UnknownSession => {
+            ("inject_unknown_session", reply.message)
+        }
+        Some(reply) => ("inject_rejected", reply.message),
+        None => (
+            "inject_transport_unavailable",
+            "no plan run is listening".to_string(),
+        ),
+    };
+    let hint = if code == "inject_transport_unavailable" {
+        INJECT_UNAVAILABLE_HINT
+    } else {
+        INJECT_REFUSED_HINT
+    };
     if cli.json {
         println!(
             "{}",
             serde_json::json!({
-                "code": "inject_transport_unavailable",
-                "message": "no live command transport is installed",
-                "hint": INJECT_UNAVAILABLE_HINT,
+                "code": code,
+                "message": message,
+                "hint": hint,
                 "kind": inject_kind.as_str(),
                 "session": session,
             })
         );
     } else {
-        eprintln!("Error: inject {inject_kind} -> session {session} was not delivered");
-        eprintln!("Hint: {INJECT_UNAVAILABLE_HINT}");
+        eprintln!("Error: inject {inject_kind} -> session {session} was not delivered: {message}");
+        eprintln!("Hint: {hint}");
     }
     Ok(EXIT_FAILURE)
 }

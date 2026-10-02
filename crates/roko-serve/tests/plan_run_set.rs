@@ -7,7 +7,8 @@
 //!    passes that directory; `{"target":"../"}`, an absolute path, and a body
 //!    with both fields each return 400; an unknown id returns 404.
 //! 3. While a set run is active, `POST /api/plans/execute` and
-//!    `POST /api/plans/{id}/execute` both return 409.
+//!    `POST /api/plans/{id}/execute` are both queued behind it with 202
+//!    (decision 9105).
 //! 4. `GET /api/plans/{member}/status` finds the run through a member plan id;
 //!    `POST /api/plans/{member}/cancel` returns 200 and the stub observed its
 //!    token cancelled; a subsequent status check reports it `cancelled`.
@@ -513,9 +514,10 @@ async fn execute_plans_unknown_id_returns_404() {
 }
 
 /// 3. While a set run is active, both `POST /api/plans/execute` and
-///    `POST /api/plans/{id}/execute` return 409.
+///    `POST /api/plans/{id}/execute` are queued behind it: 202 with
+///    `queued: true` and positions 1 and 2 (decision 9105).
 #[tokio::test(flavor = "multi_thread")]
-async fn execute_plans_409_while_set_run_active() {
+async fn execute_plans_queued_while_set_run_active() {
     let runtime = Arc::new(StubSetRuntime::new_blocking());
     let (_dir, state) = make_state(runtime).await;
 
@@ -538,7 +540,7 @@ async fn execute_plans_409_while_set_run_active() {
         "first execute must return 202"
     );
 
-    // Second `POST /api/plans/execute` while first is still active → 409.
+    // Second `POST /api/plans/execute` while first is still active → queued.
     let app2 = build_app(Arc::clone(&state));
     let r2 = app2
         .oneshot(
@@ -553,11 +555,14 @@ async fn execute_plans_409_while_set_run_active() {
         .expect("send second execute");
     assert_eq!(
         r2.status(),
-        StatusCode::CONFLICT,
-        "second POST /api/plans/execute while active must return 409"
+        StatusCode::ACCEPTED,
+        "second POST /api/plans/execute while active must be queued with 202"
     );
+    let queued = body_json(r2).await;
+    assert_eq!(queued["queued"], true, "{queued}");
+    assert_eq!(queued["position"], 1, "{queued}");
 
-    // `POST /api/plans/a/execute` while set run is active → also 409.
+    // `POST /api/plans/a/execute` while set run is active → also queued.
     let app3 = build_app(Arc::clone(&state));
     let r3 = app3
         .oneshot(
@@ -571,9 +576,12 @@ async fn execute_plans_409_while_set_run_active() {
         .expect("send single-plan execute");
     assert_eq!(
         r3.status(),
-        StatusCode::CONFLICT,
-        "POST /api/plans/a/execute while set run active must return 409"
+        StatusCode::ACCEPTED,
+        "POST /api/plans/a/execute while set run active must be queued with 202"
     );
+    let queued = body_json(r3).await;
+    assert_eq!(queued["queued"], true, "{queued}");
+    assert_eq!(queued["position"], 2, "{queued}");
 }
 
 /// 4. `GET /api/plans/{member}/status` finds the run via a member plan id.

@@ -480,10 +480,12 @@ aliases (both are mounted).
 | POST | `/api/plans` | Create a new plan |
 | GET | `/api/plans/{id}` | Full plan details |
 | GET | `/api/plans/{id}/tasks` | Tasks for a plan |
-| POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted with the run's `id`; 422 with the validation report in `details` when `roko plan run` would refuse the plan) |
+| POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted with the run's `id`; 422 with the validation report in `details` when `roko plan run` would refuse the plan). While another plan run is live the run is queued instead: 202 with `queued: true` and its `position`, started under its `id` when the live run ends; 409 only when the queue's 8 places are taken |
+| POST | `/api/plans/execute` | Execute a plan set, named plans or every plan (body `plans`, `target`, `resume`, `max_parallel_plans`); queued like a single plan |
 | GET | `/api/plans/{id}/status` | Execution status of the run `{id}` names (plan id, member plan id or run id): `running`, then `succeeded`, `failed` (with `error`), `unverified` or `cancelled`, with `finished` and `finished_at`; a run that ended keeps answering for an hour |
 | POST | `/api/plans/{id}/pause` | Pause execution |
 | POST | `/api/plans/{id}/resume` | Resume execution |
+| POST | `/api/plans/{id}/cancel` | Cancel a running run, or take a queued one out of the queue; either ends `cancelled` |
 | GET | `/api/plans/{id}/gates` | Gate results grouped by task |
 | GET | `/api/plans/{id}/costs` | Retry-inclusive spend, ceilings, projections |
 | GET | `/api/plans/{id}/reviews` | Human reviews |

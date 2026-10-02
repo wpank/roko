@@ -3,7 +3,8 @@
 //! These tests prove that:
 //! 1. `POST /api/plans/:id/execute` on a directory-layout plan returns HTTP 202
 //!    with a run id, rather than the 404 the deprecated stub used to produce.
-//! 2. A second execute while the first is still active returns HTTP 409.
+//! 2. A second execute while the first is still active is queued behind it:
+//!    HTTP 202 with `queued: true` and its position (decision 9105).
 //! 3. `POST /api/plans/:id/execute` on a nonexistent plan id returns HTTP 404.
 //! 4. `POST /api/plans/:id/cancel` on an active plan returns HTTP 200 with
 //!    `{ "cancelled": true }` and ends the run, so a subsequent
@@ -311,12 +312,13 @@ async fn execute_directory_plan_returns_202_with_run_id() {
     assert!(!run_id.is_empty(), "run id must not be empty");
 }
 
-/// 2. A second execute while the first is active returns HTTP 409.
+/// 2. A second execute while the first is active is queued behind it: HTTP
+///    202 with `queued: true` and position 1 (decision 9105).
 ///
 /// The handler performs a check-and-insert under a single write-lock so there
 /// is no TOCTOU window.
 #[tokio::test(flavor = "multi_thread")]
-async fn second_execute_while_active_returns_409() {
+async fn second_execute_while_active_is_queued() {
     let plan_id = "my-dir-plan";
     let (_dir, state) = make_state(plan_id).await;
 
@@ -338,7 +340,7 @@ async fn second_execute_while_active_returns_409() {
         "first execute must return 202"
     );
 
-    // Second execute while the first is still active — must return 409.
+    // Second execute while the first is still active — queued, not refused.
     let app2 = build_app(Arc::clone(&state));
     let r2 = app2
         .oneshot(
@@ -352,9 +354,12 @@ async fn second_execute_while_active_returns_409() {
         .expect("send second execute");
     assert_eq!(
         r2.status(),
-        StatusCode::CONFLICT,
-        "second execute while active must return 409"
+        StatusCode::ACCEPTED,
+        "second execute while active must be queued with 202"
     );
+    let payload = body_json(r2).await;
+    assert_eq!(payload["queued"], true, "{payload}");
+    assert_eq!(payload["position"], 1, "{payload}");
 }
 
 /// 3. Execute on a nonexistent plan id returns HTTP 404.

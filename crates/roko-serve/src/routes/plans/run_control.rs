@@ -3,7 +3,9 @@
 
 use super::*;
 
-use crate::state::{PlanRunStatus, RunState};
+use crate::state::{
+    PLAN_RUN_QUEUE_CAPACITY, PlanRunSpec, PlanRunStatus, PlanSetSpec, QueuedPlanRun, RunState,
+};
 use roko_core::dashboard_snapshot::classify_task_outcome;
 
 // ── Active-run bookkeeping helpers ────────────────────────────────────
@@ -22,10 +24,29 @@ pub(super) fn active_run_conflict(
         .map(|(key, _)| key.clone())
 }
 
-/// Whether the run of `handle`, stored under `key`, is the one `id` names:
-/// `id` is its key, its run id or one of its member plan ids.
-fn run_named(key: &str, handle: &PlanHandle, id: &str) -> bool {
-    key == id || handle.id == id || handle.members.iter().any(|m| m == id)
+/// Whether `id` names the run with map key `key`, run id `run_id` and member
+/// plan ids `members`: it is one of them.
+fn names_run(id: &str, key: &str, run_id: &str, members: &[String]) -> bool {
+    key == id || run_id == id || members.iter().any(|m| m == id)
+}
+
+/// Whether `id` names the queued run `queued`.
+fn queued_run_named(queued: &QueuedPlanRun, id: &str) -> bool {
+    let spec = &queued.spec;
+    names_run(id, &spec.key, &spec.run_id, &spec.members)
+}
+
+/// The queued run `id` names, with its place in the queue, 1 being next
+/// (decision 9105).
+fn queued_run_for(state: &AppState, id: &str) -> Option<(usize, QueuedPlanRun)> {
+    let queue = state
+        .plan_queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    queue
+        .iter()
+        .position(|queued| queued_run_named(queued, id))
+        .map(|index| (index + 1, queue[index].clone()))
 }
 
 /// Returns the map key of the live entry whose key or run id equals `id`, or
@@ -39,7 +60,7 @@ pub(super) fn active_run_for(
 ) -> Option<String> {
     active
         .iter()
-        .find(|(key, h)| h.is_live() && run_named(key, h, id))
+        .find(|(key, h)| h.is_live() && names_run(id, key, &h.id, &h.members))
         .map(|(key, _)| key.clone())
 }
 
@@ -51,7 +72,7 @@ fn finished_run_for(
 ) -> Option<String> {
     active
         .iter()
-        .filter(|(key, h)| !h.is_live() && run_named(key, h, id))
+        .filter(|(key, h)| !h.is_live() && names_run(id, key, &h.id, &h.members))
         .max_by_key(|(_, h)| h.status.finished_at)
         .map(|(key, _)| key.clone())
 }
@@ -156,6 +177,9 @@ pub(super) struct ExecutePlansRequest {
 /// * Neither – run every plan under `plans_dir` ("Run all").
 ///
 /// Returns `202 { "id": run_id, "order": [...], "max_parallel_plans": N }`.
+/// While another plan run is live the run is queued behind it instead, and
+/// the 202 also says `"queued": true` and its `"position"` (decision 9105);
+/// a full queue answers 409.
 pub(super) async fn execute_plans(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,
@@ -258,94 +282,31 @@ pub(super) async fn execute_plans(
         .unwrap_or(config.conductor.max_parallel_plans);
 
     let run_id = uuid::Uuid::new_v4().to_string();
-    let bus = state.event_bus.clone();
-    let runtime = state.runtime.clone();
-    let workdir = state.workdir.clone();
-    let resume = req.resume;
-    let live_agent_output = state.effective_live_agent_output();
-    let cancel = CancelToken::new();
-    let task_cancel = cancel.clone();
-    let plan_target_for_task = plan_target.clone();
-    let run_id_for_task = run_id.clone();
-    let state_for_task = Arc::clone(&state);
-    let plans_for_task = order.clone();
-
-    // Atomically check-and-insert with the write lock, then spawn the task.
-    let order_for_response = order.clone();
-    let mut active = state.active_plans.write().await;
-    if let Some(conflict_key) = active_run_conflict(&active) {
-        return Err(ApiError::conflict(format!(
-            "a plan run is already active (run key: {conflict_key})"
-        )));
-    }
-
-    // Every hub event of this run is sequenced at or after this point.
-    let hub = state.state_hub.clone();
-    let first_run_seq = hub.total_published();
-
-    let handle = tokio::spawn(async move {
-        let options = PlanRunOptions {
-            cancel: Some(task_cancel.clone()),
-            fresh: !resume,
-            force_resume: resume,
-            only_plans,
-            max_parallel_plans: Some(effective_max),
-            live_agent_output: Some(live_agent_output),
-            run_id: Some(run_id_for_task.clone()),
-        };
-        // Do NOT publish plan lifecycle events (plan_started, plan_completed)
-        // for the run_id.  The runtime publishes its own per-plan events
-        // (plan_set_loaded, run_completed) with the correct metadata.
-        let (success, failure) = match runtime
-            .run_plan_with_options(&workdir, &plan_target_for_task, options)
-            .await
-        {
-            Ok(result) => {
-                let failure = (!result.success)
-                    .then(|| format!("plan set run {run_id_for_task} completed with failures"));
-                (result.success, failure)
-            }
-            Err(err) => {
-                let message = format!("plan set execution failed (run {run_id_for_task}): {err}");
-                bus.publish(ServerEvent::Error {
-                    message: message.clone(),
-                });
-                (false, Some(message))
-            }
-        };
-        // Record how the run ended on its handle, so its status route still
-        // answers once it is over (G43).
-        let status = plan_run_end(
-            &hub,
-            first_run_seq,
-            &plans_for_task,
-            task_cancel.is_cancelled(),
-            success,
-            failure,
-        );
-        record_plan_run_end(&state_for_task, &run_id_for_task, &run_id_for_task, status).await;
-    });
-
-    let plan_handle = PlanHandle {
-        id: run_id.clone(),
-        plan_dir: plan_target,
+    let spec = PlanRunSpec {
+        run_id: run_id.clone(),
+        // Key by run_id (not a single plan id) since this run may span many plans.
+        key: run_id.clone(),
         // members carries every plan id so cancel/status by member id works.
-        members: order,
-        status: PlanRunStatus::running(),
-        handle,
-        cancel,
+        members: order.clone(),
+        plan_dir: plan_target,
+        resume: req.resume,
+        plan_set: Some(PlanSetSpec {
+            only_plans,
+            max_parallel_plans: effective_max,
+        }),
     };
-    // Key by run_id (not a single plan id) since this run may span many plans.
-    active.insert(run_id.clone(), plan_handle);
-    drop(active);
+    // Start the run, or queue it behind the live one (decision 9105).
+    let position = start_or_queue_plan_run(&state, spec).await?;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
         Json(json!({
             "id": run_id,
             "run_id": run_id,
-            "order": order_for_response,
+            "order": order,
             "max_parallel_plans": effective_max,
+            "queued": position.is_some(),
+            "position": position,
         })),
     ))
 }
@@ -357,11 +318,12 @@ pub(super) async fn execute_plans(
 /// - Derives `plan_dir` from the summary's `group`, exactly as `execute_plan`
 ///   did before this refactor: `plans_dir(..)`, joined with `group` when set,
 ///   then with the plan `id`.
-/// - Returns 409 when an unfinished run is already active.
-/// - Spawns a background task that calls `run_plan_with_options` with the
-///   cancel token; `force_resume` and `fresh` are set from `resume`.
+/// - Queues the run behind an unfinished run that is already active
+///   (decision 9105), or returns 409 when the queue is full.
+/// - Otherwise spawns a background task that calls `run_plan_with_options`
+///   with the cancel token; `force_resume` and `fresh` are set from `resume`.
 ///
-/// Returns the run it started.
+/// Returns the run it started or queued.
 pub(super) async fn start_plan_run(
     state: &Arc<AppState>,
     id: String,
@@ -380,10 +342,6 @@ pub(super) async fn start_plan_run(
         .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
 
     let run_id = uuid::Uuid::new_v4().to_string();
-    let bus = state.event_bus.clone();
-    let runtime = state.runtime.clone();
-    let workdir = state.workdir.clone();
-    let live_agent_output = state.effective_live_agent_output();
 
     // Plans inside a plan set live under their group directory.
     let plan_dir = dto
@@ -394,7 +352,6 @@ pub(super) async fn start_plan_run(
             |group| plans_dir(&state.workdir).join(group),
         )
         .join(&id);
-    let plan_id = id.clone();
 
     // Refuse a plan `roko plan run` would refuse, before the run takes the
     // workspace (gap-655d19).
@@ -423,13 +380,155 @@ pub(super) async fn start_plan_run(
         Some(Vec::new())
     };
 
-    // Acquire write lock once to check-and-insert atomically (no TOCTOU race).
+    let spec = PlanRunSpec {
+        run_id: run_id.clone(),
+        key: id.clone(),
+        // Single-plan run: the only member is this plan.
+        members: vec![id],
+        // Store the specific plan's directory, not the parent plans directory.
+        plan_dir,
+        resume,
+        plan_set: None,
+    };
+    // Start the run, or queue it behind the live one (decision 9105).
+    let queued = start_or_queue_plan_run(state, spec).await?;
+
+    Ok(StartedPlanRun {
+        run_id,
+        // A queued run starts after the live run, which may move the
+        // checkpoint, so what it replays is not known yet.
+        skippable_task_ids: skippable_task_ids.filter(|_| queued.is_none()),
+        queued,
+    })
+}
+
+/// A run [`start_plan_run`] started or queued.
+pub(super) struct StartedPlanRun {
+    pub(super) run_id: String,
+    /// Tasks the run replays from its checkpoint instead of running: none for
+    /// a fresh run, `None` when the runtime cannot tell (gap-b07969) or the
+    /// run is queued.
+    pub(super) skippable_task_ids: Option<Vec<String>>,
+    /// The run's place in the queue, 1 being next, while it waits for the
+    /// live run to end (decision 9105).
+    pub(super) queued: Option<usize>,
+}
+
+// ── Starting and queueing runs ───────────────────────────────────────
+
+/// Start the run `spec` describes, or queue it behind the live run
+/// (decision 9105). Returns the run's place in the queue, 1 being next, or
+/// `None` when it started. A full queue refuses the run with 409.
+async fn start_or_queue_plan_run(
+    state: &Arc<AppState>,
+    spec: PlanRunSpec,
+) -> Result<Option<usize>, ApiError> {
+    // Acquire the write lock once to check-and-insert atomically (no TOCTOU
+    // race). A queue left waiting with no live run starts first, and this
+    // run goes behind it.
     let mut active = state.active_plans.write().await;
-    if let Some(conflict_key) = active_run_conflict(&active) {
+    start_queued_run(state, &mut active);
+    let Some(live_key) = active_run_conflict(&active) else {
+        launch_plan_run(state, &mut active, spec, false);
+        return Ok(None);
+    };
+    let mut queue = state
+        .plan_queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if queue.len() >= PLAN_RUN_QUEUE_CAPACITY {
         return Err(ApiError::conflict(format!(
-            "a plan run is already active (run key: {conflict_key})"
+            "a plan run is already active (run key: {live_key}) and {} more are queued, \
+             as many as the queue holds",
+            queue.len()
         )));
     }
+    queue.push_back(QueuedPlanRun {
+        spec,
+        queued_at: chrono::Utc::now(),
+    });
+    Ok(Some(queue.len()))
+}
+
+/// Start the oldest queued run when no run is live (decision 9105).
+fn start_queued_run(
+    state: &Arc<AppState>,
+    active: &mut std::collections::HashMap<String, PlanHandle>,
+) {
+    if active_run_conflict(active).is_some() {
+        return;
+    }
+    let next = state
+        .plan_queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop_front();
+    if let Some(queued) = next {
+        launch_plan_run(state, active, queued.spec, true);
+    }
+}
+
+/// Start the next queued run, now that a run has ended.
+async fn start_next_queued_run(state: &Arc<AppState>) {
+    let mut active = state.active_plans.write().await;
+    start_queued_run(state, &mut active);
+}
+
+/// Spawn the run `spec` describes and insert its handle into `active`, which
+/// holds no live run. A run started from the queue (`revalidate`) checks its
+/// plans again before it runs them.
+fn launch_plan_run(
+    state: &Arc<AppState>,
+    active: &mut std::collections::HashMap<String, PlanHandle>,
+    spec: PlanRunSpec,
+    revalidate: bool,
+) {
+    match spec.plan_set.clone() {
+        Some(set) => launch_plan_set_run(state, active, spec, set, revalidate),
+        None => launch_single_plan_run(state, active, spec, revalidate),
+    }
+}
+
+/// Run a plan run's plans through the runtime. A run started from the queue
+/// (`revalidate`) first checks them as its route did before queueing it:
+/// they may have changed while it waited, and plans that now fail the check
+/// fail the run.
+async fn run_plans(
+    state: &AppState,
+    plan_target: &std::path::Path,
+    options: PlanRunOptions,
+    revalidate: bool,
+) -> anyhow::Result<PlanExecutionResult> {
+    if revalidate {
+        let only_plans = options.only_plans.as_deref();
+        if let Some(validation) = state
+            .runtime
+            .validate_plan_run(&state.workdir, plan_target, only_plans)
+            .await?
+        {
+            anyhow::bail!(
+                "its plans failed validation with {} error(s) while it was queued",
+                validation.errors.len()
+            );
+        }
+    }
+    state
+        .runtime
+        .run_plan_with_options(&state.workdir, plan_target, options)
+        .await
+}
+
+/// Spawn the single-plan run `spec` describes and insert its handle into
+/// `active` under the plan's id.
+fn launch_single_plan_run(
+    state: &Arc<AppState>,
+    active: &mut std::collections::HashMap<String, PlanHandle>,
+    spec: PlanRunSpec,
+    revalidate: bool,
+) {
+    let bus = state.event_bus.clone();
+    let live_agent_output = state.effective_live_agent_output();
+    let resume = spec.resume;
 
     // Create the cancel token before spawning so the task can observe it.
     // The `pause_plan` handler calls `cancel.cancel()` on the stored copy;
@@ -442,9 +541,9 @@ pub(super) async fn start_plan_run(
     let first_run_seq = hub.total_published();
 
     let handle = tokio::spawn({
-        let plan_id = plan_id.clone();
-        let plan_dir = plan_dir.clone();
-        let run_id = run_id.clone();
+        let plan_id = spec.key.clone();
+        let plan_dir = spec.plan_dir.clone();
+        let run_id = spec.run_id.clone();
         let state_for_task = Arc::clone(state);
         async move {
             // Do NOT publish PlanStarted here. The runtime publishes its own
@@ -464,10 +563,8 @@ pub(super) async fn start_plan_run(
                 run_id: Some(run_id.clone()),
                 ..PlanRunOptions::default()
             };
-            let (success, failure) = match runtime
-                .run_plan_with_options(&workdir, &plan_dir, options)
-                .await
-            {
+            let outcome = run_plans(&state_for_task, &plan_dir, options, revalidate).await;
+            let (success, failure) = match outcome {
                 Ok(PlanExecutionResult { success, .. }) => {
                     // Emit an explicit failure event so the portal's alert
                     // band can show why a run died, not only that it ended.
@@ -512,37 +609,99 @@ pub(super) async fn start_plan_run(
                 });
             }
             // Record how the run ended on its handle, so its status route
-            // still answers once it is over (G43).
+            // still answers once it is over (G43), then start the next
+            // queued run (decision 9105).
             record_plan_run_end(&state_for_task, &plan_id, &run_id, status).await;
+            start_next_queued_run(&state_for_task).await;
         }
     });
 
     let plan_handle = PlanHandle {
-        id: run_id.clone(),
-        // Store the specific plan's directory, not the parent plans directory.
-        plan_dir: plan_dir.clone(),
-        // Single-plan run: the only member is this plan.
-        members: vec![plan_id.clone()],
+        id: spec.run_id,
+        plan_dir: spec.plan_dir,
+        members: spec.members,
         status: PlanRunStatus::running(),
         handle,
         cancel,
     };
-
-    active.insert(id, plan_handle);
-    drop(active);
-
-    Ok(StartedPlanRun {
-        run_id,
-        skippable_task_ids,
-    })
+    active.insert(spec.key, plan_handle);
 }
 
-/// A run [`start_plan_run`] started.
-pub(super) struct StartedPlanRun {
-    pub(super) run_id: String,
-    /// Tasks the run replays from its checkpoint instead of running: none for
-    /// a fresh run, `None` when the runtime cannot tell (gap-b07969).
-    pub(super) skippable_task_ids: Option<Vec<String>>,
+/// Spawn the plan-set run `spec` describes, with its options `set`, and
+/// insert its handle into `active` under its run id.
+fn launch_plan_set_run(
+    state: &Arc<AppState>,
+    active: &mut std::collections::HashMap<String, PlanHandle>,
+    spec: PlanRunSpec,
+    set: PlanSetSpec,
+    revalidate: bool,
+) {
+    let bus = state.event_bus.clone();
+    let live_agent_output = state.effective_live_agent_output();
+    let resume = spec.resume;
+    let cancel = CancelToken::new();
+    let task_cancel = cancel.clone();
+    let plan_target = spec.plan_dir.clone();
+    let run_id = spec.run_id.clone();
+    let plans = spec.members.clone();
+    let state_for_task = Arc::clone(state);
+
+    // Every hub event of this run is sequenced at or after this point.
+    let hub = state.state_hub.clone();
+    let first_run_seq = hub.total_published();
+
+    let handle = tokio::spawn(async move {
+        let options = PlanRunOptions {
+            cancel: Some(task_cancel.clone()),
+            fresh: !resume,
+            force_resume: resume,
+            only_plans: set.only_plans,
+            max_parallel_plans: Some(set.max_parallel_plans),
+            live_agent_output: Some(live_agent_output),
+            run_id: Some(run_id.clone()),
+        };
+        // Do NOT publish plan lifecycle events (plan_started, plan_completed)
+        // for the run_id.  The runtime publishes its own per-plan events
+        // (plan_set_loaded, run_completed) with the correct metadata.
+        let outcome = run_plans(&state_for_task, &plan_target, options, revalidate).await;
+        let (success, failure) = match outcome {
+            Ok(result) => {
+                let failure = (!result.success)
+                    .then(|| format!("plan set run {run_id} completed with failures"));
+                (result.success, failure)
+            }
+            Err(err) => {
+                let message = format!("plan set execution failed (run {run_id}): {err}");
+                bus.publish(ServerEvent::Error {
+                    message: message.clone(),
+                });
+                (false, Some(message))
+            }
+        };
+        // Record how the run ended on its handle, so its status route still
+        // answers once it is over (G43), then start the next queued run
+        // (decision 9105).
+        let status = plan_run_end(
+            &hub,
+            first_run_seq,
+            &plans,
+            task_cancel.is_cancelled(),
+            success,
+            failure,
+        );
+        record_plan_run_end(&state_for_task, &run_id, &run_id, status).await;
+        start_next_queued_run(&state_for_task).await;
+    });
+
+    let plan_handle = PlanHandle {
+        id: spec.run_id,
+        plan_dir: spec.plan_dir,
+        members: spec.members,
+        status: PlanRunStatus::running(),
+        handle,
+        cancel,
+    };
+    active.insert(spec.key, plan_handle);
 }
 
 /// 422 for a run `roko plan run` would refuse: `details` is the validation
@@ -576,7 +735,9 @@ pub(super) fn hub_published_plan_completed(
 ///
 /// Accepts an optional JSON body `{ "resume": bool }` (P-7 of the portal
 /// contract). When `resume: true`, the run continues from the last checkpoint;
-/// when absent or `false`, the run starts fresh.
+/// when absent or `false`, the run starts fresh. While another plan run is
+/// live the run is queued behind it, and the 202 says `"queued": true` and
+/// its `"position"` (decision 9105).
 pub(super) async fn execute_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -601,6 +762,8 @@ pub(super) async fn execute_plan(
             "run_id": started.run_id,
             "resume": resume,
             "skippable_task_ids": started.skippable_task_ids,
+            "queued": started.queued.is_some(),
+            "position": started.queued,
         })),
     ))
 }
@@ -608,16 +771,33 @@ pub(super) async fn execute_plan(
 /// `GET /api/plans/:id/status` — check execution status for a plan.
 ///
 /// `{id}` may be the run key, the run id **or** any member plan id of a run.
-/// A live run reports `running`. Once it ends, the newest run `{id}` names
-/// reports how it ended, `succeeded`, `failed` (with `error`), `unverified`
-/// or `cancelled`, with `finished: true` and `finished_at`, for as long as
-/// its handle is kept (G43).
+/// A live run reports `running`, and a run waiting behind it `queued` with
+/// its `position` (decision 9105). Once a run ends, the newest run `{id}`
+/// names reports how it ended, `succeeded`, `failed` (with `error`),
+/// `unverified` or `cancelled`, with `finished: true` and `finished_at`, for
+/// as long as its handle is kept (G43).
 pub(super) async fn plan_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let active = state.active_plans.read().await;
-    let key = active_run_for(&active, &id)
+    let live = active_run_for(&active, &id);
+    if live.is_none()
+        && let Some((position, queued)) = queued_run_for(&state, &id)
+    {
+        return Ok(Json(json!({
+            "id": queued.spec.run_id,
+            "run_id": queued.spec.run_id,
+            "plan_dir": queued.spec.plan_dir,
+            "status": RunState::Queued.as_str(),
+            "position": position,
+            "queued_at": queued.queued_at,
+            "error": null,
+            "finished": false,
+            "finished_at": null,
+        })));
+    }
+    let key = live
         .or_else(|| finished_run_for(&active, &id))
         .ok_or_else(|| ApiError::not_found("no execution of this plan is known"))?;
     let h = active
@@ -747,6 +927,8 @@ pub(super) async fn resume_plan(
         "resumed": true,
         "resume": true,
         "skippable_task_ids": started.skippable_task_ids,
+        "queued": started.queued.is_some(),
+        "position": started.queued,
     });
     Ok((axum::http::StatusCode::ACCEPTED, Json(body)).into_response())
 }
@@ -758,18 +940,23 @@ pub(super) async fn resume_plan(
 /// the task if still running, and then records the run as `cancelled`: the
 /// handle stays, ended, so `GET /api/plans/{id}/status` reports it (G43).
 ///
-/// Returns 200 `{ "cancelled": true }` on success, or 404 when the plan is not
-/// actively executing.
+/// A queued run (decision 9105) leaves the queue without starting and ends
+/// `cancelled`.
 ///
-/// `{id}` may be the run key **or** any member plan id of an active run.
+/// Returns 200 `{ "cancelled": true }` on success, or 404 when the plan is not
+/// actively executing or queued.
+///
+/// `{id}` may be the run key, the run id **or** any member plan id of an
+/// active or queued run.
 pub(super) async fn cancel_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let active = state.active_plans.write().await;
-    // Resolve by key or by member plan id.
-    let key = active_run_for(&active, &id)
-        .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
+    let mut active = state.active_plans.write().await;
+    // Resolve by key, run id or member plan id; else look in the queue.
+    let Some(key) = active_run_for(&active, &id) else {
+        return cancel_queued_run(&state, &mut active, &id);
+    };
     let handle = active
         .get(&key)
         .expect("key from active_run_for must exist in map");
@@ -811,6 +998,9 @@ pub(super) async fn cancel_plan(
     // resumable.
     let cancelled = PlanRunStatus::ended(RunState::Cancelled, None);
     record_plan_run_end(&state, &key, &run_id, cancelled).await;
+    // An aborted run's task never started the next queued run; this does,
+    // unless the task did first (decision 9105).
+    start_next_queued_run(&state).await;
 
     // Publish PlanCompleted only when the task did not finish cleanly on its
     // own.  If the run observed the cancel token and returned, it already
@@ -824,4 +1014,36 @@ pub(super) async fn cancel_plan(
     }
 
     Ok(Json(json!({ "cancelled": true })))
+}
+
+/// Take the queued run `id` names out of the queue (decision 9105). Its
+/// handle, kept under its run id, records it as cancelled so its status route
+/// reports it; the run never started, so the handle's task only stands in.
+/// 404 when no queued run matches either.
+fn cancel_queued_run(
+    state: &AppState,
+    active: &mut std::collections::HashMap<String, PlanHandle>,
+    id: &str,
+) -> Result<Json<Value>, ApiError> {
+    let removed = {
+        let mut queue = state
+            .plan_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = queue.iter().position(|run| queued_run_named(run, id));
+        index.and_then(|index| queue.remove(index))
+    };
+    let spec = removed
+        .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?
+        .spec;
+    let plan_handle = PlanHandle {
+        id: spec.run_id.clone(),
+        plan_dir: spec.plan_dir,
+        members: spec.members,
+        status: PlanRunStatus::ended(RunState::Cancelled, None),
+        handle: tokio::spawn(async {}),
+        cancel: CancelToken::new(),
+    };
+    active.insert(spec.run_id.clone(), plan_handle);
+    Ok(Json(json!({ "cancelled": true, "run_id": spec.run_id })))
 }

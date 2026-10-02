@@ -419,6 +419,49 @@ impl RunState {
 /// the handle GC drops it (G43).
 pub const FINISHED_PLAN_RUN_RETENTION_SECS: i64 = 60 * 60;
 
+/// How many plan runs may wait behind the live one. A run past this is
+/// refused with 409.
+pub const PLAN_RUN_QUEUE_CAPACITY: usize = 8;
+
+/// What starts a plan run: `POST /api/plans/{id}/execute` and `POST
+/// /api/plans/execute` start one at once, or queue it behind the live run
+/// (decision 9105).
+#[derive(Debug, Clone)]
+pub struct PlanRunSpec {
+    /// The id the route's 202 returned; the run takes it.
+    pub run_id: String,
+    /// The run's key in `active_plans`: the plan id of a single-plan run, the
+    /// run id of a plan-set run.
+    pub key: String,
+    /// The plan ids the run executes, in order.
+    pub members: Vec<String>,
+    /// The plan directory, or the plan-set directory, the run executes.
+    pub plan_dir: PathBuf,
+    /// Resume from the last checkpoint instead of starting fresh.
+    pub resume: bool,
+    /// A plan-set run's own options; `None` for a single-plan run.
+    pub plan_set: Option<PlanSetSpec>,
+}
+
+/// The options of a plan-set run.
+#[derive(Debug, Clone)]
+pub struct PlanSetSpec {
+    /// Run only these plan ids; `None` runs every plan under the target.
+    pub only_plans: Option<Vec<String>>,
+    /// How many independent plans may run at once.
+    pub max_parallel_plans: usize,
+}
+
+/// A plan run waiting for the live run to end. Queued runs start one at a
+/// time, oldest first (decision 9105).
+#[derive(Debug, Clone)]
+pub struct QueuedPlanRun {
+    /// What starts the run.
+    pub spec: PlanRunSpec,
+    /// When it was queued.
+    pub queued_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// A recorded template run outcome used by the metrics summary endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemplateRunRecord {
@@ -721,6 +764,10 @@ pub struct AppState {
     pub active_runs: RwLock<HashMap<String, RunHandle>>,
     /// Active plan executions.
     pub active_plans: RwLock<HashMap<String, PlanHandle>>,
+    /// Plan runs waiting for the live one to end, oldest first (decision
+    /// 9105). Changed only under the `active_plans` write lock, so starting
+    /// or queueing a run is one step; locked after `active_plans`.
+    pub plan_queue: std::sync::Mutex<VecDeque<QueuedPlanRun>>,
     /// Active generic operations.
     pub operations: RwLock<HashMap<String, OperationHandle>>,
     /// Agent template registry.
@@ -1377,6 +1424,7 @@ impl AppState {
             latency_registry: LatencyRegistry::new(),
             active_runs: RwLock::new(HashMap::new()),
             active_plans: RwLock::new(HashMap::new()),
+            plan_queue: std::sync::Mutex::new(VecDeque::new()),
             operations: RwLock::new(HashMap::new()),
             templates: RwLock::new(template_registry),
             deploy_backend,

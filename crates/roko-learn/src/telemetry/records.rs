@@ -599,8 +599,10 @@ pub struct FailoverRefusal {
     pub provider: String,
     /// Why, as a class: `provider_exhausted` (out of usage), `billing`,
     /// `circuit_open`, `disabled`, `no_credentials`, `not_configured`,
-    /// `not_dispatchable` or `contract_unsupported` (the provider cannot
-    /// enforce the task's agent contract).
+    /// `not_dispatchable`, `contract_unsupported` (the provider cannot
+    /// enforce the task's agent contract) or `unguarded_in_checkout` (a
+    /// Codex, Cursor or Gemini CLI agent, which roko cannot guard, for an
+    /// attempt in the operator's shared checkout).
     pub class: String,
     /// The provider's own words, or why it could not be called.
     pub reason: String,

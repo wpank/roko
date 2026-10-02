@@ -773,6 +773,7 @@ set -- operator and author intent always take precedence.
 | `dispatch_max_retries` | u32 | `5` | Max dispatch retry attempts for transient errors |
 | `warm_pool_size` | usize | `2` | Pre-spawned warm agent slots per role |
 | `warm_pool_idle_timeout_secs` | u64 | `300` | Idle timeout before a warm agent slot is reclaimed |
+| `allow_unguarded_agents_in_checkout` | bool | `false` | Let a Codex, Cursor or Gemini CLI agent take an attempt in the operator's shared checkout; by default failover passes them over there, since roko cannot guard their commands |
 
 **Restart required.** Runner configuration is read at plan start; changes take effect on the next plan execution.
 

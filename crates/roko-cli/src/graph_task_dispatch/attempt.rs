@@ -444,7 +444,9 @@ impl Settlement {
 
     /// A provider call that ended in `error` before returning a result. A
     /// stop the plan run asked for is a cancellation, which teaches nothing
-    /// (bug-2b1ddc); anything else is [`Self::provider_failure`].
+    /// (bug-2b1ddc). An attempt in the shared checkout that only unguarded
+    /// CLI agents could take never called a provider, so it is the harness's
+    /// failure (decision 1214). Anything else is [`Self::provider_failure`].
     pub(super) fn provider_call_error(error: &RokoError) -> Self {
         match error {
             RokoError::Cancelled(reason) => Self {
@@ -457,6 +459,11 @@ impl Settlement {
                 )),
                 rung: None,
             },
+            RokoError::Gateway { category, .. }
+                if *category == super::failover::UNGUARDED_IN_CHECKOUT =>
+            {
+                Self::harness_failure(error)
+            }
             _ => Self::provider_failure(&error.to_string(), false),
         }
     }

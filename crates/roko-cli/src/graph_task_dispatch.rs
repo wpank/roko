@@ -1095,11 +1095,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
 
         // Load persisted dream routing advice once; both the cross-cut
         // arbitration and the P1-18 dream bias read it. Plans that skip
-        // enrichment get neither.
+        // enrichment get neither, and no plan reads it while plan runs do
+        // not dream (backlog 4207).
         let routing_bias = if skip_enrichment {
             None
         } else {
-            let dream_advice = roko_dreams::load_dream_routing_advice(&self.workdir).ok();
+            let dream_advice =
+                routing_context::plan_dream_routing_advice(&self.config.learning, &self.workdir);
             // P1-16: Run cross-cut arbitration to detect safety-critical
             // overrides before applying dream routing advice.
             let task_category = task.domain.as_ref().map_or("implementation", |d| d.label());

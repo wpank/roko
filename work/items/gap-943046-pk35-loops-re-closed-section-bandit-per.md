@@ -8,13 +8,12 @@ severity = "p2"
 goal = "cybernetic"
 rank = 35
 size = "L"
-hold = "workflow-audit migration in progress (session roko-7d, at Will's request, 2026-10-02): it removes the PRD pipeline and folds roko do/develop into roko run; check with roko-7d before starting work that edits PRD code, do_cmd.rs or the Run/Do/Prd parts of main.rs"
 subsystem = ["roko-learn/error-patterns"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
 source = "tmp/backlog/2026-10-02-complete-and-wire PK35"
-anchors = ["crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/prd.rs", "crates/roko-cli/src/runtime_feedback/error_patterns.rs", "crates/roko-core/src/config/mod.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-learn/src/error_pattern_store.rs", "crates/roko-learn/src/feedback_service.rs", "crates/roko-learn/src/section_effect.rs"]
+anchors = ["crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/src/runtime_feedback/error_patterns.rs", "crates/roko-core/src/config/mod.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-learn/src/error_pattern_store.rs", "crates/roko-learn/src/feedback_service.rs", "crates/roko-learn/src/section_effect.rs"]
 lane = "rust-hot"
 parent = "spec-446a41"
 links = { depends_on = ["gap-cc5051", "gap-b5caf3", "gap-aea13a", "gap-ac2611"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
@@ -88,3 +87,4 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK09 (gap-cc5051), PK32 (gap-b5caf3), PK33 (gap-aea13a), PK34 (gap-ac2611).
 - Suggested model: opus.
+- 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. Plan generation moved from `prd.rs` to `crates/roko-cli/src/plan_generate/pipeline.rs` (anchor re-pointed). Hold lifted.

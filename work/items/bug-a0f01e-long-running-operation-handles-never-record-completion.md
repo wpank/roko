@@ -8,12 +8,12 @@ severity = "p2"
 goal = "visibility"
 subsystem = ["roko-serve/operations"]
 created = 2026-09-28
-updated = 2026-10-01
+updated = 2026-10-02
 last_verified = 2026-10-01
 last_verified_rev = "ebdc0f5d5"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
-anchors = ["crates/roko-serve/src/routes/dream.rs:107", "crates/roko-serve/src/routes/research.rs:257", "crates/roko-serve/src/routes/prds.rs:537", "crates/roko-serve/src/routes/templates.rs:207", "crates/roko-serve/src/routes/plans.rs:1151", "crates/roko-serve/src/routes/gateway.rs:708"]
+anchors = ["crates/roko-serve/src/routes/dream.rs:107", "crates/roko-serve/src/routes/research.rs:257", "crates/roko-serve/src/routes/templates.rs:207", "crates/roko-serve/src/routes/plans.rs:1151", "crates/roko-serve/src/routes/gateway.rs:708"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -43,3 +43,4 @@ Re-verified 2026-09-29 at d9e79e9d8. Beyond the plan-generation producer, plan 0
   (`gc_completed_handles` drops finished handles every 60 s) and restarts; (2) a `Cancelled` status, which nothing
   produces yet; (3) the inference batch (`routes/gateway.rs`) still registers its handle after spawning and records
   only `Completed`; `plan_generate` and `plan_revise` keep their own recording.
+- 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. `routes/prds.rs` and its three producers (`prd_draft`, `prd_consolidate`, `prd_plan`) were deleted, so they drop out of this item.

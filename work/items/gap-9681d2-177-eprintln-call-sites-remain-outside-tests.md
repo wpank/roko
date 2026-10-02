@@ -8,11 +8,11 @@ severity = "p3"
 goal = "tooling"
 subsystem = ["workspace/logging"]
 created = 2026-08-13
-updated = 2026-10-01
+updated = 2026-10-02
 last_verified = 2026-10-01
 last_verified_rev = "0a7da59e8"
 source = "gaps-md#batch-2026-08-1213/eprintln-expect"
-anchors = ["crates/roko-cli/src/prd.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/runner/output_sink.rs"]
+anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/runner/output_sink.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -66,3 +66,4 @@ Re-checked 2026-09-29: unchanged; 174 non-test calls by a stricter count than th
 - 2026-10-01 (wk-filer4): What changed: 22 diagnostic sites now use tracing. In roko-learn, runtime_feedback/mod.rs has 5 save and transaction failures as `warn` and the experiment-concluded record as `info`, and bandits.rs logs an unknown arm as `warn`. In roko-core, env_registry.rs `warn_if_deprecated` uses `warn`; it has no caller. In roko-cli, prd.rs `validate_and_fix_generated_plan` logs its 14 automatic plan corrections as `warn`, or `info` for the model_hint removal, the auto-added verify and placeholder replacement. Every other site is user-facing output, skipped, deferred or test code (table above).
 - 2026-10-01 (wk-filer4): Next: after gap-0d0e81 splits main.rs, classify main.rs and commands/. A count of at most 60 looks out of reach: 95 of the 99 sites outside main.rs and commands/ are user-facing output, which should stay on stderr until it moves to `CliReporter` (cli_reporter.rs). A better verify: `print_stderr = "warn"` in [workspace.lints.clippy], with `#[allow(clippy::print_stderr)]` on each module that prints user-facing output, so new diagnostics cannot use eprintln!. gap-556ffe (parked) is still the duplicate the notes above describe.
 - 2026-10-01 (wk-filer4): After merging the working branch at 0a7da59e8, which includes bug-2d06bf, I removed the deferred duplicate timing line in `generate_plan` (prd.rs); the `tracing::info!` above it still logs the phase timing. That makes 23 sites converted and 155 remaining, and the table above has the post-merge line numbers.
+- 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. `prd.rs` moved to `crates/roko-cli/src/plan_generate/pipeline.rs` (`prd/dry_run_fs.rs` to `plan_generate/dry_run_fs.rs`), and the PRD-only sites (draft, promote and PRD validation output, `commands/prd.rs`, `commands/develop.rs`) were deleted, so the counts and line numbers above are stale: recount before starting.

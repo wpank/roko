@@ -7,13 +7,13 @@ triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
-hold = "needs Will's approval for live planner calls, and waits for session roko-7d's plan-first generation (workflow-audit migration)"
+hold = "needs Will's approval for live planner calls"
 subsystem = ["roko-cli/plan_generate"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
 source = "tmp/backlog/2026-10-02-complete-and-wire 3223 (blocked in wave 3, PK18)"
-anchors = ["crates/roko-cli/src/plan_generate.rs", "benchmarks/viabilitybench/speclint/speclint.py"]
+anchors = ["crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan", "benchmarks/viabilitybench/speclint/speclint.py"]
 lane = "rust-cold"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
@@ -35,7 +35,8 @@ It is the end-to-end check that the frontier planner writes specs a cheap model 
 
 ## Where
 
-Plan generation (moving out of `crates/roko-cli/src/prd.rs` under session roko-7d's workflow-audit migration),
+Plan generation (`crates/roko-cli/src/plan_generate/pipeline.rs::generate_plan`, reached by
+`roko plan generate "<request>"` and `roko run --plan --dry-run "<request>"`),
 scored by `benchmarks/viabilitybench/speclint/speclint.py` at the linter in force.
 
 ## Current state
@@ -45,9 +46,9 @@ At 509e3e807 the generator scores and retries, but no generated sample set exist
 
 ## Plan
 
-1. After roko-7d's change lands, pick five inputs of different kinds (a CLI flag, a serve route, a data change, a
-   refactor, a docs task). Its plan-first generation replaces the PRD inputs of the original task.
-2. Generate each plan with a roko built from main in a scratch workspace, copy the five `tasks.toml` (and `accept/`
+1. Pick five requests of different kinds (a CLI flag, a serve route, a data change, a refactor, a docs task),
+   each a prompt or a short written spec. They replace the PRD inputs of the original task.
+2. Generate each plan with `roko plan generate "<request>"` (a roko built from main, in a scratch workspace), copy the five `tasks.toml` (and `accept/`
    files) into `crates/roko-cli/tests/fixtures/spec-gen-sample/<slug>/`, and score them.
 3. Record the per-plan means, bands, planner model and cost or subscription use in the commit message.
 4. If a plan falls short, file what the planner missed. Never hand-edit the fixtures.
@@ -61,3 +62,4 @@ At 509e3e807 the generator scores and retries, but no generated sample set exist
 
 - The live planner calls are spend: get Will's approval first (subscription or API).
 - Full spec: `tmp/backlog/2026-10-02-complete-and-wire/3223-live-check-five-prd-plans-score-70.md`.
+- 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. The hold now waits only on Will's approval for the live planner calls.

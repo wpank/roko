@@ -86,3 +86,4 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK20 (gap-5ebb4f), PK30 (gap-2ca903), PK73 (gap-5e9292), PK81 (gap-a63e3c).
 - Existing work items this package covers or touches: gap-f30b8e. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
+- 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. In demo-app it fixed only what broke (the scenario runners and `PipelineStagesPanel` say `roko run`, the transport types lost the Atelier fields, `lib/cmd-descriptions.ts` describes the new commands). The PRD sample pieces (`lib/prd-pipeline-sample.ts`, `PrdPipelinePanel.tsx`, the fake terminal lines) are left for task 9317.

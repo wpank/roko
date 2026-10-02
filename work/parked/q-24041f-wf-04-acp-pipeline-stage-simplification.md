@@ -7,7 +7,7 @@ triage = "unverified"
 severity = "p3"
 subsystem = ["roko-acp"]
 created = 2026-09-23
-updated = 2026-09-28
+updated = 2026-10-02
 source = "tmp/workflow-audit/04-ACP-STAGE-AUDIT.md#Recommendation"
 discovered_from = "audit:tmp/workflow-audit/04-ACP-STAGE-AUDIT.md#Recommendation"
 anchors = ["crates/roko-acp/src/pipeline.rs"]
@@ -25,3 +25,5 @@ Imported without verification from:
 - `tmp/workflow-audit/04-ACP-STAGE-AUDIT.md#Future Work`
 
 How to verify: Owner decision; check portal/ACP UI stage exposure.
+
+2026-10-02 (roko-7d): Still deferred (the 2026-09-23 audit's Option C). The workflow-audit migration (merge bfd36512f) only removed the ACP slash commands for the PRD pipeline, `roko do` and `roko develop`, and added `/enhance-plan`.

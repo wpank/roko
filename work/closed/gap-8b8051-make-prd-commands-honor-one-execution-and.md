@@ -2,21 +2,28 @@
 id = "gap-8b8051"
 kind = "gap"
 title = "Make PRD Commands Honor One Execution and Validation Contract"
-status = "parked"
-triage = "unverified"
+status = "superseded"
+triage = "verified"
 severity = "p1"
 subsystem = ["roko-cli"]
 created = 2026-09-01
-updated = 2026-09-28
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "bfd36512f"
 source = "tmp/backlog/archive/303-prd-cli-consistency-and-integrity.md#303 — Make PRD Commands Honor One Execution and Validation Contract"
 discovered_from = "audit:tmp/backlog/archive/303-prd-cli-consistency-and-integrity.md#303 — Make PRD Commands Honor One Execution and Validation Contract"
 anchors = ["commands/prd.rs", "prd.rs", "tasks.toml", ".roko/prd/consolidation/<timestamp>.md", "model_selection::resolve_effective_model_key", "ArtifactKind", "ValidationIssue", "ArtifactValidationReport"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
-[parked]
-at = 2026-09-28
-from_status = "open"
-reason = "Triage 2026-09-28: unchecked import from an older document; not planned unless revived"
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T20:40:20Z"
+commit = "bfd36512f"
+by = "roko-7d"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "Superseded: the PRD commands were removed on 2026-10-02 (merge bfd36512f)."
 +++
 [blocked] Blocked on #262, #280, and #283 — The PRD command family is functional but each subcommand applies a different contract:
 

@@ -1,0 +1,27 @@
+# S07 §4.6, F4 kvtool-cli "after" (TSS v1), verbatim: the precise spec D-v1 degrades.
+[[task]]
+id = "F4-0017"
+title = "Rename user:* keys to acct:* with kvtool"
+goal = "After the script runs, every user:* key in data/store.db is stored under acct:* with its value unchanged."
+description = """Write scripts/migrate_prefix.sh using the bundled bin/kvtool (read its --help;
+its defaults and exit codes matter). AC ids refer to the acceptance list."""
+non_goals = ["Do not modify bin/kvtool or data/fixtures/", "Do not read or write the store except through bin/kvtool"]
+acceptance = [
+  "AC1: after one run, `bin/kvtool list --prefix user:` prints nothing and `--prefix acct:` lists every former key",
+  "AC2: every value is byte-identical after the move",
+  "AC3: a run interrupted by a partial failure completes on its own and exits 0",
+  "AC4: a second run changes nothing and exits 0",
+]
+files = ["scripts/migrate_prefix.sh"]
+max_loc = 60
+[task.context]
+read_files = [{ path = "bin/kvtool", why = "flags, dry-run default, exit codes" }]
+[task.hidden]
+suite = "auto"
+interface = ["scripts/migrate_prefix.sh"]
+properties = ["large store with injected partial failure", "idempotent", "no key loss"]
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.visible.test_migrate"
+covers = ["AC1", "AC2"]
+expect = "fail_on_base"

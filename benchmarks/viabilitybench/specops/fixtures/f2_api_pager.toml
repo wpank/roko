@@ -1,0 +1,28 @@
+# S07 §4.6, F2 api-pager "after", written out as TSS v1 from the section's description.
+[[task]]
+id = "F2-0005"
+title = "Total a customer's refunds with the pay SDK"
+goal = "`reports/refunds.py::total_refunds(customer_id) -> Decimal` returns the customer's total refunds in major units."
+description = """Implement `total_refunds` in reports/refunds.py with the vendored pay SDK
+(`vendor/paysdk.py`; see its docstrings for paging and throttling). AC ids refer to the acceptance list."""
+non_goals = ["Do not modify `vendor/paysdk.py`"]
+acceptance = [
+  "AC1: every page of refunds is included in the total",
+  "AC2: amounts are converted with the currency's exponent, and exponents 0, 2 and 3 are all right",
+  "AC3: transient throttling never changes the result",
+  "AC4: the function does no network I/O",
+]
+files = ["reports/refunds.py"]
+max_loc = 60
+[task.context]
+read_files = [{ path = "vendor/paysdk.py", why = "paging cursor, throttling errors, currency exponents" }]
+symbols = ["paysdk.Client.list_refunds"]
+[task.hidden]
+suite = "auto"
+interface = ["reports/refunds.py::total_refunds"]
+properties = ["multi-page", "throttled", "JPY/KWD"]
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.visible.test_refunds"
+covers = ["AC1", "AC2"]
+expect = "fail_on_base"

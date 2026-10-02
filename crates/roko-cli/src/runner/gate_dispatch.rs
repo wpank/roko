@@ -66,8 +66,6 @@ pub(crate) use super::gate_input::owned_input_fingerprint_id;
 
 /// Sentinel rung value for plan-level verification (not a per-task rung).
 pub const RUNG_PLAN_VERIFY: u32 = 1000;
-/// Sentinel rung value for post-merge regression gates.
-pub const RUNG_MERGE: u32 = 1001;
 
 /// Compute the `CARGO_BUILD_JOBS` limit: half the available logical CPUs,
 /// floored to at least 1. This prevents CPU exhaustion when multiple agents

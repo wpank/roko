@@ -735,15 +735,17 @@ is not judged.
 
 ## 11. Merge Queue
 
-> **Status (2026-09-30): ORPHANED.** The merge queue served Runner-v2,
-> whose event loop was deleted on 2026-09-06 (`6b5da8616`), and nothing re-attached it:
-> only tests construct `MergeQueue`, and `PlanMerger` was deleted (gap-3505fb). Graph runs
-> with per-task worktrees (the default) deliver each finished plan into the run's batch
-> branch with git plumbing instead (`crates/roko-cli/src/graph_execution/batch.rs`, `delivery.rs`).
+> **Status (2026-10-03): DELETED.** The merge queue served Runner-v2,
+> whose event loop was deleted on 2026-09-06 (`6b5da8616`), and nothing re-attached it.
+> `PlanMerger` was deleted (gap-3505fb), and the queue, its orchestrator snapshot and the
+> Graph engine's merge-queue hook followed (9204, 9205). Graph runs with per-task worktrees
+> (the default) deliver each finished plan into the run's batch branch with git plumbing
+> (`crates/roko-cli/src/graph_execution/batch.rs`, `delivery.rs`). The rest of this section
+> records the removed design.
 
-The merge queue serializes plan merges to prevent file conflicts.
+The merge queue serialized plan merges to prevent file conflicts.
 
-**Source:** `crates/roko-cli/src/orchestrator/merge_queue.rs`
+**Source (deleted):** `crates/roko-cli/src/orchestrator/merge_queue.rs`
 
 ### Conflict detection
 

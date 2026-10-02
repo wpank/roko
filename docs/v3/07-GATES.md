@@ -695,8 +695,7 @@ Key wiring functions:
   definition.
 - `build_rung_execution_config()` builds `RungExecutionConfig` with timeouts,
   parallelism limits, and environment variables.
-- Sentinel rung values: `RUNG_PLAN_VERIFY = 1000` (plan-level verification),
-  `RUNG_MERGE = 1001` (post-merge regression gates).
+- Sentinel rung value: `RUNG_PLAN_VERIFY = 1000` (plan-level verification).
 - `cargo_build_jobs()` limits concurrent CPU usage to half logical CPUs.
 - `sccache_available()` detects and caches sccache availability.
 

@@ -1,15 +1,14 @@
-//! Orchestration types owned by the live CLI runner.
+//! Orchestration types the Graph plan runner and roko's tools share.
 //!
-//! Plan discovery, task DAG, worktree management, executor state, merge
-//! queue, replan strategies, and crash-recovery snapshots.
+//! Plan discovery, task DAG, worktree management, executor state, replan
+//! strategies, and crash-recovery snapshots. Plans reach their branches
+//! through `graph_execution::delivery`, not a merge queue.
 
 pub mod dag;
 pub mod event_log;
 pub mod executor;
-pub mod merge_queue;
 pub mod plan_discovery;
 pub mod replan;
-pub mod runtime_snapshot;
 pub mod worktree;
 
 pub use dag::{
@@ -28,21 +27,12 @@ pub use executor::{
     SnapshotIntegrityError, SnapshotVerifier, SpeculativeExecution, TransitionError,
     WarningSeverity, current_schema_version,
 };
-pub use merge_queue::{
-    DEFAULT_MAX_MERGE_RETRIES, MergeConflict, MergeQueue, MergeQueueEntrySnapshot,
-    MergeQueueMetrics, MergeQueueSnapshot, MergeRequest, MergeReservation, MergeStatus,
-    ReservedMerge,
-};
 pub use plan_discovery::{
     DiscoveryError, PlanFrontmatter, PlanInfo, ValidationError, discover_plans, parse_frontmatter,
     rank_plans, validate_frontmatter,
 };
 pub use replan::{
     FailureDisposition, PlanRevisionEvidence, PlanRevisionRequest, ReplanResult, ReplanStrategy,
-};
-pub use runtime_snapshot::{
-    ORCHESTRATOR_SNAPSHOT_SCHEMA_VERSION, OrchestratorSnapshot,
-    orchestrator_snapshot_schema_version,
 };
 pub use worktree::{
     WorktreeConfig, WorktreeError, WorktreeHandle, WorktreeHealth, WorktreeIsolationStatus,

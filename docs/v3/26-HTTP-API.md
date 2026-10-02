@@ -516,6 +516,7 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 |--------|------|-------------|
 | GET | `/api/dashboard/runs` | Bounded summary of hashed per-run indexes |
 | GET | `/api/runs/{run_id}` | Run detail, terminal state, counts, integrity |
+| GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `finished_at`, `links` |
 | GET | `/api/runs/{run_id}/events` | Cursor-paginated events (`?cursor=&limit=&types=&source=`) |
 | GET | `/api/runs/{run_id}/events/stream` | Run-filtered SSE |
 | GET | `/api/runs/{run_id}/tasks` | Task summaries and attempt numbers |

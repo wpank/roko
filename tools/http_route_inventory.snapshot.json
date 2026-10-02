@@ -1,6 +1,6 @@
 {
-  "total_registrations": 455,
-  "canonical_registrations": 404,
+  "total_registrations": 456,
+  "canonical_registrations": 405,
   "alias_count": 51,
   "conflict_count": 0,
   "unparsed_count": 0,
@@ -2737,13 +2737,21 @@
       "source_file": "crates/roko-serve/src/routes/runs.rs",
       "line": 56,
       "router_fn": "routes",
+      "path": "/runs/{run_id}/summary",
+      "method": "GET",
+      "handler": "get_run_summary"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/runs.rs",
+      "line": 57,
+      "router_fn": "routes",
       "path": "/runs/{run_id}/events",
       "method": "GET",
       "handler": "get_run_events"
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 57,
+      "line": 58,
       "router_fn": "routes",
       "path": "/runs/{run_id}/events/stream",
       "method": "GET",
@@ -2751,7 +2759,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 58,
+      "line": 59,
       "router_fn": "routes",
       "path": "/runs/{run_id}/tasks",
       "method": "GET",
@@ -2759,7 +2767,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 59,
+      "line": 60,
       "router_fn": "routes",
       "path": "/runs/{run_id}/tasks/{task_id}/attempts",
       "method": "GET",
@@ -2767,7 +2775,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 63,
+      "line": 64,
       "router_fn": "routes",
       "path": "/runs/{run_id}/gates",
       "method": "GET",
@@ -2775,7 +2783,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 64,
+      "line": 65,
       "router_fn": "routes",
       "path": "/runs/{run_id}/logs",
       "method": "GET",
@@ -2783,7 +2791,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 65,
+      "line": 66,
       "router_fn": "routes",
       "path": "/runs/{run_id}/metrics",
       "method": "GET",
@@ -2791,7 +2799,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 66,
+      "line": 67,
       "router_fn": "routes",
       "path": "/runs/{run_id}/artifacts",
       "method": "GET",
@@ -2799,7 +2807,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 67,
+      "line": 68,
       "router_fn": "routes",
       "path": "/runs/{run_id}/screenshots",
       "method": "GET",
@@ -2807,7 +2815,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 68,
+      "line": 69,
       "router_fn": "routes",
       "path": "/runs/{run_id}/bundle",
       "method": "GET",

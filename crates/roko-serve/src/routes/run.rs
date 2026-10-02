@@ -358,7 +358,7 @@ fn run_verdict(result: &RunResult) -> RunState {
 
 /// The state a run handle reports, with the error of a run that failed:
 /// `running`, then the run's verdict ([`run_verdict`]) once it ends.
-fn run_handle_state(handle: &RunHandle) -> (RunState, Option<&str>) {
+pub(crate) fn run_handle_state(handle: &RunHandle) -> (RunState, Option<&str>) {
     match &handle.status {
         OperationStatus::Running => (RunState::Running, None),
         OperationStatus::Completed { .. } => match &handle.result {

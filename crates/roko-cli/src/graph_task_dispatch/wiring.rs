@@ -152,8 +152,8 @@ impl GraphTaskDispatcher {
             component(
                 "store.decision_writer",
                 WiringKind::Store,
-                false,
-                "route decisions are traced, not written to `decisions.jsonl` (S01 P0-8)",
+                feedback.runs_dir.is_some(),
+                "each run's `decisions.jsonl`: one route decision per attempt that routes",
             ),
             component(
                 "store.exposure_writer",

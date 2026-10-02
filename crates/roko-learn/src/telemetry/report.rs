@@ -28,8 +28,9 @@ use crate::error::LearnError;
 use crate::routing_log::RoutingDecisionLog;
 
 /// The source [`route_report`] files an attempt under when no route
-/// decision names one. Graph dispatch writes no route decisions yet (S01
-/// P0-8), so today every attempt is `unknown`.
+/// decision names one: an attempt that never routed (a T0 reflex, a harness
+/// failure before planning), or one from a run written before Graph
+/// dispatch recorded route decisions (S01 P0-8).
 pub const UNKNOWN_SOURCE: &str = "unknown";
 
 // ── Reading a run ─────────────────────────────────────────────────────

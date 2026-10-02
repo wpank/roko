@@ -48,7 +48,6 @@ const S01_COMPONENTS: &[&str] = &[
 /// off the list then.
 const EXPECTED_MISSING: &[&str] = &[
     "sink.section_effect",
-    "store.decision_writer",
     "store.exposure_writer",
     "store.record_access",
 ];

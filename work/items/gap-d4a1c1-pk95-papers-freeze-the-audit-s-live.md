@@ -98,3 +98,17 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: nothing.
 - Existing work items this package covers or touches: gap-08d9b2. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
+
+## Progress
+
+- 9501: implemented at ac644b6d7
+- 9502: implemented at 9d059cc72
+- 9503: implemented at 29996ca33 (sections) and ec12c7513 (README)
+- 9504: blocked: the re-read must come from a reader other than 9503's author; this agent wrote 9503 and may not run sub-agents
+- 9505: implemented in place in the main checkout (tmp/ is untracked, so no commit)
+- 9506: implemented in place (untracked)
+- 9507: implemented in place (untracked): 0 major and 2 minor errors in 60 entries, a pass; fixing the two (via `bib-overrides.json`) and adding a secondary source for §2's Beer wording (via `new-refs`) need files outside the task
+- 9508: implemented in place (untracked)
+- 9510: blocked: `work/telemetry/ROLLUP.md` (2026-10-01) has 0 harvested call rows and `work/telemetry/harvest/` does not exist, so the model ids, agent counts, tokens and costs per activity cannot come from the harvest; the provider-term citations need bib keys through `new-refs`, outside the task's files
+- 9511: implemented in place (untracked): `tmp/cybernetic-harness/paper/tools/build.sh`
+- 9512: implemented in place (untracked): `tmp/cybernetic-harness/paper/figures/f1-control-stack.svg` and `.txt`

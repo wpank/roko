@@ -469,7 +469,7 @@ pub enum TaskContextWeight {
     Slim,
     /// Default (includes workspace map, recent learnings).
     Standard,
-    /// Maximal (full PRD, research, playbook, invariants).
+    /// Maximal (full plan context, research, playbook, invariants).
     Deep,
 }
 
@@ -527,7 +527,7 @@ pub struct Task {
     /// Type signatures this task must define (from plan Quick Reference).
     #[serde(default)]
     pub types_to_define: Option<Vec<String>>,
-    /// Formulas to implement verbatim (from PRD2).
+    /// Formulas to implement verbatim (from the spec).
     #[serde(default)]
     pub formulas: Option<Vec<String>>,
     /// Invariant IDs this task must test (from `## Verification`).
@@ -726,7 +726,7 @@ pub struct TaskHints {
     /// Type signatures this task must define (from plan Quick Reference).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub types_to_define: Option<Vec<String>>,
-    /// Formulas to implement verbatim (from PRD2).
+    /// Formulas to implement verbatim (from the spec).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub formulas: Option<Vec<String>>,
     /// Imports needed from other crates/modules.

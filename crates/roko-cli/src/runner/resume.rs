@@ -362,6 +362,8 @@ mod tests {
                 fail_msg: None,
                 timeout_ms: 60_000,
                 scope: Vec::new(),
+                covers: Vec::new(),
+                expect: None,
             }],
             timeout_secs: 60,
             max_retries: 1,
@@ -372,6 +374,7 @@ mod tests {
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: Default::default(),
         }
     }

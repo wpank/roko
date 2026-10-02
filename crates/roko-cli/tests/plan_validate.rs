@@ -467,6 +467,47 @@ verfy = [{ phase = "structural", command = "grep -q slugify docs/slug.md" }]
     assert_eq!(strict.get_output().status.code(), Some(1));
 }
 
+/// 3207: the TSS v1 example plan sets every field of the task-spec
+/// standard and passes `plan validate --strict` without a PLAN_043. It runs
+/// on a copy, with the context files its task reads, so the test leaves the
+/// checkout alone.
+#[test]
+fn tss_v1_example_passes_strict_validation() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let example = fs::read_to_string(repo.join("plans/_fixtures/tss-v1-example/tasks.toml"))
+        .expect("read the TSS v1 example");
+    let parsed: toml::Value = toml::from_str(&example).expect("parse the example");
+    let task = &parsed["task"][0];
+    for key in [
+        "goal",
+        "non_goals",
+        "assumptions",
+        "open_questions",
+        "hidden",
+        "acceptance",
+    ] {
+        assert!(task.get(key).is_some(), "the example sets `{key}`");
+    }
+    let step = &task["verify"][0];
+    for key in ["covers", "expect"] {
+        assert!(step.get(key).is_some(), "the verify step sets `{key}`");
+    }
+
+    let temp = TempDir::new().unwrap();
+    write_plan(temp.path(), "tss-v1-example", &example);
+    for entry in task["context"]["read_files"].as_array().unwrap() {
+        let path = entry["path"].as_str().unwrap();
+        let copy = temp.path().join(path);
+        fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        fs::copy(repo.join(path), copy).expect("copy a context file");
+    }
+
+    let assert = run_validate(&temp, &["plans", "--strict"]).success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(!stdout.contains("PLAN_043"), "{stdout}");
+    assert!(stdout.contains("0 diagnostics in 1 plan"), "{stdout}");
+}
+
 #[test]
 fn plan_validate_accepts_typed_acceptance_contract() {
     let temp = TempDir::new().unwrap();

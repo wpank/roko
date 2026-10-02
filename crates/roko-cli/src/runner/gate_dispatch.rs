@@ -2405,6 +2405,8 @@ mod tests {
             fail_msg: None,
             timeout_ms: 1_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }
     }
 
@@ -3008,6 +3010,8 @@ path = "src/shared.rs"
             fail_msg: None,
             timeout_ms: 10_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         };
 
         let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1, None).await;
@@ -3026,6 +3030,8 @@ path = "src/shared.rs"
             fail_msg: None,
             timeout_ms: 10_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         };
 
         let verdicts = run_verify_steps(&signal, &ctx, "plan", "T01", vec![step], 1, None).await;
@@ -3108,6 +3114,8 @@ path = "src/shared.rs"
                     fail_msg: None,
                     timeout_ms: 10_000,
                     scope: Vec::new(),
+                    covers: Vec::new(),
+                    expect: None,
                 }],
                 Some(Vec::new()),
                 10,
@@ -3161,6 +3169,8 @@ path = "src/shared.rs"
                 fail_msg: None,
                 timeout_ms: 10_000,
                 scope: Vec::new(),
+                covers: Vec::new(),
+                expect: None,
             }],
             Some(Vec::new()),
             10,
@@ -3202,6 +3212,8 @@ path = "src/shared.rs"
             fail_msg: None,
             timeout_ms: 10_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         };
         let baseline = run_gate_once(
             gate_effect(GateCompletionKind::Preflight),
@@ -3277,6 +3289,8 @@ path = "src/shared.rs"
                 fail_msg: None,
                 timeout_ms: 10_000,
                 scope: Vec::new(),
+                covers: Vec::new(),
+                expect: None,
             }],
             Some(Vec::new()),
             10,
@@ -3507,6 +3521,8 @@ path = "src/shared.rs"
                 fail_msg: None,
                 timeout_ms: 10_000,
                 scope: Vec::new(),
+                covers: Vec::new(),
+                expect: None,
             }],
             None,
             10,
@@ -3831,6 +3847,8 @@ cargo_fix_enabled = false
             fail_msg: Some("tests failed".into()),
             timeout_ms: 60_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }];
         let cancel = tokio_util::sync::CancellationToken::new();
         let request = RunnerProductionGateAdapter::build_request(

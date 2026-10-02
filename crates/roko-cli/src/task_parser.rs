@@ -179,6 +179,11 @@ pub struct TaskDef {
     /// execute in the order they were authored, not alphabetically.
     #[serde(default)]
     pub sequence: usize,
+    /// The TSS v1 fields (`goal`, `non_goals`, `assumptions`,
+    /// `open_questions` and `[task.hidden]`), each a top-level `[[task]]`
+    /// key.
+    #[serde(flatten)]
+    pub spec: TaskSpec,
     /// Optional routing, gate, prompt and scheduling hints, each a top-level
     /// `[[task]]` key (`category`, `complexity_band`, `rung`, ...).
     #[serde(flatten)]
@@ -220,6 +225,55 @@ impl TaskDef {
             return String::new();
         }
         format!("\n## Specification\n{}\n", body.trim_end())
+    }
+
+    /// The task's TSS v1 fields as prompt sections, each only when set:
+    /// `## Goal`, `## Non-goals`, `## Assumptions`, and `## Hidden tests`
+    /// with the hook's interface and properties. The hook restates the spec,
+    /// so the agent sees it; its suite is never shown.
+    #[must_use]
+    pub fn tss_sections(&self) -> String {
+        let spec = &self.spec;
+        let mut out = String::new();
+        let goal = spec.goal.as_deref().map(str::trim).unwrap_or_default();
+        if !goal.is_empty() {
+            out.push_str("\n## Goal\n");
+            out.push_str(goal);
+            out.push('\n');
+        }
+        let lists = [
+            ("Non-goals", &spec.non_goals),
+            ("Assumptions", &spec.assumptions),
+        ];
+        for (heading, items) in lists {
+            if items.is_empty() {
+                continue;
+            }
+            out.push_str("\n## ");
+            out.push_str(heading);
+            out.push('\n');
+            for item in items {
+                out.push_str("- ");
+                out.push_str(item);
+                out.push('\n');
+            }
+        }
+        if let Some(hidden) = &spec.hidden
+            && !(hidden.interface.is_empty() && hidden.properties.is_empty())
+        {
+            out.push_str("\n## Hidden tests\nA hidden test suite checks this task.\n");
+            for item in &hidden.interface {
+                out.push_str("- Interface: `");
+                out.push_str(item);
+                out.push_str("`\n");
+            }
+            for item in &hidden.properties {
+                out.push_str("- Property: ");
+                out.push_str(item);
+                out.push('\n');
+            }
+        }
+        out
     }
 
     /// The hints this task sets that `plan run` parses but does not act on
@@ -297,6 +351,8 @@ struct TaskDefSerde {
     #[serde(default)]
     pub crates_touched: Option<Vec<String>>,
     #[serde(flatten)]
+    pub spec: TaskSpec,
+    #[serde(flatten)]
     pub hints: TaskHints,
 }
 
@@ -332,6 +388,7 @@ impl From<TaskDefSerde> for TaskDef {
             estimated_minutes: raw.estimated_minutes,
             crates_touched: raw.crates_touched,
             sequence: 0, // stamped by TasksFile::parse_str after deserialization
+            spec: raw.spec,
             hints: raw.hints,
         };
         task.apply_role_tool_defaults();
@@ -799,6 +856,59 @@ fn default_why() -> String {
     "context".into()
 }
 
+/// The TSS v1 fields of a task (S07 §4.1): the outcome it is for, what it
+/// must leave alone, what its planner assumed or could not settle, and the
+/// hidden-test hook. Each is a top-level `[[task]]` key, and a field left
+/// unset is not written back, so a `tasks.toml` without them rewrites
+/// unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSpec {
+    /// One sentence stating the observable outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    /// Scope exclusions ("do not change the public signature of X").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub non_goals: Vec<String>,
+    /// What the planner, or a refiner resolving an ambiguity, assumed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumptions: Vec<String>,
+    /// Questions the planner could not settle. A task with any keeps its
+    /// plan from running until the author answers them in the spec and
+    /// deletes them (PLAN_045).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_questions: Vec<String>,
+    /// `[task.hidden]`: what a hidden test suite targets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<TaskHidden>,
+}
+
+/// `[task.hidden]` (TSS v1): the public surface and the properties a hidden
+/// test suite targets. It restates the spec, so the agent sees it; it never
+/// holds tests.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskHidden {
+    /// `"auto"`, `"none"` or a suite id. Never shown to the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite: Option<String>,
+    /// The public surface the suite calls (`path::symbol`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interface: Vec<String>,
+    /// The properties the suite checks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<String>,
+}
+
+/// What a verify step does on the unchanged base (TSS v1 `expect`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifyExpect {
+    /// The step fails until the task's change lands: a feature or a fix.
+    FailOnBase,
+    /// The step passes on the base as well: a refactor's regression check.
+    PassOnBase,
+}
+
 /// One step in the per-task verification pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyStep {
@@ -820,6 +930,14 @@ pub struct VerifyStep {
     /// project, so it waits for every sibling that is mid-edit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scope: Vec<String>,
+    /// The acceptance criteria this step checks, by id (`AC1`, ...): an
+    /// explicit `ACn:` prefix of an `acceptance` item, or else its position
+    /// (TSS v1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<String>,
+    /// What the step does on the unchanged base (TSS v1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect: Option<VerifyExpect>,
 }
 
 pub(crate) fn default_verify_timeout() -> u64 {
@@ -839,6 +957,8 @@ impl From<&roko_core::config::GateRungConfig> for VerifyStep {
             fail_msg: None,
             timeout_ms: rung.timeout_secs.saturating_mul(1_000),
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }
     }
 }
@@ -847,10 +967,10 @@ impl From<&roko_core::config::GateRungConfig> for VerifyStep {
 
 /// Every `[[task]]` key: the fields of [`TaskDef`] as `tasks.toml` spells
 /// them (with `write_files`, the alias of `files`) and those of its
-/// flattened [`TaskHints`], plus `sequence`, which [`TasksFile::write`]
-/// writes and parsing stamps again. Three keys are read by tools rather
-/// than by `plan run`: `gate_rung` and `deferral` by `plan validate`
-/// (PLAN_007, PLAN_026) and `closes` by `tools/work.py sync`.
+/// flattened [`TaskSpec`] and [`TaskHints`], plus `sequence`, which
+/// [`TasksFile::write`] writes and parsing stamps again. Three keys are read
+/// by tools rather than by `plan run`: `gate_rung` and `deferral` by `plan
+/// validate` (PLAN_007, PLAN_026) and `closes` by `tools/work.py sync`.
 ///
 /// `plan validate` warns about any other key (PLAN_043), and plan
 /// generation corrects near misses against this set.
@@ -884,6 +1004,12 @@ pub const TASK_KEYS: &[&str] = &[
     "estimated_minutes",
     "crates_touched",
     "sequence",
+    // TSS v1: `TaskSpec`
+    "goal",
+    "non_goals",
+    "assumptions",
+    "open_questions",
+    "hidden",
     // `roko_core::TaskHints`
     "category",
     "complexity_band",
@@ -927,7 +1053,15 @@ pub const CONTEXT_KEYS: &[&str] = &[
 ];
 
 /// Every key of a `[[task.verify]]` or `[[meta.verify]]` step ([`VerifyStep`]).
-pub const VERIFY_KEYS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms", "scope"];
+pub const VERIFY_KEYS: &[&str] = &[
+    "phase",
+    "command",
+    "fail_msg",
+    "timeout_ms",
+    "scope",
+    "covers",
+    "expect",
+];
 
 /// Every `[meta]` key: the fields of [`TaskMeta`], plus `queue_kind`,
 /// `queue_schema` and `kind`, by which `plan validate` recognises an
@@ -2314,6 +2448,7 @@ test_invariants = ["an empty task sets no hint"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: TaskHints::default(),
         };
         assert_eq!(task.effective_model("fallback", None), "claude-haiku-4-5");
@@ -2378,6 +2513,7 @@ test_invariants = ["an empty task sets no hint"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: TaskHints::default(),
         };
         assert_eq!(task.operating_frequency(), OperatingFrequency::Gamma);
@@ -2414,6 +2550,7 @@ test_invariants = ["an empty task sets no hint"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: TaskHints::default(),
         };
         assert_eq!(reactive.operating_frequency(), OperatingFrequency::Gamma);
@@ -2447,6 +2584,7 @@ test_invariants = ["an empty task sets no hint"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: TaskHints::default(),
         };
         assert_eq!(reflective.operating_frequency(), OperatingFrequency::Delta);
@@ -2480,6 +2618,7 @@ test_invariants = ["an empty task sets no hint"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: TaskHints::default(),
         };
         assert_eq!(
@@ -2840,6 +2979,8 @@ depends_on = []
                     fail_msg: None,
                     timeout_ms: 60_000,
                     scope: Vec::new(),
+                    covers: Vec::new(),
+                    expect: None,
                 }],
                 timeout_secs: 600,
                 max_retries: 3,
@@ -2850,6 +2991,7 @@ depends_on = []
                 estimated_minutes: None,
                 crates_touched: None,
                 sequence: 0,
+                spec: Default::default(),
                 hints: TaskHints::default(),
             });
         }
@@ -3771,6 +3913,8 @@ files = ["README.md"]
             fail_msg: Some("failed".into()),
             timeout_ms: 1_000,
             scope: vec!["crates/roko-cli".into()],
+            covers: vec!["AC1".into()],
+            expect: Some(VerifyExpect::FailOnBase),
         };
         let ctx = TaskContext {
             read_files: vec![ReadFile {
@@ -3839,6 +3983,17 @@ files = ["README.md"]
             domain: Some(TaskDomain::Code),
             estimated_minutes: Some(5),
             crates_touched: some(),
+            spec: TaskSpec {
+                goal: Some("x".into()),
+                non_goals: vec!["x".into()],
+                assumptions: vec!["x".into()],
+                open_questions: vec!["x".into()],
+                hidden: Some(TaskHidden {
+                    suite: Some("auto".into()),
+                    interface: vec!["x".into()],
+                    properties: vec!["x".into()],
+                }),
+            },
             hints,
         };
         let meta = TaskMeta {
@@ -3878,6 +4033,140 @@ files = ["README.md"]
             let unique: HashSet<&str> = set.iter().copied().collect();
             assert_eq!(unique.len(), set.len(), "a key set lists a key twice: {set:?}");
         }
+    }
+
+    /// 3207: the TSS v1 fields parse into `TaskDef` and `VerifyStep`, and a
+    /// rewrite of the `tasks.toml`, or of the JSON a Graph node carries, keeps
+    /// every one. A file without them writes none of their keys, so it
+    /// rewrites as before.
+    #[test]
+    fn tss_v1_fields_round_trip() {
+        let content = r#"
+[meta]
+plan = "tss"
+
+[[task]]
+id = "T1"
+title = "Rename user keys"
+goal = "Every user:* key is stored under acct:* with its value unchanged."
+non_goals = ["Do not modify bin/kvtool"]
+assumptions = ["The store fits in memory"]
+open_questions = ["Should a second run print anything?"]
+acceptance = ["AC1: `kvtool list --prefix user:` prints nothing", "AC2: values are unchanged"]
+
+[task.hidden]
+suite = "auto"
+interface = ["scripts/migrate_prefix.sh"]
+properties = ["idempotent"]
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.visible.test_migrate"
+covers = ["AC1", "AC2"]
+expect = "fail_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "python3 -m unittest tests.visible.test_store"
+expect = "pass_on_base"
+"#;
+        let parsed = TasksFile::parse_str(content).expect("parse the TSS v1 fields");
+        let task = &parsed.tasks[0];
+        let expected = TaskSpec {
+            goal: Some("Every user:* key is stored under acct:* with its value unchanged.".into()),
+            non_goals: vec!["Do not modify bin/kvtool".into()],
+            assumptions: vec!["The store fits in memory".into()],
+            open_questions: vec!["Should a second run print anything?".into()],
+            hidden: Some(TaskHidden {
+                suite: Some("auto".into()),
+                interface: vec!["scripts/migrate_prefix.sh".into()],
+                properties: vec!["idempotent".into()],
+            }),
+        };
+        assert_eq!(task.spec, expected);
+        let checks = |task: &TaskDef| -> Vec<(Vec<String>, Option<VerifyExpect>)> {
+            task.verify
+                .iter()
+                .map(|step| (step.covers.clone(), step.expect))
+                .collect()
+        };
+        let expected_checks = vec![
+            (
+                vec!["AC1".to_string(), "AC2".to_string()],
+                Some(VerifyExpect::FailOnBase),
+            ),
+            (Vec::new(), Some(VerifyExpect::PassOnBase)),
+        ];
+        assert_eq!(checks(task), expected_checks);
+
+        let rewritten = toml::to_string_pretty(&parsed).expect("write tasks.toml");
+        let reread = TasksFile::parse_str(&rewritten).expect("read the rewrite");
+        assert_eq!(reread.tasks[0].spec, expected, "{rewritten}");
+        assert_eq!(checks(&reread.tasks[0]), expected_checks, "{rewritten}");
+        let json = serde_json::to_value(task).expect("serialize TaskDef");
+        let from_json: TaskDef = serde_json::from_value(json).expect("read the JSON back");
+        assert_eq!(from_json.spec, expected);
+        assert_eq!(checks(&from_json), expected_checks);
+
+        let plain = TasksFile::parse_str(
+            "[meta]\nplan = \"plain\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Plain\"\n\n\
+             [[task.verify]]\nphase = \"test\"\ncommand = \"cargo test\"\n",
+        )
+        .expect("parse a plain plan");
+        assert_eq!(plain.tasks[0].spec, TaskSpec::default());
+        let first = toml::to_string_pretty(&plain).expect("write");
+        let second = toml::to_string_pretty(&TasksFile::parse_str(&first).expect("reread"))
+            .expect("rewrite");
+        assert_eq!(first, second);
+        let written: toml::Value = toml::from_str(&first).expect("parse the rewrite");
+        let task_keys = written["task"][0].as_table().expect("a task table");
+        let step_keys = written["task"][0]["verify"][0]
+            .as_table()
+            .expect("a verify step");
+        for key in [
+            "goal",
+            "non_goals",
+            "assumptions",
+            "open_questions",
+            "hidden",
+        ] {
+            assert!(!task_keys.contains_key(key), "{key} written: {first}");
+        }
+        for key in ["covers", "expect"] {
+            assert!(!step_keys.contains_key(key), "{key} written: {first}");
+        }
+    }
+
+    /// 3207: the prompt sections show the goal, non-goals, assumptions and
+    /// hidden-test hook, never the hook's suite, and nothing for a task
+    /// without them.
+    #[test]
+    fn tss_sections_show_what_the_task_sets() {
+        let mut task = TasksFile::parse_str(
+            "[meta]\nplan = \"p\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Plain\"\n",
+        )
+        .expect("parse")
+        .tasks
+        .remove(0);
+        assert!(task.tss_sections().is_empty());
+
+        task.spec = TaskSpec {
+            goal: Some("Exits 0.".into()),
+            non_goals: vec!["Keep the signature".into()],
+            assumptions: Vec::new(),
+            open_questions: Vec::new(),
+            hidden: Some(TaskHidden {
+                suite: Some("suite-9".into()),
+                interface: vec!["src/lib.rs::run".into()],
+                properties: vec!["empty input".into()],
+            }),
+        };
+        assert_eq!(
+            task.tss_sections(),
+            "\n## Goal\nExits 0.\n\n## Non-goals\n- Keep the signature\n\n## Hidden tests\n\
+             A hidden test suite checks this task.\n- Interface: `src/lib.rs::run`\n\
+             - Property: empty input\n"
+        );
     }
 
     #[test]

@@ -1947,6 +1947,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: Default::default(),
         };
         let config = toml::Value::Table(toml::map::Map::from_iter([
@@ -2207,6 +2208,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             fail_msg: None,
             timeout_ms: FIXTURE_HANG_GUARD_SECS * 1_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }
     }
 
@@ -2312,6 +2315,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: Default::default(),
         };
 
@@ -2365,6 +2369,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: Default::default(),
         }
     }

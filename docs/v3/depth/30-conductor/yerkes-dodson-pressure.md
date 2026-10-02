@@ -593,7 +593,7 @@ capacity.
 |---------------|---------------------|----------------|
 | Intrinsic load | Task complexity: files to modify, dependency depth, domain specificity | Plan metadata, complexity classification |
 | Extraneous load | Irrelevant context: stale docs, off-topic examples, verbose error history | Prompt sections with low signal_ratio |
-| Germane load | Productive scaffolding: PRD context, error digests, playbook rules, skill hints | InjectContext signals, high signal_ratio sections |
+| Germane load | Productive scaffolding: plan context, error digests, playbook rules, skill hints | InjectContext signals, high signal_ratio sections |
 
 **Intrinsic load** is fixed by the task itself. A refactoring that touches 15 files
 across 4 crates has high intrinsic load. A typo fix has low intrinsic load. The
@@ -604,7 +604,7 @@ contributing to task completion. Stale documentation, full error logs from previ
 attempts (instead of digests), irrelevant file contents included "for context" --
 all extraneous.
 
-**Germane load** is productive overhead. PRD context that explains why the task
+**Germane load** is productive overhead. Plan context that explains why the task
 exists, error digests that summarize what went wrong on the last attempt, playbook
 rules that encode lessons from past failures -- this content helps the agent reason
 better about the task.
@@ -637,7 +637,7 @@ Conductor pressure interacts with cognitive load in two ways:
 
 2. **Tight time pressure prevents germane processing.** An agent under severe time
    pressure rushes through the prompt, skipping the slower reasoning that germane
-   scaffolding enables. The PRD context is there, but the agent does not use it
+   scaffolding enables. The plan context is there, but the agent does not use it
    because it optimizes for speed over understanding.
 
 The Conductor must balance pressure (motivating focus) against cognitive overload

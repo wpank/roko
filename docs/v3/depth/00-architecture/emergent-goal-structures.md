@@ -12,7 +12,7 @@
 
 ## 1. The Problem: Static Goals in a Dynamic System
 
-Roko currently operates with externally assigned goals: PRDs define what to build, plans
+Roko currently operates with externally assigned goals: requests define what to build, plans
 define how to build it, and tasks define the individual steps. The agent executes -- it does
 not *want*. This creates three limitations:
 

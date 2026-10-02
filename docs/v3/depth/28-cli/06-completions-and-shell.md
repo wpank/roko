@@ -65,7 +65,6 @@ candidates="$(roko __complete --shell bash --path "$cmd_path" --current "$cur" 2
 
 This enables workspace-aware completions that resolve at runtime:
 - Plan names from `plans/` directory
-- PRD slugs from `.roko/prd/`
 - Agent names from the agent registry
 - Model and provider names from `roko.toml`
 
@@ -119,7 +118,7 @@ roko plan run --<TAB> -> --engine, --resume-plan
 Tab completion works for the full recursive command tree:
 
 ```
-roko p<TAB>    -> plan, prd
+roko pl<TAB>   -> plan
 roko plan <TAB> -> list, show, create, run, generate, ...
 roko config p<TAB> -> providers, plugins, preset
 roko config providers <TAB> -> list, health, test, available, discover, ...
@@ -131,7 +130,7 @@ Enum flags complete with valid values:
 
 ```
 roko --effort <TAB>  -> low, medium, high, max
-roko do --complexity <TAB> -> trivial, simple, medium, complex
+roko run --complexity <TAB> -> trivial, simple, standard, complex
 roko doctor <TAB> -> disk, network, clean
 ```
 
@@ -204,7 +203,6 @@ Useful shell aliases for frequent operations:
 # .zshrc / .bashrc
 alias rk='roko'
 alias rkr='roko run'
-alias rkd='roko do'
 alias rks='roko status'
 alias rkp='roko plan'
 alias rkdash='roko dashboard'

@@ -81,7 +81,7 @@ mindmap
       Server monitoring
       Incident response
     Strategy
-      PRD generation
+      Spec writing
       Plan creation
       Consortium coordination
 ```
@@ -96,7 +96,7 @@ mindmap
 | 4 | `chain` | Protocol operations, indexing, infrastructure | Indexer management, API integration, data pipeline |
 | 5 | `knowledge` | Knowledge curation: posting, validating, organizing | Insight submission, knowledge review, ontology management |
 | 6 | `operations` | Infrastructure and DevOps: monitoring, deployment | CI/CD management, server monitoring, incident response |
-| 7 | `strategy` | Planning and coordination: task decomposition | PRD generation, plan creation, consortium coordination |
+| 7 | `strategy` | Planning and coordination: task decomposition | Spec writing, plan creation, consortium coordination |
 
 Each domain score is independent -- poor performance in `coding` does not
 affect `security` reputation. Additional domains can be registered at runtime.

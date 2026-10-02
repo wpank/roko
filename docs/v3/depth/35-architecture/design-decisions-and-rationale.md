@@ -761,7 +761,7 @@ surfaces automatically.
 - The dream consolidation cycle exists because patterns extracted from completed plans
   improve future plans.
 
-**Where visible**: The self-hosting workflow (`roko prd idea -> draft -> plan -> run`)
+**Where visible**: The self-hosting workflow (`roko plan generate -> review -> roko run`)
 is documented in `CLAUDE.md` and `docs/v3/35-ARCHITECTURE.md`. The dogfood debrief
 (`tmp/dogfood-2026-08-13/DOGFOOD-DEBRIEF.md`) documents the first real self-hosting
 run and the bugs it exposed.

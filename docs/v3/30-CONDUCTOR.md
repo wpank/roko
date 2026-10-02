@@ -1158,7 +1158,7 @@ Sweller's cognitive load theory (1988) maps to LLM context windows:
 |---------------|----------------|--------|
 | Intrinsic load | Task complexity | Plan metadata |
 | Extraneous load | Irrelevant context | Stale docs, verbose error history |
-| Germane load | Productive scaffolding | PRD context, error digests, playbook rules |
+| Germane load | Productive scaffolding | Plan context, error digests, playbook rules |
 
 `intrinsic + extraneous + germane <= context_window_capacity`
 

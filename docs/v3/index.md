@@ -17,7 +17,7 @@ hero:
 
 features:
   - title: Self-Hosting Loop
-    details: Read PRDs, generate plans, execute via agents, validate through gates, persist results. The system develops itself.
+    details: Turn a prompt or spec into a plan, execute it via agents, validate through gates, persist results. The system develops itself.
     link: /31-SELF-HOSTING
     linkText: How it works
   - title: Graph Engine

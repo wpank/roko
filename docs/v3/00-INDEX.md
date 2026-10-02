@@ -705,30 +705,28 @@ through L4, and signed under ERC-8004.
 Roko develops itself. Each step is a CLI command that exists today:
 
 ```bash
-# 1. Capture a work item
-roko prd idea "Wire SystemPromptBuilder into runner"
+# 1. Write a plan from a request: plans/<slug>/ (tasks.toml + plan.md)
+roko plan generate "Wire SystemPromptBuilder into runner"
 
-# 2. Draft a PRD from the idea (agent-driven)
-roko prd draft new "system-prompt-wiring"
+# 2. Optional: research-backed improvements to the plan
+roko research enhance-plan <slug>
 
-# 3. Research the topic for context
-roko research enhance-prd system-prompt-wiring
+# 3. Review or edit plans/<slug>/tasks.toml, then run it
+#    (agents run tasks, gates validate, state persists)
+roko run plans/<slug>
 
-# 4. Generate implementation plan + tasks from the PRD
-roko prd plan system-prompt-wiring
+# 4. Resume if interrupted
+roko plan run plans/<slug> --resume-plan
 
-# 5. Execute the plan (agents run tasks, gates validate, state persists)
-roko plan run plans/
-
-# 6. Resume if interrupted
-roko plan run plans/ --resume-plan
-
-# 7. Watch progress
+# 5. Watch progress
 roko dashboard
 
-# 8. Check status
+# 6. Check status
 roko status
 ```
+
+`roko run --plan "<prompt>"` does steps 1 and 3 in one command: it writes the plan,
+shows it, and asks before running it.
 
 Each step uses Roko's own infrastructure: the Composer assembles context, the Router
 selects models, the Gate pipeline verifies outputs, the Episode logger records what
@@ -737,19 +735,19 @@ the scaffold -- this is the autocatalytic cycle made concrete.
 
 ```mermaid
 flowchart LR
-    PRD["PRD\n(idea/draft)"]
+    Request["Request\n(prompt or spec)"]
     Plan["Plan\n(tasks.toml)"]
     Execute["Execute\n(agent dispatch)"]
     Gate["Gate\n(verify pipeline)"]
     Learn["Learn\n(episodes/routing)"]
-    Iterate["Iterate\n(replan/improve)"]
+    Iterate["Iterate\n(retry/improve)"]
 
-    PRD --> Plan --> Execute --> Gate --> Learn --> Iterate
-    Iterate -->|"next cycle"| PRD
+    Request --> Plan --> Execute --> Gate --> Learn --> Iterate
+    Iterate -->|"next cycle"| Request
 
     Gate -->|"gate failure"| Iterate
 
-    style PRD fill:#e0f2fe,stroke:#0284c7
+    style Request fill:#e0f2fe,stroke:#0284c7
     style Plan fill:#e0f2fe,stroke:#0284c7
     style Execute fill:#fef9c3,stroke:#ca8a04
     style Gate fill:#fde8e8,stroke:#c0392b
@@ -875,10 +873,10 @@ As of 2026-09-15 (source: CLAUDE.md), with the rows corrected on 2026-09-29 mark
 
 | # | Document | What It Defines | Status |
 |---|---|---|---|
-| **[25](25-TUI.md)** | Interactive TUI | ratatui dashboard. 11 tabs (F1-F11). StateHub bridge. File/git watchers. ROSEDUST design language. Spectre creature visualization. Collective display. Sonification. A2UI generative interfaces. Onboarding flow. Accessibility. | WIRED |
+| **[25](25-TUI.md)** | Interactive TUI | ratatui dashboard. 10 tabs (F1-F10). StateHub bridge. File/git watchers. ROSEDUST design language. Spectre creature visualization. Collective display. Sonification. A2UI generative interfaces. Onboarding flow. Accessibility. | WIRED |
 | **[26](26-HTTP-API.md)** | HTTP Control Plane | REST routes (counts in `tools/http_route_inventory.snapshot.json`). SSE. WebSocket. OpenAPI. REST conventions. | WIRED |
 | **[27](27-ACP.md)** | Agent Client Protocol | ACP server for Cursor/editor integration. Mutation consent. Experiments. Budget enforcement. 180 tests. | WIRED (E17 8/8) |
-| **[28](28-CLI.md)** | CLI Reference | All subcommands: prd, plan, agent, research, knowledge, learn, config, serve, dashboard, etc. | WIRED |
+| **[28](28-CLI.md)** | CLI Reference | All subcommands: run, plan, agent, research, knowledge, learn, config, serve, dashboard, etc. | WIRED |
 
 ### Cognitive architecture deep-dives
 
@@ -886,7 +884,7 @@ As of 2026-09-15 (source: CLAUDE.md), with the rows corrected on 2026-09-29 mark
 |---|---|---|---|
 | **[29](29-HEARTBEAT.md)** | Universal Cognitive Loop | CoALA-inspired decision cycle. 3 cognitive speeds (T0/T1/T2). Gamma/theta/delta loops. Adaptive clock. VCG attention auction. | WIRED |
 | **[30](30-CONDUCTOR.md)** | Conductor | 12 watchers. Circuit breaker. Graduated interventions. Diagnosis engine. OODA cybernetic loop. Yerkes-Dodson pressure. | BUILT-UNWIRED |
-| **[31](31-SELF-HOSTING.md)** | Self-Hosting | 8-step CLI loop. FAST self-development. RSI taxonomy (arXiv:2607.07663). Bounded self-refinement. Gate-failure replan (built, not wired). GRASP admission. Autocatalytic compounding. DGM/ADAS. AI4AI-Bench. Triple-loop learning. Dogfood evidence. | WIRED |
+| **[31](31-SELF-HOSTING.md)** | Self-Hosting | Plan-first CLI loop (prompt -> plan -> review -> run). FAST self-development. RSI taxonomy (arXiv:2607.07663). Bounded self-refinement. Gate-failure replan (built, not wired). GRASP admission. Autocatalytic compounding. DGM/ADAS. AI4AI-Bench. Triple-loop learning. Dogfood evidence. | WIRED |
 
 ### Deployment and meta
 

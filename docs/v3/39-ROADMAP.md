@@ -197,7 +197,7 @@ All eight have scaffolding/types but lack final wiring:
 | Item | What |
 |------|------|
 | `--json` flag | Silently ignored on ~15+ commands. Implement JSON output or remove the flag |
-| `--role` flag | Hardcoded in research/PRD commands. Make it use the specified role |
+| `--role` flag | Hardcoded in research commands. Make it use the specified role |
 | `config set --global` | Flag exists but is silently ignored |
 | `roko inject` | Stub that accepts args but never sends signals. Wire or remove |
 | `roko new` | 6/9 scaffold types generate non-compiling code (stale Signal rename) |
@@ -299,7 +299,7 @@ Automate optimization of the agent harness itself. Two independent lines of work
 - AHE (Autonomous Harness Evolution) -- self-modifying agent scaffolding
 
 These validate roko's scaffold thesis and suggest the harness optimization loop (currently
-manual via PRDs and plans) could eventually become automated.
+manual via plans) could eventually become automated.
 
 ### 5.5 eBPF Kernel Enforcement
 

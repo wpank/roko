@@ -1,4 +1,4 @@
-# Enrichment Pipeline: 13-Step Context Pre-Computation
+# Enrichment Pipeline: 12-Step Context Pre-Computation
 
 > **Depth file for [06-COMPOSITION.md](../../06-COMPOSITION.md)**
 > Source: `crates/roko-compose/src/enrichment/`
@@ -10,60 +10,61 @@
 
 The enrichment pipeline pre-computes context artifacts before agent sessions
 begin. Rather than having agents spend tokens discovering what they need, the
-pipeline generates 13 typed artifacts using the cheapest appropriate model for
+pipeline generates 12 typed artifacts using the cheapest appropriate model for
 each step. Each artifact is stored on disk, staleness-checked, and selectively
 injected into agent prompts based on role and task type.
 
 This embodies the "write for amnesia" principle: every agent session starts
 cold, and the files on disk are the only truth.
 
+The pipeline had a thirteenth step, `Prd`, which extracted PRD sections into
+`prd-extract.md`. It was removed with the PRD pipeline: plans now come straight
+from a prompt or a written spec, and the plan's own `plan.md` carries that context.
+
 ---
 
-## 1. The 13 Enrichment Steps
+## 1. The 12 Enrichment Steps
 
 ```rust
 pub enum EnrichStep {
-    Prd,           // 1. Extract PRD sections relevant to this plan
-    Briefs,        // 2. Generate strategist briefs (What/Why/How)
-    Tasks,         // 3. Generate task TOMLs from plan decomposition
-    Decompose,     // 4. Step-by-step subtask breakdown
-    Research,      // 5. Deep research with citations
-    Dependencies,  // 6. External dependency requirements
-    Fixtures,      // 7. Test fixture requirements
-    Integration,   // 8. Cross-crate integration notes
-    Verify,        // 9. Invariant verification scripts
-    Reviews,       // 10. Review task lists
-    Tests,         // 11. Test task lists
-    Invariants,    // 12. Invariant specifications
-    Scribe,        // 13. Documentation task lists
+    Briefs,        // 1. Generate strategist briefs (What/Why/How)
+    Tasks,         // 2. Generate task TOMLs from plan decomposition
+    Decompose,     // 3. Step-by-step subtask breakdown
+    Research,      // 4. Deep research with citations
+    Dependencies,  // 5. External dependency requirements
+    Fixtures,      // 6. Test fixture requirements
+    Integration,   // 7. Cross-crate integration notes
+    Verify,        // 8. Invariant verification scripts
+    Reviews,       // 9. Review task lists
+    Tests,         // 10. Test task lists
+    Invariants,    // 11. Invariant specifications
+    Scribe,        // 12. Documentation task lists
 }
 
 pub const ALL_ORDERED: &[EnrichStep] = &[
-    EnrichStep::Prd,        EnrichStep::Briefs,
-    EnrichStep::Tasks,      EnrichStep::Decompose,
-    EnrichStep::Research,   EnrichStep::Dependencies,
-    EnrichStep::Fixtures,   EnrichStep::Integration,
-    EnrichStep::Verify,     EnrichStep::Reviews,
-    EnrichStep::Tests,      EnrichStep::Invariants,
-    EnrichStep::Scribe,
+    EnrichStep::Briefs,       EnrichStep::Tasks,
+    EnrichStep::Decompose,    EnrichStep::Research,
+    EnrichStep::Dependencies, EnrichStep::Fixtures,
+    EnrichStep::Integration,  EnrichStep::Verify,
+    EnrichStep::Reviews,      EnrichStep::Tests,
+    EnrichStep::Invariants,   EnrichStep::Scribe,
 ];
 ```
 
 | # | Step | Output File | Model | Purpose |
 |---|------|------------|-------|---------|
-| 1 | Prd | `prd-extract.md` | Haiku | Extract plan-relevant PRD sections |
-| 2 | Briefs | `brief.md` | Sonnet | Generate What/Why/How task summaries |
-| 3 | Tasks | `tasks.toml` | Sonnet | Generate task specifications |
-| 4 | Decompose | `decomposition.md` | Sonnet | Step-by-step subtask breakdown |
-| 5 | Research | `research.md` | Opus | Deep research with citations |
-| 6 | Dependencies | `dependency-manifest.toml` | Haiku | External dependency list |
-| 7 | Fixtures | `fixture-manifest.toml` | Haiku | Test fixture requirements |
-| 8 | Integration | `integration.md` | Sonnet | Cross-crate integration notes |
-| 9 | Verify | `verify.sh` | Haiku | Invariant verification script |
-| 10 | Reviews | `review-tasks.toml` | Haiku | Review task assignments |
-| 11 | Tests | `test-tasks.toml` | Haiku | Test task assignments |
-| 12 | Invariants | `invariants.md` | Sonnet | Invariant specifications |
-| 13 | Scribe | `scribe-tasks.toml` | Haiku | Documentation task assignments |
+| 1 | Briefs | `brief.md` | Sonnet | Generate What/Why/How task summaries |
+| 2 | Tasks | `tasks.toml` | Sonnet | Generate task specifications |
+| 3 | Decompose | `decomposition.md` | Sonnet | Step-by-step subtask breakdown |
+| 4 | Research | `research.md` | Opus | Deep research with citations |
+| 5 | Dependencies | `dependency-manifest.toml` | Haiku | External dependency list |
+| 6 | Fixtures | `fixture-manifest.toml` | Haiku | Test fixture requirements |
+| 7 | Integration | `integration.md` | Sonnet | Cross-crate integration notes |
+| 8 | Verify | `verify.sh` | Haiku | Invariant verification script |
+| 9 | Reviews | `review-tasks.toml` | Haiku | Review task assignments |
+| 10 | Tests | `test-tasks.toml` | Haiku | Test task assignments |
+| 11 | Invariants | `invariants.md` | Sonnet | Invariant specifications |
+| 12 | Scribe | `scribe-tasks.toml` | Haiku | Documentation task assignments |
 
 Cheapest model for each step: Haiku for mechanical extraction, Sonnet for
 reasoning, Opus for deep research.
@@ -112,7 +113,7 @@ and the pipeline continues. One-retry policy prevents infinite loops.
 
 ### Continue-on-Failure
 
-The pipeline runs all 13 steps regardless of individual failures. Failed steps
+The pipeline runs all 12 steps regardless of individual failures. Failed steps
 are logged as warnings. The agent receives whatever artifacts were generated
 successfully. Missing artifacts are absent from the prompt -- the
 PromptComposer's priority-based dropping handles this gracefully.
@@ -121,26 +122,26 @@ PromptComposer's priority-based dropping handles this gracefully.
 
 ## 3. Step Selection
 
-Not every task needs all 13 steps:
+Not every task needs all 12 steps:
 
 | Task Type | Steps Run | Steps Skipped |
 |-----------|----------|---------------|
-| Simple rename | Prd, Briefs | 11 others |
-| Standard implementation | Prd, Briefs, Tasks, Decompose, Research | 8 others |
-| Cross-crate integration | All 13 | None |
-| Review task | Prd, Reviews | 11 others |
-| Documentation task | Prd, Scribe, Research | 10 others |
+| Simple rename | Briefs | 11 others |
+| Standard implementation | Briefs, Tasks, Decompose, Research | 8 others |
+| Cross-crate integration | All 12 | None |
+| Review task | Reviews | 11 others |
+| Documentation task | Scribe, Research | 10 others |
 
 ```rust
 pub fn steps_for(complexity: Complexity, role: AgentRole) -> Vec<EnrichStep> {
     match (complexity, role) {
-        (Complexity::Trivial, _) => vec![EnrichStep::Prd, EnrichStep::Briefs],
+        (Complexity::Trivial, _) => vec![EnrichStep::Briefs],
         (Complexity::Standard, AgentRole::Scribe) => {
-            vec![EnrichStep::Prd, EnrichStep::Scribe, EnrichStep::Research]
+            vec![EnrichStep::Scribe, EnrichStep::Research]
         }
         (Complexity::Complex, _) => EnrichStep::ALL_ORDERED.to_vec(),
         _ => vec![
-            EnrichStep::Prd, EnrichStep::Briefs, EnrichStep::Tasks,
+            EnrichStep::Briefs, EnrichStep::Tasks,
             EnrichStep::Decompose, EnrichStep::Research,
         ],
     }
@@ -160,7 +161,6 @@ context/in/
   architect-pack.md        # Role-specific: Architect
   scribe-pack.md           # Role-specific: Scribe
   brief.md                 # Implementation brief
-  prd2-extract.md          # Relevant PRD sections
   decomposition.md         # Step-by-step breakdown
   verify-tasks.toml        # Verification checklist
   learning.md              # Learning pack
@@ -179,7 +179,7 @@ reading the entire context directory.
 | Enrichment approach | Cost per plan | Agent success rate |
 |--------------------|---------------|-------------------|
 | No enrichment | $0 | ~45% |
-| All 13 steps (Haiku/Sonnet mix) | ~$0.15 | ~78% |
+| All 12 steps (Haiku/Sonnet mix) | ~$0.15 | ~78% |
 | Manual context assembly | $0 (human time) | ~72% |
 
 The $0.15 enrichment investment produces a ~33% improvement in agent success.
@@ -211,7 +211,7 @@ ahead of time so agents do not burn tokens figuring out what they need.
 
 | Aspect | Status |
 |--------|--------|
-| 13 enrichment steps defined | **Shipped** |
+| 12 enrichment steps defined | **Shipped** |
 | EnrichmentPipeline struct | **Shipped** |
 | Staleness checking | **Shipped** |
 | TOML repair (one retry) | **Shipped** |

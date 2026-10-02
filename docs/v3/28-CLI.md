@@ -14,7 +14,7 @@
 3. [Global flags](#global-flags)
 4. [Exit codes](#exit-codes)
 5. [Core workflow](#core-workflow)
-6. [Planning and PRDs](#planning-and-prds)
+6. [Planning](#planning)
 7. [Agents](#agents)
 8. [Research](#research)
 9. [Knowledge](#knowledge)
@@ -32,17 +32,18 @@
 21. [Config file locations and precedence](#config-file-locations-and-precedence)
 22. [Data directory layout](#data-directory-layout)
 23. [In-progress changes](#in-progress-changes)
-24. [Deprecated commands](#deprecated-commands)
-25. [Troubleshooting](#troubleshooting)
+24. [Removed commands](#removed-commands)
+25. [Deprecated commands](#deprecated-commands)
+26. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Overview
 
 Roko is a Rust toolkit for building agents that build themselves. The CLI is the primary
-control surface. You use it to capture ideas, draft requirements, generate implementation
-plans, execute them with LLM agents, validate results through a gate pipeline, learn from
-every run, and persist everything so it can resume if interrupted.
+control surface. You use it to turn a request (a prompt or a written spec) into an
+implementation plan, execute the plan with LLM agents, validate results through a gate
+pipeline, learn from every run, and persist everything so it can resume if interrupted.
 
 ### Command tree
 
@@ -50,23 +51,17 @@ every run, and persist everything so it can resume if interrupted.
 graph LR
     roko((roko))
 
-    roko --- run[run / do]
+    roko --- run[run]
     roko --- status[status]
     roko --- show[show]
     roko --- doctor[doctor]
 
-    roko --- prd[prd]
-    prd --- prd_idea[idea]
-    prd --- prd_draft[draft]
-    prd --- prd_plan[plan]
-    prd --- prd_list[list]
-    prd --- prd_consolidate[consolidate]
-
     roko --- plan[plan]
+    plan --- plan_generate[generate]
+    plan --- plan_create[create]
+    plan --- plan_validate[validate]
     plan --- plan_run[run]
     plan --- plan_list[list]
-    plan --- plan_validate[validate]
-    plan --- plan_generate[generate]
     plan --- plan_index[index]
     plan --- plan_queue[queue]
 
@@ -81,7 +76,7 @@ graph LR
     roko --- research[research]
     research --- res_topic[topic]
     research --- res_search[search]
-    research --- res_enhance[enhance-prd/plan/tasks]
+    research --- res_enhance[enhance-plan/tasks]
 
     roko --- knowledge[knowledge]
     knowledge --- k_query[query]
@@ -110,19 +105,18 @@ graph LR
     roko --- trigger[trigger]
 ```
 
-The full self-hosting workflow:
+The full self-hosting workflow, plan first:
 
 ```mermaid
 flowchart TD
-    A["roko prd idea '...'\nCapture a work item"] --> B["roko prd draft new '...'\nAgent writes requirements"]
-    B --> C["roko research enhance-prd\nEnrich with citations"]
-    C --> D["roko prd plan &lt;slug&gt;\nAgent writes tasks.toml"]
-    D --> E["roko plan validate plans/\nLint without executing"]
-    E --> F["roko plan run plans/\nExecute: agents + gates + replan + persist"]
+    A["roko plan generate '...'\nAgent writes plans/&lt;slug&gt;/tasks.toml"] --> B["roko research enhance-plan &lt;slug&gt;\nOptional: research-backed improvements"]
+    B --> C["Review or edit\nplans/&lt;slug&gt;/tasks.toml"]
+    C --> E["roko plan validate plans/&lt;slug&gt;\nLint without executing"]
+    E --> F["roko run plans/&lt;slug&gt;\nExecute: agents + gates + persist"]
 
     F --> G{"Gate\npass?"}
     G -- Yes --> H["roko status\nInspect results"]
-    G -- No --> I["Auto-replan\n(if enabled)"]
+    G -- No --> I["Retry with the gate's\nfeedback (up to max_retries)"]
     I --> F
 
     F -.-> J["roko dashboard\nWatch live in the TUI"]
@@ -137,9 +131,11 @@ flowchart TD
     style L fill:#f3e5f5
 ```
 
-For a quick one-off task, `roko do "..."` or `roko run "..."` is sufficient. The full
-PRD-to-plan pipeline is for larger features requiring reproducibility, resume-on-interrupt,
-and automatic replan-on-gate-failure.
+`roko run --plan "..."` does the first and last steps in one command: it writes the plan,
+shows it, and asks before running it. For a small change, `roko run "..."` is enough: it
+sizes the prompt and runs a small change as one checked task, and writes a plan first only
+when the work is larger. Write the plan yourself (`roko plan generate`, or
+`roko run --plan --dry-run`) when you want to review or edit it before anything runs.
 
 ---
 
@@ -255,63 +251,61 @@ roko setup [--workdir <path>] [--yes]
 
 ---
 
-### `roko do` (alias: `roko d`)
-
-The recommended entry point for ad-hoc work. Auto-classifies the prompt into a complexity
-band and picks the lightest workflow that can complete it:
-
-- **Trivial / Simple** -> direct single-agent dispatch (no plan file)
-- **Medium / Complex** -> planned workflow: generate tasks.toml, approve, execute
-
-```
-roko do <prompt...> [--plan] [--complexity trivial|simple|medium|complex]
-                    [--dry-run] [--workdir <path>] [--provider <name>]
-                    [--yes] [--ghost] [--compare] [--continue [<id>]]
-                    [--no-cascade] [--context <path>...]
-```
-
-| Arg/Flag | Default | Description |
-|---|---|---|
-| `<prompt...>` | required | Natural-language task description. Quoted prompts recommended. |
-| `--plan` | false | Force planned workflow regardless of classification. |
-| `--complexity <level>` | auto | Force a complexity band: `trivial`, `simple`, `medium`, `complex`. Aliases: `mechanical`, `standard`, `architectural`. |
-| `--dry-run` | false | Show classification/template without executing. |
-| `--workdir <path>` | cwd | Override the working directory. |
-| `--provider <name>` | config | Override provider for this run. |
-| `--yes` | false | Skip approval prompts when the workflow would ask. |
-| `--ghost` | false | Alias for `--dry-run`. |
-| `--compare` | false | Preview comparison of cascade vs non-cascade routing. |
-| `--continue [<id>]` | -- | Resume interrupted work. Optionally pass a work/run ID. |
-| `--no-cascade` | false | Disable cascade routing for this run. |
-| `--context <path>` | -- | Additional context files/dirs/globs to include in the prompt (repeatable). |
-
-```bash
-roko do "Fix the login bug"
-roko do "Add auth flow" --complexity medium
-roko do "Refactor API" --dry-run
-roko do "Continue feature work" --continue
-```
-
----
-
 ### `roko run`
 
-Single prompt through the universal loop (compose -> agent -> gate -> persist). For
-classified task execution, prefer `roko do`.
+The one entry point for work. `roko run` takes a prompt or an existing plan directory:
+
+| Form | What it does |
+|---|---|
+| `roko run "<prompt>"` | Size the prompt. A small change runs as one checked task; a larger one gets a plan written first (`plans/<slug>/tasks.toml`), which then runs. |
+| `roko run --plan "<prompt>"` | Always write a plan first. On a terminal Roko shows the plan and asks before running it; `--yes` skips the question. |
+| `roko run --plan --dry-run "<prompt>"` | Write the plan and stop. Review or edit `plans/<slug>/`, then run it with `roko run plans/<slug>`. |
+| `roko run --dry-run "<prompt>"` | Show how the prompt would run (size, route, gates). Runs nothing. |
+| `roko run plans/<slug>` | Run an existing plan directory; the same run as `roko plan run plans/<slug>`. |
+| `roko run plans/` | Run every plan under `plans/`. |
 
 ```
-roko run <prompt> [--workdir <path>] [--serve] [--share] [--provider <name>]
-                  [--max-retries <n>]
+roko run <prompt...|plan-dir> [--plan] [--dry-run] [--yes]
+                              [--complexity trivial|simple|standard|complex]
+                              [--context <path>...] [--no-cascade] [--provider <name>]
+                              [--workdir <path>] [--max-retries <n>] [--serve] [--share]
+                              [--fresh] [--resume-plan [<path>]]
 ```
 
 | Arg/Flag | Default | Description |
 |---|---|---|
-| `<prompt>` | required | The user prompt text. |
+| `<prompt...>` or `<plan-dir>` | required | A natural-language request (quote it), or a plan directory such as `plans/<slug>` or `plans/`. |
+| `--plan` | false | Always write a plan first, whatever the size of the prompt. |
+| `--dry-run` | false | With `--plan`: write the plan and stop. Without it: show the size, route and gates the prompt would get, and run nothing. |
+| `--yes` | false | Run a written plan without asking first. |
+| `--complexity <level>` | auto | Force the size: `trivial` and `simple` run one task; `standard` and `complex` write a plan. |
+| `--context <path>` | -- | Extra context for the planner: files, directories or globs (repeatable). |
+| `--no-cascade` | false | Disable cascade routing for this run. |
+| `--provider <name>` | config | Override the provider for this run. |
 | `--workdir <path>` | cwd | Override the working directory. |
-| `--serve` | false | Start the HTTP control plane alongside the run. |
-| `--share` | false | Generate a shareable URL (starts serve if needed). |
-| `--provider <name>` | config | Override provider for this run. |
-| `--max-retries <n>` | config | Maximum retry attempts per task when gate failures trigger replanning. |
+| `--max-retries <n>` | config | Maximum retry attempts per task. A task that fails its gates is retried with the gate's feedback. |
+| `--serve` | false | Start the HTTP control plane alongside the run. One-task runs only. |
+| `--share` | false | Generate a shareable URL (starts serve if needed). One-task runs only. |
+| `--fresh` | false | Plan directory only: archive existing state and start from scratch. |
+| `--resume-plan [<path>]` | -- | Plan directory only: resume from the last checkpoint (default `.roko/state/graph/`). |
+
+The global flags (`--model`, `--role`, `--json`, `--effort`, `--quiet`) apply as usual. For
+the full set of plan-run options (budgets, worktrees, topology, the inline TUI), use
+[`roko plan run`](#roko-plan-run).
+
+`roko run` does not classify intent: a question is not routed to research. Ask questions
+with `roko think "<question>"` or `roko research topic "<topic>"`.
+
+```bash
+roko run "add a unit test for the config parser"   # one change, checked
+roko run --plan "Add OAuth2 login"                 # write a plan, review it, run it
+roko run --plan --dry-run "Add OAuth2 login"       # write plans/add-oauth2-login/ and stop
+roko run plans/add-oauth2-login                    # run an existing plan
+roko run --dry-run "Refactor the API errors"       # show size, route and gates; run nothing
+```
+
+`roko do`, `roko develop` and `roko prd` were removed; see
+[Removed commands](#removed-commands) for what replaces each.
 
 When invoked with no subcommand and a bare string argument, Roko treats it as `roko run`:
 
@@ -557,104 +551,21 @@ roko impact --json                   # JSON for scripting
 
 ---
 
-## Planning and PRDs
+## Planning
 
-### `roko prd`
-
-Manage product requirements documents. Lifecycle: idea -> draft -> (research enhancement) -> publish -> plan -> execute.
-
-#### `roko prd idea`
-
-Capture a quick work item idea. Appends to `.roko/prd/ideas.md`.
-
-```
-roko prd idea <text...>
-```
+A plan is the unit of work: a directory `plans/<slug>/` that holds `tasks.toml` (the tasks,
+their dependencies and `verify` commands) and `plan.md` (prose context). Write one from a
+prompt with `roko plan generate` (or `roko run --plan --dry-run`), or by hand with
+`roko plan create`; check it with `roko plan validate`; run it with `roko run plans/<slug>`
+or `roko plan run`.
 
 ```bash
-roko prd idea "Extract runner prompt assembly into a dedicated module"
+roko plan generate "Add OAuth2 login"              # write plans/add-oauth2-login/ (tasks.toml + plan.md)
+roko research enhance-plan add-oauth2-login        # optional: research-backed improvements to the plan
+roko plan validate plans/add-oauth2-login          # lint without executing
+roko run plans/add-oauth2-login                    # run it: parallel, isolated, checked, merged
+roko plan run plans/add-oauth2-login --resume-plan # resume an interrupted run
 ```
-
-#### `roko prd list`
-
-List all PRDs (published, drafts, ideas).
-
-```
-roko prd list
-```
-
-#### `roko prd status`
-
-Show coverage report across PRDs and plans.
-
-```
-roko prd status
-```
-
-#### `roko prd draft new`
-
-Create a new draft PRD. Launches a `scribe`-role agent. Builds a repository context pack
-first and injects it into the agent prompt. Post-generation validation checks for a
-`## Repository Grounding` section and flags proposed crates that already exist.
-
-Sidecar files: `<slug>.context.json` (keywords, workspace members), `<slug>.validation.json` (grounding report).
-
-```
-roko prd draft new <title...>
-```
-
-#### `roko prd draft edit`
-
-Refine an existing draft with a `scribe`-role agent.
-
-```
-roko prd draft edit <slug>
-```
-
-#### `roko prd draft promote`
-
-Promote a draft to published status. If `prd.auto_plan` is enabled in `roko.toml`, triggers
-automatic plan generation.
-
-```
-roko prd draft promote <slug> [--auto-execute]
-```
-
-| Flag | Description |
-|---|---|
-| `--auto-execute` | Execute the generated plan immediately after promotion. |
-
-#### `roko prd draft list`
-
-List all draft PRDs.
-
-```
-roko prd draft list
-```
-
-#### `roko prd plan`
-
-Turn a PRD into executable tasks. A `strategist`-role agent reads the PRD and writes
-`tasks.toml` files under `plans/`.
-
-```
-roko prd plan <slug> [--dry-run]
-```
-
-| Arg/Flag | Description |
-|---|---|
-| `<slug>` | PRD slug (filename without `.md`). Searches both `published/` and `drafts/`. |
-| `--dry-run` | Preview generation without writing `tasks.toml` files. |
-
-#### `roko prd consolidate`
-
-Scan all PRDs for duplicates, gaps, inconsistencies, stale requirements, and ideas to promote.
-
-```
-roko prd consolidate
-```
-
----
 
 ### `roko plan` (alias: `roko p`)
 
@@ -705,7 +616,8 @@ roko plan validate [<dir>] [--strict] [--json] [--dag]
 #### `roko plan run`
 
 The primary execution command. The Graph engine executes tasks through the complete
-agent/gate/replan/worktree/merge/persistence lifecycle.
+agent/gate/replan/worktree/merge/persistence lifecycle. `roko run <plans-dir>` is the same
+run with the common options; `roko plan run` takes the full set below.
 
 ```
 roko plan run <plans-dir> [--engine graph] [--workdir <path>]
@@ -758,7 +670,9 @@ that names what to use instead (`--resume-plan`, `[agent] default_effort`, `roko
 
 #### `roko plan generate`
 
-Generate implementation plans from a prompt, file, or PRD.
+Write a plan from a prompt, a spec file, your notes, or backlog specs. An agent writes
+`plans/<slug>/` (`tasks.toml` and `plan.md`) and nothing runs. Review or edit the plan,
+then run it with `roko run plans/<slug>`.
 
 ```
 roko plan generate <source...> [--from-file <path>] [--context <path>...]
@@ -767,16 +681,23 @@ roko plan generate <source...> [--from-file <path>] [--context <path>...]
 
 | Arg/Flag | Description |
 |---|---|
-| `<source...>` | Free-text prompt, or path to a file. |
+| `<source...>` | Free-text prompt, or path to a file (a written spec, requirements, notes). |
 | `--from-file <path>` | Treat source as a file path. |
 | `--context <path>` | Additional context files/dirs/globs (repeatable). |
 | `--from-notes` | Read notes from `.roko/notes/` and generate one plan per cluster. |
 | `--tag <tag>` | Filter notes by tag when using `--from-notes`. |
-| `--from-backlog <ids>` | Generate from backlog spec(s). Comma-separated IDs. |
+| `--from-backlog <ids>` | Generate one plan per backlog spec, read from `tmp/backlog/<id>-*.md`. Comma-separated IDs: `--from-backlog 206,120`. |
+
+```bash
+roko plan generate "Add OAuth2 login"
+roko plan generate --from-file docs/specs/oauth2.md
+roko plan generate --from-backlog 206
+```
 
 #### `roko plan regenerate`
 
-Regenerate an existing plan from its source PRD or plan extract.
+Regenerate an existing plan's `tasks.toml` from the source document in its plan directory
+(its `plan.md`).
 
 ```
 roko plan regenerate <plan-dir> [--dry-run]
@@ -856,20 +777,8 @@ roko plan queue init [--output <path>] [--workdir <path>]
 
 ### `roko backlog`
 
-Import backlog specs as PRD ideas.
-
-#### `roko backlog import`
-
-```
-roko backlog import <path> [--draft] [--execute] [--check] [--workdir <path>]
-```
-
-| Flag | Description |
-|---|---|
-| `<path>` | Path to a single backlog `.md` file or directory. |
-| `--draft` | Create/update the plan artifact without execution. |
-| `--execute` | Create then start an eligible packet. |
-| `--check` | Dry-run: check eligibility without side effects. |
+List backlog specs, reconcile plan status with the Graph runs on record, and record closure
+evidence. To turn a backlog spec into a plan, use `roko plan generate --from-backlog <ids>`.
 
 #### `roko backlog list`
 
@@ -881,8 +790,7 @@ roko backlog list [<path>] [--workdir <path>]
 |---|---|
 | `<path>` | Backlog directory (default `tmp/backlog`). Its `archive/` is listed too. |
 
-Lists each spec with its id, its `**Status**:` line (the one `mark-done` writes) and whether `backlog import` has
-recorded it as a PRD idea.
+Lists each spec with its id and its `**Status**:` line (the one `mark-done` writes).
 
 #### `roko backlog audit`
 
@@ -1035,17 +943,10 @@ roko research topic <topic...> [--deep] [--backend auto|gemini|perplexity|agent]
 | `--deep` | false | Use Perplexity deep research (async, 1-10 min). |
 | `--backend <backend>` | `auto` | Force a specific research backend. |
 
-### `roko research enhance-prd`
-
-Enhance a PRD with academic citations, mermaid diagrams, and research-backed improvements.
-
-```
-roko research enhance-prd <slug>
-```
-
 ### `roko research enhance-plan`
 
-Optimize an implementation plan with research-backed task decomposition techniques.
+Optimize an implementation plan with research-backed task decomposition techniques. Run it
+on a plan written by `roko plan generate` before you run the plan.
 
 ```
 roko research enhance-plan <plan>
@@ -1992,8 +1893,8 @@ The dashboard can also be launched embedded in the server: `roko serve --tui`.
 | Config | F6 | `6` | Config editor / effective config view |
 | Inspect | F7 | `7` | Signal DAG inspector, episode replay |
 | Marketplace | F8 | `8` | Job browser, creation, assignment |
-| Atelier | F9 | `9` | PRD workshop, plan progress |
-| Learning | F10 | `0` | Cascade router, model routing, efficiency metrics |
+| Learning | F9 | `9` | Cascade router, model routing, efficiency metrics |
+| Providers | F10 | `0` | Provider health, cost, latency, circuit state |
 
 **Global keybindings:**
 
@@ -2170,10 +2071,6 @@ All runtime data lives under `.roko/` in the workspace root.
 +-- episodes.jsonl          # Agent turn recording (EpisodeLogger)
 +-- engrams.jsonl           # Signal log (FileSubstrate hot store)
 +-- notes/                  # Quick notes (roko note)
-+-- prd/
-|   +-- ideas.md            # Captured ideas (roko prd idea)
-|   +-- drafts/             # Draft PRDs (<slug>.md + sidecars)
-|   +-- published/          # Published PRDs
 +-- state/
 |   +-- state-snapshot.json # Legacy Runner-v2 snapshot (deprecated)
 |   +-- graph/              # Graph engine checkpoints (resume state)
@@ -2205,6 +2102,10 @@ All runtime data lives under `.roko/` in the workspace root.
 +-- screenshots/            # Event-driven screenshots (roko plan run --screenshots)
 ```
 
+Plans live outside `.roko/`, in `plans/<slug>/` at the workspace root. A workspace used with
+an older release may still have a `.roko/prd/` directory from the removed PRD pipeline; Roko
+no longer creates or reads it, and leaves it on disk.
+
 ---
 
 ## In-progress changes
@@ -2221,13 +2122,37 @@ These items are actively being worked on and may change behavior in the next rel
 
 ---
 
+## Removed commands
+
+The PRD pipeline was removed: plans are the only unit of work, and `roko run` is the one
+entry point. `roko do`, `roko develop` and `roko prd ...` still parse as hidden commands for
+one release; each prints ``error: `roko X` was removed ...`` with its replacement and exits 1
+(a JSON object with `--json`). Use this table to migrate scripts and older docs:
+
+| Removed | Replacement |
+|---|---|
+| `roko prd idea` / `list` / `status` / `draft new` / `draft edit` / `draft promote` / `draft list` / `plan` / `consolidate` | `roko run --plan "<prompt>"`, or `roko plan generate "<prompt>"` then `roko run plans/<slug>` |
+| `roko do "<prompt>"` (alias `d`) | `roko run "<prompt>"` (same sizing); `roko do --plan` becomes `roko run --plan` |
+| `roko develop "<prompt>"` (already an error since 2026-09-04) | `roko run --plan "<prompt>"` |
+| `roko research enhance-prd <slug>` | `roko research enhance-plan <slug>` |
+| `roko backlog import` (imported `tmp/backlog` specs as PRD ideas) | `roko plan generate --from-backlog <ids>` |
+| HTTP `/api/prds`, `/api/prds/ideas`, `/api/prds/status`, `/api/prds/{slug}`, `/api/prds/{slug}/draft`, `/api/prds/{slug}/promote`, `/api/prds/{slug}/plan`, `/api/prd/consolidate`, `/api/prds/consolidate` | `POST /api/plans/generate {"prompt": "..."}` (takes `prompt` only; `slug` is rejected with 422) |
+| `POST /api/research/enhance-prd/{slug}` | `POST /api/research/enhance-plan/{plan}` |
+| Auto-plan on PRD publish (`[prd] auto_plan`) | None: plans come straight from a prompt |
+| `[prd]` section of `roko.toml` | Dropped with a warning when an old `roko.toml` still has it |
+| TUI F9 Atelier tab (PRD workshop) | F2 Plans. The tabs after it move up: F9 Learning, F10 Providers |
+| ACP slash commands `/prd-idea`, `/prd-draft`, `/prd-list`, `/prd-status`, `/prd-plan`, `/prd-consolidate`, `/enhance-prd`, `/do`, `/develop` | `/run`, `/plan-generate`, `/plan-run`, `/enhance-plan` |
+| Chat `/prd idea`, `/prd list` | None |
+| `.roko/prd/` (`ideas.md`, `drafts/`, `published/`, `INDEX.md`) | Not created or read any more; existing data is left on disk |
+
+---
+
 ## Deprecated commands
 
 These commands are hidden from `--help` but still accepted for backward compatibility:
 
 | Command | Replacement |
 |---|---|
-| `roko develop "<prompt>"` | `roko do --plan "<prompt>"` |
 | `roko tune routing\|gates\|budget\|model` | `roko config preset routing\|gates\|budget\|model` |
 | `roko learn tune <subsystem>` | `roko learn inspect <subsystem>` |
 | `roko layer-check` | `roko doctor` |
@@ -2243,7 +2168,7 @@ These commands are hidden from `--help` but still accepted for backward compatib
 |---|---|---|
 | `.roko/` or `roko.toml` not found | Workspace not initialized | `roko init` |
 | `agent not found` / `unknown agent` | No agents registered | `roko agent list` to see what exists |
-| `plan not found` / `no plans found` | No plan files in the directory | `roko plan list` or `roko plan create` |
+| `plan not found` / `no plans found` | No plan files in the directory | `roko plan list`, or write one with `roko plan generate` or `roko plan create` |
 | `connection refused` / `connect error` | roko-serve is not running | `roko serve` in another terminal |
 | Gate failures on every task | Config or code problem | `roko doctor` then check `.roko/learn/gate-thresholds.json` |
 | Run interrupted, want to continue | Normal for long plans | `roko plan run plans/ --resume-plan` |

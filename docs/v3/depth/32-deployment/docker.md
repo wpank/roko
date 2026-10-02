@@ -80,7 +80,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -s /bin/bash -d /data roko \
-    && mkdir -p /data/.roko/state /data/.roko/prd \
+    && mkdir -p /data/.roko/state \
     && chown -R roko:roko /data
 
 COPY target/x86_64-unknown-linux-musl/release/roko-cli \

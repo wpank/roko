@@ -45,10 +45,10 @@ what happens at each step. The `alt` blocks show conditional branches
 
 ## 1. Plan Execution {#plan-execution}
 
-The complete lifecycle from an idea to validated, committed code. This is
-the self-hosting loop that Roko uses to develop itself.
+The complete lifecycle from a request (a prompt or a written spec) to validated,
+committed code. This is the self-hosting loop that Roko uses to develop itself.
 
-### Phase 1: Idea to Plan
+### Phase 1: Request to Plan
 
 ```mermaid
 sequenceDiagram
@@ -58,27 +58,26 @@ sequenceDiagram
     participant Agent as roko-agent
     participant Neuro as roko-neuro
 
-    User->>CLI: roko prd idea "Add rate limiting"
-    CLI->>FS: Write idea signal to .roko/prd/ideas/
-
-    User->>CLI: roko prd draft new "rate-limiting"
-    CLI->>Agent: Dispatch agent to write PRD
-    Agent->>FS: Read codebase context
-    Agent-->>CLI: Generated PRD document
-    CLI->>FS: Write PRD to .roko/prd/drafts/
-
-    User->>CLI: roko research topic "rate limiting"
-    CLI->>Agent: Dispatch Perplexity research agent
-    Agent-->>CLI: Research with citations
-    CLI->>FS: Write research to .roko/research/
-
-    User->>CLI: roko prd plan rate-limiting
+    User->>CLI: roko plan generate "Add rate limiting"
     CLI->>Neuro: Query relevant knowledge
     Neuro-->>CLI: Past insights, anti-patterns
-    CLI->>Agent: Generate tasks.toml from PRD + knowledge
+    CLI->>Agent: Generate tasks.toml from the prompt + knowledge
+    Agent->>FS: Read codebase context
     Agent-->>CLI: Implementation plan (task DAG)
-    CLI->>FS: Write plan to plans/rate-limiting/
+    CLI->>FS: Write plan to plans/add-rate-limiting/
+
+    opt Research-backed improvements
+        User->>CLI: roko research enhance-plan add-rate-limiting
+        CLI->>Agent: Dispatch research agent
+        Agent->>FS: Update the plan files in place
+    end
+
+    User->>FS: Review or edit plans/add-rate-limiting/tasks.toml
+    User->>CLI: roko run plans/add-rate-limiting
 ```
+
+`roko run --plan "Add rate limiting"` covers this phase in one command: it writes the
+plan, shows it, and asks before running it.
 
 ### Phase 2: Execution and Verification
 
@@ -394,8 +393,8 @@ graph LR
 
 | Flow | Commands |
 |------|----------|
-| Plan Execution | `roko prd idea`, `roko prd draft`, `roko prd plan`, `roko plan run` |
-| Agent Dispatch | `roko run "<prompt>"`, `roko do "<prompt>"` |
+| Plan Execution | `roko plan generate`, `roko research enhance-plan`, `roko run plans/<slug>` (or `roko plan run`), `roko run --plan` |
+| Agent Dispatch | `roko run "<prompt>"` |
 | Gate Validation | Automatic during `roko plan run`; inspect with `roko learn gates` |
 | Knowledge Query | `roko knowledge query "<topic>"`, `roko knowledge stats` |
 | Dream Consolidation | `roko knowledge dream run`, `roko knowledge dream report` |

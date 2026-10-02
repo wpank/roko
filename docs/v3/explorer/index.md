@@ -39,7 +39,7 @@ detailed Mermaid sequence diagrams walk through specific workflows:
 
 | Scenario | What it shows |
 |----------|--------------|
-| Plan Execution | Idea through PRD, plan generation, graph execution, gates, learning |
+| Plan Execution | Prompt to plan, plan review, graph execution, gates, learning |
 | Agent Dispatch | Model routing, prompt composition, affect modulation, tool loop |
 | Gate Validation | 7-rung pipeline, adaptive thresholds, failure-to-replan feedback |
 | Knowledge Query | Retrieval, HDC similarity, tier progression, dream consolidation |

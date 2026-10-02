@@ -36,7 +36,7 @@ this budget:
 | 4 | **CodeIntelligence** | Symbols, file content, structural context |
 | 5 | **PlaybookRules** | Skills, playbooks, distilled rules from learning |
 | 6 | **Research** | Research memos, external domain context |
-| 7 | **TaskContext** | Task brief, plan, PRD slices, acceptance criteria |
+| 7 | **TaskContext** | Task brief, plan, task description, acceptance criteria |
 | 8 | **Oracles** | Predictions, warnings, forecast outputs |
 | 9 | **GroupContext** | Mesh knowledge, cross-agent context |
 
@@ -186,7 +186,7 @@ pub enum AttentionBidder {
     CodeIntelligence,  // Symbols, files, structural context
     PlaybookRules,     // Skills, playbooks, distilled rules
     Research,          // Research memos, external domain context
-    TaskContext,       // Task brief, plan, PRD slices (default)
+    TaskContext,       // Task brief, plan, task description (default)
     Oracles,           // Predictions, warnings, forecasts
     GroupContext,       // Membership-scoped group knowledge
 }

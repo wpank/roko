@@ -93,7 +93,7 @@ planner_model = "claude-opus-4-6"   # a key from [models], or a builtin slug
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `planner_model` | String | `""` (unset) | Model for every plan generate and revise path: `roko prd plan`, `roko plan generate` / `regenerate`, the plan-writing bands of `roko do`, and the serve runtime's generate and revise |
+| `planner_model` | String | `""` (unset) | Model for every plan generate and revise path: `roko plan generate` / `regenerate`, `roko run --plan` and the plan-writing sizes of `roko run`, and the serve runtime's generate and revise |
 
 Precedence (`model_selection::resolve_planner_model`): `--model`, then
 `[authoring] planner_model`, then `[agent.roles.strategist] model`, then
@@ -108,7 +108,7 @@ serialized default config lacks.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `sandbox_level` | RunnerSandboxLevel | `"restrict"` | Live enforcement: `none`, `observe`, `restrict`, `isolate`, or `quarantine` |
-| `dangerously_skip_permissions` | bool | false | Run agents without the provider's own permission checks (Claude `--dangerously-skip-permissions`, the Codex and Gemini bypass modes). Off by default, and nothing turns it on by itself: `roko plan run`, the direct agent flows (`roko prd`, `plan generate`, `research`, `do`), `roko chat`, template dispatch in `roko serve` and the legacy ACP pipeline read this key, and the other spawn paths never skip. Rejected in strict/shared config |
+| `dangerously_skip_permissions` | bool | false | Run agents without the provider's own permission checks (Claude `--dangerously-skip-permissions`, the Codex and Gemini bypass modes). Off by default, and nothing turns it on by itself: `roko plan run`, the direct agent flows (`plan generate`, `research`, and the one-task path of `roko run`), `roko chat`, template dispatch in `roko serve` and the legacy ACP pipeline read this key, and the other spawn paths never skip. Rejected in strict/shared config |
 | `worktree_per_task` | bool | true | `roko plan run` runs each task in its own git worktree and delivers finished plans into the run's batch branch, `roko/batch/<run-id>`, never the operator's checkout; the run ends with the `git merge` that takes the work (gap-4ec59f). A workdir that is not the top level of a git checkout with a commit runs its tasks in the shared working tree. `--worktree-per-task` and `--no-worktree-per-task` override it per run, and a server's runs follow the server's value |
 
 ---
@@ -335,6 +335,7 @@ The list is `REMOVED_CONFIG_KEYS` in `crates/roko-core/src/config/loader.rs`.
 | `gates.domain_gates` | No gate ran its commands. Give the plan tasks of that domain their own verify commands (gap-7a3527) |
 | `learning.replan_max_per_plan` | No plan run revises a plan on gate failure, so it limited nothing (gap-7a3527) |
 | `learning.replan_gate_attempts` | As for `replan_max_per_plan` (gap-7a3527) |
+| `[prd]` (the whole section) | The PRD pipeline was removed, `auto_plan` with it: plans come straight from a prompt (`roko run --plan`, `roko plan generate`), so nothing reads the PRD lifecycle settings |
 | `[executor]` (the whole section) | The CLI-only parallel executor it configured never ran in a plan run. `conductor.max_parallel_plans` sets how many plans run at once, and `runner.worktree_per_task` (on by default) runs each task in its own git worktree (gap-666ab3, gap-4ec59f) |
 | `tools.prefer_mcp`, `tools.mcp_timeout_secs` | v1 keys of the CLI-only config that nothing read (bug-d5051e) |
 | `tools.global_denied` | v1 key that nothing read; `tools.deny` is the current tool denylist (bug-d5051e) |
@@ -348,7 +349,6 @@ The list is `REMOVED_CONFIG_KEYS` in `crates/roko-core/src/config/loader.rs`.
 
 | Section | Struct | Purpose |
 |---------|--------|---------|
-| `[prd]` | `PrdConfig` | PRD lifecycle settings |
 | `[graduation]` | `GraduationConfig` | Bus-to-Store promotion policies |
 | `[watcher]` | `WatcherConfig` | Filesystem watcher settings |
 | `[tui]` | `TuiConfig` | TUI display preferences |

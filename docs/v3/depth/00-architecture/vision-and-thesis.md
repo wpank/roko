@@ -331,14 +331,13 @@ Roko's strongest architectural argument is that it develops itself. The self-hos
 demonstrates the scaffold thesis in practice:
 
 ```
-1. Capture a work item           --> roko prd idea "Wire SystemPromptBuilder"
-2. Draft a PRD                   --> roko prd draft new "system-prompt-wiring"
-3. Research the topic            --> roko research enhance-prd system-prompt-wiring
-4. Generate an implementation plan --> roko prd plan system-prompt-wiring
-5. Execute the plan              --> roko plan run plans/
-6. Resume if interrupted         --> roko plan run plans/ --resume-plan
-7. Watch progress                --> roko dashboard
-8. Check status                  --> roko status
+1. Write a plan from a prompt    --> roko plan generate "Wire SystemPromptBuilder"
+2. Research the plan (optional)  --> roko research enhance-plan <slug>
+3. Review or edit the plan       --> plans/<slug>/tasks.toml, roko plan validate
+4. Execute the plan              --> roko run plans/<slug>
+5. Resume if interrupted         --> roko plan run plans/<slug> --resume-plan
+6. Watch progress                --> roko dashboard
+7. Check status                  --> roko status
 ```
 
 Each step uses Roko's own infrastructure. The scaffold improves the scaffold. This is the

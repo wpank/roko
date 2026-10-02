@@ -915,6 +915,24 @@ mod tests {
         );
     }
 
+    /// Each finish reason's canonical text reads back as that reason, so a
+    /// reason one module writes is the reason another module's check sees
+    /// (bug-e3940b).
+    #[test]
+    fn finish_reason_text_round_trips() {
+        for reason in [
+            FinishReason::Stop,
+            FinishReason::Length,
+            FinishReason::ToolCalls,
+            FinishReason::ContentFilter,
+            FinishReason::Error("network_error".into()),
+            FinishReason::Error("context_overflow".into()),
+            FinishReason::Error(crate::streaming::UNKNOWN_FINISH_REASON.into()),
+        ] {
+            assert_eq!(normalize_finish_reason(reason.as_str()), reason);
+        }
+    }
+
     #[test]
     fn translator_error_display_shows_variants() {
         let e = TranslatorError::Malformed("bad json".into());

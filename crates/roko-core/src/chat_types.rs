@@ -268,6 +268,24 @@ pub enum FinishReason {
     Error(String),
 }
 
+impl FinishReason {
+    /// The finish reason as text, in its one canonical form: `stop`,
+    /// `length`, `tool_calls`, `content_filter`, or an error's own reason.
+    /// `roko_agent::translate::normalize_finish_reason` reads it back. Every
+    /// place that writes a finish reason as text uses this, never the `Debug`
+    /// name (`Length`), which no finish-reason check matches (bug-e3940b).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Stop => "stop",
+            Self::Length => "length",
+            Self::ToolCalls => "tool_calls",
+            Self::ContentFilter => "content_filter",
+            Self::Error(reason) => reason.as_str(),
+        }
+    }
+}
+
 /// Canonical provider-agnostic chat response.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatResponse {
@@ -319,7 +337,7 @@ impl ChatResponse {
         Signal::builder(Kind::AgentOutput)
             .body(Body::text(&self.content))
             .tag("model", self.metadata.model_used.as_deref().unwrap_or(""))
-            .tag("finish_reason", format!("{:?}", self.finish_reason))
+            .tag("finish_reason", self.finish_reason.as_str())
             .build()
     }
 }
@@ -589,5 +607,25 @@ mod tests {
             ..Usage::default()
         };
         assert!(!usage.has_known_cost());
+    }
+
+    /// A finish reason is written as its wire text, never its `Debug` name,
+    /// including in the signal a response becomes (bug-e3940b).
+    #[test]
+    fn finish_reason_text_is_the_wire_form() {
+        assert_eq!(FinishReason::Stop.as_str(), "stop");
+        assert_eq!(FinishReason::Length.as_str(), "length");
+        assert_eq!(FinishReason::ToolCalls.as_str(), "tool_calls");
+        assert_eq!(FinishReason::ContentFilter.as_str(), "content_filter");
+        assert_eq!(
+            FinishReason::Error("network_error".to_string()).as_str(),
+            "network_error"
+        );
+
+        let response = ChatResponse {
+            finish_reason: FinishReason::Length,
+            ..ChatResponse::default()
+        };
+        assert_eq!(response.to_signal().tag("finish_reason"), Some("length"));
     }
 }

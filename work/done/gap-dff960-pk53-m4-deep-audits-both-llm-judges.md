@@ -2,7 +2,7 @@
 id = "gap-dff960"
 kind = "gap"
 title = "PK53 M4 deep audits: Both LLM judges read a list number, a scale echo or a 0–10 score as their 0–1 score (+3 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -12,6 +12,7 @@ subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "db49bfd1d"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK53"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs", "crates/roko-cli/src/graph_task_dispatch/helper_calls.rs", "crates/roko-cli/src/graph_task_dispatch/inert_settings.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs", "crates/roko-gate/src/agent_judge.rs", "crates/roko-learn/src/quality_judge.rs"]
 lane = "rust-hot"
@@ -29,6 +30,17 @@ command = "! grep -q 'EvalGenerator' crates/roko-cli/src/graph_task_dispatch.rs 
 
 [[verify]]
 command = "grep -qw 'def test_a1_flags_every_planted_tamper_kind' benchmarks/viabilitybench/audit/tests/test_battery.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/audit/tests/test_battery.py -q"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T21:13:59Z"
+commit = "db49bfd1d"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-02T19:13:12Z"
+forced = false
+evidence = "Gate 4b (work/backlog-batch-4b with main and the workflow audit merged in; merged into main as db49bfd1d, which differs from the gated tree only in work/ and one later docs commit): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 12,641 passed over 14 crates, golden-path canaries 13/13, sse_replay 1/1, ViabilityBench suite 513 passed; every [[verify]] passes."
 +++
 
 ## Problem

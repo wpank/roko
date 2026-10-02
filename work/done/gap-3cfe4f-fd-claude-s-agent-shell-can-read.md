@@ -2,7 +2,7 @@
 id = "gap-3cfe4f"
 kind = "gap"
 title = "fd_claude's agent shell can read the operator's real Anthropic keychain credential via the security wrapper"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "db49bfd1d"
 source = "wave-3 follow-up reports 2026-10-02 (w3-live gap-154f93)"
 discovered_from = "gap-154f93 (its own Progress notes and run_cli.py's module docstring already name the mechanism, but filed no item)"
 anchors = ["benchmarks/viabilitybench/driver/run_cli.py::KEYCHAIN_WRAPPER", "benchmarks/viabilitybench/driver/agent_env.py", "benchmarks/viabilitybench/families/common/sandbox.py::profile", "benchmarks/viabilitybench/driver/census.py"]
@@ -20,6 +21,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_agent_shell_cannot_read_the_real_keychain' benchmarks/viabilitybench/driver/test_run_cli.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_cli.py -k test_agent_shell_cannot_read_the_real_keychain -q"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T21:14:01Z"
+commit = "db49bfd1d"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-02T19:52:36Z"
+forced = false
+evidence = "Gate 4b (work/backlog-batch-4b with main and the workflow audit merged in; merged into main as db49bfd1d, which differs from the gated tree only in work/ and one later docs commit): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 12,641 passed over 14 crates, golden-path canaries 13/13, sse_replay 1/1, ViabilityBench suite 513 passed; every [[verify]] passes. Detection only: prevention needs per-task containers; Will's decision is filed separately."
 +++
 
 ## Problem

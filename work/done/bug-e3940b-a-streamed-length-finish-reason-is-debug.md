@@ -2,7 +2,7 @@
 id = "bug-e3940b"
 kind = "bug"
 title = "A streamed length finish reason is Debug-formatted as Length, so hit_length_limit never matches"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/streaming"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "db49bfd1d"
 source = "backlog wave reports 2026-10-02 (PK01 gap-625195)"
 discovered_from = "gap-625195 (adjacent to backlog task 1111; stream_without_finish_reason_is_not_stop already shows the capitalized string without flagging it)"
 anchors = ["crates/roko-agent/src/streaming.rs::parse_sse_frame", "crates/roko-agent/src/tool_loop/mod.rs::collect_stream_to_response"]
@@ -20,6 +21,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn collected_length_finish_reason_is_recognized_as_truncated' crates/roko-agent/ && cargo test -p roko-agent collected_length_finish_reason_is_recognized_as_truncated"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T21:13:16Z"
+commit = "db49bfd1d"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-02T19:13:07Z"
+forced = false
+evidence = "Gate 4b (work/backlog-batch-4b with main and the workflow audit merged in; merged into main as db49bfd1d, which differs from the gated tree only in work/ and one later docs commit): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 12,641 passed over 14 crates, golden-path canaries 13/13, sse_replay 1/1, ViabilityBench suite 513 passed; every [[verify]] passes."
 +++
 
 ## Problem

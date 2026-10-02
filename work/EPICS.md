@@ -42,9 +42,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **50/63 closed** · goal `proof` · severity p1
-- open by lane: bench 13
-- next: [gap-3cfe4f](items/gap-3cfe4f-fd-claude-s-agent-shell-can-read.md) fd_claude's agent shell can read the operator's real Anthropic keychain credential via the security wrapper
+- **51/63 closed** · goal `proof` · severity p1
+- open by lane: bench 12
+- next: [gap-a2f86a](items/gap-a2f86a-f7-s-in-tree-cargo-target-build.md) F7's in-tree .cargo-target build directory lands in commit_final's archived c_i
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
@@ -100,12 +100,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 55 | 89 | 34 (25) |
+| bench | 56 | 90 | 34 (25) |
 | docs | 18 | 22 | 4 (3) |
 | frontend | 3 | 6 | 3 (3) |
 | none | 343 | 420 | 77 (77) |
 | paper | 61 | 73 | 12 (9) |
 | rust-cold | 187 | 240 | 53 (43) |
-| rust-hot | 131 | 163 | 32 (29) |
+| rust-hot | 133 | 163 | 30 (27) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 21 | 24 | 3 (2) |

@@ -1813,7 +1813,10 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         assert_eq!(requests.lock().len(), 1, "one probe, of the one API rung");
         let reason = failed.get("mid-1").expect("the mid rung failed its probe");
         assert!(reason.contains("empty_response"), "{reason}");
-        let bound = ladder.without_models(&failed).expect("two rungs remain");
+        let bound = ladder
+            .clone()
+            .without_models(&failed)
+            .expect("two rungs remain");
         assert_eq!(
             bound.rung_models(),
             ["claude-haiku-4-5", "claude-sonnet-4-6"]

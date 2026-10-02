@@ -10,8 +10,8 @@
   },
   "tasks": {
     "T1": {
-      "score": 57,
-      "band": "C",
+      "score": 71.25,
+      "band": "B",
       "hard_fail": [],
       "verify_classes": [
         "test"
@@ -32,8 +32,8 @@
       }
     },
     "T2": {
-      "score": 54.5,
-      "band": "C",
+      "score": 68.12,
+      "band": "B",
       "hard_fail": [],
       "verify_classes": [
         "test"
@@ -54,8 +54,8 @@
       }
     },
     "T3": {
-      "score": 54.5,
-      "band": "C",
+      "score": 68.12,
+      "band": "B",
       "hard_fail": [],
       "verify_classes": [
         "test"
@@ -76,8 +76,8 @@
       }
     },
     "T4": {
-      "score": 52,
-      "band": "C",
+      "score": 65,
+      "band": "B",
       "hard_fail": [],
       "verify_classes": [
         "test"

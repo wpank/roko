@@ -972,13 +972,13 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
     let stdout = String::from_utf8_lossy(&scored.get_output().stdout);
     assert!(stdout.starts_with(&plain_stdout), "{stdout}");
     assert!(
-        stdout.contains("spec quality (sq-2, static: HF3 and SQ06 not evaluated)\n"),
+        stdout.contains("spec quality (sq-3, static: HF3 and SQ06 not evaluated)\n"),
         "{stdout}"
     );
     assert!(stdout.contains("\nplans/spec/tasks.toml\n"), "{stdout}");
     assert!(
         stdout.contains(
-            "  T1  17.00 D  SQ01=0 SQ02=0 SQ03=0 SQ04=0 SQ05=0 SQ06=0 SQ07=0 SQ08=1 SQ09=0 SQ10=1 \
+            "  T1  21.25 D  SQ01=0 SQ02=0 SQ03=0 SQ04=0 SQ05=0 SQ06=0 SQ07=0 SQ08=1 SQ09=0 SQ10=1 \
              SQ11=1 SQ12=0  hard=HF2\n"
         ),
         "{stdout}"
@@ -987,9 +987,9 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
         stdout.contains("HF2: step 1: the step only runs `echo ok`"),
         "{stdout}"
     );
-    assert!(stdout.contains("  T2  37.00 D  SQ01=0"), "{stdout}");
+    assert!(stdout.contains("  T2  46.25 C  SQ01=0"), "{stdout}");
     assert!(
-        stdout.contains("2 tasks: 0 A, 0 B, 0 C, 2 D; 1 with hard fails"),
+        stdout.contains("2 tasks: 0 A, 0 B, 1 C, 1 D; 1 with hard fails"),
         "{stdout}"
     );
 
@@ -1003,13 +1003,13 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
     assert_eq!(json["plans"], plain_json["plans"]);
     assert_eq!(json["totals"], plain_json["totals"]);
     let spec = &json["spec_quality"];
-    assert_eq!(spec["linter"], "sq-2");
+    assert_eq!(spec["linter"], "sq-3");
     let tasks = spec["tasks"].as_array().unwrap();
     assert_eq!(tasks.len(), 2);
     let t1 = &tasks[0];
     assert_eq!(t1["task_id"], "T1");
     assert_eq!(t1["plan_path"], "plans/spec/tasks.toml");
-    assert_eq!(t1["score"], 17.0);
+    assert_eq!(t1["score"], 21.25);
     assert_eq!(t1["band"], "D");
     assert_eq!(t1["hard_fail"], serde_json::json!(["HF2"]));
     assert_eq!(
@@ -1021,7 +1021,7 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
     assert_eq!(t1["rules"]["SQ04"], 0.0);
     assert_eq!(t1["verify_classes"], serde_json::json!(["vacuous"]));
     let t2 = &tasks[1];
-    assert_eq!(t2["score"], 37.0);
+    assert_eq!(t2["score"], 46.25);
     assert_eq!(t2["hard_fail"], serde_json::json!([]));
     assert_eq!(t2["rules"]["SQ05"], 1.0);
     assert_eq!(t2["verify_classes"], serde_json::json!(["test"]));

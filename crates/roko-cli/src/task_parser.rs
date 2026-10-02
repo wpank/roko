@@ -1065,7 +1065,8 @@ pub const VERIFY_KEYS: &[&str] = &[
 
 /// Every `[meta]` key: the fields of [`TaskMeta`], plus `queue_kind`,
 /// `queue_schema` and `kind`, by which `plan validate` recognises an
-/// architecture queue.
+/// architecture queue, and `hidden_suites`, by which the spec-quality score
+/// counts SQ12 (`roko_gate::spec_quality`, sq-3).
 pub const META_KEYS: &[&str] = &[
     "plan",
     "iteration",
@@ -1082,10 +1083,11 @@ pub const META_KEYS: &[&str] = &[
     "verify",
     "approval",
     "allow_unverified",
-    // Read by `plan validate`.
+    // Read by `plan validate` and the spec-quality score.
     "queue_kind",
     "queue_schema",
     "kind",
+    "hidden_suites",
 ];
 
 /// Misspellings of `tasks.toml` keys that plan generators write, and the key

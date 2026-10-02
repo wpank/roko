@@ -1,39 +1,38 @@
 {
   "focus": {
-    "rule": "SQ10",
+    "rule": "SQ02",
     "expect": {
       "T1": 1.0,
-      "T2": 0.5,
-      "T3": 0.0,
-      "T4": 1.0
+      "T2": 0.0,
+      "T3": 0.0
     }
   },
   "tasks": {
     "T1": {
-      "score": 46.25,
-      "band": "C",
+      "score": 93.75,
+      "band": "A",
       "hard_fail": [],
       "verify_classes": [
         "test"
       ],
       "rules": {
-        "SQ01": 0,
-        "SQ02": 0,
-        "SQ03": 0,
+        "SQ01": 0.5,
+        "SQ02": 1,
+        "SQ03": 1,
         "SQ04": 1,
         "SQ05": 1,
         "SQ06": 0,
-        "SQ07": 0,
+        "SQ07": 1,
         "SQ08": 1,
-        "SQ09": 0,
+        "SQ09": 1,
         "SQ10": 1,
         "SQ11": 1,
         "SQ12": 0
       }
     },
     "T2": {
-      "score": 47.5,
-      "band": "C",
+      "score": 68.75,
+      "band": "B",
       "hard_fail": [],
       "verify_classes": [
         "test"
@@ -45,53 +44,31 @@
         "SQ04": 1,
         "SQ05": 1,
         "SQ06": 0,
-        "SQ07": 0,
+        "SQ07": 1,
         "SQ08": 1,
-        "SQ09": 0,
-        "SQ10": 0.5,
+        "SQ09": 1,
+        "SQ10": 1,
         "SQ11": 1,
         "SQ12": 0
       }
     },
     "T3": {
-      "score": 30,
-      "band": "D",
+      "score": 68.75,
+      "band": "B",
       "hard_fail": [],
       "verify_classes": [
         "test"
       ],
       "rules": {
-        "SQ01": 0,
+        "SQ01": 0.5,
         "SQ02": 0,
         "SQ03": 0,
         "SQ04": 1,
         "SQ05": 1,
         "SQ06": 0,
-        "SQ07": 0,
+        "SQ07": 1,
         "SQ08": 1,
-        "SQ09": 0,
-        "SQ10": 0,
-        "SQ11": 0,
-        "SQ12": 0
-      }
-    },
-    "T4": {
-      "score": 46.25,
-      "band": "C",
-      "hard_fail": [],
-      "verify_classes": [
-        "test"
-      ],
-      "rules": {
-        "SQ01": 0,
-        "SQ02": 0,
-        "SQ03": 0,
-        "SQ04": 1,
-        "SQ05": 1,
-        "SQ06": 0,
-        "SQ07": 0,
-        "SQ08": 1,
-        "SQ09": 0,
+        "SQ09": 1,
         "SQ10": 1,
         "SQ11": 1,
         "SQ12": 0

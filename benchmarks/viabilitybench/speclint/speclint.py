@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""speclint: the static spec-quality score (SQS v1, linter id ``sq-2``) for roko task specs.
+"""speclint: the static spec-quality score (SQS v1, linter id ``sq-3``) for roko task specs.
 
 Scores every ``[[task]]`` of ``plans/**/tasks.toml`` against rules SQ01-SQ12 and the static hard
 fails of S07 section 4.2 (``tmp/cybernetic-harness/specs/S07-spec-quality.md``), writes one
@@ -12,22 +12,29 @@ Without ``--out`` the records go to ``$VB_RESULTS/speclint/<run_id>/speclint.jso
 repo (decision D4; ``$VB_RESULTS`` defaults to ``~/.roko-bench/viability``). Standard library only,
 no model calls. Records are deterministic apart from ``ts``.
 
-Static mode cannot run anything, so SQ06 (red on base) scores 0 and HF3 is not evaluated; both are
-listed under ``unknown`` in every record. ``--dynamic`` first runs each implementer task's pinned
-acceptance tests and verify steps on a clean checkout of the base commit and passes the task's
-``red_on_base`` to :func:`score_task` (``dynamic.py``, S07.2)::
+Static mode cannot run anything, so HF3 is not evaluated and SQ06 (red on base) is unknown; both are
+listed under ``unknown`` in every record, and the score leaves SQ06 out (sq-3). ``--dynamic`` first
+runs each implementer task's pinned acceptance tests and verify steps on a clean checkout of the base
+commit and passes the task's ``red_on_base`` to :func:`score_task` (``dynamic.py``, S07.2)::
 
     python3 benchmarks/viabilitybench/speclint/speclint.py plans/ --dynamic [--base REV]
 
-The rule definitions below are frozen as ``sq-2``: the Rust port (``roko plan validate
---spec-quality``, gap-46ab3f) must match them within 0.5 points on the golden fixtures in
-``fixtures/``. Change a definition only together with the linter id.
+The rule definitions below are frozen as ``sq-3``: the Rust port (``roko plan validate
+--spec-quality``, gap-46ab3f) implements the current id only and must match it within 0.5 points on
+the golden fixtures in ``fixtures/``. Change a definition only together with the linter id.
+``--linter sq-2`` still scores by the previous rules, so published sq-2 figures reproduce.
 
 Linter ids:
 
 - ``sq-1``: SQ01-SQ12 and the static hard fails as S07 section 4.2 defines them.
 - ``sq-2``: well-formed ``[task.accept]`` entries count as scoped test verify steps and as observable
   acceptance (bug-019f02).
+- ``sq-3`` (decision 3202): a planner-written test the task cannot edit is its acceptance: SQ02 = 1
+  and SQ03 = 1 for a task with a ``[task.accept]`` test, or with a scoped test-run step whose command
+  names a test file that exists on the base and is not one of the task's ``files``. The score is out
+  of the rules the mode can evaluate: SQ06 is left out in static mode (still listed as unknown), and
+  SQ12 counts only in plans that declare hidden suites (``[meta] hidden_suites = true``). Records
+  list the rules left out under ``excluded``.
 """
 
 from __future__ import annotations
@@ -45,7 +52,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-LINTER = "sq-2"
+LINTER = "sq-3"
+# The ids `--linter` accepts: the current one, and the one before it for published figures.
+LINTERS = ("sq-2", "sq-3")
 
 WEIGHTS = {
     "SQ01": 10,
@@ -855,6 +864,45 @@ def analyze_step(command: str, task_files: set[str] | frozenset[str] = frozenset
     return analysis
 
 
+_DOTTED_MODULE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+
+
+def named_paths(command: str) -> list[str]:
+    """sq-3: the paths the words of a verify step name, relative to the repo root.
+
+    Each word after a command's program that is not a flag or a variable, without a pytest
+    ``::selector``, resolved against the step's ``cd``. A dotted Python module (``tests.test_slug``)
+    names its file (``tests/test_slug.py``) as well.
+    """
+    paths: list[str] = []
+    cwd = ""
+    for cmd in parse_shell(command):
+        argv = _strip_wrappers(cmd.words)
+        if argv and argv[0] == "cd":
+            target = _first_positional(argv[1:])
+            cwd = "" if not target or target.startswith(("$", "~", "/", "-")) else _resolve(cwd, target)
+            if cwd in (".", "") or cwd.startswith(".."):
+                cwd = ""
+            continue
+        for word in argv[1:]:
+            word = word.split("::", 1)[0]
+            if not word or word.startswith(("-", "$", "~", "/")):
+                continue
+            candidates = [word]
+            if _DOTTED_MODULE_RE.fullmatch(word):
+                candidates.append(word.replace(".", "/") + ".py")
+            for candidate in candidates:
+                path = _resolve(cwd, candidate)
+                if path != "." and not path.startswith("..") and path not in paths:
+                    paths.append(path)
+    return paths
+
+
+def is_test_path(path: str) -> bool:
+    """Whether a path names a test: a part of it is ``test``, ``tests``, ``spec`` or a test runner."""
+    return bool(_tokens(path) & _TEST_TOKENS)
+
+
 # --------------------------------------------------------------------------------------------
 # Field access. Plans are hand-written, so every field is type-checked before use.
 
@@ -1044,6 +1092,7 @@ class PlanContext:
     archived: bool
     tasks_by_id: dict[str, dict]
     plan_outputs: dict[str, set[str]]  # plan id -> files its tasks write, for depends_on_plan
+    hidden_suites: bool = False  # `[meta] hidden_suites`: SQ12 counts (sq-3)
 
 
 def task_outputs(task: dict) -> set[str]:
@@ -1069,6 +1118,36 @@ def dependency_outputs(task: dict, ctx: PlanContext) -> set[str]:
     return created
 
 
+def planner_written_test(steps: list[dict], analyses: list[StepAnalysis], accept: list[dict], files: set[str], workspace: Workspace) -> bool:
+    """sq-3 (decision 3202): whether a planner-written test the task cannot edit is its acceptance.
+
+    A pinned ``[task.accept]`` test is one. So is a scoped test-run step whose command names a test file
+    that exists on the base (the workspace, in static mode) and is not one of the task's ``files``: the
+    Goodhart guard is that the test is named in the step and read-only to the task.
+    """
+    if accept:
+        return True
+    for step, analysis in zip(steps, analyses):
+        if analysis.cls != "test" or not analysis.scopes or any(scope != "scoped" for scope in analysis.scopes):
+            continue
+        for path in named_paths(_str(step.get("command"))):
+            if path not in files and is_test_path(path) and workspace.text(path) is not None:
+                return True
+    return False
+
+
+def excluded_rules(linter: str, red_on_base: str, hidden_suites: bool) -> list[str]:
+    """sq-3: the rules a score leaves out: SQ06 in static mode, SQ12 without hidden suites."""
+    if linter == "sq-2":
+        return []
+    excluded = []
+    if red_on_base == "unknown":
+        excluded.append("SQ06")
+    if not hidden_suites:
+        excluded.append("SQ12")
+    return excluded
+
+
 def band(score: float) -> str:
     if score >= 80:
         return "A"
@@ -1079,8 +1158,9 @@ def band(score: float) -> str:
     return "D"
 
 
-def score_task(task: dict, ctx: PlanContext, red_on_base: str = "unknown") -> dict:
-    """Score one task. ``red_on_base`` is "fail", "pass" or "unknown" (static mode)."""
+def score_task(task: dict, ctx: PlanContext, red_on_base: str = "unknown", linter: str = LINTER) -> dict:
+    """Score one task. ``red_on_base`` is "fail", "pass" or "unknown" (static mode); ``linter`` is one of
+    :data:`LINTERS`."""
     role = _str(task.get("role")).strip() or "implementer"
     title = _str(task.get("title"))
     goal = _str(task.get("goal"))
@@ -1123,6 +1203,12 @@ def score_task(task: dict, ctx: PlanContext, red_on_base: str = "unknown") -> di
     scopes = [scope for a in analyses for scope in a.scopes] + ["scoped"] * len(accept)
     n_scoped = scopes.count("scoped")
     rules["SQ05"] = 0.0 if not n_scoped else 1.0 if n_scoped == len(scopes) else 0.5
+
+    # sq-3: a planner-written test the task cannot edit is its acceptance, and traces to itself.
+    planner_test = linter != "sq-2" and planner_written_test(steps, analyses, accept, files, ctx.workspace)
+    if planner_test:
+        rules["SQ02"] = 1.0
+        rules["SQ03"] = 1.0
 
     # SQ06 red on base: dynamic; unknown scores 0 and is flagged.
     rules["SQ06"] = 1.0 if red_on_base == "fail" else 0.0
@@ -1203,11 +1289,18 @@ def score_task(task: dict, ctx: PlanContext, red_on_base: str = "unknown") -> di
             hard.append("HF5")
             detail["HF5"] = claims
 
-    score = round(sum(WEIGHTS[rule] * value for rule, value in rules.items()), 2)
+    # sq-3: the score is out of the rules this mode and plan can evaluate.
+    excluded = excluded_rules(linter, red_on_base, ctx.hidden_suites)
+    if excluded:
+        weight = sum(w for rule, w in WEIGHTS.items() if rule not in excluded)
+        points = sum(WEIGHTS[rule] * value for rule, value in rules.items() if rule not in excluded)
+        score = round(100.0 * points / weight, 2)
+    else:
+        score = round(sum(WEIGHTS[rule] * value for rule, value in rules.items()), 2)
     canonical = json.dumps(task, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
     return {
         "ev": "spec.quality",
-        "linter": LINTER,
+        "linter": linter,
         "mode": "static" if red_on_base == "unknown" else "dynamic",
         "plan_id": ctx.plan_id,
         "plan_path": ctx.plan_path,
@@ -1221,6 +1314,7 @@ def score_task(task: dict, ctx: PlanContext, red_on_base: str = "unknown") -> di
         "hard_fail": hard,
         "hard_fail_detail": detail,
         "unknown": list(STATIC_UNKNOWN) if red_on_base == "unknown" else [],
+        "excluded": excluded,
         "rules": {rule: round(value, 4) for rule, value in rules.items()},
         "verify_classes": classes,
         "red_on_base": red_on_base,
@@ -1247,6 +1341,7 @@ def score_task(task: dict, ctx: PlanContext, red_on_base: str = "unknown") -> di
             "max_loc": max_loc if max_loc_set else None,
             "has_non_goals": has_non_goals,
             "has_hidden_hook": isinstance(hidden, dict),
+            "planner_test": planner_test,
             "refine_rounds": 0,
         },
         "critic": None,
@@ -1286,8 +1381,8 @@ def _relative(path: Path, root: Path) -> str:
         return path.as_posix()
 
 
-def lint_files(files: list[Path], root: Path, red_on_base: dict[tuple[str, str], str] | None = None) -> tuple[list[dict], list[tuple[str, str]]]:
-    """Score every task of ``files``; returns (records without `ts`, parse errors)."""
+def lint_files(files: list[Path], root: Path, red_on_base: dict[tuple[str, str], str] | None = None, linter: str = LINTER) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Score every task of ``files`` under ``linter``; returns (records without `ts`, parse errors)."""
     workspace = Workspace(root)
     parsed: list[tuple[Path, dict]] = []
     errors: list[tuple[str, str]] = []
@@ -1313,10 +1408,11 @@ def lint_files(files: list[Path], root: Path, red_on_base: dict[tuple[str, str],
             archived="archive" in PurePosixPath(rel).parts,
             tasks_by_id={_str(t.get("id")).strip(): t for t in tasks if _str(t.get("id")).strip()},
             plan_outputs=plan_outputs,
+            hidden_suites=_table(data.get("meta")).get("hidden_suites") is True,
         )
         for task in tasks:
             key = (rel, _str(task.get("id")))
-            records.append(score_task(task, ctx, (red_on_base or {}).get(key, "unknown")))
+            records.append(score_task(task, ctx, (red_on_base or {}).get(key, "unknown"), linter))
     return records, errors
 
 
@@ -1339,7 +1435,7 @@ def _quantile(values: list[float], q: float) -> float:
     return ordered[low] + (ordered[high] - ordered[low]) * (pos - low)
 
 
-def summarize(records: list[dict], files: int, errors: list[tuple[str, str]], worst: int = 10, dynamic: bool = False) -> str:
+def summarize(records: list[dict], files: int, errors: list[tuple[str, str]], worst: int = 10, dynamic: bool = False, linter: str = LINTER) -> str:
     unknown = () if dynamic else STATIC_UNKNOWN
     groups = {
         "all": records,
@@ -1348,7 +1444,7 @@ def summarize(records: list[dict], files: int, errors: list[tuple[str, str]], wo
     }
     names = list(groups)
     lines = [
-        f"speclint {LINTER} ({'dynamic' if dynamic else 'static'}): {files} files, {len(records)} tasks "
+        f"speclint {linter} ({'dynamic' if dynamic else 'static'}): {files} files, {len(records)} tasks "
         f"({len(groups['active'])} active, {len(groups['archived'])} archived), {len(errors)} parse errors",
     ]
     for path, err in errors:
@@ -1439,6 +1535,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, help="workspace root for context files (default: nearest .git or roko.toml)")
     parser.add_argument("--worst", type=int, default=10, help="how many of the lowest-scoring tasks to list")
     parser.add_argument("--strict", action="store_true", help="exit 1 when any task has a hard fail")
+    parser.add_argument("--linter", choices=LINTERS, default=LINTER, help=f"the rule set to score by (default: {LINTER}); sq-2 reproduces published sq-2 figures")
     parser.add_argument("--dynamic", action="store_true", help="run each implementer task's verify steps twice on a clean base checkout first, to score SQ06 and HF3 (dynamic.py)")
     parser.add_argument("--base", help="with --dynamic: the commit to check every plan against (default: HEAD for plans that have not run; none for the rest)")
     parser.add_argument("--timeout", type=float, help="with --dynamic: the most seconds a verify step may take (default: 120)")
@@ -1471,12 +1568,13 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout or dynamic.STEP_TIMEOUT_S,
                 scratch=args.scratch,
                 fixture=args.fixture,
+                linter=args.linter,
             )
         except dynamic.CheckError as err:
             print(f"speclint: {err}", file=sys.stderr)
             return 2
     else:
-        records, errors = lint_files(files, root)
+        records, errors = lint_files(files, root, linter=args.linter)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [json.dumps({**record, "ts": ts}, sort_keys=True, ensure_ascii=False) for record in records]
 
@@ -1489,7 +1587,7 @@ def main(argv: list[str] | None = None) -> int:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         print(f"records: {out}", file=summary_stream)
-    print(summarize(records, len(files), errors, args.worst, dynamic=args.dynamic), file=summary_stream)
+    print(summarize(records, len(files), errors, args.worst, dynamic=args.dynamic, linter=args.linter), file=summary_stream)
     if args.dynamic:
         print("\n".join(dynamic.summary_lines(records)), file=summary_stream)
     if args.strict and any(record["hard_fail"] for record in records):

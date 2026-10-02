@@ -12,7 +12,7 @@
   },
   "tasks": {
     "T1": {
-      "score": 17,
+      "score": 21.25,
       "band": "D",
       "hard_fail": [
         "HF2"
@@ -36,7 +36,7 @@
       }
     },
     "T2": {
-      "score": 17,
+      "score": 21.25,
       "band": "D",
       "hard_fail": [
         "HF2"
@@ -60,7 +60,7 @@
       }
     },
     "T3": {
-      "score": 17,
+      "score": 21.25,
       "band": "D",
       "hard_fail": [
         "HF2"
@@ -84,7 +84,7 @@
       }
     },
     "T4": {
-      "score": 20.75,
+      "score": 25.94,
       "band": "D",
       "hard_fail": [],
       "verify_classes": [
@@ -106,8 +106,8 @@
       }
     },
     "T5": {
-      "score": 37,
-      "band": "D",
+      "score": 46.25,
+      "band": "C",
       "hard_fail": [],
       "verify_classes": [
         "test"
@@ -128,7 +128,7 @@
       }
     },
     "T6": {
-      "score": 17,
+      "score": 21.25,
       "band": "D",
       "hard_fail": [
         "HF2"

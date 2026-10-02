@@ -253,6 +253,7 @@ verify = [{{ phase = "test", command = "{verify}" }}]
         assert!(!report.blocks(), "{report:?}");
         let decision = &report.decisions[0];
         assert!(decision.score < advise.allow_threshold, "{decision:?}");
+        assert_eq!(decision.band, "C", "{decision:?}");
         assert_eq!(decision.action, SpecGateAction::Advise);
 
         // Under enforce, a score below the block threshold blocks as well.

@@ -152,14 +152,14 @@ export default function ParetoFrontierChart({
             <g key={p.arm.arm} className="sc-mark" data-arm={p.arm.arm} tabIndex={0}>
               <title>{title}</title>
               {p.usd.ci && (
-                <g data-ci="whisker" data-axis="x" data-metric-ref={p.usd.metric_ref} data-value={String(p.usd.value)}>
+                <g data-ci="whisker" data-ci-axis="x" data-metric-ref={p.usd.metric_ref} data-value={String(p.usd.value)}>
                   <line x1={x(p.usd.ci[0])} x2={x(p.usd.ci[1])} y1={cy} y2={cy} stroke={color} />
                   <line x1={x(p.usd.ci[0])} x2={x(p.usd.ci[0])} y1={cy - CAP} y2={cy + CAP} stroke={color} />
                   <line x1={x(p.usd.ci[1])} x2={x(p.usd.ci[1])} y1={cy - CAP} y2={cy + CAP} stroke={color} />
                 </g>
               )}
               {p.resolve.ci && (
-                <g data-ci="whisker" data-axis="y" data-metric-ref={p.resolve.metric_ref} data-value={String(p.resolve.value)}>
+                <g data-ci="whisker" data-ci-axis="y" data-metric-ref={p.resolve.metric_ref} data-value={String(p.resolve.value)}>
                   <line x1={cx} x2={cx} y1={y(p.resolve.ci[0])} y2={y(p.resolve.ci[1])} stroke={color} />
                   <line x1={cx - CAP} x2={cx + CAP} y1={y(p.resolve.ci[0])} y2={y(p.resolve.ci[0])} stroke={color} />
                   <line x1={cx - CAP} x2={cx + CAP} y1={y(p.resolve.ci[1])} y2={y(p.resolve.ci[1])} stroke={color} />

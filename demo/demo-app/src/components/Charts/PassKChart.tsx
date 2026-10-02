@@ -86,7 +86,7 @@ export default function PassKChart({ arms, provenance }: PassKChartProps) {
                       {`${arm.label}, pass^${p.k}: ${formatValue(value, 'rate')} ${formatCi(ci, 'rate')}`}
                     </title>
                     {ci && (
-                      <g data-ci="whisker" data-axis="y" data-metric-ref={p.estimate.metric_ref} data-value={String(value)}>
+                      <g data-ci="whisker" data-ci-axis="y" data-metric-ref={p.estimate.metric_ref} data-value={String(value)}>
                         <line x1={cx} x2={cx} y1={y(ci[0])} y2={y(ci[1])} stroke={color} />
                         <line x1={cx - CAP} x2={cx + CAP} y1={y(ci[0])} y2={y(ci[0])} stroke={color} />
                         <line x1={cx - CAP} x2={cx + CAP} y1={y(ci[1])} y2={y(ci[1])} stroke={color} />

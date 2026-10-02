@@ -51,6 +51,7 @@ benchmarks/viabilitybench/
   driver/{disturb, vb_verify}.py                            # H6's disturbances, and the visible-verify wrapper
   driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
   analysis/{metrics, passk, report}.py                      # vb report
+  analysis/gates.py                                         # gate pages: G0's go/no-go (go-no-go.md, g0.json)
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
   manifest.json  order-<seed>.json  records.jsonl  ledger.jsonl  reservations.jsonl  errors.jsonl  metrics.json
@@ -156,6 +157,10 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   without `--dry-run` it runs one `vb run` per unit in the manifest's order (`as_listed`, or S09's
   `daily_interleave`), logs them in `<experiment>/campaign.jsonl`, and on a rerun goes on after the last finished
   unit. Its module docstring has the rules.
+- **Gate G0** (`analysis/gates.py G0 --experiment PILOT-A --experiment PILOT-B ...`, S09 §4.7). It computes every
+  G0 check from the pilot's runs and the evidence files it is given (the verifier-CI JSON, `vb ledger reconcile
+  --json` per provider, the hand-filled SC2 spot check, a synthetic runaway's run), with its value, threshold and run
+  ids, and writes `go-no-go.md` and `g0.json`. A check without its evidence is "not evaluated", never passed.
 - **The report.** `vb report --experiment <id>` writes `metrics.json` and prints the VS rate, $/VS, pass^k and false
   greens of each arm (of each model, for an arm that ran more than one), every false green with its run id, and the
   excluded runs. `--bundle` writes the summary bundle for `reports/`, and `--check` holds bundles to their manifests

@@ -354,7 +354,47 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         list_swe_runs,
         get_swe_run,
         cfactor_trend,
-        cache_prune
+        cache_prune,
+        cache_status,
+        chain_agents,
+        chain_blocks,
+        chain_bounties,
+        chain_events,
+        chain_status,
+        chain_txs,
+        chain_watcher_status,
+        apply_preset,
+        get_config_toml,
+        get_dashboard_runs,
+        post_defi_bonds,
+        get_defi_bonds_id,
+        get_defi_indices,
+        get_defi_instruments,
+        post_defi_insurance,
+        post_defi_insurance_id_claims,
+        post_defi_options_price,
+        get_defi_risk_portfolio,
+        create_deployment,
+        teardown_deployment,
+        doctor_report,
+        sse_handler,
+        ingest_event,
+        ingest_event_batch,
+        executor_state,
+        gates_history,
+        gate_summary,
+        gate_history,
+        pipeline_batch_flush,
+        pipeline_batch_result,
+        pipeline_batch_submit,
+        pipeline_inference,
+        gateway_models,
+        gateway_stats,
+        list_heartbeats,
+        receive_heartbeat,
+        list_history,
+        get_history_session,
+        batch_submit
     ),
     components(schemas(
         ApiErrorResponse,
@@ -1359,6 +1399,88 @@ doc_get!(list_swe_datasets, "/bench/swe/datasets", "swe_bench");
 doc_post_value!(start_swe_run, "/bench/swe/run", "swe_bench");
 doc_get!(list_swe_runs, "/bench/swe/runs", "swe_bench");
 doc_get_param!(get_swe_run, "/bench/swe/runs/{id}", "swe_bench", "id");
+
+// ── cache (gap-c50b85) ─────────────────────────────────────────────────────────────
+doc_get!(cache_status, "/cache/status", "cache");
+
+// ── chain (gap-c50b85) ─────────────────────────────────────────────────────────────
+doc_get!(chain_agents, "/chain/agents", "chain");
+doc_get!(chain_blocks, "/chain/blocks", "chain");
+doc_get!(chain_bounties, "/chain/bounties", "chain");
+doc_get!(chain_events, "/chain/events", "chain");
+doc_get!(chain_status, "/chain/status", "chain");
+doc_get!(chain_txs, "/chain/transactions", "chain");
+doc_get!(chain_watcher_status, "/chain/watcher", "chain");
+
+// ── config (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_post_value!(apply_preset, "/config/preset", "config");
+doc_get!(get_config_toml, "/config/toml", "config");
+
+// ── defi (gap-c50b85) ──────────────────────────────────────────────────────────────
+doc_post_value!(post_defi_bonds, "/defi/bonds", "defi");
+doc_get_param!(get_defi_bonds_id, "/defi/bonds/{id}", "defi", "id");
+doc_get!(get_defi_indices, "/defi/indices", "defi");
+doc_get!(get_defi_instruments, "/defi/instruments", "defi");
+doc_post_value!(post_defi_insurance, "/defi/insurance", "defi");
+doc_post_value!(
+    post_defi_insurance_id_claims,
+    "/defi/insurance/{id}/claims",
+    "defi"
+);
+doc_post_value!(post_defi_options_price, "/defi/options/price", "defi");
+doc_get!(get_defi_risk_portfolio, "/defi/risk/portfolio", "defi");
+
+// ── deployments (gap-c50b85) ───────────────────────────────────────────────────────
+doc_post_value!(create_deployment, "/deployments", "deployments");
+doc_delete!(teardown_deployment, "/deployments/{id}", "deployments");
+
+// ── doctor (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(doctor_report, "/doctor", "doctor");
+
+// ── event_ingest (gap-c50b85) ──────────────────────────────────────────────────────
+doc_post_value!(ingest_event, "/events/ingest", "event_ingest");
+doc_post_value!(ingest_event_batch, "/events/ingest/batch", "event_ingest");
+
+// ── gateway (gap-c50b85) ───────────────────────────────────────────────────────────
+doc_post_value!(pipeline_batch_flush, "/gateway/batch/flush", "gateway");
+doc_get_param!(
+    pipeline_batch_result,
+    "/gateway/batch/result/{id}",
+    "gateway",
+    "id"
+);
+doc_post_value!(pipeline_batch_submit, "/gateway/batch/submit", "gateway");
+doc_post_value!(pipeline_inference, "/gateway/inference", "gateway");
+doc_get!(gateway_models, "/gateway/models", "gateway");
+doc_get!(gateway_stats, "/gateway/stats", "gateway");
+doc_post_value!(batch_submit, "/inference/batch/submit", "gateway");
+
+// ── heartbeats (gap-c50b85) ────────────────────────────────────────────────────────
+doc_get!(list_heartbeats, "/heartbeats", "heartbeats");
+doc_post_value!(receive_heartbeat, "/heartbeats", "heartbeats");
+
+// ── history (gap-c50b85) ───────────────────────────────────────────────────────────
+doc_get!(list_history, "/history", "history");
+doc_get_param!(get_history_session, "/history/{id}", "history", "id");
+
+// ── learning (gap-c50b85) ──────────────────────────────────────────────────────────
+doc_get!(executor_state, "/executor/state", "learning");
+
+// ── runs (gap-c50b85) ──────────────────────────────────────────────────────────────
+doc_get!(get_dashboard_runs, "/dashboard/runs", "runs");
+
+// ── sse (gap-c50b85) ───────────────────────────────────────────────────────────────
+doc_get!(sse_handler, "/events", "sse");
+
+// ── status (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(gates_history, "/gates/history", "status");
+doc_get!(gate_summary, "/gates/summary", "status");
+doc_get_param!(
+    gate_history,
+    "/gates/{gate_name}/history",
+    "status",
+    "gate_name"
+);
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorResponse {

@@ -226,12 +226,13 @@ enum RouterCredit {
 }
 
 /// The credit an outcome earns from the source routing returned for its
-/// model (decision 4111 (A)): full for the router's own pick, dampened for an
-/// operator override, and none for a ladder rung, a task hint, a guard's
-/// fallback or the default, which the router did not choose.
+/// model (decision 4111 (A)): full for the router's own pick, its argmax or
+/// its exploration draw, dampened for an operator override, and none for a
+/// ladder rung, a task hint, a guard's fallback or the default, which the
+/// router did not choose.
 const fn router_credit(source: ModelChoiceSource) -> Option<RouterCredit> {
     match source {
-        ModelChoiceSource::Router => Some(RouterCredit::Full),
+        ModelChoiceSource::Router | ModelChoiceSource::Explore => Some(RouterCredit::Full),
         ModelChoiceSource::Override => Some(RouterCredit::Override),
         ModelChoiceSource::TaskHint
         | ModelChoiceSource::Ladder { .. }

@@ -236,6 +236,10 @@ impl SharedAgentFactory {
             Some(ladder) => dispatcher.with_routing_ladder(ladder),
             None => dispatcher,
         };
+        // `[routing] explore_epsilon`: routes the cascade router decides
+        // explore the eligible models (S02.P1-3).
+        let epsilon = config.routing.effective_explore_epsilon();
+        let dispatcher = dispatcher.with_explore_epsilon(epsilon);
 
         Self {
             config,
@@ -471,6 +475,8 @@ impl SharedAgentFactory {
         if let Some(store) = self.dispatcher.knowledge_store() {
             dispatcher = dispatcher.with_knowledge_store(store.clone());
         }
+        let epsilon = self.config.routing.effective_explore_epsilon();
+        dispatcher = dispatcher.with_explore_epsilon(epsilon);
         self.dispatcher = dispatcher;
     }
 

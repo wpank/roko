@@ -193,6 +193,7 @@ semantics and built-in profiles.
 | `fast_task_model` | String | MODEL_FAST | Model for fast/simple tasks |
 | `standard_task_model` | String | MODEL_FOCUSED | Model for standard tasks |
 | `complex_task_model` | String | MODEL_DEEP | Model for complex tasks |
+| `explore_epsilon` | f64 | 0.05 | Share of the routes the cascade router decides that run an eligible model drawn uniformly instead of its argmax (S02.P1-3, decision 2203), so each eligible model's logged propensity is at least ε/k. Capped at 0.10; 0 turns exploration off. A `--model` pin, a model hint or a ladder rung is never explored |
 
 ---
 

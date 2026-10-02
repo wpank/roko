@@ -26,7 +26,10 @@
 //!    rung applies. Returns a [`CascadeModel`] whose `primary` slug is used.
 //!    The guards mask the models that cannot run here before its argmax
 //!    (S02.P1-2); when none can, a guard replaces the pick with the default
-//!    and labels the choice [`ModelChoiceSource::Fallback`].
+//!    and labels the choice [`ModelChoiceSource::Fallback`]. An attempt's
+//!    route explores (`[routing] explore_epsilon`, S02.P1-3): with
+//!    probability ε it runs a model drawn among the eligible ones, labelled
+//!    [`ModelChoiceSource::Explore`].
 //! 5. **Safe default**. With no router and no hint, fall back to the
 //!    `RunConfig.model` default. The router will eventually populate
 //!    itself from observations.
@@ -47,7 +50,9 @@ use roko_core::agent::ModelSpec;
 use roko_core::config::routing::LadderConfig;
 use roko_core::config::schema::{ModelProfile, RokoConfig};
 use roko_core::task::{TaskCategory, TaskSpeedPriority, TaskTier};
-use roko_learn::cascade_router::{CascadeModel, CascadeRouter, RoutingBias};
+use roko_learn::cascade_router::{
+    CascadeModel, CascadeRouter, ExploredRoute, RoutingBias, explore_route,
+};
 use roko_learn::latency::LatencyRegistry;
 use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
@@ -55,11 +60,16 @@ use roko_learn::routing_log::{
     CandidateEntry, DecisionState, ROUTE_DECISION_POINT, RouteInfluence, RouteProposals,
     RoutingDecisionLog,
 };
-use roko_learn::telemetry::DecisionSource;
+use roko_learn::telemetry::{AttemptKey, DecisionSource};
 
 use super::DispatchContext;
 use super::outcome::RunnerDispatchError;
 use crate::task_parser::TaskDef;
+
+/// `run_seed` of the exploration draws (`telemetry::assign`): 0 until runs
+/// record an experiment seed (S01 `experiment.seed`). The attempt key the
+/// draws use names the run.
+const EXPLORE_SEED: u64 = 0;
 
 /// Returns `true` when the task category requires tool use.
 ///
@@ -114,6 +124,9 @@ pub struct RoutingInputs {
     /// should bias toward cheaper models. Set by the event loop when
     /// `BudgetAction::RouteToCheaper` fires.
     pub budget_pressure: bool,
+    /// The attempt the route is for: the unit of its exploration draw
+    /// (S02.P1-3). Without one the route never explores.
+    pub attempt_key: Option<AttemptKey>,
 }
 
 impl RoutingInputs {
@@ -150,6 +163,7 @@ impl RoutingInputs {
             routing_context: ctx.routing_context.clone(),
             routing_bias,
             budget_pressure: false,
+            attempt_key: ctx.attempt_key.clone(),
         }
     }
 }
@@ -201,6 +215,9 @@ pub enum ModelChoiceSource {
     },
     /// Fallback when no other signal was available.
     Default,
+    /// The exploration draw of the cascade router's ε-greedy route (S02.P1-3)
+    /// replaced its argmax with a model drawn among the eligible ones.
+    Explore,
 }
 
 impl ModelChoiceSource {
@@ -215,6 +232,7 @@ impl ModelChoiceSource {
             Self::Router => DecisionSource::Router,
             Self::Fallback { .. } => DecisionSource::Fallback,
             Self::Default => DecisionSource::Default,
+            Self::Explore => DecisionSource::Explore,
         }
     }
 }
@@ -347,6 +365,9 @@ pub struct ModelRouter {
     /// computed at, so a decision digests the state again only after the
     /// router learned (S01 P0-10).
     state_digest: Arc<parking_lot::Mutex<StateDigestMemo>>,
+    /// ε of the exploration draw of a route the cascade router decides
+    /// (S02.P1-3, `[routing] explore_epsilon`); 0 takes its argmax.
+    explore_epsilon: f64,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -366,6 +387,7 @@ impl std::fmt::Debug for ModelRouter {
             .field("models_without_tools", &self.models_without_tools.len())
             .field("ladder", &self.ladder)
             .field("knowledge", &self.knowledge.is_some())
+            .field("explore_epsilon", &self.explore_epsilon)
             .finish()
     }
 }
@@ -386,7 +408,18 @@ impl ModelRouter {
             ladder: None,
             knowledge: None,
             state_digest: Arc::default(),
+            explore_epsilon: 0.0,
         }
+    }
+
+    /// Explore with probability `epsilon` among the models the guards
+    /// accept, on each route the cascade router decides that has an attempt
+    /// key to draw for (S02.P1-3, decision 2203). The caller caps it
+    /// (`RoutingConfig::effective_explore_epsilon`).
+    #[must_use]
+    pub fn with_explore_epsilon(mut self, epsilon: f64) -> Self {
+        self.explore_epsilon = epsilon;
+        self
     }
 
     /// Start every task without an override or hint on its
@@ -554,7 +587,8 @@ impl ModelRouter {
         inputs: &RoutingInputs,
     ) -> Result<(ModelChoice, RoutingDecisionLog), RunnerDispatchError> {
         let (choice, learned) = self.choose(inputs);
-        let decision = self.decision_row(inputs, &choice, learned);
+        let (choice, explored) = self.explore(inputs, choice);
+        let decision = self.decision_row(inputs, &choice, learned, explored.as_ref());
         Ok((choice, decision))
     }
 
@@ -650,13 +684,62 @@ impl ModelRouter {
         (choice, learned)
     }
 
+    /// `choice` made ε-greedy (S02.P1-3): when the cascade router decided it,
+    /// exploration is on and the route has an attempt key, the attempt's
+    /// draw may replace the router's pick with a model drawn among the ones
+    /// the guards accept, as an [`ModelChoiceSource::Explore`] choice.
+    /// Returns the choice and, for an ε-greedy route, its draw.
+    fn explore(
+        &self,
+        inputs: &RoutingInputs,
+        choice: ModelChoice,
+    ) -> (ModelChoice, Option<ExploredRoute>) {
+        let route = if choice.source == ModelChoiceSource::Router {
+            self.explored_route(inputs, &choice.model.slug)
+        } else {
+            None
+        };
+        match route {
+            Some(route) if route.explored => {
+                let explored = ModelChoice {
+                    model: ModelSpec::from_slug(&route.chosen),
+                    source: ModelChoiceSource::Explore,
+                };
+                (explored, Some(route))
+            }
+            route => (choice, route),
+        }
+    }
+
+    /// The attempt's ε-greedy route around `argmax` among the models the
+    /// guards accept; `None` when exploration is off, the route has no
+    /// attempt key or routing context, or the guards accept `argmax` alone
+    /// or reject it.
+    fn explored_route(&self, inputs: &RoutingInputs, argmax: &str) -> Option<ExploredRoute> {
+        let key = inputs.attempt_key.as_ref()?;
+        let router = self.cascade.as_ref()?;
+        let ctx = inputs.routing_context.as_ref()?;
+        if self.explore_epsilon <= 0.0 {
+            return None;
+        }
+        let eligible = self.knowledge_candidates(router, ctx);
+        if eligible.len() < 2 || !eligible.iter().any(|model| model == argmax) {
+            return None;
+        }
+        let epoch = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let epsilon = self.explore_epsilon;
+        let route = explore_route(&eligible, argmax, epsilon, EXPLORE_SEED, &epoch, key);
+        Some(route)
+    }
+
     /// `choice` as a route decision row, with `learned` the cascade router's
-    /// own pick.
+    /// own pick and `explored` the draw of its ε-greedy route.
     fn decision_row(
         &self,
         inputs: &RoutingInputs,
         choice: &ModelChoice,
         learned: Option<String>,
+        explored: Option<&ExploredRoute>,
     ) -> RoutingDecisionLog {
         let ctx = inputs.routing_context.as_ref();
         let chosen = choice.model.slug.as_str();
@@ -689,10 +772,27 @@ impl ModelRouter {
                 None,
             ));
         }
-        // The policy is argmax until S02.P1-3: the chosen model has p = 1.
-        for candidate in &mut candidates {
-            candidate.p = Some(if candidate.model == chosen { 1.0 } else { 0.0 });
+        // Every model the router's ε-greedy route may run is a candidate.
+        for (model, _) in explored.iter().flat_map(|route| &route.propensities) {
+            if !candidates.iter().any(|candidate| candidate.model == *model) {
+                candidates.push(CandidateEntry::new(
+                    model.clone(),
+                    self.provider_of(model),
+                    0.0,
+                    None,
+                ));
+            }
         }
+        // The router's ε-greedy route gives each model the guards accept its
+        // probability (S02.P1-3); any other route chose with certainty.
+        for candidate in &mut candidates {
+            candidate.p = Some(match explored {
+                Some(route) => route.propensity(&candidate.model),
+                None if candidate.model == chosen => 1.0,
+                None => 0.0,
+            });
+        }
+        let propensity = explored.map_or(1.0, |route| route.propensity(chosen));
         let (ladder, fallback_reason) = match choice.source {
             ModelChoiceSource::Ladder { .. } => (Some(chosen.to_string()), None),
             ModelChoiceSource::Fallback { reason } => (None, Some(reason.as_str().to_string())),
@@ -743,13 +843,13 @@ impl ModelRouter {
             attempt_key: None,
             source: Some(source),
             default_model: Some(self.default_slug.clone()),
-            propensity: Some(1.0),
+            propensity: Some(propensity),
             decision_point: ROUTE_DECISION_POINT.to_string(),
             proposals: RouteProposals {
                 learned,
                 default: Some(self.default_slug.clone()),
                 ladder,
-                aa: None,
+                aa: explored.map(|route| route.aa.clone()),
             },
             fallback_reason,
             influences,
@@ -901,8 +1001,9 @@ impl ModelRouter {
         }
     }
 
-    /// The cascade router's models a knowledge-weighed pick may land on:
-    /// those the guards in [`Self::route`] accept.
+    /// The cascade router's models a knowledge-weighed pick or an
+    /// exploration draw may land on: those the guards in [`Self::route`]
+    /// accept.
     fn knowledge_candidates(&self, router: &CascadeRouter, ctx: &RoutingContext) -> Vec<String> {
         let needs_tools = needs_tool_use(ctx.task_category);
         router
@@ -1277,6 +1378,7 @@ mod tests {
             cached_workspace_context: String::new(),
             cached_cfactor_context: String::new(),
             concurrent_plans: Vec::new(),
+            attempt_key: None,
         }
     }
 
@@ -2307,6 +2409,36 @@ mod tests {
             assert!(!masked.eligible, "{reason:?}");
             assert_eq!(masked.ineligible_reason.as_deref(), Some(reason.as_str()));
         }
+    }
+
+    /// S02.P1-3: a route the cascade router decides for an attempt explores
+    /// with probability ε among the models the guards accept. Its decision
+    /// row gives each its ε-greedy probability and names the A/A draw; a
+    /// route without an attempt key takes the argmax.
+    #[test]
+    fn explored_route_logs_every_eligible_propensity() {
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "gpt-5".into(),
+        ]));
+        let router = ModelRouter::new(Some(cascade))
+            .with_default_slug("default-model")
+            .with_explore_epsilon(1.0);
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+        let (choice, row) = router.decide(&inputs).unwrap();
+        assert_eq!(choice.source, ModelChoiceSource::Router, "no attempt key");
+        assert_eq!(row.propensity, Some(1.0));
+        assert_eq!(row.proposals.aa, None);
+
+        inputs.attempt_key = Some(AttemptKey::new("run", "p", "t", 1));
+        let (choice, row) = router.decide(&inputs).unwrap();
+        assert_eq!(choice.source, ModelChoiceSource::Explore);
+        assert_eq!(row.source, Some(DecisionSource::Explore));
+        assert_eq!(row.propensity, Some(0.5));
+        let p: Vec<Option<f64>> = row.candidates.iter().map(|c| c.p).collect();
+        assert_eq!(p, [Some(0.5), Some(0.5)]);
+        assert!(row.proposals.aa.is_some());
     }
 
     /// The learned state `router`'s decision for `inputs` names.

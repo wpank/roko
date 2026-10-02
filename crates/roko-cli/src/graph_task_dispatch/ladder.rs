@@ -139,6 +139,7 @@ impl GraphTaskDispatcher {
                 (pinned, false)
             }
             ModelChoiceSource::Router
+            | ModelChoiceSource::Explore
             | ModelChoiceSource::Fallback { .. }
             | ModelChoiceSource::Default => return,
         };

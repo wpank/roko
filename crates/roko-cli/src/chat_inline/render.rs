@@ -47,7 +47,7 @@ pub(crate) fn render_viewport(frame: &mut Frame<'_>, session: &ChatSession, them
                     Style::default().fg(Theme::EMBER),
                 ),
                 Span::styled(
-                    super::session::truncate_str(error, area.width as usize - 6),
+                    super::session::truncate_str(error, (area.width as usize).saturating_sub(6)),
                     Style::default().fg(Theme::EMBER),
                 ),
                 Span::raw("  "),

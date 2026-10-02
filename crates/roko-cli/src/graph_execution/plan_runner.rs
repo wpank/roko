@@ -1282,13 +1282,15 @@ async fn run_graph_plan_body(
             ),
         )
     });
-    let graph_feedback = build_graph_feedback_context(
+    let mut graph_feedback = build_graph_feedback_context(
         workdir,
         &roko_config,
         graph_run_config.cascade_router.as_ref(),
         cascade_journal.as_ref(),
         shared_factory.error_pattern_store(),
     );
+    // CLI dispatch turns record with their run's provenance sink (gap-ca8022).
+    graph_feedback.provenance_sinks = Some(provenance_sinks.clone());
     let holdout_experiment = graph_feedback.holdout_experiment.clone();
 
     // ── TUI vs inline progress decision ──────────────────────────────
@@ -2280,6 +2282,8 @@ pub fn build_graph_feedback_context(
         retrieval_outcomes_path: Some(graph_learn_dir.join("retrieval-outcomes.jsonl")),
         // S01: every attempt's open line and verdict, per checkpoint run.
         runs_dir: Some(graph_layout.runs_dir()),
+        // The run body attaches its runs' provenance sinks (gap-ca8022).
+        provenance_sinks: None,
     }
 }
 

@@ -220,8 +220,9 @@ pub struct GraphTaskDispatcher {
     task_spend: GraphTaskSpendLedger,
     /// Today's spend before this process, for `budget.max_daily_usd`.
     daily_budget: GraphDailyBudget,
-    /// Set once the plan run began to stop ([`Self::begin_stop`]).
-    stopping: std::sync::atomic::AtomicBool,
+    /// Cancelled once the plan run began to stop ([`Self::begin_stop`]), so
+    /// waits can end on it (bug-3a3968).
+    stopping: tokio_util::sync::CancellationToken,
     /// `[meta] skip_enrichment` per plan id, read once from the plan's
     /// `tasks.toml`.
     skip_enrichment_plans: parking_lot::Mutex<HashMap<String, bool>>,
@@ -318,7 +319,7 @@ impl GraphTaskDispatcher {
             retrieval_ctx: parking_lot::Mutex::new(HashMap::new()),
             task_spend: GraphTaskSpendLedger::default(),
             daily_budget: GraphDailyBudget::default(),
-            stopping: std::sync::atomic::AtomicBool::new(false),
+            stopping: tokio_util::sync::CancellationToken::new(),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
@@ -602,14 +603,15 @@ impl GraphTaskDispatcher {
     /// [`RokoError::Cancelled`], which the task executor does not retry
     /// (bug-28b604). So does a verify step that fails then, a gate command
     /// stopped with the agents say, and no further verify step starts
-    /// (bug-82cbef).
+    /// (bug-82cbef); a step waiting for siblings or for the compile lock
+    /// stops waiting (bug-3a3968).
     pub fn begin_stop(&self) {
-        self.stopping.store(true, Ordering::Release);
+        self.stopping.cancel();
     }
 
     /// Whether the plan run began to stop ([`Self::begin_stop`]).
     fn is_stopping(&self) -> bool {
-        self.stopping.load(Ordering::Acquire)
+        self.stopping.is_cancelled()
     }
 
     /// The cancellation a call of `plan_id/task_id` that ended with `cause`

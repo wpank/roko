@@ -281,7 +281,7 @@ pub fn observe_model_call_on_router(
 
 /// One outcome [`ModelCallJournal`] journals and applies: its reward, success
 /// and the share of a full observation it carries, and the task category
-/// whose per-category counts the caller moved with it (bug-a6a3cd).
+/// whose per-category counts it moves too (bug-a6a3cd).
 struct JournaledOutcome {
     reward: f64,
     success: bool,
@@ -374,7 +374,8 @@ impl ModelCallJournal {
     /// Journal the settled outcome of a task that ran on the model the
     /// router picked, then apply it to `router`. A success earns the
     /// multi-objective reward at its cost and latency, and a failure 0,
-    /// since its cost and latency bought nothing (bug-8da8ba). A Graph run
+    /// since its cost and latency bought nothing (bug-8da8ba). The outcome
+    /// also moves `ctx`'s task category counts (bug-a83a6e). A Graph run
     /// records its routing outcomes through it (bug-dfb28f).
     pub fn observe_task_outcome(
         &self,
@@ -399,7 +400,7 @@ impl ModelCallJournal {
     /// override, then apply it to `router` as
     /// [`CascadeRouter::record_override_outcome`] does: the reward of
     /// [`Self::observe_task_outcome`], at an override's dampened weight
-    /// (bug-f68404).
+    /// (bug-f68404). The category counts move in full, as for any outcome.
     pub fn observe_override_outcome(
         &self,
         router: &CascadeRouter,
@@ -481,9 +482,11 @@ impl ModelCallJournal {
         self.journal_observation(router, model_slug, context_features, outcome);
     }
 
-    /// [`Self::observe_weighted`], journaling `outcome.category` as well:
-    /// the task category whose per-category counts the caller moved with
-    /// the outcome, so a replay moves them too (bug-a6a3cd).
+    /// [`Self::observe_weighted`] for an outcome that also moves
+    /// `outcome.category`'s per-category counts (bug-a6a3cd). Journaling and
+    /// both updates happen under the journal's lock, so a save sees the
+    /// counts with the journaled observation or neither, and a replay counts
+    /// them once (bug-a83a6e).
     fn journal_observation(
         &self,
         router: &CascadeRouter,
@@ -491,16 +494,21 @@ impl ModelCallJournal {
         context_features: Vec<f64>,
         outcome: JournaledOutcome,
     ) {
-        let Some(model_idx) = router.model_index_for_slug(model_slug) else {
-            tracing::debug!("model {model_slug} not in cascade router slug list, skipping observe");
-            return;
-        };
         let JournaledOutcome {
             reward,
             success,
             weight,
             category,
         } = outcome;
+        let Some(model_idx) = router.model_index_for_slug(model_slug) else {
+            tracing::debug!("model {model_slug} not in cascade router slug list, skipping observe");
+            // An untracked model's outcome is not journaled, but its category
+            // counts still move (audit #84).
+            if let Some(category) = category {
+                router.record_category_outcome(model_slug, category, success);
+            }
+            return;
+        };
         let weight = weight.clamp(0.0, 1.0);
 
         let entry = WalEntry::ModelCallObservation {
@@ -528,6 +536,9 @@ impl ModelCallJournal {
             );
         }
         router.observe_weighted_outcome(&context_features, model_idx, reward, success, weight);
+        if let Some(category) = category {
+            router.record_category_outcome(model_slug, category, success);
+        }
     }
 
     /// Save `router` to the snapshot, then truncate the journal's segment:
@@ -776,15 +787,12 @@ mod tests {
         {
             let router = CascadeRouter::new(models.clone());
             let journal = ModelCallJournal::for_learn_dir(&learn_dir);
-            // The Graph routing sink moves the counts, then journals.
-            router.record_category_outcome("model-a", category, true);
             journal.observe_task_outcome(&router, "model-a", &ctx, true, 0.02, 30_000);
             journal.save(&router).expect("the earlier run saves");
         }
         {
             let journal = ModelCallJournal::for_learn_dir(&learn_dir);
             let router = CascadeRouter::load_or_new(journal.snapshot_path(), models.clone());
-            router.record_category_outcome("model-a", category, false);
             journal.observe_task_outcome(&router, "model-a", &ctx, false, 0.02, 30_000);
             journal.retract_success(&router, "model-a", category);
             assert_eq!(router.category_stats_snapshot()[&key], (2, 0));
@@ -795,6 +803,41 @@ mod tests {
         assert_eq!(
             runtime.cascade_router().category_stats_snapshot()[&key],
             (2, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn category_counted_once_across_a_save() {
+        // bug-a83a6e: the journal moves a task outcome's category counts under
+        // its lock, with the observation. A save therefore holds both or
+        // neither, and the replay after a crash counts each outcome once.
+        let tmp = tempdir().expect("tempdir");
+        let learn_dir = tmp.path().join("learn");
+        let models = vec!["model-a".to_string()];
+        let ctx = RoutingContext::default();
+        let key = ("model-a".to_string(), ctx.task_category.label().to_string());
+        {
+            let router = CascadeRouter::new(models.clone());
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            journal.observe_task_outcome(&router, "model-a", &ctx, true, 0.02, 30_000);
+            assert_eq!(
+                router.category_stats_snapshot()[&key],
+                (1, 1),
+                "the journal moves the category counts itself"
+            );
+            journal.save(&router).expect("save");
+            journal.observe_override_outcome(&router, "model-a", &ctx, false, 0.02, 30_000);
+            // The run dies before it saves again.
+        }
+
+        let runtime = reopen(&learn_dir, models).await;
+        assert_eq!(
+            runtime.cascade_router().category_stats_snapshot()[&key],
+            (2, 1)
+        );
+        assert_eq!(
+            runtime.cascade_router().confidence_snapshot()["model-a"],
+            (2, 1)
         );
     }
 

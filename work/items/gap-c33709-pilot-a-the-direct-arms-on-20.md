@@ -83,27 +83,39 @@ Checked at `41c7ffbd6`: nothing can run yet, and no money has been spent.
 
 ## Progress
 
-- 2026-10-02, claude-agent on `work/gap-c33709`: **blocked before any paid call; $0 spent.** The driver finds no
-  provider key file (`secret.py keys`: `~/.config/viabilitybench/keys`, no such file; no `VB_KEY_FILE`) and no
-  benchmark secret (`~/.config/viabilitybench/secret`). Per the run rules nobody looked for keys elsewhere. No
-  results root exists yet (`~/.roko-bench/viability`), so no ledger row has been written.
-- Done offline, at 6f85e5efc:
-  - `vb campaign --manifest experiments/pilot_a.toml --dry-run`: 65 runs (4 daily units), planned $5.10 (BL0
-    $3.60, BL8 $1.50), worst case $10.20 (blocks' caps $7.20 + $3.00; worst task $0.2893 and $1.00).
-  - `experiments/test_pilot_a.py`: 3 passed, including the 65-run offline rehearsal. Every rehearsal record says
-    `provenance.network_policy = {network: none, sandbox: sandbox-exec+net}`, which `mini_loop.network_policy`
-    sets whether or not the provider is offline. `driver/test_sandbox_net.py`: 4 passed, none skipped.
-  - Verifier CI, `--families f1,f4 --levels 1-5 --seeds 10` (latents v1 and v2, throwaway secret
-    sha256:8ae87d2143c8b7ae): 200/200 cells green (f1 100/100, f4 100/100) in 401 s.
-  - Synthetic runaway (a stub that never submits; cheap_direct on F1-l1-0001, seed 1, through the metering
-    proxy): `aborted_cap` (`model_calls`) at 30 calls, attempts of 12, 12 and 6 turns.
-  - The scoring path, rehearsed on the offline records: `vb report --bundle`, `report.py --check` (0 problems) and
-    the `gates.py G0` page.
-- c1fc06e4a: `vb campaign --max-cost-usd` holds an experiment's billed spend under one hard cap (the coordinator's
-  $8 for Pilot A): each billed unit gets the smaller of its share of its block's cap and what the experiment's books
-  leave. Lowering the manifest's block caps to $8 instead would cut a unit short once its tasks average more than
-  1.33 × plan, and a cut unit leaves the bundle failing `report.py --check`.
-- To unblock (Will): create the key file, mode 0600 in a 0700 directory, with `CEREBRAS_API_KEY=` and
-  `OPENAI_API_KEY=` lines (keys or projects used only by the pilot keep the usage-export reconciliation clean), and
-  the benchmark secret (`driver/secret.py init`). The paid run is then `vb campaign --manifest
-  benchmarks/viabilitybench/experiments/pilot_a.toml --allow-network --max-cost-usd 8 --transcripts`.
+- 2026-10-02, claude-agent on `work/gap-c33709`: **ready for the paid run, waiting for the key file; $0 spent.**
+  The provider key file `~/.config/viabilitybench/keys` does not exist yet. Will creates it, with
+  `CEREBRAS_API_KEY=` and `OPENAI_API_KEY=` lines, mode 0600 in the 0700 directory; nobody looked for keys
+  anywhere else. No results root exists yet (`~/.roko-bench/viability`), so no ledger row has been written.
+- **The benchmark secret** is `/Users/will/.config/viabilitybench/secret`, fingerprint `sha256:1675cc951cf12ce3`
+  (`driver/secret.py init`, 2026-10-02; mode 0600 in a 0700 directory, with a canary line). Pilot B must use this
+  same file: each instance keeps one secret for the whole campaign (S09 §4.1).
+- **Caps** (33efe9665, approved by the coordinator): the blocks' `max_cost_usd` are $5.40 (cheap-direct, $1.80 per
+  seed) and $2.60 (fd-api), a hard $8.00 in all. Planned spend is unchanged at $5.10 ($3.60 on BL0, $1.50 on BL8).
+  A seed's 20th cheap_direct task starts only if its first 19 averaged at most $0.0795, and fd_api's fifth only if
+  its first four averaged at most $0.40 (1.33 × plan). c1fc06e4a adds `vb campaign --max-cost-usd`, which holds an
+  experiment's billed spend under one cap in all; at these block caps it changes no unit's cap and states the bound.
+- **Checked offline:**
+  - `vb campaign --manifest experiments/pilot_a.toml --dry-run --max-cost-usd 8`, against the real secret and
+    again under `env -i`: ok, 65 runs in 4 daily units, planned $5.10, worst case $8.00, no problems.
+  - `experiments/test_pilot_a.py` at the new caps: 3 passed, including the 65-run offline rehearsal, whose units
+    ran under `--max-cost-usd` 1.8, 1.8, 1.8 and 2.6.
+  - **Network confinement:** all 65 rehearsal records say `provenance.network_policy = {network: none, sandbox:
+    sandbox-exec+net}` and `vs.sandbox = sandbox-exec`, and `mini_loop.network_policy` sets the same for a paid
+    run. `driver/test_sandbox_net.py`: 4 passed, none skipped.
+  - Verifier CI under the real secret (`--families f1,f4 --levels 1-5 --seeds 10`, latents v1 and v2): 200/200
+    cells green (f1 100/100, f4 100/100), covering all 20 pilot instances.
+  - Synthetic runaway (a stub that never submits; cheap_direct on F1-l1-0001, seed 1, through the metering proxy):
+    `aborted_cap` (`model_calls`) at 30 calls, in attempts of 12, 12 and 6 turns.
+  - TLS from the venv's Python to both providers, with no credentials: api.cerebras.ai answers 403 `Not
+    authenticated` and api.openai.com 401, so only the key is missing.
+  - The scoring path, on the offline records: `vb report --bundle`, `report.py --check` (0 problems) and the
+    `gates.py G0` page.
+- **The paid run**, once `driver/secret.py keys` lists both names:
+
+  ```bash
+  cd /Users/will/dev/nunchi/roko/roko-work-gap-c33709 &&
+  env -i HOME="$HOME" USER="$USER" LOGNAME="$USER" PATH="$PATH" TMPDIR="$TMPDIR" LANG=C.UTF-8 \
+    benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/driver/vb.py campaign \
+    --manifest benchmarks/viabilitybench/experiments/pilot_a.toml --allow-network --max-cost-usd 8 --transcripts
+  ```

@@ -1,9 +1,17 @@
 //! The learning/feedback context of a Graph plan run and the feedback each task
 //! attempt emits once its outcome is settled.
 
+use roko_agent::safety::provenance_sink::arguments_digest;
+use roko_agent::safety::{
+    ProvenanceCall, ProvenanceOutcome, ProvenanceVerdict, SafetyProvenanceSink,
+};
+use roko_core::ContentHash;
+use roko_core::extension::CamelTaintLevel;
+
 use super::tui_forward::append_jsonl_line_async;
 use super::verification::verify_step_label;
 use super::*;
+use crate::dispatch_v2::ToolCallRecord;
 
 /// Learning/feedback subsystem context for the Graph engine.
 ///
@@ -71,6 +79,10 @@ pub struct GraphFeedbackContext {
     /// reuses an attempt key. When unset, ordinals live in memory and no
     /// attempt is recorded.
     pub runs_dir: Option<PathBuf>,
+
+    /// The safety provenance sinks of the runs in flight (gap-ca8022): a
+    /// CLI provider's dispatch turn leaves one record with its run's sink.
+    pub provenance_sinks: Option<crate::safety_provenance::ProvenanceSinks>,
 }
 
 /// A `costs.jsonl` row with its attempt's settled verdict beside it: the
@@ -107,6 +119,7 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("gate_thresholds_path", &self.gate_thresholds_path)
             .field("retrieval_outcomes_path", &self.retrieval_outcomes_path)
             .field("runs_dir", &self.runs_dir)
+            .field("provenance_sinks", &self.provenance_sinks.is_some())
             .finish()
     }
 }
@@ -131,6 +144,7 @@ impl Default for GraphFeedbackContext {
             gate_thresholds_path: None,
             retrieval_outcomes_path: None,
             runs_dir: None,
+            provenance_sinks: None,
         }
     }
 }
@@ -306,6 +320,7 @@ impl GraphTaskDispatcher {
             }
         }
         self.publish_settlement(spec, task, settled).await;
+        self.record_cli_turn_provenance(settled, dispatch).await;
 
         // ── W05: Efficiency event ────────────────────────────────────────
         if let Some(eff_path) = &self.feedback.efficiency_path {
@@ -569,6 +584,40 @@ impl GraphTaskDispatcher {
     /// one did, learns from it ([`Self::credit_reflex_rule`]), and the
     /// settlement counts toward the task's standing on the model ladder
     /// (gap-460230).
+    /// Record a CLI provider's dispatch turn with its run's safety
+    /// provenance sink (gap-ca8022). A CLI agent such as the Claude CLI runs
+    /// its tools itself, outside roko's tool dispatcher, so nothing records
+    /// an intent before they run. The turn instead leaves one outcome
+    /// afterwards: whether it succeeded, and a keyed digest of the tool calls
+    /// its live output showed. A failed write is logged: the tools have run.
+    async fn record_cli_turn_provenance(
+        &self,
+        settled: &SettledAttempt,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+    ) {
+        use roko_core::agent::ProviderKind;
+
+        let cli = matches!(
+            dispatch.target.provider_kind,
+            ProviderKind::ClaudeCli | ProviderKind::CodexCli
+        );
+        let Some(sinks) = self.feedback.provenance_sinks.as_ref().filter(|_| cli) else {
+            return;
+        };
+        let Some(sink) = sinks.for_run(&settled.key().run_id) else {
+            return;
+        };
+        let calls = settled.live_tool_calls.finish().await;
+        let outcome = cli_turn_outcome(sink.as_ref(), settled, dispatch, &calls);
+        if let Err(error) = sink.record_outcome(&outcome) {
+            tracing::warn!(
+                attempt_key = settled.attempt_key(),
+                %error,
+                "safety provenance: the CLI turn was not recorded"
+            );
+        }
+    }
+
     pub(super) async fn publish_settlement(
         &self,
         spec: &TaskExecutionSpec,
@@ -723,6 +772,58 @@ fn settle_tool_calls(
             }
         }
     }
+}
+
+/// The provenance record of a CLI provider's dispatch turn `dispatch`, for
+/// attempt `settled` (gap-ca8022). It is an outcome with no intent, since the
+/// CLI ran its tools before roko saw them, and its argument digest commits to
+/// the tool calls `calls` the turn's live output showed. A turn that made tool
+/// calls carries external taint: roko cannot see where their inputs came from.
+fn cli_turn_outcome(
+    sink: &dyn SafetyProvenanceSink,
+    settled: &SettledAttempt,
+    dispatch: &crate::dispatch_v2::AgentResultDispatch,
+    calls: &[ToolCallRecord],
+) -> ProvenanceOutcome {
+    let identity = &settled.verdict.identity;
+    let verdict = if dispatch.result.success {
+        ProvenanceVerdict::Succeeded
+    } else {
+        ProvenanceVerdict::Failed
+    };
+    let taint = if calls.is_empty() {
+        CamelTaintLevel::Trusted
+    } else {
+        CamelTaintLevel::External
+    };
+    ProvenanceOutcome {
+        call: ProvenanceCall {
+            run_id: identity.run_id.clone(),
+            task_id: identity.task_id.clone(),
+            attempt_id: identity.attempt_key.clone(),
+            turn_id: String::new(),
+            call_id: "cli-turn".to_string(),
+            tool: format!("cli:{}", dispatch.target.provider_id),
+            args_digest: cli_tool_calls_digest(&sink.digest_key(), calls),
+        },
+        intent: None,
+        verdict,
+        reason: None,
+        result_digest: None,
+        taint,
+    }
+}
+
+/// Keyed digest of the tool calls `calls` a CLI turn's live output showed:
+/// each call's id, tool and outcome, in the order the provider made them.
+fn cli_tool_calls_digest(key: &[u8; 32], calls: &[ToolCallRecord]) -> ContentHash {
+    let observed: Vec<serde_json::Value> = calls
+        .iter()
+        .map(|call| {
+            serde_json::json!({ "id": call.id, "name": call.name, "succeeded": call.succeeded })
+        })
+        .collect();
+    arguments_digest(key, &serde_json::Value::Array(observed))
 }
 
 #[cfg(test)]
@@ -1062,6 +1163,67 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             rows[0]
         );
         assert_eq!(rows[0]["tools_used"], 2, "{:#}", rows[0]);
+    }
+
+    /// gap-ca8022: a Claude CLI attempt runs its tools itself, outside roko's
+    /// tool dispatcher, and its dispatch turn leaves one provenance record:
+    /// an outcome with no intent, whose argument digest commits to the tool
+    /// calls the attempt's live output showed.
+    #[tokio::test]
+    async fn cli_attempts_record_provenance() {
+        use roko_agent::safety::{ProvenanceRecord, WitnessLogger};
+
+        use crate::safety_provenance::{GraphProvenanceSink, ProvenanceSinks};
+
+        let temp = tempdir().expect("tempdir");
+        let sinks = ProvenanceSinks::default();
+        let feedback = GraphFeedbackContext {
+            provenance_sinks: Some(sinks.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, TOOL_CALLING_PROVIDER, no_auto_fix, feedback).await;
+        let sink = Arc::new(GraphProvenanceSink::start(temp.path()).expect("provenance sink"));
+        let _registered = sinks.register("run-cli", Arc::clone(&sink));
+        let ctx = CellContext::new().with_run_id("run-cli".to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the attempt completes");
+
+        let summary = sink.summary();
+        assert_eq!(summary.records, 1, "one record for the turn");
+        let head = summary.witness_head.expect("the turn's vertex");
+        let dag = WitnessLogger::new(temp.path().join(".roko/witness.jsonl"))
+            .read_all()
+            .expect("witness log");
+        let vertex = dag.get(&head).expect("the turn's vertex");
+        let record: ProvenanceRecord =
+            serde_json::from_value(vertex.content["record"].clone()).expect("a record");
+        let ProvenanceRecord::Outcome(outcome) = record else {
+            panic!("expected an outcome: {record:?}");
+        };
+        assert_eq!(outcome.intent, None);
+        assert_eq!(outcome.verdict, ProvenanceVerdict::Succeeded);
+        assert_eq!(outcome.call.tool, "cli:stream-cli");
+        assert_eq!(outcome.call.run_id, "run-cli");
+        assert_eq!(outcome.taint, CamelTaintLevel::External);
+        let calls = [
+            ToolCallRecord {
+                id: "tu_1".to_string(),
+                name: "Read".to_string(),
+                succeeded: Some(true),
+            },
+            ToolCallRecord {
+                id: "tu_2".to_string(),
+                name: "Bash".to_string(),
+                succeeded: Some(false),
+            },
+        ];
+        assert_eq!(
+            outcome.call.args_digest,
+            cli_tool_calls_digest(&sink.digest_key(), &calls)
+        );
     }
 
     /// gap-7a8474: the Graph efficiency row's usage fields come from what the

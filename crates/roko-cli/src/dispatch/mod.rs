@@ -47,11 +47,13 @@ use roko_core::config::schema::RokoConfig;
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
+use roko_learn::routing_log::RoutingDecisionLog;
 use tokio::sync::mpsc;
 
 pub use factory::SharedAgentFactory;
 pub use model_routing::{
-    LadderStartRung, ModelChoice, ModelChoiceSource, ModelRouter, RoutingInputs, RoutingLadder,
+    FallbackReason, LadderStartRung, ModelChoice, ModelChoiceSource, ModelRouter, RoutingInputs,
+    RoutingLadder,
 };
 pub use outcome::{AgentOutcome, RunnerDispatchError};
 pub use prompt_builder::{
@@ -301,7 +303,8 @@ impl Dispatcher {
         ctx: &DispatchContext,
     ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
         let inputs = RoutingInputs::from_task(task, ctx);
-        let choice = self.router.route(&inputs)?;
+        let (choice, mut decision) = self.router.decide(&inputs)?;
+        decision.task_id.clone_from(&task.id);
         let prompt_ctx = PromptContext::from_task(task, ctx);
         let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
         Ok(RunnerDispatchPlan {
@@ -309,6 +312,7 @@ impl Dispatcher {
             forced: choice.forced(),
             source: choice.source,
             prompt: assembled,
+            route_decision: Some(decision),
         })
     }
 
@@ -324,7 +328,8 @@ impl Dispatcher {
     ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
         let mut inputs = RoutingInputs::from_task(task, ctx);
         inputs.budget_pressure = budget_pressure;
-        let choice = self.router.route_logged(&inputs, task_id)?;
+        let (choice, mut decision) = self.router.decide_logged(&inputs, task_id)?;
+        decision.task_id = task_id.to_string();
         let prompt_ctx = PromptContext::from_task(task, ctx);
         let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
         Ok(RunnerDispatchPlan {
@@ -332,6 +337,7 @@ impl Dispatcher {
             forced: choice.forced(),
             source: choice.source,
             prompt: assembled,
+            route_decision: Some(decision),
         })
     }
 
@@ -396,6 +402,9 @@ pub struct RunnerDispatchPlan {
     pub source: ModelChoiceSource,
     /// Assembled prompt, allowlist, diagnostics.
     pub prompt: AssembledPrompt,
+    /// The route decision behind `model` (S01 §5.3), not yet keyed to an
+    /// attempt: Graph dispatch writes it to the run's `decisions.jsonl`.
+    pub route_decision: Option<RoutingDecisionLog>,
 }
 
 // ─── Provider bridge trait (async-trait friendly) ──────────────────────

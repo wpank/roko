@@ -144,7 +144,8 @@ impl GraphTaskDispatcher {
     /// the ladder put it on counts, and the second such failure moves the
     /// task one runnable rung up, unless it already climbed
     /// [`MAX_ESCALATIONS`] rungs or stands on its top rung. Other failures,
-    /// and pinned attempts, change nothing.
+    /// pinned attempts, and attempts a failover substitute ran in place of
+    /// the rung's model (backlog 1118), change nothing.
     pub(super) fn note_ladder_outcome(
         &self,
         spec: &TaskExecutionSpec,
@@ -161,6 +162,16 @@ impl GraphTaskDispatcher {
             return;
         };
         if verdict.blame != Blame::Agent || ladder.reason == LadderReason::Pinned {
+            return;
+        }
+        if !verdict.executed.failover_chain.is_empty() {
+            tracing::debug!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                rung = ladder.rung.as_deref().unwrap_or("-"),
+                substitute = verdict.executed.model_dispatched.as_deref().unwrap_or("-"),
+                "a substitute ran; the rung's standing is unchanged"
+            );
             return;
         }
         let Some(routing) = self.routing_ladder() else {
@@ -421,6 +432,62 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
             .filter(|id| id.starts_with("ladder_exhausted"))
             .collect();
         assert_eq!(diagnoses, ["ladder_exhausted:stream-plan/T-EXP"]);
+    }
+
+    /// A settled turn-cap stop of `task` on the cheap rung. `substitute`
+    /// names the routed model failover replaced, when a substitute ran.
+    fn turn_cap_on_cheap_rung(
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        substitute: Option<&str>,
+    ) -> SettledAttempt {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let key = AttemptKey::new(RUN, &spec.plan_id, &task.id, 1);
+        let identity = AttemptIdentity::new(&key);
+        let mut verdict = AttemptVerdictRecord::settle(identity, AttemptOutcome::TurnCap, true);
+        verdict.ladder = Some(AttemptLadder {
+            rung: Some("cheap".to_string()),
+            index: Some(0),
+            step: 0,
+            reason: LadderReason::Start,
+            exhausted: false,
+        });
+        verdict.executed.failover_chain = substitute.map(str::to_string).into_iter().collect();
+        SettledAttempt {
+            verdict: Arc::new(verdict),
+            failure_reason: None,
+            reflex_rule: None,
+            live_tool_calls: LiveToolCalls::default(),
+        }
+    }
+
+    /// backlog 1118: an agent-blamed failure of a failover substitute says
+    /// nothing about the rung whose model it replaced, so it leaves the
+    /// task's standing alone; the same failures on the rung's own model
+    /// climb it.
+    #[tokio::test]
+    async fn substitute_failure_does_not_count_against_routed_rung() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let spec = make_spec(&task);
+        let substituted = turn_cap_on_cheap_rung(&spec, &task, Some("cheap-model"));
+        assert_eq!(substituted.verdict.blame, Blame::Agent);
+
+        for _ in 0..FAILURES_PER_RUNG {
+            dispatcher.note_ladder_outcome(&spec, &task, &substituted);
+        }
+        let standing = dispatcher
+            .gate_retry_context
+            .ladder_standing(&spec.plan_id, &task.id);
+        assert_eq!(standing.failures_on_rung, 0);
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 0);
+
+        let own = turn_cap_on_cheap_rung(&spec, &task, None);
+        for _ in 0..FAILURES_PER_RUNG {
+            dispatcher.note_ladder_outcome(&spec, &task, &own);
+        }
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
     }
 
     /// The streaming path climbs the same ladder.

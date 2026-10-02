@@ -914,6 +914,10 @@ pub struct GraphPlanRunParams {
     /// gap-9980c6): the routing ladder, else the default model, routes each
     /// task. The run's outcomes still teach the router.
     pub no_cascade: bool,
+    /// Hold learned state fixed for this run alone (`roko plan run
+    /// --frozen-learning`, decision 2218): the run's config reads
+    /// `[learning] frozen = true` whatever `roko.toml` says.
+    pub frozen_learning: bool,
     /// Registry that counts this run's verify verdicts and durations
     /// (`roko_gate_verdicts_total`, `roko_gate_duration_seconds`) beside the
     /// tracing fields: serve passes the one `/metrics` renders (gap-d8c39a).
@@ -929,24 +933,6 @@ pub struct GraphPlanRunParams {
 /// true), and runs them through the GraphEngine with the default cell registry.
 pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
     run_graph_plan_in_run(params, None).await
-}
-
-tokio::task_local! {
-    /// Whether the plan run of this task freezes learning for itself alone
-    /// ([`with_frozen_learning`]).
-    static FROZEN_LEARNING_RUN: bool;
-}
-
-/// Run `run`, a plan run such as [`run_graph_plan`], with learning frozen
-/// for that run alone when `frozen` (`roko plan run --frozen-learning`,
-/// decision 2218): its config reads `[learning] frozen = true` whatever
-/// `roko.toml` says. The switch is scoped to the run's task rather than
-/// carried in [`GraphPlanRunParams`], which more commands build.
-pub async fn with_frozen_learning<F>(frozen: bool, run: F) -> F::Output
-where
-    F: std::future::Future,
-{
-    FROZEN_LEARNING_RUN.scope(frozen, run).await
 }
 
 /// [`run_graph_plan`] for a caller whose run already has an id: a single
@@ -1121,6 +1107,7 @@ async fn run_graph_plan_body(
         force_disk_check,
         effort,
         no_cascade,
+        frozen_learning,
         metrics,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
@@ -1180,13 +1167,10 @@ async fn run_graph_plan_body(
     if let Some(effort) = effort {
         roko_config.agent.default_effort = effort;
     }
-    // `--frozen-learning` freezes this run alone (`with_frozen_learning`),
-    // before the manifest, the feedback facade and the dispatcher are built,
-    // so every reader sees one value.
-    if FROZEN_LEARNING_RUN
-        .try_with(|frozen| *frozen)
-        .unwrap_or(false)
-    {
+    // `--frozen-learning` freezes this run alone, before the manifest, the
+    // feedback facade and the dispatcher are built, so every reader sees one
+    // value.
+    if frozen_learning {
         roko_config.learning.frozen = true;
     }
     if roko_config.learning.frozen {
@@ -4297,6 +4281,7 @@ files = ["README.md"]
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            frozen_learning: false,
             metrics: None,
         })
         .await
@@ -4467,16 +4452,18 @@ max_retries = 0
         max_parallel_plans: Option<usize>,
         interrupt: Option<PlanRunInterruptHandle>,
     ) -> (i32, Vec<String>, crate::state_hub::SharedStateHub) {
-        run_plan_set_with(dir, max_parallel_plans, interrupt, true).await
+        run_plan_set_with(dir, max_parallel_plans, interrupt, true, false).await
     }
 
     /// [`run_plan_set`], enforcing the workspace's `[budget]` unless
-    /// `no_budget`.
+    /// `no_budget`, and freezing learning for the run when
+    /// `frozen_learning`.
     async fn run_plan_set_with(
         dir: &Path,
         max_parallel_plans: Option<usize>,
         interrupt: Option<PlanRunInterruptHandle>,
         no_budget: bool,
+        frozen_learning: bool,
     ) -> (i32, Vec<String>, crate::state_hub::SharedStateHub) {
         let hub = crate::state_hub::shared_state_hub();
         let exit_code = run_graph_plan(GraphPlanRunParams {
@@ -4508,6 +4495,7 @@ max_retries = 0
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            frozen_learning,
             metrics: None,
         })
         .await
@@ -4931,7 +4919,7 @@ max_retries = 0
             ],
         );
 
-        let (exit_code, _, _) = run_plan_set_with(dir.path(), Some(1), None, false).await;
+        let (exit_code, _, _) = run_plan_set_with(dir.path(), Some(1), None, false, false).await;
 
         assert_eq!(exit_code, EXIT_FAILURE);
         assert!(
@@ -5165,11 +5153,11 @@ max_retries = 0
             .expect("the run wrote a manifest")
     }
 
-    /// Decision 2218: `--frozen-learning` (`with_frozen_learning`) freezes a
-    /// run's learning, and `[learning] frozen = true` every run's. Either
-    /// reaches the run's config, so its fingerprint is a frozen one, and its
-    /// manifest records `ablation_flags = ["learning_frozen"]`; neither
-    /// leaves the flags empty.
+    /// Decision 2218: `--frozen-learning` freezes a run's learning (the
+    /// params' `frozen_learning`), and `[learning] frozen = true` every
+    /// run's. Either reaches the run's config, so its fingerprint is a frozen
+    /// one, and its manifest records `ablation_flags = ["learning_frozen"]`;
+    /// neither leaves the flags empty.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn frozen_learning_switch_reaches_config_and_manifest() {
@@ -5184,8 +5172,7 @@ max_retries = 0
         );
 
         // The run resumes with the flag: that invocation's config is frozen.
-        let resume = run_plan_set(dir.path(), Some(1), None);
-        let (exit_code, _, _) = with_frozen_learning(true, resume).await;
+        let (exit_code, _, _) = run_plan_set_with(dir.path(), Some(1), None, true, true).await;
         assert_eq!(exit_code, EXIT_SUCCESS);
         let frozen = only_run_manifest(dir.path());
         assert_eq!(frozen.experiment.ablation_flags, ["learning_frozen"]);
@@ -6735,6 +6722,7 @@ exec sleep 60
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            frozen_learning: false,
             metrics: None,
         })
         .await
@@ -6918,6 +6906,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             force_disk_check: false,
             effort: None,
             no_cascade: false,
+            frozen_learning: false,
             metrics: None,
         }
     }

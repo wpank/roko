@@ -3013,7 +3013,6 @@ async fn cmd_plan_run_engine(
 ) -> Result<i32> {
     use roko_cli::graph_execution::plan_runner::{
         PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan,
-        with_frozen_learning,
     };
 
     let worktree_per_task = resolve_worktree_per_task(worktree_flag, workdir);
@@ -3098,10 +3097,11 @@ async fn cmd_plan_run_engine(
         force_disk_check: force,
         effort: None,
         no_cascade: false,
+        // `--frozen-learning` holds learned state fixed for this run alone.
+        frozen_learning,
         metrics: None,
     };
-    // `--frozen-learning` holds learned state fixed for this run alone.
-    let exit_code = with_frozen_learning(frozen_learning, run_graph_plan(params)).await;
+    let exit_code = run_graph_plan(params).await;
 
     // Stop serving, and wait until the socket and token files are gone.
     #[cfg(unix)]

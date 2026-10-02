@@ -977,6 +977,7 @@ fn run_plan_on_local_runtime(
                 force_disk_check: false,
                 effort: None,
                 no_cascade: false,
+                frozen_learning: false,
                 metrics,
             },
             run_id,

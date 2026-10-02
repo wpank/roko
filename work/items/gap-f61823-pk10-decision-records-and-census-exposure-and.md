@@ -126,3 +126,4 @@ Cargo verification of every task is deferred to the batch gate (no cargo on the 
 - 2219: implemented at 3b8daad5e, CLI reference at fe1007f5c. `--frozen-learning` rides a task-local scope (`plan_runner::with_frozen_learning`) instead of a `GraphPlanRunParams` field: `prd.rs`, `commands/do_cmd.rs` and `run.rs` build those params, and roko-7d is rewriting them. `[learning] frozen` covers `roko run`.
 - 2220: implemented at 8699ca81d.
 - 2221: implemented at 5007eaa22.
+- Gate 4c fix (work/gap-f61823-fix): the frozen-attempt test now matches its reflex rule before crediting it (the store caps a rule's passes at its hits); with roko-7d landed, `--frozen-learning` moved from the task-local scope into `GraphPlanRunParams::frozen_learning`.

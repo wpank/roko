@@ -2,16 +2,16 @@
 id = "gap-c002bb"
 kind = "gap"
 title = "Wire TUI Recovery Keybindings to Runner Command Channel"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "L"
 goal = "visibility"
 subsystem = ["roko-cli/tui"]
 created = 2026-09-21
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "6a08f9e2c"
 source = "tmp/backlog/archive/386-tui-recovery-keybindings-runner-channel.md#386 — Wire TUI Recovery Keybindings to Runner Command Channel"
 discovered_from = "audit:tmp/backlog/archive/386-tui-recovery-keybindings-runner-channel.md#386 — Wire TUI Recovery Keybindings to Runner Command Channel"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::route_execution_commands", "crates/roko-cli/src/graph_execution/plan_runner.rs::PlanControl", "crates/roko-cli/src/graph_execution/plan_runner.rs::terminate_in_flight_agents", "crates/roko-cli/src/tui/app/modals.rs::send_tui_command_for_confirm", "crates/roko-cli/src/tui/app/channels.rs::drain_execution_acks", "crates/roko-cli/src/execution_control.rs::ExecutionCommandKind", "crates/roko-graph/src/engine.rs::FlowHandle"]
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'TUI command queued (post-execution; plan still running)' crates/roko-cli/src/graph_execution/plan_runner.rs && grep -rqw 'fn tui_skip_command_skips_the_running_task' crates/roko-cli/src && cargo test -p roko-cli --lib tui_skip_command_skips_the_running_task"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:03Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "L"
+claimed_at = "2026-10-01T16:12:55Z"
+forced = false
+evidence = "TUI skip, retry, repair, reverify, approve/reject and reset reach the Graph run; tui_skip_command_skips_the_running_task passes (wk-childenv 338194043); gate 6h2 passed at 285282248 (cargo check, clippy -D warnings, 11,366 lib tests in roko-agent/cli/core/fs/gate/graph/learn/serve, canaries C1-C8 plus integration tests, 446 roko-cli bin tests, run_evidence py, portal tsc and 809 vitest); merged in 6a08f9e2c"
 +++
 
 ## Problem

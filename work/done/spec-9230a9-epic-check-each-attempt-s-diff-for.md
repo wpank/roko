@@ -2,14 +2,16 @@
 id = "spec-9230a9"
 kind = "spec"
 title = "Epic: check each attempt's diff for tampering and scope"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "L"
 subsystem = ["roko-gate", "roko-cli/graph_task_dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "6a08f9e2c"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e9"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #13; tldr/04 design rule 4)"
 anchors = ["crates/roko-gate/src/diff_gate.rs::analyze_diff", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification"]
@@ -19,6 +21,13 @@ links = { depends_on = ["gap-abbd22", "gap-b72761", "gap-b954ad", "bug-809e22", 
 
 [[verify]]
 command = "grep -rqw 'fn c5_tampering_attempt_is_flagged' crates/roko-cli/tests/ && grep -rqw 'fn c5_empty_diff_is_rejected_before_verify' crates/roko-cli/tests/ && cargo test -p roko-cli --test attempt_diff_canary"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:03Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "all children done; its verify (C5 attempt_diff_canary) passed in gate 6h2 at 285282248, merged in 6a08f9e2c"
 +++
 
 ## Problem

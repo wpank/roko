@@ -2,14 +2,16 @@
 id = "spec-a78d57"
 kind = "spec"
 title = "Epic: scheduler"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "L"
 subsystem = ["roko-graph/engine", "roko-cli/graph_execution", "roko-cli/task_parser"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "6a08f9e2c"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e7"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #11); tldr/04 step 5; tldr/research/B2-dag-worktrees-merge.md"
 anchors = ["crates/roko-graph/src/engine.rs::execute_ready_queue", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/task_parser.rs::default_max_parallel"]
@@ -19,6 +21,13 @@ links = { depends_on = ["gap-4d835d", "gap-96d348", "gap-439794", "gap-272448", 
 
 [[verify]]
 command = "grep -rqw 'fn scheduler_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test scheduler_canary"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:04Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "all children done; its verify (C6 scheduler_canary) passed in gate 6h2 at 285282248, merged in 6a08f9e2c"
 +++
 
 ## Problem

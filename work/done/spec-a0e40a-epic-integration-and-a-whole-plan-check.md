@@ -2,14 +2,16 @@
 id = "spec-a0e40a"
 kind = "spec"
 title = "Epic: integration and a whole-plan check"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "L"
 subsystem = ["roko-cli/graph_execution", "roko-cli/orchestrator", "roko-graph/cells"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "6a08f9e2c"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e6"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #12; tldr/04 step 9)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/mod.rs::accept_attempt", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/task_parser.rs::TaskMeta"]
@@ -19,6 +21,13 @@ links = { depends_on = ["gap-3b5361", "bug-a3760a", "spec-f830c4", "gap-60233f",
 
 [[verify]]
 command = "grep -rqw 'fn c3_each_passed_task_commits_once_on_the_plan_branch' crates/roko-cli/tests/ && grep -rqw 'fn c4_meta_verify_catches_tasks_that_break_together' crates/roko-cli/tests/ && cargo test -p roko-cli --test plan_branch_integration"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:04Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "all children done; its verify (C3/C4 plan_branch_integration) passed in gate 6h2 at 285282248, merged in 6a08f9e2c"
 +++
 
 ## Problem

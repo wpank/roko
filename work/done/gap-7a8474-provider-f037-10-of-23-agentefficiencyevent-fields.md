@@ -2,7 +2,7 @@
 id = "gap-7a8474"
 kind = "gap"
 title = "10 of 23 AgentEfficiencyEvent fields always zero/empty in primary live path"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-learn/efficiency"]
 created = 2026-09-01
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "f8906b3c0"
+last_verified_rev = "6a08f9e2c"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F037"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F037"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::emit_feedback", "crates/roko-learn/src/efficiency.rs::AgentEfficiencyEvent", "crates/roko-core/src/chat_types.rs::Usage::fill_cost_from_pricing", "crates/roko-cli/src/dispatch_v2.rs::dispatch_events_from_result", "crates/roko-agent/src/safety/contract.rs::AgentContract", "crates/roko-agent/src/agent.rs::AgentResult", "crates/roko-agent/src/immune_boundary.rs::is_model_output"]
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-f9ae3e"], supersedes = [
 
 [[verify]]
 command = "! sed -n '/async fn emit_feedback/,/^    }/p' crates/roko-cli/src/graph_task_dispatch/feedback.rs | grep -Eq 'reasoning_tokens: 0,|time_to_first_token_ms: 0,|cost_usd_without_cache: cost_usd,|tools_available: eff_tool_calls.len'"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:01Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-02T01:20:13Z"
+forced = false
+evidence = "the per-dispatch efficiency event fills reasoning tokens, time to first token (measured at the immune boundary), cache-free cost and tools available (wk-settle f08f64380 plus the batch's channel type fix f0d640b9e); gate 6h2 passed at 285282248 (cargo check, clippy -D warnings, 11,366 lib tests in roko-agent/cli/core/fs/gate/graph/learn/serve, canaries C1-C8 plus integration tests, 446 roko-cli bin tests, run_evidence py, portal tsc and 809 vitest); merged in 6a08f9e2c"
 +++
 
 ## Problem

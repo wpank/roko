@@ -2,7 +2,7 @@
 id = "gap-ad0d39"
 kind = "gap"
 title = "Cost records miss Claude per-model usage and reasoning tokens, and price unknown models as Sonnet"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -10,7 +10,7 @@ subsystem = ["roko-agent/claude-cli", "roko-learn/cost-table"]
 created = 2026-09-28
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "6a08f9e2c"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::parse_stream_usage", "crates/roko-learn/src/cost_table.rs:25"]
@@ -18,6 +18,15 @@ links = { depends_on = [], blocks = [], related = ["find-af6b7f", "bug-b9cb83", 
 
 [[verify]]
 command = "grep -q 'modelUsage' crates/roko-agent/src/claude_cli_agent.rs && ! sed -n '/fn usage_from_stream/,/^    }/p' crates/roko-agent/src/claude_cli_agent.rs | grep -q 'reasoning_tokens: 0' && ! grep -q 'None if total_tokens > 0 => &SONNET_FALLBACK' crates/roko-learn/src/cost_table.rs && ! grep -q 'SONNET_FALLBACK' crates/roko-agent/src/task_runner.rs"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:01Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+claimed_at = "2026-10-01T16:34:20Z"
+forced = false
+evidence = "Claude per-model usage (modelUsage) and reasoning tokens are recorded, unknown models stay unpriced instead of Sonnet, task_runner uses the CostTable (wk-model-truth e8a54a647); gate 6h2 passed at 285282248 (cargo check, clippy -D warnings, 11,366 lib tests in roko-agent/cli/core/fs/gate/graph/learn/serve, canaries C1-C8 plus integration tests, 446 roko-cli bin tests, run_evidence py, portal tsc and 809 vitest); merged in 6a08f9e2c"
 +++
 The Claude CLI usage parser (`claude_cli_agent.rs:441-506`) reads `total_cost_usd` and `usage.{input, output, cache_creation, cache_read}`. It ignores:
 - `modelUsage` (per-model usage, including subagents);

@@ -89,7 +89,7 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [x] gap-96f7ed: Thread the attempt context through dispatch and settle one outcome per attempt (S01.P0-1)
 - [x] bug-c34782: Cascade router learns from the provider call's success flag before gates run (existing item)
 - [x] bug-35379d: Provider failover silently runs a different model and records it as if it had been chosen (existing item)
-- [ ] gap-ad0d39: Cost records miss Claude per-model usage and reasoning tokens, and price unknown models as Sonnet (existing item)
+- [x] gap-ad0d39: Cost records miss Claude per-model usage and reasoning tokens, and price unknown models as Sonnet (existing item)
 - [x] bug-690dc6: Timed-out and errored agent runs are recorded at $0 with no tokens (existing item; fix merged in `d4be4e872`)
 - [x] gap-8cb382: Run manifest with a config fingerprint for every plan run (S01.P0-2)
 - [x] gap-1f2661: Wiring census: a fixture proves every learning loop reads the settled attempt record (S01.P0-11, S01.P0-12)

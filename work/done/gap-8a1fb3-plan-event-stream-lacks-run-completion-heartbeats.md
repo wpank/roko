@@ -2,7 +2,7 @@
 id = "gap-8a1fb3"
 kind = "gap"
 title = "Plan event stream lacks run completion, heartbeats, timestamps, DAG edges and gate rung"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -10,7 +10,7 @@ subsystem = ["roko-cli/graph-execution", "roko-serve/events"]
 created = 2026-09-28
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "f8906b3c0"
+last_verified_rev = "6a08f9e2c"
 source = "tmp/portal-audit/01-FINDINGS.md#B4"
 discovered_from = "doc:tmp/portal-audit/01-FINDINGS.md"
 anchors = ["crates/roko-serve/src/lib.rs:1635", "crates/roko-core/src/dashboard_snapshot.rs::DashboardEvent", "crates/roko-cli/src/runner/tui_bridge.rs::TuiBridge"]
@@ -18,6 +18,15 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'rung: _' crates/roko-serve/src/lib.rs && cargo test -p roko-core --lib task_state_carries_start_and_end_times && cargo test -p roko-serve --lib -- data_frames_carry_the_time_the_hub_published_their_event gate_rung_survives_both_bridges one_shot_run_starts_and_ends_the_plan_its_events_name one_shot_run_agent_beats_while_it_works_then_completes && cd apps/portal && npx vitest run src/stores/dashboard.test.ts"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:02Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+claimed_at = "2026-10-01T16:13:33Z"
+forced = false
+evidence = "event frames carry ts_millis, gate rungs survive both serve bridges, one-shot runs beat and complete under one plan id (wk-streams 6984bb759); serve and portal tests pass; gate 6h2 passed at 285282248 (cargo check, clippy -D warnings, 11,366 lib tests in roko-agent/cli/core/fs/gate/graph/learn/serve, canaries C1-C8 plus integration tests, 446 roko-cli bin tests, run_evidence py, portal tsc and 809 vitest); merged in 6a08f9e2c"
 +++
 
 On the Graph path no run-completion event is emitted (`run_duration_ms` stays null) and agent heartbeats have no caller (`AgentState.elapsed_ms` stays 0).

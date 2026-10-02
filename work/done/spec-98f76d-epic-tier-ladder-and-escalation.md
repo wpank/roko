@@ -2,14 +2,16 @@
 id = "spec-98f76d"
 kind = "spec"
 title = "Epic: tier ladder and escalation"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "L"
 subsystem = ["roko-cli/dispatch", "roko-cli/graph_task_dispatch", "roko-core/config"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "6a08f9e2c"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #8); tldr/04 steps 4 and 8, design rules 1 and 5"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/routing_context.rs::build_routing_context", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route", "crates/roko-core/src/config/routing.rs::RoutingConfig"]
@@ -19,6 +21,13 @@ links = { depends_on = ["gap-8c0a20", "gap-0f3980", "gap-9cbf35", "gap-dbf2a6", 
 
 [[verify]]
 command = "grep -rqw 'fn tier_ladder_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test tier_ladder_canary"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:05Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "all children done; its verify (C8 tier_ladder_canary) passed in gate 6h2 at 285282248, merged in 6a08f9e2c"
 +++
 
 ## Problem

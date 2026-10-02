@@ -37,6 +37,15 @@ error, and the resample counts: B per interval and the total number of bootstrap
 1,000 campaigns at B = 10,000 is heavy in pure Python: run the full simulation once, off-CI (`--workers` spreads the
 campaigns over processes); `test_simulate.py` runs a fast version with a wider band.
 
+**The full run** (2026-10-03, 1,000 campaigns, B = 10,000, 70 million replicates, 39 minutes on 6 workers) is kept for
+the lock in `reports/simulation/simulate-planted-0.15.json`. Six criteria are in band; the stratified bootstrap of one
+arm's VS rate covers 0.975 ± 0.005, above the band, and the difference (0.968) and the ratio (0.970) sit at its top.
+S09 §4.1's two-stage resampling (tasks within strata, then seeds within tasks) counts the seeds' noise twice, so it is
+conservative. In 300-campaign checks, resampling tasks alone covers 0.90 (four tasks per stratum: the stratified
+bootstrap's variance is (n_h − 1)/n_h of the true one), and resampling n_h − 1 tasks per stratum, tasks alone, covers
+0.95 for the rate, the difference and the ratio. Which one S09 uses is the author's decision; `bootstrap.py` keeps
+§4.1's method until then.
+
 API:
     LEVEL_BANDS, FAMILIES, TASKS_PER_STRATUM, SEEDS, COSTS, CRITERIA
     campaign(rng, *, planted=0.0, scale=1.0, coupling=0.0, spread=EFFECT_SPREAD, cost_ratio=None, tasks=...,

@@ -26,6 +26,16 @@ stub's, and a network endpoint is refused before Roko starts. The agent environm
 `~/.roko/.env` loads and no learned state crosses seeds, along with PATH, TMPDIR, locale and a git identity. Nothing
 else of the driver's environment reaches Roko. At 33e107da1, Roko needed nothing under HOME and wrote nothing there.
 
+**Network** (gap-0bd49a, 3304). Roko's tools run the agent's commands inside Roko's process tree, so on macOS every
+roko process of a task (`--version`, `plan validate`, `plan run`) runs through `common.sandbox` with the rule
+`loopback:<port>`, the port of the loopback endpoint Roko calls (`network_rule`): the metering proxy's, or a stub's.
+No other connection can open, to another loopback port, to DNS or to the internet. Unix sockets stay open under the
+workspace, where Roko keeps its StateHub and per-run `inject` sockets (`.roko/runtime/`). The tree is also denied
+`ctx.deny`, the files and directories no agent may touch. The run record names the rule
+(`provenance.network_policy`); off macOS its `sandbox` is "none" and the network stays open (gap-29ac83). The
+preflight's `plan validate`, which runs before any task, gets the rule "none". Builds need no network for the Python
+families; a family that fetches its dependencies needs them vendored first (F7, 3324).
+
 **The model check** (W10 rec 5, bug-35379d, bug-31438d). Every record Roko writes must name the pinned model and the
 arm's provider, as the model it dispatched and, when the provider reported one, as the model that served:
 - each episode (`.roko/episodes.jsonl`, one per dispatch): `model` and `backend`, and in `extra` the served
@@ -117,6 +127,7 @@ time, and `records.py` sums them into the record:
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
     preflight(arm, model, endpoint, limits, snapshot) -> None       # raises RunnerError
+    network_rule(endpoint: provider.Endpoint) -> str                # the roko processes' network rule
     read_evidence(workspace: Path, slug: str, *, proxy_rows: list[dict] | None = None) -> Evidence
     settle(evidence, *, chain_key, model, provider, snapshot, reserved_usd, max_attempts, roko_build=None)
         -> (list[RokoAttempt], list[str])
@@ -134,6 +145,7 @@ import signal
 import subprocess
 import tempfile
 import time
+import urllib.parse
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -146,7 +158,7 @@ import ledger
 import planemit
 import provider
 import records
-from common import repo
+from common import repo, sandbox
 
 PROXY_CAPS = ("input_tokens_per_attempt",)  # arm caps that `vb run` has the metering proxy hold for this runner
 PROMPT_VERSION = planemit.TEMPLATE_VERSION  # Roko's own prompt is in its binary, recorded per attempt as roko_build
@@ -236,6 +248,8 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     max_retries = int(settings.get("max_retries", 2))
     bound = caps.worst_task_usd(ctx.caps, ctx.price_row)
     task_bound = ctx.caps.usd_per_task if bound is None else bound
+    network = network_rule(ctx.endpoint)
+    jail = sandbox.command([], deny=ctx.deny, network=network, sockets=[ctx.workdir])  # every roko process's prefix
     transcript: list[dict] = []
     attempts: list[RokoAttempt] = []
     emitted = build = None
@@ -250,10 +264,10 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         transcript.append({"event": "emit", "slug": emitted.slug, "tasks_toml": emitted.tasks_text,
                            "roko_toml": emitted.config_text})
         env = _roko_env(ctx, spec.api_key_env, emitted.config_path)
-        build = _build(binary, env, settings.get("build") or None, transcript)
+        build = _build(binary, env, settings.get("build") or None, transcript, jail)
         head = _head(binary, ctx.workdir, ctx.model)
         checked = _roko([*head, "plan", "validate", "--strict", "--dag", str(ctx.workdir / "plans")], ctx.workdir,
-                        env, min(VALIDATE_TIMEOUT_S, _left(ctx, clock)))
+                        env, min(VALIDATE_TIMEOUT_S, _left(ctx, clock)), jail)
         transcript.append(checked.event("validate"))
         if checked.returncode != 0:
             raise RunnerError(f"the emitted plan failed `plan validate --strict --dag` (exit {checked.returncode}): "
@@ -262,7 +276,8 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         _reserve(ctx.ledger, keys, task_bound / (max_retries + 1) if ctx.billed else 0.0)
         reserved = keys
         dispatched = True
-        ran = _roko([*head, "plan", "run", str(emitted.plan_dir), "--no-tui"], ctx.workdir, env, _left(ctx, clock))
+        ran = _roko([*head, "plan", "run", str(emitted.plan_dir), "--no-tui"], ctx.workdir, env, _left(ctx, clock),
+                    jail)
         transcript.append(ran.event("run"))
         evidence = read_evidence(ctx.workdir, emitted.slug, proxy_rows=_proxy_rows(ctx))
         attempts, problems = settle(evidence, chain_key=ctx.chain_key, model=ctx.model,
@@ -302,7 +317,18 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     saved = (ctx.ledger.path.parent / "s01" / ctx.key).is_dir()  # Roko's records, copied by _save_evidence
     return harness.TaskOutcome(status=status, reason=reason, attempts=list(attempts), transcript=transcript,
                                started_at=started, finished_at=harness.utc_now(),
-                               s01_run_dir=f"s01/{ctx.key}" if saved else None)
+                               s01_run_dir=f"s01/{ctx.key}" if saved else None,
+                               network_policy={"network": network, "sandbox": sandbox.kind(ctx.deny, network),
+                                               "unix_sockets": "workspace"})
+
+
+def network_rule(endpoint: provider.Endpoint) -> str:
+    """The network rule of a task's roko processes: the loopback port of the endpoint Roko calls, the metering
+    proxy's or a stub's; "none" for a network endpoint, which `_roko_env` refuses before Roko starts."""
+    if not endpoint.offline:
+        return sandbox.NETWORK_NONE
+    parts = urllib.parse.urlsplit(endpoint.base_url)
+    return sandbox.loopback(parts.port or (443 if parts.scheme == "https" else 80))
 
 
 def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.Caps, snapshot: ledger.Snapshot) -> None:
@@ -327,8 +353,9 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
             raise RunnerError(f"the arm cannot emit a plan: {err}") from None
         env = {**agent_env.build(home=Path(scratch) / "home"), "ROKO_CONFIG": str(emitted.config_path),
                spec.api_key_env: OFFLINE_KEY}
+        jail = sandbox.command([], deny=(), network=sandbox.NETWORK_NONE, sockets=[workspace])  # validate needs none
         checked = _roko([*_head(binary, workspace, model), "plan", "validate", "--strict", "--dag",
-                         str(workspace / "plans")], workspace, env, VALIDATE_TIMEOUT_S)
+                         str(workspace / "plans")], workspace, env, VALIDATE_TIMEOUT_S, jail)
     if checked.returncode != 0:
         said = (checked.stdout + checked.stderr).strip()[-500:]
         raise RunnerError(f"{binary} rejects the plan this arm emits: `plan validate --strict --dag` "
@@ -689,9 +716,11 @@ def _roko_env(ctx: harness.TaskContext, api_key_env: str, config_path: Path) -> 
     return {**ctx.agent_env, "ROKO_CONFIG": str(config_path), api_key_env: OFFLINE_KEY}
 
 
-def _build(binary: Path, env: dict[str, str], pinned: str | None, transcript: list[dict]) -> str | None:
-    """The binary's git sha from `roko --version`; a mismatch with the arm's `[roko] build` stops the task."""
-    version = subprocess.run([str(binary), "--version"], env=env, capture_output=True, text=True, timeout=30,
+def _build(binary: Path, env: dict[str, str], pinned: str | None, transcript: list[dict],
+           jail: list[str]) -> str | None:
+    """The binary's git sha from `roko --version`, run in its sandbox (`jail`, a `sandbox.command` prefix); a mismatch
+    with the arm's `[roko] build` stops the task."""
+    version = subprocess.run([*jail, str(binary), "--version"], env=env, capture_output=True, text=True, timeout=30,
                              check=False, stdin=subprocess.DEVNULL)
     match = BUILD.search(version.stdout)
     transcript.append({"event": "version", "stdout": version.stdout.strip()[:300]})
@@ -701,10 +730,11 @@ def _build(binary: Path, env: dict[str, str], pinned: str | None, transcript: li
     return build
 
 
-def _roko(argv: list[str], cwd: Path, env: dict[str, str], timeout_s: float) -> Ran:
-    """Run Roko in its own session and kill the whole session when it ends or times out."""
+def _roko(argv: list[str], cwd: Path, env: dict[str, str], timeout_s: float, jail: list[str]) -> Ran:
+    """Run Roko in its sandbox (`jail`, a `sandbox.command` prefix; the record keeps `argv` without it) and in its
+    own session, and kill the whole session when it ends or times out."""
     start = time.monotonic()
-    process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    process = subprocess.Popen([*jail, *argv], cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True)
     timed_out = False
     try:

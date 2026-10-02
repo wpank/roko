@@ -97,8 +97,10 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   your user stays readable (`ps -E -ax`), so run the benchmark from a session that exports no credential.
 - **Network** (gap-0bd49a). On macOS every agent process runs under a network rule of `sandbox.py`, and is denied the
   secret file, the key file and the run's private task directories. The direct loop's shell gets no network at all,
-  since the driver makes every model call. The record names the rule and the confinement that applied
-  (`provenance.network_policy`). Off macOS the rule is not applied, and the record says "none" (gap-29ac83).
+  since the driver makes every model call. The Roko arm's process tree, whose tools run the agent's commands, reaches
+  only the loopback port of the endpoint Roko calls (the metering proxy's) and Unix sockets in its workspace. The
+  record names the rule and the confinement that applied (`provenance.network_policy`). Off macOS the rule is not
+  applied, and the record says "none" (gap-29ac83).
 - **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the
   agent's repo, then archives it (a git bundle, a tarball and the diff). The census (`census.py`) re-runs the visible
   checks on a clean export with the test files restored, runs the family's `hidden.py --secret-file` and the integrity

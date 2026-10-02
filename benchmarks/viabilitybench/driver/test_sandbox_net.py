@@ -132,8 +132,8 @@ def places(tmp_path: Path) -> dict[str, Path]:
 
 @pytest.fixture
 def socket_dir():
-    """A short directory for Unix sockets, whose paths must stay under 104 bytes."""
-    path = Path(tempfile.mkdtemp(prefix="vbs-"))
+    """A short directory for Unix sockets, whose paths must stay under 104 bytes: under /tmp when it can be."""
+    path = Path(tempfile.mkdtemp(prefix="vbs-", dir="/tmp" if os.access("/tmp", os.W_OK) else None))
     yield path
     shutil.rmtree(path, ignore_errors=True)
 

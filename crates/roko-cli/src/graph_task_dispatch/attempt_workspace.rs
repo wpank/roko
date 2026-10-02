@@ -146,6 +146,11 @@ impl GraphTaskDispatcher {
     /// attempt with `gate: "review"`, and the reviewer's note is the next
     /// attempt's feedback. A cancelled run ends the hold without a decision.
     /// The hold is removed either way.
+    ///
+    /// While it waits, the dashboard shows the task in the
+    /// [`AWAITING_APPROVAL_PHASE`], not as a failed gate. The decision is the
+    /// task's `review` gate result: passed on approval, failed with the
+    /// reviewer's note otherwise.
     pub(super) async fn await_review(
         &self,
         spec: &TaskExecutionSpec,
@@ -189,12 +194,11 @@ impl GraphTaskDispatcher {
             "the verified attempt waits for a review before it is accepted"
         );
         if let Some(tui) = &self.tui_bridge {
-            tui.gate_result_with_output(
+            tui.task_phase_changed(
                 &spec.plan_id,
                 &task.id,
-                "review",
-                false,
-                Some("waiting for a review: approve or reject the task's diff"),
+                RUNNING_PHASE,
+                AWAITING_APPROVAL_PHASE,
             );
         }
 
@@ -212,6 +216,15 @@ impl GraphTaskDispatcher {
         if let Err(error) = std::fs::remove_file(&hold_path) {
             tracing::warn!(hold = %hold_path.display(), %error, "could not remove the review hold");
         }
+        // The task no longer waits, decided or not.
+        if let Some(tui) = &self.tui_bridge {
+            tui.task_phase_changed(
+                &spec.plan_id,
+                &task.id,
+                AWAITING_APPROVAL_PHASE,
+                RUNNING_PHASE,
+            );
+        }
         let Some((decision, note)) = decision else {
             return Err(RokoError::Cancelled(format!(
                 "the run was cancelled while attempt {attempt_key} waited for a review"
@@ -219,6 +232,15 @@ impl GraphTaskDispatcher {
         };
         if decision == "approved" {
             tracing::info!(plan_id = %spec.plan_id, task_id = %task.id, attempt_key, "a reviewer approved the attempt");
+            if let Some(tui) = &self.tui_bridge {
+                tui.gate_result_with_output(
+                    &spec.plan_id,
+                    &task.id,
+                    "review",
+                    true,
+                    Some("a reviewer approved the attempt"),
+                );
+            }
             return Ok(());
         }
         let note = if note.trim().is_empty() {
@@ -227,6 +249,9 @@ impl GraphTaskDispatcher {
             note
         };
         let message = format!("a reviewer {decision} attempt {attempt_key}: {note}");
+        if let Some(tui) = &self.tui_bridge {
+            tui.gate_result_with_output(&spec.plan_id, &task.id, "review", false, Some(&message));
+        }
         if let Some(feedback) = GateFeedback::from_raw(&message) {
             self.gate_retry_context.record(
                 &spec.plan_id,
@@ -244,6 +269,15 @@ impl GraphTaskDispatcher {
 
 /// How often a held attempt looks for its review decision.
 const REVIEW_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The dashboard phase of a task whose verified attempt waits for a person's
+/// review. `roko serve`'s review routes call the state `awaiting_approval`
+/// too.
+pub const AWAITING_APPROVAL_PHASE: &str = "awaiting_approval";
+
+/// The phase the graph runner starts a task in, which a held task returns to
+/// once its wait ends.
+const RUNNING_PHASE: &str = "graph-executing";
 
 /// Write `hold` to `path` whole: to a temporary file beside it, then renamed.
 fn write_review_hold(path: &Path, hold: &serde_json::Value) -> Result<()> {
@@ -280,6 +314,56 @@ fn review_decision(
             let note = entry["comment"].as_str().unwrap_or_default().to_string();
             Some((decision, note))
         })
+}
+
+/// Record `decision` (`approved` or `rejected`) with `note` on the attempt
+/// of `task_id` that `plan_id`'s run holds for review (gap-0d64d5), in the
+/// review log the held attempt reads (`review_decision`). `roko plan
+/// review` and a Graph run's Approve and Reject commands record through it,
+/// and `roko serve`'s review route writes the same entry. Returns the
+/// attempt's key.
+///
+/// # Errors
+///
+/// When the task holds no attempt for review, or the log cannot be written.
+pub fn record_review(
+    workdir: &Path,
+    plan_id: &str,
+    task_id: &str,
+    decision: &str,
+    note: &str,
+) -> anyhow::Result<String> {
+    use anyhow::anyhow;
+    use std::io::Write as _;
+
+    let layout = roko_fs::RokoLayout::for_project(workdir);
+    let hold_path = layout.review_hold(plan_id, task_id);
+    let hold: serde_json::Value = std::fs::read(&hold_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(|| {
+            anyhow!("task `{task_id}` of plan `{plan_id}` is not waiting for a review")
+        })?;
+    let attempt_key = hold["attempt_key"]
+        .as_str()
+        .ok_or_else(|| anyhow!("the review hold {} names no attempt", hold_path.display()))?
+        .to_string();
+    let entry = serde_json::json!({
+        "plan_id": plan_id,
+        "task_id": task_id,
+        "decision": decision,
+        "comment": note,
+        "attempt_key": attempt_key,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+    let log = layout.reviews_log();
+    std::fs::create_dir_all(layout.state_dir())?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)?;
+    file.write_all(format!("{entry}\n").as_bytes())?;
+    Ok(attempt_key)
 }
 
 #[cfg(test)]
@@ -588,6 +672,91 @@ printf '%s\n' '{"type":"result","session_id":"sess-w","model":"claude-sonnet-4-6
         assert_eq!(git(repo.path(), &["show", &landed]), "feature");
         assert!(!hold_path.exists(), "the hold is removed");
         assert_operator_checkout_untouched(repo.path(), &head);
+    }
+
+    /// Apply to `snapshot` the events `events` has received, and return
+    /// whether each `review` gate result among them passed.
+    fn apply_published(
+        events: &mut tokio::sync::broadcast::Receiver<
+            roko_runtime::event_bus::Envelope<roko_core::DashboardEvent>,
+        >,
+        snapshot: &mut roko_core::DashboardSnapshot,
+    ) -> Vec<bool> {
+        let mut review_gates = Vec::new();
+        loop {
+            let envelope = match events.try_recv() {
+                Ok(envelope) => envelope,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            };
+            if let roko_core::DashboardEvent::GateResult { gate, passed, .. } = &envelope.payload
+                && gate == "review"
+            {
+                review_gates.push(*passed);
+            }
+            snapshot.apply(&envelope.payload);
+        }
+        review_gates
+    }
+
+    /// 1217: while a verified attempt waits for a review, the dashboard shows
+    /// its task awaiting approval rather than a failed `review` gate. The
+    /// decision is the gate's result, and the task runs on.
+    #[tokio::test]
+    async fn held_task_snapshot_shows_awaiting_approval() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let hub = crate::state_hub::StateHub::new(4096);
+        let mut events = hub.subscribe_events();
+        let (dispatcher, mut task) = make_test_dispatcher_with(
+            &repo,
+            WRITES_FEATURE_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| {
+                dispatcher
+                    .with_workspace_provider(provider)
+                    .with_tui_bridge(TuiBridge::new(hub.sender()))
+            },
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "test -f feature.txt")];
+        let spec = make_spec(&task);
+        dispatcher.hold_for_approval(&spec.plan_id);
+        let hold_path =
+            roko_fs::RokoLayout::for_project(repo.path()).review_hold(&spec.plan_id, &task.id);
+        // The graph runner starts the task, as in a plan run.
+        let key = format!("{}/{}", spec.plan_id, task.id);
+        let mut snapshot = roko_core::DashboardSnapshot::default();
+        snapshot.apply(&roko_core::DashboardEvent::TaskStarted {
+            plan_id: spec.plan_id.clone(),
+            task_id: task.id.clone(),
+            title: task.title.clone(),
+            phase: RUNNING_PHASE.to_string(),
+        });
+
+        let running = dispatch_in_background(&dispatcher, &spec);
+        let hold = held_review(&hold_path).await;
+        // The hold is published just after it is written.
+        let mut review_gates = Vec::new();
+        for _ in 0..200 {
+            review_gates.extend(apply_published(&mut events, &mut snapshot));
+            if snapshot.tasks[&key].phase == AWAITING_APPROVAL_PHASE {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(snapshot.tasks[&key].phase, AWAITING_APPROVAL_PHASE);
+        assert!(review_gates.is_empty(), "{review_gates:?}");
+
+        decide(repo.path(), &hold, "approved", "");
+        running
+            .await
+            .expect("dispatch task")
+            .expect("the approved attempt passes");
+        review_gates.extend(apply_published(&mut events, &mut snapshot));
+        assert_eq!(review_gates, [true], "the approval passes the review gate");
+        assert_eq!(snapshot.tasks[&key].phase, RUNNING_PHASE);
     }
 
     /// gap-0d64d5: a rejection fails the held attempt without merging it,

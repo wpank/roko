@@ -227,13 +227,13 @@ impl StdioTransport {
     ///
     /// The provided environment is layered on top of the current process
     /// environment before the child process is started. The server does not
-    /// inherit provider keys, names roko loaded from its `.env` files, or
-    /// roko's own credentials ([`CredentialScrub`]); one that needs a key
-    /// names it in its `env` overlay (`"OPENAI_API_KEY": "${OPENAI_API_KEY}"`),
-    /// which always reaches it. Stderr is piped and forwarded to the tracing
-    /// subscriber (one `debug!` line per stderr line) so MCP server
-    /// diagnostics appear in structured logs rather than leaking directly to
-    /// the parent's stderr.
+    /// inherit provider keys, other names that look like a credential, or
+    /// names roko loaded from its `.env` files ([`CredentialScrub`]); one that
+    /// needs a key names it in its `env` overlay
+    /// (`"OPENAI_API_KEY": "${OPENAI_API_KEY}"`), which always reaches it.
+    /// Stderr is piped and forwarded to the tracing subscriber (one `debug!`
+    /// line per stderr line) so MCP server diagnostics appear in structured
+    /// logs rather than leaking directly to the parent's stderr.
     pub fn spawn_with_env(
         command: &str,
         args: &[String],
@@ -609,10 +609,11 @@ fn redact_stderr(raw: &str, env_values: &[String]) -> String {
 /// The command that starts MCP server `command` with `args`.
 ///
 /// The server inherits roko's environment (`parent_env` in its place when
-/// given) minus what [`CredentialScrub`] strips: provider keys, names roko
-/// loaded from its `.env` files, and roko's own credentials. Its configured
-/// `env` overlay is set on top and always reaches it, so a server that needs
-/// a key names it there (`"OPENAI_API_KEY": "${OPENAI_API_KEY}"`).
+/// given) minus what [`CredentialScrub`] strips: provider keys, other names
+/// that look like a credential, and names roko loaded from its `.env` files.
+/// Its configured `env` overlay is set on top and always reaches it, so a
+/// server that needs a key names it there
+/// (`"OPENAI_API_KEY": "${OPENAI_API_KEY}"`).
 fn server_command(
     command: &str,
     args: &[String],
@@ -745,17 +746,18 @@ mod tests {
             .await
             .expect("read the server's env");
 
+        // A secret roko does not know as a provider key goes too (1212).
         for leaked in [
             "sk-test-not-real",
             "sk-ant-test-not-real",
             "serve-test-not-real",
+            "ghp-shell-test",
         ] {
             assert!(!env.contains(leaked), "{leaked} leaked:\n{env}");
         }
         for kept in [
             "MCP_SERVER_SETTING=from-config",
             "PERPLEXITY_API_KEY=named-in-config",
-            "GITHUB_TOKEN=ghp-shell-test",
         ] {
             assert!(env.contains(kept), "{kept} missing:\n{env}");
         }

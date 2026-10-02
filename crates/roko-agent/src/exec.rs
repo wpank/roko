@@ -17,12 +17,14 @@ use crate::provider::codex_cli::stream::parse_stream_line as parse_codex_line;
 use crate::provider::error_classify::{ProviderExhaustion, detect_provider_exhaustion};
 use crate::runtime_events::AgentRuntimeEvent;
 use crate::safety::SafetyLayer;
+use crate::safety::git::check_git_command;
 use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
 use roko_core::child_env::CredentialScrub;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::tool::ToolResult;
 use roko_core::{Body, Context, Kind, Provenance, Signal};
+use roko_std::tool::builtin::sandbox::refuse_key_file_in_command;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -246,7 +248,8 @@ const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] = &[
 // ── JSONL operation broker ───────────────────────────────────────────────────
 
 /// Scan raw Codex JSONL output for operation types that violate `policy`,
-/// and for file changes outside `write_root`.
+/// for file changes outside `write_root`, and for commands roko's own guards
+/// refuse.
 ///
 /// Returns `Ok(())` when all observed operations are permitted, or `Err` with
 /// a human-readable description of the first policy violation found.
@@ -260,9 +263,6 @@ fn check_codex_output_against_policy(
     policy: &CodexOperationPolicy,
     write_root: Option<&Path>,
 ) -> Result<(), String> {
-    if !policy.has_constraints() {
-        return Ok(());
-    }
     match raw
         .lines()
         .find_map(|line| codex_line_violation(line, policy, write_root))
@@ -273,8 +273,10 @@ fn check_codex_output_against_policy(
 }
 
 /// The violation in one line of Codex JSONL: a description of the operation
-/// it starts or completes, when `policy` denies that operation or the
-/// operation changes a file outside `write_root`.
+/// it starts or completes, when `policy` denies that operation, the
+/// operation changes a file outside `write_root`, or it runs a command roko's
+/// own guards refuse ([`guarded_command_violation`]; relative paths in the
+/// command resolve against `write_root`, the run's working directory).
 fn codex_line_violation(
     line: &str,
     policy: &CodexOperationPolicy,
@@ -295,6 +297,11 @@ fn codex_line_violation(
     let op = CodexOperationType::from_item_type(item_type)?;
     if !policy.permits(&op) {
         return Some(denied_operation(&op, item));
+    }
+    // A permitted command must still pass roko's key-file and git guards.
+    if op == CodexOperationType::CommandExecution {
+        let command = item.get("command").and_then(|v| v.as_str())?;
+        return guarded_command_violation(command, write_root.unwrap_or(Path::new(".")));
     }
     // A permitted file change must still stay inside the worktree.
     let root = write_root.filter(|_| op == CodexOperationType::FileChange)?;
@@ -349,6 +356,115 @@ fn file_change_paths(item: &serde_json::Value) -> Vec<&str> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Whether roko's own guards refuse `command`, a command Codex runs in `cwd`:
+/// a read of a key file such as `~/.roko/.env`
+/// ([`refuse_key_file_in_command`]), or a git command the default git policy
+/// denies, such as `git stash` ([`check_git_command`]), in the command or in
+/// the script of a shell it starts (Codex reports a command as
+/// `bash -lc '…'`).
+///
+/// The broker sees a command in Codex's `item.started` event, so the command
+/// has already started when roko stops the run. Stopping it at once keeps a
+/// key file's contents from being sent on to the model, but a `git stash`
+/// may already have run.
+fn guarded_command_violation(command: &str, cwd: &Path) -> Option<String> {
+    let git_refusal = || {
+        shell_scripts(command)
+            .iter()
+            .find_map(|script| check_git_command(script).err())
+    };
+    let refusal = refuse_key_file_in_command(command, cwd)
+        .err()
+        .or_else(git_refusal)?;
+    Some(format!("command_execution denied by roko's guard: {refusal}"))
+}
+
+/// How deep [`shell_scripts`] reads shells started by shells.
+const MAX_SHELL_NESTING: usize = 4;
+
+/// `command` and the script of each shell it starts with `-c`, nested up to
+/// [`MAX_SHELL_NESTING`] deep: `bash -lc 'cd src && git stash'` yields both
+/// command lines.
+fn shell_scripts(command: &str) -> Vec<String> {
+    let mut scripts = vec![command.to_string()];
+    while scripts.len() <= MAX_SHELL_NESTING {
+        let Some(script) = scripts.last().map(String::as_str).and_then(shell_script) else {
+            break;
+        };
+        scripts.push(script);
+    }
+    scripts
+}
+
+/// The script of `command` when it starts a shell with `-c` (`bash -lc '…'`,
+/// `/bin/zsh -c '…'`); `None` for any other command, or one whose quotes do
+/// not close.
+fn shell_script(command: &str) -> Option<String> {
+    let mut words = shell_words(command)?.into_iter();
+    let shell = words.next()?;
+    let name = shell.rsplit('/').next().unwrap_or_default();
+    if !matches!(name, "sh" | "bash" | "zsh" | "dash" | "ksh") {
+        return None;
+    }
+    let mut runs_script = false;
+    for word in words {
+        let Some(options) = word.strip_prefix('-') else {
+            return runs_script.then_some(word);
+        };
+        // Short options (`-lc`) may include `c`; long ones (`--login`) don't.
+        runs_script |= !options.starts_with('-') && options.contains('c');
+    }
+    None
+}
+
+/// The words of `command`, a shell command line, with quotes and escapes
+/// removed; `None` when a quote is left open. Words are split at whitespace
+/// only, which is enough to find a shell's `-c` script.
+fn shell_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                let current = word.get_or_insert_with(String::new);
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => current.push(c),
+                    }
+                }
+            }
+            '"' => {
+                let current = word.get_or_insert_with(String::new);
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        // Inside double quotes a backslash escapes only these.
+                        '\\' => match chars.next()? {
+                            '\n' => {}
+                            c @ ('"' | '\\' | '$' | '`') => current.push(c),
+                            c => {
+                                current.push('\\');
+                                current.push(c);
+                            }
+                        },
+                        c => current.push(c),
+                    }
+                }
+            }
+            '\\' => match chars.next() {
+                Some('\n') | None => {}
+                Some(c) => word.get_or_insert_with(String::new).push(c),
+            },
+            c if c.is_whitespace() => words.extend(word.take()),
+            c => word.get_or_insert_with(String::new).push(c),
+        }
+    }
+    words.extend(word);
+    Some(words)
 }
 
 /// Checks Codex's JSONL while the process runs, so that `ExecAgent` can stop
@@ -530,7 +646,9 @@ impl ExecAgent {
     }
 
     /// When enabled, parse stdout as Codex CLI JSONL (`--json` output) and
-    /// extract `agent_message` text from `item.completed` events.
+    /// extract `agent_message` text from `item.completed` events. Each
+    /// command Codex runs is checked against roko's key-file and git guards
+    /// as it starts, and the first one they refuse stops the run.
     #[must_use]
     pub const fn with_extract_codex_jsonl(mut self, extract: bool) -> Self {
         self.extract_codex_jsonl = extract;
@@ -903,24 +1021,24 @@ impl Agent for ExecAgent {
         // Scan the raw JSONL before extracting text.  The live check above
         // stops the process at a denied operation; this scan catches one it
         // had no chance to act on.  Fail-closed: any denied or
-        // unrecognised-in-policy operation rejects the whole turn.
+        // unrecognised-in-policy operation rejects the whole turn, and so
+        // does a command roko's own guards refuse, with or without a policy.
         if self.extract_codex_jsonl {
-            if let Some(ref policy) = self.codex_operation_policy {
-                let write_root = self.current_dir.as_deref();
-                if let Err(violation) =
-                    check_codex_output_against_policy(&raw_stdout, policy, write_root)
-                {
-                    tracing::warn!(
-                        agent = %self.name,
-                        %violation,
-                        "Codex operation denied by policy broker"
-                    );
-                    return self.policy_denial(
-                        input,
-                        &violation,
-                        self.run_usage(&full_stdin, &raw_stdout, started),
-                    );
-                }
+            let policy = self.codex_operation_policy.clone().unwrap_or_default();
+            let write_root = self.current_dir.as_deref();
+            if let Err(violation) =
+                check_codex_output_against_policy(&raw_stdout, &policy, write_root)
+            {
+                tracing::warn!(
+                    agent = %self.name,
+                    %violation,
+                    "Codex operation denied by policy broker"
+                );
+                return self.policy_denial(
+                    input,
+                    &violation,
+                    self.run_usage(&full_stdin, &raw_stdout, started),
+                );
             }
         }
 
@@ -995,15 +1113,15 @@ impl Agent for ExecAgent {
 }
 
 impl ExecAgent {
-    /// The live check for a Codex run whose policy has constraints; `denied`
-    /// is told the first operation it denies.
+    /// The live check for every Codex run: its operations against its policy
+    /// (every type is permitted without one) and its commands against roko's
+    /// own guards. `denied` is told the first violation.
     fn codex_stream_broker(&self, denied: oneshot::Sender<String>) -> Option<CodexStreamBroker> {
-        let policy = self.codex_operation_policy.as_ref()?;
-        if !self.extract_codex_jsonl || !policy.has_constraints() {
+        if !self.extract_codex_jsonl {
             return None;
         }
         Some(CodexStreamBroker {
-            policy: policy.clone(),
+            policy: self.codex_operation_policy.clone().unwrap_or_default(),
             write_root: self.current_dir.clone(),
             checked: 0,
             denied: Some(denied),
@@ -1771,6 +1889,88 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_inp
         );
         assert_eq!(broker.checked, output.len());
         assert!(broker.denied.is_none());
+    }
+
+    /// 1215: the broker runs roko's own key-file and git guards on each
+    /// command Codex starts, whatever the run's policy permits, so a Codex
+    /// agent is stopped when it reads a key file or stashes the checkout.
+    #[test]
+    fn codex_agent_cannot_read_key_files() {
+        let worktree = tempfile::tempdir().expect("tempdir");
+        let started = |command: &str| {
+            let item = serde_json::json!({"type": "command_execution", "command": command});
+            format!("{}\n", serde_json::json!({"type": "item.started", "item": item}))
+        };
+        let denial = |command: &str| {
+            let (denied_tx, mut denied_rx) = oneshot::channel();
+            let mut broker = CodexStreamBroker {
+                policy: CodexOperationPolicy::allow_all(),
+                write_root: Some(worktree.path().to_path_buf()),
+                checked: 0,
+                denied: Some(denied_tx),
+            };
+            broker.check(started(command).as_bytes());
+            denied_rx.try_recv().ok()
+        };
+
+        for command in [
+            "cat ~/.roko/.env",
+            "bash -lc 'cat ~/.roko/.env'",
+            "git stash",
+            "/bin/zsh -lc 'cd src && git stash'",
+        ] {
+            let violation = denial(command).expect(command);
+            assert!(
+                violation.starts_with("command_execution denied by roko's guard: "),
+                "{violation}"
+            );
+        }
+        for command in [
+            "cargo test",
+            "bash -lc 'cargo test -p roko-agent'",
+            "git status",
+        ] {
+            assert_eq!(denial(command), None, "{command}");
+        }
+
+        // The scan after Codex exits applies the guards too, policy or not.
+        let output = started("cat ~/.roko/.env");
+        let allow_all = CodexOperationPolicy::allow_all();
+        assert!(check_codex_output_against_policy(&output, &allow_all, None).is_err());
+    }
+
+    /// Codex reports a command as the shell line it runs (`bash -lc '…'`):
+    /// the git guard reads the script inside, however it is quoted.
+    #[test]
+    fn codex_commands_are_read_through_their_shell() {
+        assert_eq!(
+            shell_script("bash -lc 'git stash'").as_deref(),
+            Some("git stash")
+        );
+        assert_eq!(
+            shell_script(r#"/bin/zsh --login -c "git -C \"a b\" stash""#).as_deref(),
+            Some(r#"git -C "a b" stash"#)
+        );
+        assert_eq!(
+            shell_script(r#"bash -lc 'echo '"'"'hi'"'"''"#).as_deref(),
+            Some("echo 'hi'")
+        );
+        for command in [
+            "echo 'git stash'",
+            "bash script.sh",
+            "bash -lc 'unclosed",
+            "python -c 'x'",
+        ] {
+            assert_eq!(shell_script(command), None, "{command}");
+        }
+        assert_eq!(
+            shell_scripts(r#"sh -c "bash -lc 'git stash'""#),
+            [
+                r#"sh -c "bash -lc 'git stash'""#,
+                "bash -lc 'git stash'",
+                "git stash",
+            ]
+        );
     }
 
     /// gap-baab0a: the broker stops Codex when an operation its contract

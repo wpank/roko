@@ -65,6 +65,33 @@ pub struct PendingApproval {
     pub run_id: Option<String>,
     /// Optional approval identifier (P1-40: SurfaceEvent command path).
     pub approval_id: Option<String>,
+    /// Whether this offers a task a Graph run holds for review, whose
+    /// `approval_id` is `<plan>/<task>`: an Approve or Reject command on the
+    /// run's control channel decides it, not an agent's request.
+    pub held_task: bool,
+}
+
+impl PendingApproval {
+    /// The offer of task `task_id` of plan `plan_id`, whose verified attempt
+    /// a Graph run holds for review (its phase is
+    /// [`AWAITING_APPROVAL_PHASE`](crate::graph_task_dispatch::AWAITING_APPROVAL_PHASE)).
+    #[must_use]
+    pub fn for_held_task(plan_id: &str, task_id: &str) -> Self {
+        let id = format!("{plan_id}/{task_id}");
+        Self {
+            agent_id: format!("review of {id}"),
+            description: format!("task {task_id} of plan {plan_id} waits for a review"),
+            command: format!(
+                "Task {task_id} of plan {plan_id} passed its gates and waits for a review.\n\
+                 Its diff is in the portal's review pane and in\n\
+                 .roko/state/review-holds/{plan_id}/{task_id}.json.\n\
+                 y approves it and n rejects it, as roko plan review {plan_id} {task_id} does."
+            ),
+            run_id: None,
+            approval_id: Some(id),
+            held_task: true,
+        }
+    }
 }
 
 /// Health classification for a configured LLM provider.

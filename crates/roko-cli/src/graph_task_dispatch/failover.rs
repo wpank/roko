@@ -1,6 +1,11 @@
 //! Provider failover: a planned model whose provider cannot take the task hands
 //! it to the next usable candidate within the same attempt.
 
+use std::collections::HashSet;
+use std::sync::OnceLock;
+
+use parking_lot::Mutex;
+use roko_core::agent::ProviderKind;
 use roko_learn::provider_failover::{
     FailoverCandidate as DispatchCandidate, format_local_ms, missing_credentials_reason,
     provider_brings_own_tools,
@@ -16,6 +21,24 @@ use super::*;
 /// The error is non-retryable, so `TaskExecutorCell` fails the attempt at once
 /// instead of re-running a dispatch that would be refused again.
 const PROVIDER_EXHAUSTED_CATEGORY: &str = "provider_exhausted";
+
+/// Failover refusal class, and `RokoError::Gateway` category, of a CLI agent
+/// roko cannot guard that an attempt in the operator's shared checkout passes
+/// over (decision 1214). The error is non-retryable like
+/// [`PROVIDER_EXHAUSTED_CATEGORY`], and the attempt settles as a harness
+/// failure, charged to no provider.
+pub(super) const UNGUARDED_IN_CHECKOUT: &str = "unguarded_in_checkout";
+
+/// Agents whose commands roko cannot check before they run: they bring their
+/// own shells, and Codex's stream broker acts only once a command has
+/// started. They run only in per-task worktrees, where a `git stash` or
+/// `git clean -fdx` cannot reach the operator's work (decision 1214).
+const UNGUARDED_CLI_KINDS: [ProviderKind; 4] = [
+    ProviderKind::CodexCli,
+    ProviderKind::CursorCli,
+    ProviderKind::CursorAcp,
+    ProviderKind::GeminiCli,
+];
 
 /// `role` of the cost and efficiency rows of a call failover refused.
 const FAILOVER_REFUSED_ROLE: &str = "failover_refused";
@@ -100,6 +123,10 @@ impl GraphTaskDispatcher {
     /// fails over. When nothing usable remains the attempt fails with a
     /// non-retryable error that says how to recover.
     ///
+    /// In the operator's shared checkout, a Codex, Cursor or Gemini CLI agent
+    /// is passed over the same way, pinned or not, unless `[runner]
+    /// allow_unguarded_agents_in_checkout` is set (decision 1214).
+    ///
     /// Returns the dispatch with the models failover passed over, which the
     /// attempt's records carry beside the one that ran. A call a provider
     /// refused gets cost and efficiency rows of its own, keyed by
@@ -120,8 +147,26 @@ impl GraphTaskDispatcher {
             config: None,
         };
         let mut refusals: Vec<ProviderRefusal> = Vec::new();
+        // A pinned model never fails over, and never runs unguarded in the
+        // shared checkout either.
+        if pinned {
+            let target = self.resolve_candidate(&candidate);
+            if let Some(kind) = self.unguarded_in_checkout(&target) {
+                log_unguarded_skip(&spec.plan_id, kind);
+                let pinned_model = format!(
+                    "`{}` on `{}`: {}",
+                    candidate.model_key,
+                    target.provider_id,
+                    unguarded_reason(kind)
+                );
+                return Err(no_guarded_provider(&[pinned_model]));
+            }
+        }
         loop {
             if !pinned && let Some(refusal) = self.blocked_provider(&candidate, &request) {
+                if refusal.class == UNGUARDED_IN_CHECKOUT {
+                    log_unguarded_skip(&spec.plan_id, refusal.provider_kind);
+                }
                 let definitive = refusal.definitive;
                 refusals.push(refusal);
                 match self.failover_model(spec, task_id, &refusals) {
@@ -246,7 +291,8 @@ impl GraphTaskDispatcher {
 
     /// The refusal for `candidate` when its provider must not be called now:
     /// missing, not dispatchable, unable to enforce `request`'s agent
-    /// contract, without credentials, statically disabled, or its circuit is
+    /// contract, an agent that would run unguarded in the operator's shared
+    /// checkout, without credentials, statically disabled, or its circuit is
     /// open in the health registry.
     fn blocked_provider(
         &self,
@@ -297,6 +343,14 @@ impl GraphTaskDispatcher {
             return Some(refusal(
                 "contract_unsupported",
                 error.to_string(),
+                None,
+                true,
+            ));
+        }
+        if let Some(kind) = self.unguarded_in_checkout(&target) {
+            return Some(refusal(
+                UNGUARDED_IN_CHECKOUT,
+                unguarded_reason(kind),
                 None,
                 true,
             ));
@@ -370,7 +424,9 @@ impl GraphTaskDispatcher {
     }
 
     /// The first usable model in [`Self::failover_candidates`], with the
-    /// substitution and its reason logged at WARN.
+    /// substitution and its reason logged at WARN. A candidate that would run
+    /// unguarded in the shared checkout is passed over, and when that is all
+    /// that stopped every candidate the error says so.
     fn failover_model(
         &self,
         spec: &TaskExecutionSpec,
@@ -378,7 +434,17 @@ impl GraphTaskDispatcher {
         refusals: &[ProviderRefusal],
     ) -> Result<DispatchCandidate> {
         let mut skipped = Vec::new();
+        let mut only_unguarded = refusals
+            .iter()
+            .all(|refusal| refusal.class == UNGUARDED_IN_CHECKOUT);
         for candidate in self.failover_candidates(refusals) {
+            if let Some(kind) = self.unguarded_in_checkout(&self.resolve_candidate(&candidate)) {
+                log_unguarded_skip(&spec.plan_id, kind);
+                let why = unguarded_reason(kind);
+                skipped.push(format!("{}: {why}", candidate.model_key));
+                continue;
+            }
+            only_unguarded = false;
             match self.failover_candidate(&candidate, refusals) {
                 Ok(provider_id) => {
                     if let Some(refused) = refusals.last() {
@@ -402,7 +468,42 @@ impl GraphTaskDispatcher {
                 Err(why) => skipped.push(format!("{}: {why}", candidate.model_key)),
             }
         }
+        if only_unguarded {
+            let passed_over: Vec<String> = refusals
+                .iter()
+                .map(|refusal| {
+                    format!(
+                        "`{}` on `{}`: {}",
+                        refusal.model_key, refusal.provider_id, refusal.reason
+                    )
+                })
+                .chain(skipped)
+                .collect();
+            return Err(no_guarded_provider(&passed_over));
+        }
         Err(self.no_usable_provider(refusals, &skipped, false))
+    }
+
+    /// The kind of agent `target` runs, when it is one roko cannot guard
+    /// ([`UNGUARDED_CLI_KINDS`]) and this attempt would run it in the
+    /// operator's shared checkout: the dispatcher has no per-task worktrees,
+    /// and `[runner] allow_unguarded_agents_in_checkout` is off. The kind is
+    /// the CLI protocol's when `target` runs a CLI, so a legacy
+    /// `openai_compat` provider whose command is `codex` counts as Codex.
+    fn unguarded_in_checkout(
+        &self,
+        target: &crate::dispatch_v2::ProviderDispatchSpec,
+    ) -> Option<ProviderKind> {
+        if self.workspace_provider.is_some()
+            || self.config.runner.allow_unguarded_agents_in_checkout
+        {
+            return None;
+        }
+        let kind = match &target.runtime {
+            crate::dispatch_v2::ProviderRuntime::Cli(cli) => cli.descriptor.provider_kind,
+            _ => target.provider_kind,
+        };
+        UNGUARDED_CLI_KINDS.contains(&kind).then_some(kind)
     }
 
     /// The provider id of `candidate` when it can take the task now, else why not.
@@ -529,6 +630,49 @@ impl GraphTaskDispatcher {
         } else {
             format!(" (e.g. {})", examples.join(", "))
         }
+    }
+}
+
+/// Why an agent of `kind` may not take an attempt in the operator's shared
+/// checkout.
+fn unguarded_reason(kind: ProviderKind) -> String {
+    format!("{kind} has no roko command guard, so it runs only in a per-task worktree")
+}
+
+/// Non-retryable error for an attempt in the operator's shared checkout that
+/// only agents roko cannot guard could take; `passed_over` names each
+/// (decision 1214).
+fn no_guarded_provider(passed_over: &[String]) -> RokoError {
+    RokoError::Gateway {
+        category: UNGUARDED_IN_CHECKOUT,
+        retryable: false,
+        message: format!(
+            "no guarded provider for a shared-checkout attempt: {}. Codex, Cursor and \
+             Gemini CLI agents have no roko command guard, so they run only in per-task \
+             worktrees: run the plan with --worktree-per-task, route the task to a guarded \
+             provider such as claude_cli, or set [runner] allow_unguarded_agents_in_checkout \
+             = true to accept the risk.",
+            passed_over.join("; ")
+        ),
+    }
+}
+
+/// Log, once per plan and agent kind, that the plan's attempts in the shared
+/// checkout pass over agents of `kind`.
+fn log_unguarded_skip(plan_id: &str, kind: ProviderKind) {
+    static LOGGED: OnceLock<Mutex<HashSet<(String, ProviderKind)>>> = OnceLock::new();
+    let first = LOGGED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .insert((plan_id.to_string(), kind));
+    if first {
+        tracing::warn!(
+            plan_id,
+            agent = %kind,
+            "{kind} agents have no roko command guard, so this plan's attempts in the shared \
+             checkout pass them over; run it with --worktree-per-task, or set [runner] \
+             allow_unguarded_agents_in_checkout = true to accept the risk"
+        );
     }
 }
 
@@ -1190,6 +1334,9 @@ exec sleep 5
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "codex-model".to_string();
+        // The dispatcher has no per-task worktrees, so Codex runs only when
+        // the operator accepts it in the shared checkout (decision 1214).
+        config.runner.allow_unguarded_agents_in_checkout = true;
         let codex_cli = provider(ProviderKind::CodexCli, Some(&codex), None);
         config.providers.insert("codex_cli".to_string(), codex_cli);
         let profile = ModelProfile {
@@ -1252,6 +1399,173 @@ exec sleep 5
         );
         assert_eq!(policy["network_off"], true);
         assert_eq!(policy["denial"], "web_search denied by policy: rust");
+    }
+
+    /// `claude_cli` and `codex_cli`, each a fake script, with `default_model`
+    /// the model failover falls back to.
+    fn shared_checkout_config(
+        claude: &Path,
+        codex: &Path,
+        default_model: &str,
+        allow_unguarded: bool,
+    ) -> Arc<RokoConfig> {
+        let provider = |kind, command: Option<&Path>, key_env: Option<&str>| ProviderConfig {
+            kind,
+            base_url: None,
+            api_key_env: key_env.map(str::to_string),
+            command: command.map(|path| path.display().to_string()),
+            args: None,
+            timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+        };
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = default_model.to_string();
+        config.agent.bare_mode = false;
+        config.runner.allow_unguarded_agents_in_checkout = allow_unguarded;
+        let claude_cli = provider(ProviderKind::ClaudeCli, Some(claude), None);
+        config
+            .providers
+            .insert("claude_cli".to_string(), claude_cli);
+        let codex_cli = provider(ProviderKind::CodexCli, Some(codex), None);
+        config.providers.insert("codex_cli".to_string(), codex_cli);
+        for (key, provider_id, slug) in [
+            ("claude-sonnet-4-6", "claude_cli", "claude-sonnet-4-6"),
+            ("codex-model", "codex_cli", "gpt-5-codex"),
+        ] {
+            let profile = ModelProfile {
+                provider: provider_id.to_string(),
+                slug: slug.to_string(),
+                ..ModelProfile::default()
+            };
+            config.models.insert(key.to_string(), profile);
+        }
+        // Keys in the environment must not synthesize other usable providers.
+        for (id, kind) in [
+            ("anthropic", ProviderKind::AnthropicApi),
+            ("openai", ProviderKind::OpenAiCompat),
+            ("gemini", ProviderKind::GeminiApi),
+            ("perplexity", ProviderKind::PerplexityApi),
+        ] {
+            let keyless = provider(kind, None, Some("ROKO_TEST_FAILOVER_KEY_NEVER_SET"));
+            config.providers.insert(id.to_string(), keyless);
+        }
+        Arc::new(config)
+    }
+
+    /// Dispatch `task` as run `run` from a dispatcher without per-task
+    /// worktrees, so its attempt runs in the shared checkout `workdir`.
+    async fn dispatch_in_shared_checkout(
+        config: Arc<RokoConfig>,
+        workdir: &Path,
+        task: &TaskDef,
+        run: &str,
+    ) -> Result<()> {
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = GraphTaskDispatcher::new(factory, config, workdir.to_path_buf())
+            .with_feedback(recording_feedback(workdir));
+        dispatcher
+            .dispatch(
+                &make_spec(task),
+                Vec::new(),
+                &CellContext::new().with_run_id(run.to_string()),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    /// 1216 (decision 1214): roko cannot check a Codex, Cursor or Gemini CLI
+    /// agent's commands before they run, so an attempt in the operator's
+    /// shared checkout passes Codex over for Claude's CLI; with Codex alone it
+    /// fails before any call, saying why; and `[runner]
+    /// allow_unguarded_agents_in_checkout` lets the operator accept the risk.
+    #[tokio::test]
+    async fn unguarded_cli_agents_never_run_in_the_shared_checkout() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().join("work");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        let codex_calls = temp.path().join("codex-calls.log");
+        let codex = temp.path().join("fake-codex.sh");
+        write_executable(
+            &codex,
+            &format!(
+                r#"#!/bin/sh
+cat >/dev/null
+echo called >> '{}'
+printf '%s\n' '{{"type":"item.completed","item":{{"id":"item_0","type":"agent_message","text":"codex ran"}}}}'
+"#,
+                codex_calls.display()
+            ),
+        );
+        let claude = temp.path().join("fake-claude.sh");
+        write_executable(
+            &claude,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"ran"}}'
+printf '%s\n' '{"type":"result","session_id":"s","total_cost_usd":0,"usage":{"input_tokens":1,"output_tokens":1}}'
+"#,
+        );
+        let task = TaskDef {
+            id: "T11".to_string(),
+            title: "Implement in the shared checkout".to_string(),
+            model_hint: Some("codex-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+
+        // Codex is planned; Claude's CLI runs the task instead, and the
+        // attempt records why.
+        let config = shared_checkout_config(&claude, &codex, "claude-sonnet-4-6", false);
+        let run = "graph-unguarded-failover-run";
+        dispatch_in_shared_checkout(config, &workdir, &task, run)
+            .await
+            .expect("claude_cli runs the task");
+        assert_eq!(invocations(&codex_calls), 0, "codex was called");
+        let verdicts = jsonl_rows_where(
+            &workdir.join(".roko/runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let executed = &verdicts[0]["executed"];
+        assert_eq!(executed["provider"], "claude_cli");
+        assert_eq!(
+            executed["failover_chain"],
+            serde_json::json!(["codex-model"])
+        );
+        let reason = executed["failover_reason"]
+            .as_str()
+            .expect("failover reason");
+        assert!(reason.contains("no roko command guard"), "{reason}");
+
+        // With Codex alone, the attempt fails before any call, saying why.
+        let config = shared_checkout_config(&claude, &codex, "codex-model", false);
+        let run = "graph-unguarded-alone-run";
+        let error = dispatch_in_shared_checkout(config, &workdir, &task, run)
+            .await
+            .expect_err("no guarded provider is left");
+        let message = error.to_string();
+        assert!(
+            message.contains("no guarded provider for a shared-checkout attempt"),
+            "{message}"
+        );
+        assert_eq!(invocations(&codex_calls), 0, "codex was called");
+
+        // The operator may accept the risk.
+        let config = shared_checkout_config(&claude, &codex, "claude-sonnet-4-6", true);
+        let run = "graph-unguarded-allowed-run";
+        dispatch_in_shared_checkout(config, &workdir, &task, run)
+            .await
+            .expect("codex runs once the operator allows it");
+        assert_eq!(invocations(&codex_calls), 1);
     }
 
     /// `roko init` workspaces configure only `claude_cli` and the default

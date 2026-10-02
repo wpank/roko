@@ -65,9 +65,12 @@ pub struct AgentConfig {
     /// `["AWS_*", "CLAUDE_CODE_USE_BEDROCK"]`.
     ///
     /// Provider CLIs lose known LLM provider keys other than their own, every
-    /// variable roko loaded from `~/.roko/.env` or `.roko/.env`, and roko's
-    /// own `ROKO_*` credentials. A provider's `api_key_env` is always kept for
-    /// that provider. See `roko_core::child_env::CredentialScrub`.
+    /// other variable whose name looks like a credential (`GITHUB_TOKEN`,
+    /// `AWS_SECRET_ACCESS_KEY`, roko's own `ROKO_*` credentials), and every
+    /// variable roko loaded from `~/.roko/.env` or `.roko/.env`. A provider's
+    /// `api_key_env` is always kept for that provider; a CLI that reads cloud
+    /// credentials itself (Claude Code on Bedrock reads `AWS_*`) needs them
+    /// listed here. See `roko_core::child_env::CredentialScrub`.
     ///
     /// The commands agents run through roko's own tools (`bash`, `run_tests`,
     /// ACP's `bash`) get the gate allowlist instead, as verify steps do

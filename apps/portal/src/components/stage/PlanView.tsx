@@ -523,6 +523,7 @@ export function PlanView({
             rows={rows}
             selectedTaskId={selectedTaskId}
             onSelectTask={handleSelectTask}
+            planId={plan.id}
           />
         </>
       )}

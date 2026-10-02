@@ -55,5 +55,5 @@ Each tab has a corresponding view module in `crates/roko-cli/src/tui/views/`:
 
 ## Snapshot Keys
 
-Each tab has a snapshot key for the headless capture engine, such as `f01` for
-Dashboard. Used in filenames like `f01-dashboard.txt`.
+Each tab has a snapshot key for the headless capture engine: `f01` through `f10`.
+Used in filenames like `f01-dashboard.txt`.

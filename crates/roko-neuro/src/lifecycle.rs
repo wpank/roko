@@ -137,6 +137,10 @@ pub struct RuntimeEpisodeObservation {
     /// Agent output or reflection text used for citation/quotation checks.
     #[serde(default)]
     pub agent_output: String,
+    /// The lesson the agent stated on a verified pass, its `Lesson:` line:
+    /// all a pass stores (decision 4201, backlog 4216).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lesson: Option<String>,
     /// Knowledge entry ids present in the context pack for this runtime event.
     #[serde(default)]
     pub context_entry_ids: Vec<String>,
@@ -176,6 +180,7 @@ impl From<&Episode> for RuntimeEpisodeObservation {
             gate_verdicts: episode.gate_verdicts.clone(),
             gate_output: gate_output_from_episode(episode),
             agent_output: agent_output_from_episode(episode),
+            lesson: None,
             context_entry_ids: extract_context_entry_ids(episode),
             task_tags: task_tags_from_episode(episode),
             source_channel: SourceChannel::GateVerdict,
@@ -708,7 +713,14 @@ impl RuntimeKnowledgeLifecycle {
 }
 
 fn build_runtime_entry(observation: &RuntimeEpisodeObservation) -> Option<KnowledgeEntry> {
-    let summary = runtime_summary(observation);
+    // A pass stores the lesson its agent stated, and nothing without one: a
+    // success note holds no lesson (decision 4201, backlog 4216). A failure
+    // stores its warning.
+    let summary = if observation.gate_passed {
+        observation.lesson.clone()?
+    } else {
+        runtime_summary(observation)
+    };
     if summary.trim().is_empty() {
         return None;
     }
@@ -1001,7 +1013,27 @@ fn runtime_tags(observation: &RuntimeEpisodeObservation, kind: KnowledgeKind) ->
             .iter()
             .map(|verdict| format!("gate:{}", normalize_tag(&verdict.gate))),
     );
+    // A stored lesson is tagged as one, with the crates or packages of the
+    // task's files (backlog 4216).
+    if observation.gate_passed && observation.lesson.is_some() {
+        tags.push("lesson".to_string());
+        let packages = observation.task_tags.iter().filter_map(|tag| package_of(tag));
+        tags.extend(packages.map(str::to_string));
+    }
     dedupe(tags)
+}
+
+/// The crate or package a file path names: the directory after `crates/` or
+/// `packages/`, else its first directory. `None` for a bare file name, or a
+/// tag that is no path.
+fn package_of(path: &str) -> Option<&str> {
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let index = parts
+        .iter()
+        .position(|part| matches!(*part, "crates" | "packages"))
+        .map_or(0, |index| index + 1);
+    // The last part is the file itself.
+    parts.get(index).copied().filter(|_| index + 1 < parts.len())
 }
 
 fn task_tags_from_episode(episode: &Episode) -> Vec<String> {
@@ -1326,6 +1358,7 @@ mod tests {
                 "retry loop exceeded its bound".to_string()
             },
             agent_output: String::new(),
+            lesson: passed.then(|| "Bound retries and verify after each attempt".to_string()),
             context_entry_ids: Vec::new(),
             task_tags: vec!["memory".to_string(), "lifecycle".to_string()],
             source_channel: SourceChannel::GateVerdict,
@@ -1432,6 +1465,33 @@ mod tests {
         // Replaying the same observation adds nothing.
         lifecycle.ingest_observation(reuse).expect("replay");
         assert_eq!(entry(&learned).confirmation_count, 2);
+    }
+
+    /// backlog 4216 (decision 4201): a verified pass whose agent stated no
+    /// lesson admits no entry, though it still writes its receipt; one with
+    /// a lesson stores the lesson, tagged as one.
+    #[test]
+    fn verified_pass_without_lesson_admits_no_entry() {
+        let temp = TempDir::new().expect("tempdir");
+        let lifecycle = lifecycle(&temp);
+        let mut silent = observation("episode-silent", true);
+        silent.lesson = None;
+        let record = lifecycle.ingest_observation(silent).expect("ingest");
+        assert_eq!(record.candidate_entry_id, None);
+        assert_eq!(record.admission_path, RuntimeAdmissionPath::NoCandidate);
+        assert!(lifecycle.knowledge_store().read_all().expect("read").is_empty());
+        assert_eq!(lifecycle.read_records().expect("receipts").len(), 1);
+
+        let mut stated = observation("episode-stated", true);
+        stated.task_tags.push("crates/roko-neuro/src/lifecycle.rs".to_string());
+        lifecycle.ingest_observation(stated).expect("ingest");
+        let entries = lifecycle.knowledge_store().read_all().expect("read");
+        let [entry] = entries.as_slice() else {
+            panic!("one lesson, one entry: {entries:#?}");
+        };
+        assert_eq!(entry.content, "Bound retries and verify after each attempt");
+        assert!(entry.tags.contains(&"lesson".to_string()), "{:?}", entry.tags);
+        assert!(entry.tags.contains(&"roko-neuro".to_string()), "{:?}", entry.tags);
     }
 
     #[test]

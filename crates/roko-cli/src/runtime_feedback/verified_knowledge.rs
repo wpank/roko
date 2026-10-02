@@ -4,11 +4,11 @@
 //! Each [`FeedbackEvent::TaskVerified`] becomes one
 //! [`RuntimeEpisodeObservation`] for [`RuntimeKnowledgeLifecycle`], which:
 //!
-//! - admits a strategy fragment describing the verified attempt when it is
-//!   novel; a repeat of a stored entry (the same task verified again)
-//!   confirms that entry instead, and other close matches go to the
-//!   evidence-based admission store, so the durable store does not fill with
-//!   copies,
+//! - admits the lesson the agent stated, its `Lesson:` line, when it is
+//!   novel, and nothing for a pass that states none (decision 4201, backlog
+//!   4216); a repeat of a stored lesson confirms that entry instead, and
+//!   other close matches go to the evidence-based admission store, so the
+//!   durable store does not fill with copies,
 //! - reinforces the knowledge entries the attempt's prompt surfaced, and
 //!   records the gate confirmation and context once on each of them and on
 //!   the learned entry, so `TierProgression` can promote them
@@ -32,6 +32,8 @@ const MAX_AGENT_OUTPUT_BYTES: usize = 2_000;
 
 /// Most declared files kept as knowledge tags.
 const MAX_FILE_TAGS: usize = 16;
+/// The longest lesson a verified pass stores, in characters (decision 4201).
+const MAX_LESSON_CHARS: usize = 300;
 
 /// A task attempt whose every authored verify step passed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,12 +92,28 @@ impl VerifiedAttempt {
                 .collect(),
             gate_output,
             agent_output,
+            lesson: stated_lesson(&self.agent_output),
             context_entry_ids: self.knowledge_ids.clone(),
             task_tags,
             source_channel: SourceChannel::GateVerdict,
             observed_at: chrono::Utc::now(),
         }
     }
+}
+
+/// The lesson the agent stated: the text after `Lesson:` on the last line of
+/// its output that starts with it (backlog 4216). `none`, an empty lesson or
+/// one longer than [`MAX_LESSON_CHARS`] is no lesson.
+fn stated_lesson(agent_output: &str) -> Option<String> {
+    let lesson = agent_output
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix("Lesson:"))?
+        .trim();
+    let none = lesson.is_empty()
+        || lesson.trim_end_matches('.').eq_ignore_ascii_case("none")
+        || lesson.chars().count() > MAX_LESSON_CHARS;
+    (!none).then(|| lesson.to_string())
 }
 
 /// The first `max` bytes of `text`, cut at a character boundary.
@@ -181,6 +199,9 @@ mod tests {
     };
     use tempfile::tempdir;
 
+    /// The lesson the fixture's agent states.
+    const LESSON: &str = "Keep hello/main.rs free of external crates.";
+
     fn attempt(attempt_id: &str, knowledge_ids: Vec<String>) -> VerifiedAttempt {
         VerifiedAttempt {
             plan_id: "hello-plan".into(),
@@ -196,7 +217,7 @@ mod tests {
                 "rustc hello/main.rs -o hello/hello-bin".into(),
             )],
             knowledge_ids,
-            agent_output: "Created hello/main.rs printing hello world.".into(),
+            agent_output: format!("Created hello/main.rs printing hello world.\nLesson: {LESSON}"),
         }
     }
 
@@ -258,7 +279,7 @@ mod tests {
             .find(|entry| entry.source.as_deref() == Some("runtime:gate_verdict"))
             .expect("the verified attempt is admitted as durable knowledge");
         assert_eq!(learned.kind, KnowledgeKind::StrategyFragment);
-        assert!(learned.content.contains("Write the hello world program"));
+        assert_eq!(learned.content, LESSON);
         assert_eq!(learned.source_episodes, ["run-1:hello-plan/T01/a0"]);
         assert!(learned.confirmation_count >= 1);
         let hint = entries
@@ -283,6 +304,39 @@ mod tests {
             RuntimeAdmissionPath::LightAdmitted
         );
         assert_eq!(receipts[0].gated_reinforcements, 1);
+    }
+
+    /// backlog 4216 (decision 4201): a verified pass stores the lesson its
+    /// agent stated, not a success note, and a pass that states none adds
+    /// no entry. The last `Lesson:` line counts; an over-long one is none.
+    #[tokio::test]
+    async fn verified_pass_stores_stated_lesson() {
+        let dir = tempdir().expect("tempdir");
+        let store = KnowledgeStore::for_workdir(dir.path());
+        let sink = VerifiedKnowledgeSink::for_workdir(dir.path());
+        let mut silent = attempt("run-1:hello-plan/T01/a0", vec![]);
+        silent.agent_output = "Created hello/main.rs.\nLesson: none".into();
+        sink.on_event(&FeedbackEvent::TaskVerified(silent))
+            .await
+            .expect("ingest the silent pass");
+        assert!(store.read_all().expect("read").is_empty());
+
+        let stated = attempt("run-2:hello-plan/T01/a0", vec![]);
+        sink.on_event(&FeedbackEvent::TaskVerified(stated))
+            .await
+            .expect("ingest the stated lesson");
+        let entries = store.read_all().expect("read");
+        let [learned] = entries.as_slice() else {
+            panic!("one lesson, one entry: {entries:#?}");
+        };
+        assert_eq!(learned.content, LESSON);
+        assert!(learned.tags.contains(&"lesson".to_string()), "{:?}", learned.tags);
+        assert!(learned.tags.contains(&"hello".to_string()), "{:?}", learned.tags);
+
+        let long = format!("Lesson: {}", "x".repeat(MAX_LESSON_CHARS + 1));
+        assert_eq!(stated_lesson(&long), None);
+        let twice = "Lesson: first\nmore work\n  Lesson: second";
+        assert_eq!(stated_lesson(twice).as_deref(), Some("second"));
     }
 
     #[tokio::test]

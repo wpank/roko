@@ -42,7 +42,7 @@ Subscriptions are declared in `roko.toml` or `.roko/subscriptions.toml`:
 pattern = "webhook.github.push"
 agent_template = "auto-plan-agent"
 filter = { ref = "refs/heads/main" }
-path_filter = ".roko/prd/**"
+path_filter = "specs/**"
 max_concurrent = 1
 cooldown_secs = 300
 enabled = true

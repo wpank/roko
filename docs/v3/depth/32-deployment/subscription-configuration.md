@@ -20,7 +20,7 @@ overridden by the per-repo `.roko/config.toml`.
 | Trigger | When it fires | Use case |
 |---------|--------------|----------|
 | **Cron** | On a time schedule | Periodic builds, nightly consolidation |
-| **Watch** | When files change (fsnotify) | Reactive to PRD edits |
+| **Watch** | When files change (fsnotify) | Reactive to plan edits |
 | **Webhook** | HTTP POST arrives | GitHub push events, CI triggers |
 
 Multiple triggers can be combined for a single repository.
@@ -49,13 +49,13 @@ repo = "/Users/will/dev/project-a"
 [subscriptions.cron]
 schedule = "*/30 * * * *"
 plan_dirs = ["plans/"]
-changed_paths = [".roko/prd/**/*.md", "plans/**/*.toml"]
+changed_paths = ["plans/**/*.toml"]
 
 [[subscriptions]]
 repo = "/Users/will/dev/project-b"
 
 [subscriptions.watch]
-paths = [".roko/prd/"]
+paths = ["plans/"]
 debounce_ms = 5000
 
 plan_dirs = ["plans/"]
@@ -123,7 +123,7 @@ matching files changed since the last successful run:
 ```toml
 [subscriptions.cron]
 schedule = "*/30 * * * *"
-changed_paths = [".roko/prd/**/*.md"]
+changed_paths = ["plans/**/*.toml"]
 ```
 
 The daemon tracks the last successful run timestamp per subscription in
@@ -139,7 +139,7 @@ event monitoring:
 
 ```toml
 [subscriptions.watch]
-paths = [".roko/prd/", "src/"]
+paths = ["plans/", "src/"]
 debounce_ms = 5000
 recursive = true
 ignore = ["*.swp", "*~", ".git/"]
@@ -249,7 +249,7 @@ Subscriptions:
     Next run: in 12 minutes
 
   /Users/will/dev/project-b
-    Triggers: watch (.roko/prd/)
+    Triggers: watch (plans/)
     Last run: 15m ago (running)
 ```
 

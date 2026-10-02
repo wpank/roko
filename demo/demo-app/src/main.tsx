@@ -1,6 +1,6 @@
 import { StrictMode, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Routes, Route } from 'react-router';
+import { BrowserRouter, Navigate, Routes, Route, useLocation } from 'react-router';
 import ErrorBoundary from './components/ErrorBoundary';
 import AppShell from './components/AppShell';
 import { ToastProvider } from './components/Toast';
@@ -42,6 +42,35 @@ const FixtureRoutes =
   import.meta.env.MODE !== 'production' && import.meta.env.VITE_ALLOW_FIXTURES === '1'
     ? lazy(() => import('./showcase/fixtureRoutes'))
     : null;
+
+/** The legacy pages that moved under /lab (D23); their old top-level paths redirect. */
+const LAB_PATHS = [
+  'demo',
+  'dashboard',
+  'terminal',
+  'builder',
+  'explorer',
+  'settings',
+  'bench',
+  'share',
+];
+
+/** An old top-level path: the same page under /lab, keeping the query and hash. */
+function ToLab() {
+  const { pathname, search, hash } = useLocation();
+  return <Navigate to={`/lab${pathname}${search}${hash}`} replace />;
+}
+
+/** The showcase home until the R1 pages land (S10 §4.1): nothing measured is shown yet. */
+function ShowcaseHome() {
+  return (
+    <section data-showcase-page="overview" style={{ padding: 'var(--sp-8) var(--sp-6)' }}>
+      <h1 style={{ fontSize: 'var(--text-2xl)' }}>A Cybernetic Agent Harness</h1>
+      <p>Cheap models, made dependable by measured self-regulation.</p>
+      <p data-not-measured="PILOT">not yet measured · planned in PILOT</p>
+    </section>
+  );
+}
 
 function RouteLoading() {
   return (
@@ -103,28 +132,37 @@ createRoot(document.getElementById('root')!).render(
             <Routes>
               {FixtureRoutes && <Route path="__fixtures/*" element={<FixtureRoutes />} />}
               <Route element={<AppShell />}>
-                <Route index element={<Landing />} />
-                <Route path="dashboard" element={<DashboardLayout />}>
-                  <Route index element={<CostDashboard />} />
-                  <Route path="fleet" element={<AgentFleet />} />
-                  <Route path="knowledge" element={<KnowledgeGraph />} />
-                  <Route path="integrity" element={<IntegrityView />} />
-                  <Route path="entries" element={<KnowledgeEntries />} />
-                  <Route path="routing" element={<CascadeRouter />} />
-                  <Route path="dreams" element={<DreamsView />} />
-                  <Route path="feeds" element={<FeedsDashboard />} />
-                  <Route path="relay" element={<RelayDashboard />} />
+                {/* The showcase (S10 §4.2): measured claims at the home. */}
+                <Route index element={<ShowcaseHome />} />
+                {/* Legacy pages, local only (D23). */}
+                <Route path="lab">
+                  <Route index element={<Landing />} />
+                  {/* AppShell keeps the scenario player mounted while this path is open. */}
+                  <Route path="demo" />
+                  <Route path="dashboard" element={<DashboardLayout />}>
+                    <Route index element={<CostDashboard />} />
+                    <Route path="fleet" element={<AgentFleet />} />
+                    <Route path="knowledge" element={<KnowledgeGraph />} />
+                    <Route path="integrity" element={<IntegrityView />} />
+                    <Route path="entries" element={<KnowledgeEntries />} />
+                    <Route path="routing" element={<CascadeRouter />} />
+                    <Route path="dreams" element={<DreamsView />} />
+                    <Route path="feeds" element={<FeedsDashboard />} />
+                    <Route path="relay" element={<RelayDashboard />} />
+                  </Route>
+                  <Route path="terminal" element={<Terminal />} />
+                  <Route path="builder" element={<Builder />} />
+                  <Route path="explorer" element={<Explorer />} />
+                  <Route path="settings" element={<Settings />} />
+                  <Route path="bench" element={<Bench />} />
+                  <Route path="bench/run/:id" element={<BenchRunDetail />} />
+                  <Route path="bench/compare" element={<BenchCompare />} />
+                  <Route path="share/:token" element={<SharePage />} />
+                  <Route path="share" element={<SharePage />} />
                 </Route>
-                <Route path="demo" element={null} />
-                <Route path="terminal" element={<Terminal />} />
-                <Route path="builder" element={<Builder />} />
-                <Route path="explorer" element={<Explorer />} />
-                <Route path="settings" element={<Settings />} />
-                <Route path="bench" element={<Bench />} />
-                <Route path="bench/run/:id" element={<BenchRunDetail />} />
-                <Route path="bench/compare" element={<BenchCompare />} />
-                <Route path="share/:token" element={<SharePage />} />
-                <Route path="share" element={<SharePage />} />
+                {LAB_PATHS.map((path) => (
+                  <Route key={path} path={`${path}/*`} element={<ToLab />} />
+                ))}
               </Route>
             </Routes>
           </Suspense>

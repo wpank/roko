@@ -5,15 +5,15 @@ import RevealWhen from '../../components/RevealWhen';
 import ComponentErrorBoundary from '../../components/design/ComponentErrorBoundary';
 
 const VIEWS = [
-  { to: '/dashboard', label: 'Cost', icon: 'cost', end: true },
-  { to: '/dashboard/fleet', label: 'Fleet', icon: 'agent', end: false },
-  { to: '/dashboard/knowledge', label: 'Knowledge', icon: 'database', end: false },
-  { to: '/dashboard/entries', label: 'Entries', icon: 'event', end: false },
-  { to: '/dashboard/routing', label: 'Routing', icon: 'route', end: false },
-  { to: '/dashboard/integrity', label: 'Integrity', icon: 'hash', end: false },
-  { to: '/dashboard/dreams', label: 'Dreams', icon: 'spark', end: false },
-  { to: '/dashboard/feeds', label: 'Feeds', icon: 'event', end: false },
-  { to: '/dashboard/relay', label: 'Relay', icon: 'agent', end: false },
+  { to: '/lab/dashboard', label: 'Cost', icon: 'cost', end: true },
+  { to: '/lab/dashboard/fleet', label: 'Fleet', icon: 'agent', end: false },
+  { to: '/lab/dashboard/knowledge', label: 'Knowledge', icon: 'database', end: false },
+  { to: '/lab/dashboard/entries', label: 'Entries', icon: 'event', end: false },
+  { to: '/lab/dashboard/routing', label: 'Routing', icon: 'route', end: false },
+  { to: '/lab/dashboard/integrity', label: 'Integrity', icon: 'hash', end: false },
+  { to: '/lab/dashboard/dreams', label: 'Dreams', icon: 'spark', end: false },
+  { to: '/lab/dashboard/feeds', label: 'Feeds', icon: 'event', end: false },
+  { to: '/lab/dashboard/relay', label: 'Relay', icon: 'agent', end: false },
 ] satisfies Array<{ to: string; label: string; icon: FlatIconName; end: boolean }>;
 
 const shellStyle: CSSProperties = {

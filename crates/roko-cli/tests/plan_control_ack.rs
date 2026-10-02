@@ -133,7 +133,8 @@ fn a_running_plan_answers_plan_control_commands() {
             .append("one.txt", "one\n")
             .hold_while(&hang, &started, 120)],
     );
-    let (workspace, _provider) = ScriptedPlanWorkspace::with_provider(PLAN, TASKS, &script, "");
+    let (workspace, _provider) =
+        ScriptedPlanWorkspace::with_provider_at_short_path(PLAN, TASKS, &script, "");
     let (repo, home) = (&workspace.repo, &workspace.home);
     fs::write(&hang, "").expect("hold T1's agent");
     let log = workspace.root.join("plan-run.log");

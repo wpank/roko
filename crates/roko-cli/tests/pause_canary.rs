@@ -194,7 +194,8 @@ fn pause_holds_next_task_until_resume() {
                 .hold_while(&hang, &t1_started, 120)],
         )
         .task("T2", [Turn::reply().append("two.txt", "two\n")]);
-    let (workspace, provider) = ScriptedPlanWorkspace::with_provider(PLAN, TASKS, &script, "");
+    let (workspace, provider) =
+        ScriptedPlanWorkspace::with_provider_at_short_path(PLAN, TASKS, &script, "");
     let fixtures = workspace.fixtures.clone();
     fs::write(&hang, "").expect("hold T1's agent");
     let mut run = BackgroundRun::start(&workspace, PLAN);

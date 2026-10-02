@@ -1880,3 +1880,49 @@ fn control_events_survive_long_stream_backpressure() {
         assert_eq!(task.status, TaskStatus::Done, "{task_id}");
     }
 }
+
+/// bug-cc61a3: an attempt's screened transcript replaces the text it streamed
+/// unscreened and keeps its live tool step. Unscreened text that trails the
+/// screened copy is dropped, until the agent's next attempt starts.
+#[test]
+fn screened_transcript_replaces_unscreened_text() {
+    use crate::runner::tui_bridge::TuiBridge;
+    use crate::tui::widgets::stream_output::display_text;
+
+    let dir = tempdir().expect("tempdir");
+    let hub = crate::state_hub::shared_state_hub();
+    let mut app = App::new_connected(dir.path(), &hub);
+    let bridge = TuiBridge::new(hub.sender());
+    let unscreened = |text: &str| {
+        let payload = serde_json::json!({ "text": text });
+        bridge.publish_unscreened_stream_record("a", "p", "t", 0, "text", payload);
+    };
+    let texts = |app: &App| {
+        app.tui_state
+            .agent_output_history
+            .records_for("a")
+            .iter()
+            .map(|record| display_text(&record.text).into_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // An attempt streams a live tool step and two drafts.
+    bridge.agent_spawned("a", "p", "t", 1, "impl", "sonnet", "claude_cli");
+    bridge.tool_step("a", "p", "t", 0, "c1", "Bash", "ls");
+    unscreened("draft one");
+    unscreened("draft two");
+    app.drain_state_events();
+    assert_eq!(texts(&app), ["Bash ls", "draft one", "draft two"]);
+
+    // Its screened transcript arrives, and a late draft trails it.
+    bridge.agent_text_delta("a", "p", "t", 0, "final answer");
+    unscreened("late draft");
+    app.drain_state_events();
+    assert_eq!(texts(&app), ["Bash ls", "final answer"]);
+
+    // The next attempt's drafts show until its own transcript settles them.
+    bridge.agent_spawned("a", "p", "t", 2, "impl", "sonnet", "claude_cli");
+    unscreened("retry draft");
+    app.drain_state_events();
+    assert_eq!(texts(&app), ["Bash ls", "final answer", "retry draft"]);
+}

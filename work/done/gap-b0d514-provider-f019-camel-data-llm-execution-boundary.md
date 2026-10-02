@@ -2,23 +2,33 @@
 id = "gap-b0d514"
 kind = "gap"
 title = "CaMeL Data-LLM execution boundary not enforced"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "L"
 goal = "features"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "4dc345a29"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F019"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F019"
 anchors = ["crates/roko-agent/src/safety/data_llm.rs::DataLlmRouter", "crates/roko-agent/src/tool_loop/mod.rs::ToolLoop", "crates/roko-agent/src/dispatcher/mod.rs::tool_result_taint", "crates/roko-core/src/config/agent.rs::DataLlmConfig", "crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q '\"agent.data_llm\", NO_READER' crates/roko-cli/src/graph_task_dispatch.rs && grep -rqw 'fn untrusted_tool_result_never_reaches_main_model_raw' crates/roko-agent/src/ && cargo test -p roko-agent untrusted_tool_result_never_reaches_main_model_raw"
+command = "! grep -qE '^ +\"agent\\.data_llm\",$' crates/roko-cli/src/graph_task_dispatch/inert_settings.rs && grep -rqw 'fn untrusted_tool_result_never_reaches_main_model_raw' crates/roko-agent/src/ && cargo test -p roko-agent untrusted_tool_result_never_reaches_main_model_raw"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T00:39:04Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "L"
+claimed_at = "2026-10-01T18:58:11Z"
+forced = false
+evidence = "Gate 6e on ddf47dbd6 plus its fixes, re-run at 3ac297a00 and merged as 4dc345a29 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean on 10 crates; lib tests pass (roko-cli 3420, roko-agent 2289, roko-core 1984, roko-learn 1230, roko-serve 1013, roko-graph 488, roko-conductor 316, roko-acp 220, roko-execution 193, roko-dreams 101); all eight canaries, golden_path_suite, secret_canary and C2 pass; roko-acp integration, smoke, graph_plan_callers, graph_timeout_matrix and plan_conversion pass; bin 445; scripts/test_run_evidence_graph.py 9/9 against the gate binary; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem
@@ -156,6 +166,90 @@ LLM failure blocks the content instead of passing it through.
   `crates/roko-core/src/config/loader.rs`. While that entry exists, loading drops the key with a "was removed"
   warning. The verify's first clause greps `graph_task_dispatch.rs`, but the inert list moved to
   `graph_task_dispatch/inert_settings.rs`.
+- 2026-10-01 (wk-childenv): Plan step 1 (config) on work/gap-1555ac; cargo verification deferred to the batch
+  check. `[agent.data_llm]` is back as `AgentConfig::data_llm: Option<DataLlmConfig>` (`None`, the default, turns
+  it off), and `DataLlmConfig` gains `timeout_ms` (30 s) and `max_input_bytes` (32 KiB). gap-7a3527 had removed the
+  key, so its `REMOVED_CONFIG_KEYS` entry is gone and its schema sentinel is back in `build_schema_tree`. Loading
+  fails (invariant 8) when `strip_tool_calls` is false or either bound is 0, and `validate_references` warns when
+  `model` is neither a `[models.*]` key nor a builtin. Until step 6 builds the boundary from config,
+  `graph_engine_inert_settings` reports the key, and the config docs say it protects nothing yet. Tests:
+  `validate_invariants_rejects_a_data_llm_with_tools_or_no_bounds`, `validate_references_warns_on_unknown_data_llm_model`,
+  the data_llm rows of `every_optional_config_key_survives_a_load` and `inert_settings_list_only_changed_keys_the_graph_engine_ignores`.
+- 2026-10-01 (wk-childenv): Plan step 2 (data-only caller) on work/gap-1555ac; cargo verification deferred to the
+  batch check. `DataLlmBoundary { router, backend }` in `safety/data_llm.rs` (re-exported from `safety`) is built
+  with `DataLlmBoundary::new(config, backend)`, which refuses `strip_tool_calls = false` or a zero bound. `process`
+  sanitizes, cuts the text to `max_input_bytes` at a character boundary, and sends only the fixed
+  `DATA_LLM_SYSTEM_PROMPT` (plus the configured output schema) and that text, with an empty tool list, through
+  `stream_turn` under `timeout_ms`, `max_tokens` and `temperature`. It never dispatches a tool call. A timeout, a
+  backend error, a response that asks for a tool, or output that fails `validate_output` is a `DataLlmWithheld`
+  that names no content. Building the backend from the provider factory belongs to step 6. Tests:
+  `data_llm_boundary_sends_only_the_fixed_prompt_and_the_text`, `data_llm_boundary_withholds_what_it_cannot_validate`,
+  `data_llm_boundary_bounds_its_input`, `data_llm_boundary_refuses_tools_and_unbounded_calls`.
+- 2026-10-01 (wk-childenv): Plan step 3 (tool loop) on work/gap-1555ac; cargo verification deferred to the batch
+  check. `ToolLoop::with_data_llm(Arc<DataLlmBoundary>)` (default: none) makes `run_inner` pass each
+  `dispatch_batch` result through `DataLlmBoundary::screen_result` before previews and `render_results`, by the
+  taint `tool_source_taint` gives the tool's registry source (MCP and plugin: third party; web search, retrieval
+  and network builtins: external fetch; other builtins: none). A routed result reaches the model only as
+  `[untrusted output (<reason>), read by the data model: ...]` plus the validated JSON, or as the tool error
+  `untrusted content withheld: <why>`. Images and artifacts are withheld, and a `ToolError::Other` message is
+  screened like text. Tests: `a_routed_tool_result_reaches_the_model_only_as_data_output`,
+  `a_withheld_tool_result_never_reaches_the_model_raw` (tool_loop/mod.rs).
+- Left (steps 4-8): the narrow output type (step 4; validation is still JSON plus the configured `required` keys);
+  a typed withheld error instead of `ToolError::Other` (step 5); building the boundary from `config.agent.data_llm`
+  through the provider factory for every roko-owned loop, including ACP's, and dropping the inert entry (step 6);
+  audit records (step 7); cancellation coverage (step 8). The verify now greps `inert_settings.rs`, where the inert
+  list moved. Its test, `untrusted_tool_result_never_reaches_main_model_raw`, is left for step 6, so that it covers
+  the boundary built from config; the step-3 tests use other names, so the verify does not pass early.
+- 2026-10-02 (wk-childenv): Plan step 4 (output validation, option a) on work/gap-1555ac; cargo verification
+  deferred to the batch check. `DataLlmBoundary::process` now returns a `DataLlmExtraction { summary: String,
+  facts: Vec<String> }`: after `validate_output`, the JSON is read into that type (other keys dropped), with a
+  2 KiB summary, at most 50 facts and 512 bytes per fact. A rejection names the rule broken and quotes none of the
+  output. A backend error's message, which may echo the request, stays in logs (`Debug`) and out of the notice the
+  model sees. No new dependency. Test: `data_llm_boundary_passes_on_only_a_bounded_extraction`.
+- 2026-10-02 (wk-childenv): Plan step 5 (failure policy) on work/gap-1555ac; cargo verification deferred to the
+  batch check. A withheld result is now the typed `ToolError::UntrustedContentWithheld(<why>)` (roko-core
+  `tool/call.rs`; `classify_tool_error` maps it to `FailureKind::PermissionDenied`), not `ToolError::Other`. The
+  fail-closed policy itself landed with step 3: there is no path back to the raw text. The serde and classification
+  variant lists in roko-core's tests include it; the boundary's tool-loop test checks the notice.
+- 2026-10-02 (wk-childenv): Plan step 6, part 1 (provider factory) on work/gap-1555ac; cargo verification deferred
+  to the batch check. `AgentOptions::data_llm` carries the boundary. `create_agent_for_model` builds it from
+  `config.agent.data_llm` with the new `provider::data_llm_boundary` (the data model's backend comes from
+  `tool_loop::backends::create_tool_loop_backend`; a CLI model, or one it cannot resolve, fails the agent's
+  construction) for adapters that run tools in process (`supports_local_tool_runtime`: Anthropic API,
+  OpenAI-compatible, Cerebras, Gemini and Perplexity). Each of their `ToolLoop`s takes it through the new
+  `ToolLoop::with_optional_data_llm`. The inert-settings entry is gone, and the config docs say what is covered.
+  Exhaustive `AgentOptions` literals gained `data_llm: None` (roko-dreams `runner.rs`, roko-serve `dispatch.rs`,
+  roko-cli `tests/smoke.rs`, roko-agent `provider/claude_cli.rs` test). Test:
+  `data_llm_boundary_needs_a_model_roko_calls_over_an_api`.
+- The verify's first clause now matches only an inert-list entry line, not the test's mention of the key.
+- 2026-10-02 (wk-childenv): Plan step 6, part 2 (ACP) on work/gap-1555ac; cargo verification deferred to the batch
+  check. ACP's three `ToolLoop`s (`roko-acp/src/bridge_events/dispatch.rs`: the Anthropic loop and the
+  OpenAI-compatible MCP and builtin loops) take the boundary from the new `acp_data_llm`, which calls
+  `provider::data_llm_boundary` with the session config. Without `[agent.data_llm]` nothing changes. A configured
+  boundary that cannot be built fails the turn with a `Failure` event that says why, instead of running the tools
+  unscreened; the OpenAI-compatible path builds it only when one of its tool loops can run. `DataLlmConfig`'s doc
+  and the config docs now include ACP. Test: `acp_data_llm_is_built_from_config_or_fails_the_turn` (roko-acp
+  `bridge_events/tests.rs`).
+- 2026-10-02 (wk-childenv): the verify's end-to-end test on work/gap-1555ac; cargo verification deferred to the
+  batch check. `untrusted_tool_result_never_reaches_main_model_raw` (roko-agent `provider/openai_compat.rs`) builds
+  an agent with `create_agent_for_model` from a config whose `[agent.data_llm]` names a second model on a local
+  HTTP server, and gives it a plugin tool whose output carries an injection. It checks that the data model's request
+  has the raw output but no tools and not the main system prompt, and that the main model's next request carries
+  the data model's extraction, marked as data, and not the raw output. With it, every Done-when line is covered;
+  the verify's grep clauses pass now, and its `cargo test` clause waits for the gate.
+- Left, outside Done-when: audit records of each routing decision (Plan step 7), and cancellation (step 8): the
+  data-LLM call is not raced against the loop's cancel token, so a cancel waits for the call or its `timeout_ms`
+  (the raw text still never passes).
+- 2026-10-02 (wk-childenv): gate 6e failed three of the boundary's tests. The dispatcher's immune screen
+  (`tool_immune::screen_tool_result`) quarantines untrusted results that contain a known injection phrase ("ignore
+  previous instructions", ...) and rate-limits that tool source for 60 s, before the loop's data-LLM boundary sees
+  them. The fixtures used such phrases, and the tool-loop tests shared `/tmp` as their immune root, so the first
+  test's rate limit denied the second. The order stays as it is: the deterministic screen runs first and keeps the
+  quarantine evidence of the raw payload, the data model reads the rest, and an immune denial reaches the model as
+  roko's own error and passes the boundary unchanged. The fixtures now carry injections the screen does not know,
+  each test keeps its immune state in a tempdir (the e2e test through `AgentOptions::working_dir`), and the new
+  `the_immune_screen_withholds_known_injections_before_the_data_model` pins the order: a known phrase is quarantined
+  and the data model is never called.
 
 ## Original notes
 

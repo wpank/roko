@@ -1154,6 +1154,13 @@ pub async fn generate_plan_from_prd_with_failure_context(
     Ok(plans_root)
 }
 
+/// Characters of the model's output that a failed plan generation prints.
+const FAILURE_OUTPUT_CHARS: usize = 2000;
+/// Characters of the model's output that a non-retriable agent error quotes.
+const AGENT_ERROR_PREVIEW_CHARS: usize = 500;
+/// Characters of the model's last output that a retry prompt quotes.
+const RETRY_OUTPUT_CHARS: usize = 2000;
+
 /// Default model escalation chain: haiku -> sonnet -> opus.
 ///
 /// When the workspace configures models, chain models it does not configure
@@ -1753,7 +1760,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // Non-retriable errors (model not found, context overflow): fail
             // immediately because a retry will hit the same permanent error.
             if !crash_class.is_retriable() {
-                let preview = &output[..output.len().min(500)];
+                let preview = crate::run::truncate(&output, AGENT_ERROR_PREVIEW_CHARS);
                 return Err(anyhow!(
                     "plan generation agent failed (exit code {exit_code}, {crash_class:?}): \
                      {preview}\nHint: {}",
@@ -2034,8 +2041,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     max_retries + 1,
                 );
                 let error = validated_toml.as_ref().unwrap_err();
-                let truncated_output = if last_output.len() > 2000 {
-                    format!("{}…(truncated)", &last_output[..2000])
+                let head = crate::run::truncate(&last_output, RETRY_OUTPUT_CHARS);
+                let truncated_output = if head.len() < last_output.len() {
+                    format!("{head}…(truncated)")
                 } else {
                     last_output.clone()
                 };
@@ -2209,8 +2217,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 None,
             )
             .await;
-            eprintln!("--- Raw model output (first 2000 chars) ---");
-            eprintln!("{}", &output[..output.len().min(2000)]);
+            eprintln!("--- Raw model output (first {FAILURE_OUTPUT_CHARS} chars) ---");
+            eprintln!("{}", crate::run::truncate(&output, FAILURE_OUTPUT_CHARS));
             eprintln!("--- End raw model output ---");
             return Err(anyhow!(
                 "Plan generation failed after retries: no valid tasks.toml was produced.\n\
@@ -3622,6 +3630,24 @@ pub fn validate_prd_grounding(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug-d3c72e: a failed plan generation prints the head of the model's
+    /// output. Cutting it at byte 2000 panicked when that byte fell inside a
+    /// multi-byte character; the cut now falls on a char boundary.
+    #[test]
+    fn prd_failure_output_cuts_at_a_char_boundary() {
+        let output = format!("{}é and more", "x".repeat(FAILURE_OUTPUT_CHARS - 1));
+        assert!(!output.is_char_boundary(FAILURE_OUTPUT_CHARS));
+
+        let printed = crate::run::truncate(&output, FAILURE_OUTPUT_CHARS);
+
+        assert_eq!(printed.chars().count(), FAILURE_OUTPUT_CHARS);
+        assert!(printed.ends_with('é'));
+        let preview = crate::run::truncate(&output, AGENT_ERROR_PREVIEW_CHARS);
+        assert_eq!(preview, "x".repeat(AGENT_ERROR_PREVIEW_CHARS));
+        assert_eq!(crate::run::truncate(&output, RETRY_OUTPUT_CHARS), printed);
+        assert_eq!(crate::run::truncate("short", FAILURE_OUTPUT_CHARS), "short");
+    }
 
     #[test]
     fn slugify_basic() {

@@ -177,6 +177,36 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         ));
     }
 
+    // The data LLM reads untrusted content, so it stays tool-less, and each
+    // of its calls is bounded in time and size (gap-b0d514).
+    if let Some(data_llm) = &config.agent.data_llm {
+        if !data_llm.strip_tool_calls {
+            results.push(invariant(
+                8,
+                InvariantSeverity::Error,
+                "agent.data_llm.strip_tool_calls",
+                "agent.data_llm.strip_tool_calls must be true: the data LLM reads untrusted \
+                 content, so it may not call tools",
+            ));
+        }
+        if data_llm.timeout_ms == 0 {
+            results.push(invariant(
+                8,
+                InvariantSeverity::Error,
+                "agent.data_llm.timeout_ms",
+                "agent.data_llm.timeout_ms must be at least 1",
+            ));
+        }
+        if data_llm.max_input_bytes == 0 {
+            results.push(invariant(
+                8,
+                InvariantSeverity::Error,
+                "agent.data_llm.max_input_bytes",
+                "agent.data_llm.max_input_bytes must be at least 1",
+            ));
+        }
+    }
+
     results
 }
 
@@ -1082,6 +1112,45 @@ mod tests {
     #[test]
     fn validate_invariants_accepts_default_config() {
         assert!(validate_invariants(&RokoConfig::default()).is_empty());
+    }
+
+    /// gap-b0d514: a data LLM that may call tools, or whose calls have no
+    /// time or size bound, fails the config.
+    #[test]
+    fn validate_invariants_rejects_a_data_llm_with_tools_or_no_bounds() {
+        use crate::config::DataLlmConfig;
+
+        let mut config = RokoConfig::default();
+        config.agent.data_llm = Some(DataLlmConfig::default());
+        assert!(validate_invariants(&config).is_empty());
+
+        config.agent.data_llm = Some(DataLlmConfig {
+            strip_tool_calls: false,
+            timeout_ms: 0,
+            max_input_bytes: 0,
+            ..DataLlmConfig::default()
+        });
+        let failed: Vec<_> = validate_invariants(&config)
+            .into_iter()
+            .filter(|result| result.invariant_id == 8)
+            .collect();
+        assert!(
+            failed
+                .iter()
+                .all(|result| result.severity == InvariantSeverity::Error)
+        );
+        let paths: Vec<_> = failed
+            .iter()
+            .map(|result| result.config_path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "agent.data_llm.strip_tool_calls",
+                "agent.data_llm.timeout_ms",
+                "agent.data_llm.max_input_bytes",
+            ]
+        );
     }
 
     // ---- unknown field detection tests ----

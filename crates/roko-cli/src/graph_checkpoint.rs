@@ -44,7 +44,7 @@ use roko_learn::telemetry::{AttemptOpenRecord, AttemptOutcome};
 use serde::{Deserialize, Serialize};
 
 use crate::runner::plan_loader::Plan;
-use crate::safety_provenance::GraphProvenanceSink;
+use crate::safety_provenance::{GraphProvenanceSink, SafetyProvenanceSummary};
 use crate::task_accept;
 use crate::task_parser::{TaskDef, TasksFile};
 
@@ -88,6 +88,10 @@ pub const BATCH_EXTENSION: &str = "roko.batch@1";
 /// Known extension namespace for the plan's whole-plan check (`[meta]
 /// verify`, gap-60233f) when it ran in the shared working tree.
 pub const PLAN_VERIFY_EXTENSION: &str = "roko.plan.verify@1";
+
+/// Namespace of [`EXT_SAFETY_PROVENANCE`] (gap-ff95f5). This build reads
+/// version 1 only, and fails closed on any other.
+const SAFETY_PROVENANCE_NAMESPACE: &str = "roko.safety-provenance";
 
 /// Known extension namespace for the tasks whose latest attempt a stop cut
 /// off, as the last resume found them (gap-36f3fb).
@@ -1222,6 +1226,52 @@ impl PreparedGraphCheckpoint {
     /// write stores `sink`'s summary under [`EXT_SAFETY_PROVENANCE`].
     pub fn attach_safety_provenance(&mut self, sink: Arc<GraphProvenanceSink>) {
         self.safety_provenance = Some(sink);
+    }
+
+    /// The run's safety provenance as the checkpoint stored it under
+    /// [`EXT_SAFETY_PROVENANCE`]; `None` when it stored none, as for a fresh
+    /// run or a checkpoint from before gap-ff95f5.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on a version of the extension this build cannot read, or
+    /// a value it cannot decode.
+    pub fn stored_safety_provenance(&self) -> Result<Option<SafetyProvenanceSummary>> {
+        let unknown = self.manifest.extensions.iter().find(|(key, extension)| {
+            extension.namespace == SAFETY_PROVENANCE_NAMESPACE
+                && (key.as_str() != EXT_SAFETY_PROVENANCE || extension.schema_version != 1)
+        });
+        if let Some((key, _)) = unknown {
+            bail!("safety provenance: this build cannot read the checkpoint's `{key}`");
+        }
+        let Some(extension) = self.manifest.extensions.get(EXT_SAFETY_PROVENANCE) else {
+            return Ok(None);
+        };
+        serde_json::from_value(extension.value.clone())
+            .map(Some)
+            .context("safety provenance: decode the checkpoint's summary")
+    }
+
+    /// Open the run's safety provenance sink, attach it, and store its
+    /// summary (gap-ff95f5). A run whose checkpoint stored no provenance
+    /// starts fresh, whatever history the workspace's logs hold. A resumed
+    /// run's sink comes back from what the checkpoint stored, its own records
+    /// checked against the witness and custody logs, so call this before any
+    /// task runs; see [`GraphProvenanceSink::resume`].
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when the stored provenance or the run's records do not
+    /// check out.
+    pub fn open_safety_provenance(&mut self, workdir: &Path) -> Result<Arc<GraphProvenanceSink>> {
+        let sink = match self.stored_safety_provenance()? {
+            Some(stored) => GraphProvenanceSink::resume(workdir, &self.manifest.run_id, &stored)?,
+            None => GraphProvenanceSink::start(workdir)?,
+        };
+        let sink = Arc::new(sink);
+        self.attach_safety_provenance(Arc::clone(&sink));
+        self.persist_manifest()?;
+        Ok(sink)
     }
 
     /// Rebuild the [`EXT_SAFETY_PROVENANCE`] extension from the attached
@@ -3703,6 +3753,238 @@ depends_on = ["T1"]
         let summary = stored(&checkpoint).expect("extension");
         assert_eq!(summary.records, 1);
         assert_eq!(summary, sink.summary());
+    }
+
+    /// Record one tool call of run `run_id` with `sink`, its turn tainted at
+    /// `taint`: an intent, then its outcome. Returns the call's argument and
+    /// result digests.
+    fn record_tool_call(
+        sink: &GraphProvenanceSink,
+        run_id: &str,
+        taint: roko_core::extension::CamelTaintLevel,
+    ) -> (roko_core::ContentHash, roko_core::ContentHash) {
+        use roko_agent::safety::{
+            ProvenanceCall, ProvenanceIntent, ProvenanceOutcome, ProvenanceVerdict,
+            SafetyProvenanceSink,
+        };
+
+        let key = sink.digest_key();
+        let call = ProvenanceCall {
+            run_id: run_id.to_string(),
+            task_id: "task-1".to_string(),
+            attempt_id: "1".to_string(),
+            turn_id: "1".to_string(),
+            call_id: "call-1".to_string(),
+            tool: "fetch".to_string(),
+            args_digest: roko_core::ContentHash::keyed(&key, b"arguments"),
+        };
+        let intent = ProvenanceIntent {
+            call: call.clone(),
+            taint,
+        };
+        let ack = sink.record_intent(&intent).expect("record the intent");
+        let result = roko_core::ContentHash::keyed(&key, b"result");
+        let outcome = ProvenanceOutcome {
+            call: call.clone(),
+            intent: Some(ack.record_id),
+            verdict: ProvenanceVerdict::Succeeded,
+            reason: None,
+            result_digest: Some(result),
+            taint,
+        };
+        sink.record_outcome(&outcome).expect("record the outcome");
+        (call.args_digest, result)
+    }
+
+    /// Run plan `p` once in `dir`, recording one untrusted tool call, and
+    /// finish it failed so that it can resume.
+    fn run_with_provenance(dir: &Path, graph: &Graph) {
+        let mut checkpoint = prepare_graph_checkpoint(dir, None, "p", 1, graph, false, false)
+            .expect("fresh checkpoint");
+        let sink = checkpoint
+            .open_safety_provenance(dir)
+            .expect("open provenance");
+        let run_id = checkpoint.run_id().to_string();
+        let untrusted = roko_core::extension::CamelTaintLevel::Untrusted;
+        record_tool_call(&sink, &run_id, untrusted);
+        checkpoint.finish(false).expect("finish");
+    }
+
+    /// How resuming plan `p` in `dir` fails to restore its safety provenance.
+    fn restore_error(dir: &Path, graph: &Graph) -> String {
+        let mut resumed = prepare_graph_checkpoint(dir, None, "p", 1, graph, false, false)
+            .expect("resume checkpoint");
+        let error = resumed
+            .open_safety_provenance(dir)
+            .expect_err("the restore must fail closed");
+        format!("{error:#}")
+    }
+
+    #[test]
+    fn safety_provenance_restores_taint_after_restart() {
+        use roko_core::extension::CamelTaintLevel;
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut first = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        let sink = first
+            .open_safety_provenance(dir.path())
+            .expect("open provenance");
+        let run_id = first.run_id().to_string();
+        let (args, result) = record_tool_call(&sink, &run_id, CamelTaintLevel::Untrusted);
+        first.finish(false).expect("finish");
+        drop((first, sink));
+
+        // Another process resumes the run, and the lineage comes back first.
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        let restored = resumed
+            .open_safety_provenance(dir.path())
+            .expect("restore provenance");
+        let taint = restored.taint();
+        assert_eq!(taint.get_level(&args), Some(CamelTaintLevel::Untrusted));
+        assert_eq!(taint.get_level(&result), Some(CamelTaintLevel::Untrusted));
+        assert_eq!(taint.derived_from(&result), [args]);
+        assert_eq!(restored.summary().records, 2);
+        let stored = resumed
+            .stored_safety_provenance()
+            .expect("stored provenance")
+            .expect("a summary");
+        assert_eq!(stored, restored.summary());
+    }
+
+    #[test]
+    fn safety_provenance_restore_tracks_calls_after_the_last_save() {
+        use roko_core::extension::CamelTaintLevel;
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut first = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        let sink = first
+            .open_safety_provenance(dir.path())
+            .expect("open provenance");
+        let run_id = first.run_id().to_string();
+        // The process dies after the call, before another checkpoint write.
+        let (args, result) = record_tool_call(&sink, &run_id, CamelTaintLevel::External);
+        drop((first, sink));
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        let restored = resumed
+            .open_safety_provenance(dir.path())
+            .expect("restore provenance");
+        let taint = restored.taint();
+        assert_eq!(taint.get_level(&result), Some(CamelTaintLevel::External));
+        assert_eq!(taint.derived_from(&result), [args]);
+    }
+
+    #[test]
+    fn safety_provenance_restore_fails_closed_on_a_tampered_custody_log() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        run_with_provenance(dir.path(), &graph);
+        let log = RokoLayout::for_project(dir.path()).custody_log();
+        let text = std::fs::read_to_string(&log).expect("custody log");
+        let tampered = text.replacen("tool_outcome:fetch", "tool_outcome:fetch2", 1);
+        assert_ne!(tampered, text);
+        std::fs::write(&log, tampered).expect("tamper with the custody log");
+
+        let error = restore_error(dir.path(), &graph);
+        assert!(error.contains("custody chain"), "{error}");
+    }
+
+    #[test]
+    fn safety_provenance_restore_fails_closed_on_a_missing_witness_root() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        run_with_provenance(dir.path(), &graph);
+        let log = RokoLayout::for_project(dir.path()).witness_log();
+        std::fs::remove_file(&log).expect("remove the witness log");
+
+        let error = restore_error(dir.path(), &graph);
+        assert!(error.contains("witness"), "{error}");
+    }
+
+    #[test]
+    fn safety_provenance_restore_fails_closed_on_a_taint_downgrade() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        run_with_provenance(dir.path(), &graph);
+        let path = dir.path().join(".roko/state/graph/p/checkpoint.json");
+        let mut manifest = read_manifest(&path).expect("manifest");
+        let extension = manifest
+            .extensions
+            .get_mut(EXT_SAFETY_PROVENANCE)
+            .expect("the provenance extension");
+        // Everything the run proved tainted now reads as trusted.
+        extension.value["taint"] = roko_agent::safety::TaintTracker::new().to_json();
+        write_manifest_atomic(&path, &manifest).expect("write the manifest");
+
+        let error = restore_error(dir.path(), &graph);
+        assert!(error.contains("taint index"), "{error}");
+    }
+
+    #[test]
+    fn safety_provenance_restore_fails_closed_on_an_unknown_version() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        run_with_provenance(dir.path(), &graph);
+        let path = dir.path().join(".roko/state/graph/p/checkpoint.json");
+        let mut manifest = read_manifest(&path).expect("manifest");
+        manifest.extensions.insert(
+            "roko.safety-provenance@2".to_string(),
+            CheckpointExtension {
+                namespace: "roko.safety-provenance".into(),
+                schema_version: 2,
+                required: false,
+                fingerprint: "from-a-later-build".into(),
+                value: serde_json::json!({}),
+            },
+        );
+        write_manifest_atomic(&path, &manifest).expect("write the manifest");
+
+        let error = restore_error(dir.path(), &graph);
+        assert!(error.contains("cannot read"), "{error}");
+    }
+
+    #[test]
+    fn safety_provenance_starts_on_broken_history_and_checks_only_its_own_records() {
+        use roko_agent::safety::provenance::{Custody, CustodyLogger};
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        // Custody history no run can verify, as older builds and concurrent
+        // processes leave it: a garbage line, a record edited after it was
+        // sealed, and a record appended twice.
+        let log = RokoLayout::for_project(dir.path()).custody_log();
+        let logger = CustodyLogger::new(&log);
+        let old = |action: &str, when: i64| Custody::new(action, "older-build", when, Vec::new());
+        crate::custody::log_chained(&logger, old("old-a", 1)).expect("old record");
+        crate::custody::log_chained(&logger, old("old-b", 2)).expect("old record");
+        let text = std::fs::read_to_string(&log).expect("custody log");
+        let first = text.lines().next().expect("a first record").to_string();
+        let edited = text.replacen("old-b", "old-B", 1);
+        std::fs::write(&log, format!("not json at all\n{edited}{first}\n")).expect("break it");
+        assert!(crate::custody::cmd_custody_verify(dir.path()).is_err());
+
+        // A fresh run still records its calls, and its resume checks only them.
+        run_with_provenance(dir.path(), &graph);
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        let restored = resumed
+            .open_safety_provenance(dir.path())
+            .expect("restore provenance");
+        assert_eq!(restored.summary().records, 2);
+        drop((resumed, restored));
+
+        // Tampering with the run's own records still fails its resume closed.
+        let text = std::fs::read_to_string(&log).expect("custody log");
+        let tampered = text.replacen("tool_outcome:fetch", "tool_outcome:fetch2", 1);
+        std::fs::write(&log, tampered).expect("tamper with the run's records");
+        let error = restore_error(dir.path(), &graph);
+        assert!(error.contains("custody chain"), "{error}");
     }
 
     #[test]

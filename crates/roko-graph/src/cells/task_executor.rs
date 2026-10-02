@@ -733,9 +733,11 @@ pub fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
 /// How often a wait before a retry checks whether its run was cancelled.
 const RETRY_WAIT_STEP: Duration = Duration::from_millis(100);
 
-/// How a live [`TaskExecutorCell`] waits before retrying a task whose attempt
-/// failed with a provider error (backlog 1117), so that a short rate limit is
-/// waited out rather than retried into an open circuit.
+/// How a live [`TaskExecutorCell`] waits before retrying a provider failure.
+///
+/// A task whose attempt failed with a provider error waits (backlog 1117), so
+/// that a short rate limit is waited out rather than retried into an open
+/// circuit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryBackoff {
     /// Window before the first retry; each later retry doubles it.
@@ -756,7 +758,7 @@ impl RetryBackoff {
     pub const DEFAULT: Self = Self {
         base: Duration::from_secs(1),
         cap: Duration::from_secs(30),
-        retry_after_cap: Duration::from_secs(120),
+        retry_after_cap: Duration::from_mins(2),
         jitter: true,
     };
 

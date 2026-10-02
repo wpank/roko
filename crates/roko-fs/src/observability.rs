@@ -359,7 +359,7 @@ pub struct CorrelationQuery {
 }
 
 /// Result of a correlation lookup.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CorrelationResult {
     /// Lines from the audit log matching the call ID.
     pub audit_lines: Vec<serde_json::Value>,

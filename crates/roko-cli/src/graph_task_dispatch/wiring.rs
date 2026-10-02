@@ -80,7 +80,27 @@ impl WiringReport {
     }
 }
 
+/// Logged once: a frozen run's attempts skip their learned-state writes.
+static FROZEN_WRITES_SKIPPED: std::sync::Once = std::sync::Once::new();
+
 impl GraphTaskDispatcher {
+    /// Whether learning is frozen for this run (`[learning] frozen`,
+    /// decision 2218): its attempts read learned state and write none, so
+    /// they skip the affect appraisal, the T0 reflex credit and the
+    /// knowledge-access count. The first skip says so in the log.
+    pub(super) fn learning_frozen(&self) -> bool {
+        let frozen = self.config.learning.frozen;
+        if frozen {
+            FROZEN_WRITES_SKIPPED.call_once(|| {
+                tracing::info!(
+                    "learning is frozen: attempts skip the affect appraisal, the T0 reflex \
+                     credit and the knowledge-access count"
+                );
+            });
+        }
+        frozen
+    }
+
     /// The census of this dispatcher's learning wiring (S01 §5.8): every
     /// learning component, and whether the dispatcher has it.
     #[must_use]
@@ -177,9 +197,9 @@ impl GraphTaskDispatcher {
             component(
                 "store.record_access",
                 WiringKind::Store,
-                true,
+                !self.config.learning.frozen,
                 "`KnowledgeStore::count_access`: each knowledge entry a planned prompt \
-                 included counts an access",
+                 included counts an access, unless learning is frozen",
             ),
             component(
                 "reader.gate_thresholds",

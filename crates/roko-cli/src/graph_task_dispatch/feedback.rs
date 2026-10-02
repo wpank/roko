@@ -554,8 +554,11 @@ impl GraphTaskDispatcher {
 
         // ── W09: DaimonState affect feedback ─────────────────────────────
         //
-        // Only an attempt with a learning label moves affect.
-        if let (Some(daimon), Some(success)) = (&self.feedback.daimon_state, learning) {
+        // Only an attempt with a learning label moves affect, and none does
+        // while learning is frozen (decision 2218).
+        if let (Some(daimon), Some(success)) = (&self.feedback.daimon_state, learning)
+            && !self.learning_frozen()
+        {
             use roko_daimon::AffectEngine;
             let event = roko_daimon::AffectEvent::TaskOutcome {
                 task_id: task.id.clone(),

@@ -60,9 +60,10 @@ impl GraphTaskDispatcher {
     }
 
     /// Count an access to each knowledge entry `plan`'s prompt included (S01
-    /// P0-9), off the reactor: access counts are the store's evidence that a
-    /// prompt used an entry. Cited episodes are not knowledge entries. A
-    /// failed count is logged, and the attempt goes on.
+    /// P0-9), off the reactor, unless learning is frozen: access counts are
+    /// the store's evidence that a prompt used an entry. Cited episodes are
+    /// not knowledge entries. A failed count is logged, and the attempt goes
+    /// on.
     fn record_knowledge_access(&self, plan: &RunnerDispatchPlan) {
         let included: Vec<String> = plan
             .prompt
@@ -72,7 +73,8 @@ impl GraphTaskDispatcher {
             .filter(|item| item.kind == ExposureItemKind::Knowledge && item.included)
             .map(|item| item.id.clone())
             .collect();
-        if included.is_empty() {
+        // A frozen run counts no access (decision 2218).
+        if included.is_empty() || self.learning_frozen() {
             return;
         }
         let store = roko_neuro::KnowledgeStore::for_workdir(&self.workdir);

@@ -423,6 +423,16 @@ fn check_plan(
             checks.push(TaskCheck::new(&rel, &id, Outcome::NotRun, reason));
             continue;
         }
+        // Only regression checks (`expect = "pass_on_base"`), such as the
+        // workspace gates `roko run` writes: the task cannot be HF3, so its
+        // steps are not run on the base.
+        let regression_only = accept_files(task).is_empty()
+            && tables(task.get("verify")).all(|step| text(step.get("expect")) == "pass_on_base");
+        if regression_only {
+            let reason = "not run: every step is a regression check (pass_on_base)".to_string();
+            checks.push(TaskCheck::new(&rel, &id, Outcome::NotRun, reason));
+            continue;
+        }
         let (sha, why) = match &plan_base {
             Some(known) => known.clone(),
             None => {

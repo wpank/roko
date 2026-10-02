@@ -10,7 +10,7 @@ use crate::config::{Config, GateConfig};
 use crate::model_selection::{EffectiveModelSelection, SelectionSource, resolve_effective_model};
 use crate::output_format;
 use crate::state_hub::{SharedStateHub, StateHub};
-use crate::task_parser::{TaskDef, TaskMeta, TasksFile, VerifyStep};
+use crate::task_parser::{TaskDef, TaskMeta, TasksFile, VerifyExpect, VerifyStep};
 use anyhow::{Context as _, Result, anyhow, bail};
 use chrono::Utc;
 use roko_agent::provider::is_known_protocol_command;
@@ -687,9 +687,20 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
 /// the compile check of a Cargo or Go workspace. Empty when neither exists.
 /// Plan tasks run the workspace's rungs after their own steps, skipping any
 /// whose command a step already runs, so these rungs run once.
+///
+/// They are regression checks: the workspace passes them before the change
+/// too. So each is `expect = "pass_on_base"`, which keeps the plan-load spec
+/// gate from refusing the run as green on the base (HF3), and the red-on-base
+/// check does not run them (3231).
 fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -> Vec<VerifyStep> {
     if gates.has_custom_rungs() {
-        return gates.required_rungs().map(VerifyStep::from).collect();
+        return gates
+            .required_rungs()
+            .map(|rung| VerifyStep {
+                expect: Some(VerifyExpect::PassOnBase),
+                ..VerifyStep::from(rung)
+            })
+            .collect();
     }
     let compile = if workdir.join("Cargo.toml").is_file() {
         "cargo check --workspace"
@@ -708,7 +719,7 @@ fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -
             .saturating_mul(1_000),
         scope: Vec::new(),
         covers: Vec::new(),
-        expect: None,
+        expect: Some(VerifyExpect::PassOnBase),
     }]
 }
 
@@ -1135,7 +1146,7 @@ sibling_settle_secs = 0
 
 [[gates.rungs]]
 name = "check"
-command = "true"
+command = "test -f README.md"
 "#,
                 provider = provider.display().to_string()
             ),
@@ -1279,6 +1290,7 @@ sibling_settle_secs = 0
         let steps = prompt_verify_steps(tmp.path(), &gates);
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].command, "cargo check --workspace");
+        assert_eq!(steps[0].expect, Some(VerifyExpect::PassOnBase));
 
         let rung = |name: &str, command: &str, required| roko_core::config::GateRungConfig {
             name: name.to_string(),
@@ -1296,6 +1308,77 @@ sibling_settle_secs = 0
         assert_eq!(steps[0].phase, "check");
         assert_eq!(steps[0].command, "make check");
         assert_eq!(steps[0].timeout_ms, 30_000);
+        assert_eq!(steps[0].expect, Some(VerifyExpect::PassOnBase));
+    }
+
+    /// 3231: the plan `roko run` writes declares the workspace's gates as
+    /// regression checks, so a gate that already passes on the unchanged
+    /// base, as a healthy workspace's gates do, never makes the plan-load
+    /// spec gate refuse the run (HF3), and the red-on-base check does not
+    /// run it.
+    #[test]
+    fn roko_run_workspace_gates_never_refuse_as_green_on_the_base() {
+        let tmp = TempDir::new().expect("tempdir");
+        let repo = tmp.path();
+        std::fs::write(repo.join("README.md"), "# base\n").expect("README");
+        let identity = [
+            "-c",
+            "user.name=roko-test",
+            "-c",
+            "user.email=roko-test@localhost",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ];
+        for args in [
+            &["init", "--quiet"][..],
+            &["add", "--all"],
+            &["commit", "--quiet", "-m", "base"],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(identity)
+                .args(args)
+                .current_dir(repo)
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?}");
+        }
+        let mut gates = roko_core::config::GatesConfig::default();
+        gates.custom_rungs = vec![roko_core::config::GateRungConfig {
+            name: "docs".to_string(),
+            command: "test -f README.md".to_string(),
+            timeout_secs: 30,
+            required: true,
+            parallel_with: Vec::new(),
+        }];
+        let run_dir = repo.join(".roko").join("runs").join("run-1");
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+        let verify = prompt_verify_steps(repo, &gates);
+        prompt_tasks_file(
+            "run-1",
+            "Say done",
+            "focused",
+            "implementer",
+            verify,
+            None,
+            repo,
+        )
+        .write(&run_dir.join("tasks.toml"))
+        .expect("write the run's plan");
+
+        let config = roko_core::config::SpecQualityConfig::default();
+        assert!(config.red_on_base, "the check is on by default");
+        let files = [run_dir.join("tasks.toml")];
+        let options = crate::spec_red_on_base::RedOnBaseOptions::from_config(&config);
+        let checks = crate::spec_red_on_base::check_plans(&files, repo, &options).expect("check");
+        assert_eq!(
+            checks.checks[0].outcome,
+            crate::spec_red_on_base::Outcome::NotRun,
+            "{checks:?}"
+        );
+        let report = crate::spec_gate::gate_plans(&files, repo, &config).expect("gate");
+        assert!(!report.blocks(), "{report:?}");
     }
 
     #[test]

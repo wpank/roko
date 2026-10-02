@@ -2,16 +2,16 @@
 id = "gap-6dba88"
 kind = "gap"
 title = "Per-task gate ratchet for Graph verify: flag a step that passed on an earlier attempt and now fails"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
 size = "M"
 subsystem = ["roko-gate", "roko-cli/graph-dispatch"]
 created = 2026-09-29
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "40d55e0b7"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:feat/learning-verify-loops 99adacd6d"
 anchors = ["crates/roko-gate/src/ratchet.rs::GateRatchet", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/retry_feedback.rs::RetryFeedbackBook"]
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["find-4b4344", "bug-e0f472"],
 
 [[verify]]
 command = "grep -rqw 'fn a_step_that_passed_on_an_earlier_attempt_and_fails_now_is_a_regression' crates/roko-cli/src && cargo test -p roko-cli --lib a_step_that_passed_on_an_earlier_attempt_and_fails_now_is_a_regression && grep -rqw 'fn step_order_within_an_attempt_is_not_a_regression' crates/roko-cli/src && cargo test -p roko-cli --lib step_order_within_an_attempt_is_not_a_regression"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T01:17:32Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-01T16:11:59Z"
+forced = false
+evidence = "Gate 6f on 9d7b62cbd plus its fixes, re-checked at 41c59176b and merged as 40d55e0b7 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests pass (roko-cli 3425, roko-core 1985, roko-learn 1233, roko-gate 700); all eight canaries, golden_path_suite, secret_canary and C2 pass; graph_plan_callers and smoke pass; bin 445; scripts/test_run_evidence_graph.py 9/9; all 245 --help pages identical to the pre-split binary once the binary name is normalized; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem

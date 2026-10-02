@@ -2,7 +2,7 @@
 id = "gap-0d0e81"
 kind = "gap"
 title = "Split main.rs: move the clap command enums into their command modules"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/main", "roko-cli/commands"]
 created = 2026-09-29
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "a788dfd8d"
+last_verified_rev = "40d55e0b7"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e15"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W5-contention-parallelism.md (F2, F4, rec 2b)"
 anchors = ["crates/roko-cli/src/main.rs", "crates/roko-cli/src/commands/"]
@@ -21,6 +21,16 @@ links = { depends_on = [], blocks = [], related = ["gap-c7c946"], supersedes = [
 
 [[verify]]
 command = "! grep -qE 'enum (LearnCmd|PlanCmd|KnowledgeCmd|ConfigCmd|PrdCmd|JobCmd) [{]' crates/roko-cli/src/main.rs && test \"$(wc -l < crates/roko-cli/src/main.rs)\" -lt 3000 && cargo test -p roko-cli --bin roko"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T01:17:34Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-01T16:13:21Z"
+forced = false
+evidence = "Gate 6f on 9d7b62cbd plus its fixes, re-checked at 41c59176b and merged as 40d55e0b7 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests pass (roko-cli 3425, roko-core 1985, roko-learn 1233, roko-gate 700); all eight canaries, golden_path_suite, secret_canary and C2 pass; graph_plan_callers and smoke pass; bin 445; scripts/test_run_evidence_graph.py 9/9; all 245 --help pages identical to the pre-split binary once the binary name is normalized; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem

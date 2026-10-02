@@ -2,7 +2,7 @@
 id = "bug-c0602b"
 kind = "bug"
 title = "sonar-deep-research has no price row and is priced as sonar"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "truth"
@@ -11,7 +11,7 @@ subsystem = ["roko-core/pricing"]
 created = 2026-10-01
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "a788dfd8d"
+last_verified_rev = "40d55e0b7"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-2dfd23"
 anchors = ["crates/roko-core/src/config/model_registry.rs"]
@@ -20,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["bug-2dfd23"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn sonar_deep_research_price' crates/roko-core/src/ && cargo test -p roko-core --lib sonar_deep_research_price"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T01:17:33Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T22:34:25Z"
+forced = false
+evidence = "Gate 6f on 9d7b62cbd plus its fixes, re-checked at 41c59176b and merged as 40d55e0b7 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests pass (roko-cli 3425, roko-core 1985, roko-learn 1233, roko-gate 700); all eight canaries, golden_path_suite, secret_canary and C2 pass; graph_plan_callers and smoke pass; bin 445; scripts/test_run_evidence_graph.py 9/9; all 245 --help pages identical to the pre-split binary once the binary name is normalized; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem

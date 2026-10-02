@@ -2,7 +2,7 @@
 id = "bug-724982"
 kind = "bug"
 title = "roko chat, the vision loop and dispatch_v2's direct model calls write no cost rows"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "truth"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli"]
 created = 2026-10-01
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "a788dfd8d"
+last_verified_rev = "40d55e0b7"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-c1f6b8"
 anchors = ["crates/roko-cli/src/chat_session.rs", "crates/roko-cli/src/dispatch_v2.rs", "crates/roko-cli/src/vision_loop.rs"]
@@ -20,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["bug-c1f6b8"], supersedes = [
 
 [[verify]]
 command = "cargo test -p roko-cli --lib chat_calls_write_cost_rows"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T01:17:31Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T22:36:15Z"
+forced = false
+evidence = "Gate 6f on 9d7b62cbd plus its fixes, re-checked at 41c59176b and merged as 40d55e0b7 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests pass (roko-cli 3425, roko-core 1985, roko-learn 1233, roko-gate 700); all eight canaries, golden_path_suite, secret_canary and C2 pass; graph_plan_callers and smoke pass; bin 445; scripts/test_run_evidence_graph.py 9/9; all 245 --help pages identical to the pre-split binary once the binary name is normalized; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem

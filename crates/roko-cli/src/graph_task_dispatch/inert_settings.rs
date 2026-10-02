@@ -20,8 +20,9 @@ pub struct InertGraphSetting {
 pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting> {
     const LEGACY_GATES: &str = "only the deleted Runner-v2 gate pipeline read it";
     const ADAPTIVE: &str = "of the adaptive-threshold settings the Graph engine reads only \
-                            adaptive_min_retries and adaptive_max_retries (task retry budgets); \
-                            its gate EMA uses a fixed alpha";
+                            adaptive_min_retries, adaptive_max_retries (task retry budgets) and \
+                            ema_alpha (its gate EMA); it never skips a verify step or promotes a \
+                            converged threshold";
     const NO_LONG_LIVED_AGENT: &str = "no production code reads it: each plan-run attempt is a \
                                        fresh provider session, bounded by budget.max_task_usd and \
                                        budget.max_task_retry_usd";
@@ -86,11 +87,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             gates.write_eval_artifacts != default_gates.write_eval_artifacts,
             "gates.write_eval_artifacts",
             NO_EVAL_SOURCE,
-        ),
-        (
-            gates.ema_alpha.to_bits() != default_gates.ema_alpha.to_bits(),
-            "gates.ema_alpha",
-            ADAPTIVE,
         ),
         (
             gates.skip_streak_threshold != default_gates.skip_streak_threshold,

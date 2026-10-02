@@ -47,7 +47,7 @@ pub struct GraphFeedbackContext {
     /// P2-LRN-6 Loop 1: Path to `.roko/learn/gate-thresholds.json` for
     /// adaptive EMA threshold updates after each verify run.
     ///
-    /// When set, each verify step outcome is fed into `GateThresholds::observe`
+    /// When set, each verify step outcome is fed into `GateThresholds::observe_with_alpha`
     /// so the EMA pass-rate converges toward the workspace's real gate history.
     /// The file is written atomically after every task's verify sequence
     /// completes (both pass and fail), and a `GateThresholdsUpdated` event is

@@ -76,8 +76,8 @@ enough to verify, with Claude Code as one of its workers.
   author before any agent starts.
 - **Focused context.** Each prompt layers a role template, the task's declared files and symbols,
   relevant playbooks and knowledge, and the errors from any earlier attempt.
-- **From idea to plan.** Write a plan by hand, or let `roko prd` take a one-line idea through web
-  research and a drafted PRD to a generated plan.
+- **From prompt to plan.** Write a plan by hand, or have an agent write one from a prompt with
+  `roko run --plan` or `roko plan generate`. Review and edit it, then run it.
 
 ### Execute
 
@@ -145,11 +145,10 @@ optional chain primitives (agent registry, job marketplace, arena).
 ```bash
 roko init                                          # set up a workspace in your repo
 roko run "add a unit test for the config parser"   # one change, checked
+roko run --plan "Add OAuth2 login"                 # bigger work: write a plan, review it, run it
 
-roko prd idea "Add OAuth2 login"                   # or plan something bigger
-roko prd draft new "oauth2-login"                  # draft a PRD with an agent
-roko prd plan oauth2-login                         # turn it into a graph of checkable tasks
-roko plan run plans/                               # run it: parallel, isolated, checked, merged
+roko plan generate "Add OAuth2 login"              # or in steps: write plans/add-oauth2-login/
+roko run plans/add-oauth2-login                    # run it: parallel, isolated, checked, merged
 roko dashboard                                     # watch it live
 ```
 
@@ -271,34 +270,35 @@ commands pass (`crates/roko-gate`). Checkpoints, activity logs and costs go to
 
 ### Full planning pipeline
 
-For larger work that spans several tasks:
+For larger work that spans several tasks, a plan comes straight from a prompt:
 
 ```bash
-# 1. Capture what you want to build
-roko prd idea "Add user authentication with OAuth2"
+# 1. Write a plan: plans/add-oauth2-login/ with tasks.toml and plan.md (runs nothing)
+roko plan generate "Add OAuth2 login"
 
-# 2. Research the topic (optional; uses Perplexity for web-grounded citations)
-roko research topic "OAuth2 best practices in Rust"
+# 2. Optional: have an agent make research-backed improvements to the plan, in place
+roko research enhance-plan add-oauth2-login
 
-# 3. Draft a PRD (agent-assisted)
-roko prd draft new "oauth2-auth"
+# 3. Review it: edit tasks.toml and plan.md as you like, then lint the result
+roko plan validate plans/add-oauth2-login
 
-# 4. Generate an implementation plan with tasks
-roko prd plan oauth2-auth
+# 4. Run it through the Graph engine
+roko run plans/add-oauth2-login
 
-# 5. Execute the plans under plans/ through the Graph engine
-roko plan run plans/
+# 5. Resume if interrupted
+roko plan run plans/add-oauth2-login --resume-plan
 
-# 6. Resume if interrupted
-roko plan run plans/ --resume-plan
-
-# 7. Watch progress
+# 6. Watch progress
 roko dashboard
 ```
 
-`roko plan validate plans/<plan>` lints a `tasks.toml` without running it, and
-`roko plan run plans/<plan> --dry-run` lists the tasks and their order. `roko doctor disk` reports
-free space, stale Rust targets, orphaned worktrees and oversized logs without changing anything.
+`roko run --plan "<prompt>"` does steps 1 and 4 in one command: it writes the plan, shows it, and
+asks before running it (`--yes` skips the question). `roko run --plan --dry-run "<prompt>"` writes
+the plan and stops, and `roko run plans/` runs every plan under `plans/`.
+
+`roko plan run plans/<plan> --dry-run` lists a plan's tasks and their order. `roko doctor disk`
+reports free space, stale Rust targets, orphaned worktrees and oversized logs without changing
+anything.
 
 ### One-shot prompts
 
@@ -326,8 +326,8 @@ tabs, and `?` shows the key bindings.
 | F6 | Config | Effective config view with source annotations |
 | F7 | Inspect | Signal DAG inspector, episode replay |
 | F8 | Marketplace | Job browser, creation, and assignment |
-| F9 | Atelier | PRD workshop and plan progress |
-| F10 / 0 | Learning | Cascade routing, model health, and efficiency |
+| F9 | Learning | Cascade routing, model health, and efficiency |
+| F10 | Providers | Provider health, cost, latency, and circuit-breaker state |
 
 ## Providers
 
@@ -578,11 +578,10 @@ collection.
 |---------|-------------|
 | `roko init [path]` | Create `.roko/` and `roko.toml` |
 | `roko run "<prompt>"` | Run a prompt as a checked task, or as a generated plan |
-| `roko plan run <dir>` | Execute a plan directory through the Graph engine |
+| `roko run --plan "<prompt>"` | Write a plan for the prompt, show it, and run it once you confirm |
+| `roko plan generate "<prompt>"` | Write a plan to `plans/<slug>/` without running it |
+| `roko run plans/<dir>` | Execute a plan directory through the Graph engine (also `roko plan run <dir>`) |
 | `roko plan status <dir>` | Show a plan's task states |
-| `roko prd idea "<text>"` | Capture a work item |
-| `roko prd draft new "<title>"` | Draft a PRD (agent-assisted) |
-| `roko prd plan <slug>` | Generate an implementation plan from a PRD |
 | `roko research topic "<topic>"` | Research with citations |
 | `roko status` | Signal counts, recent episodes, gate results |
 | `roko github status` | GitHub config, auth, plan PR, CI, and failure-issue status |

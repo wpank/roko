@@ -151,8 +151,8 @@ port, hit it via `reqwest`, and verify every branch of `/message` and
 
 ## What it is not
 
-- **Not a control plane.** It has no knowledge of other agents, plans, or
-  PRDs. All cross-agent coordination lives in `roko-serve`.
+- **Not a control plane.** It has no knowledge of other agents or plans.
+  All cross-agent coordination lives in `roko-serve`.
 - **Not a scheduler.** Task dispatch into the sidecar is the caller's job;
   this crate only exposes the REST surface.
 

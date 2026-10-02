@@ -63,7 +63,7 @@ from Layer 3.
 | **Webhook events** | push, pull_request, pull_request_review, issues |
 
 Webhook events consumed:
-- `push` -- file changes trigger enrichment and auto-planning
+- `push` -- file changes trigger enrichment and the subscribed templates
 - `pull_request` -- PR open/update triggers review agents
 - `pull_request_review` -- review submission triggers response
 - `issues` -- issue open triggers triage

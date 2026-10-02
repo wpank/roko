@@ -404,8 +404,6 @@ learning_min_occurrences = 2
 file_intel_max_entries = 15
 warning_max_entries = 5
 replan_on_gate_failure = true
-replan_max_per_plan = 2
-replan_gate_attempts = 3
 dream_on_completion = false
 use_lookahead_router = false
 lookahead_threshold = 0.7
@@ -428,7 +426,7 @@ refresh_rate_ms = 250
 preset = "full"
 
 [timeouts]
-agent_dispatch_secs = 600
+agent_dispatch_secs = 1800
 gate_compile_secs = 600
 gate_test_secs = 900
 gate_clippy_secs = 300

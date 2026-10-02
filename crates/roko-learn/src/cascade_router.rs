@@ -1279,6 +1279,22 @@ impl CascadeRouter {
         }
     }
 
+    /// Re-rank `route`, which another selector picked among `candidates`,
+    /// with knowledge `advice`: the knowledge step of
+    /// [`Self::route_with_knowledge_among`], for a route a health- or
+    /// bias-aware selector produced (reg-ff6e1a). A candidate that beats the
+    /// pick by more than 0.1 once the advice is counted replaces it.
+    #[must_use]
+    pub fn apply_knowledge_among(
+        &self,
+        ctx: &RoutingContext,
+        route: CascadeModel,
+        candidates: &[String],
+        advice: Option<&KnowledgeRoutingAdvice>,
+    ) -> CascadeModel {
+        self.apply_knowledge_to_route(ctx, route, candidates, advice)
+    }
+
     /// Route a context through the cascade over a candidate subset with knowledge hints.
     pub fn route_with_knowledge_among(
         &self,
@@ -1675,6 +1691,46 @@ impl CascadeRouter {
         entry.trials += 1;
         if success {
             entry.successes += 1;
+        }
+    }
+
+    /// Retract one success credited to `model_slug` when its attempt
+    /// completed: a later verdict relabeled that attempt a failure
+    /// (hindsight, gap-b95d94). The success becomes a failure in `category`'s
+    /// stats and in the model's confidence stats, where every routing
+    /// outcome counts, an operator override's included. Trials are
+    /// unchanged, and a count with no success left stays as it is.
+    ///
+    /// The `LinUCB` bandit is exempt (bug-583e50). The success added the
+    /// dispatch-time context features to the arm's reward vector, scaled by
+    /// the reward that the arm's EWC regularizer let through at that moment.
+    /// The relabel has neither the features nor that effective reward, so
+    /// any subtraction would move the arm somewhere no observation put it.
+    /// The bandit keeps the attempt as it was settled.
+    pub fn retract_success(&self, model_slug: &str, category: TaskCategory) {
+        let mut cat = self.category_stats.lock();
+        if let Some(entry) = cat.get_mut(&(model_slug.to_string(), category)) {
+            entry.successes = entry.successes.saturating_sub(1);
+        }
+        drop(cat);
+        self.replay_retraction(model_slug);
+    }
+
+    /// Apply the confidence-stats half of [`Self::retract_success`]
+    /// (bug-583e50): the replay of a journaled retraction that names no task
+    /// category, as entries written before retractions named one. A replayed
+    /// retraction that names its category applies both halves. Does NOT
+    /// write a WAL entry.
+    pub fn replay_retraction(&self, model_slug: &str) {
+        let Some(slug) = self
+            .model_index_for_slug(model_slug)
+            .and_then(|model_idx| self.model_slugs.get(model_idx))
+        else {
+            return;
+        };
+        let mut stats = self.confidence_stats.lock();
+        if let Some(entry) = stats.get_mut(slug) {
+            entry.successes = entry.successes.saturating_sub(1);
         }
     }
 
@@ -2368,7 +2424,24 @@ impl CascadeRouter {
             stage_transitions,
             linucb_state: Some(self.linucb.export_linucb_snapshot()),
             pareto_frontier: self.pareto_frontier.lock().frontier.clone(),
+            category_stats: self.persisted_category_stats(),
         }
+    }
+
+    /// The per-(model, category) counts in their persisted form: by model,
+    /// then category (bug-a6a3cd).
+    fn persisted_category_stats(
+        &self,
+    ) -> HashMap<String, HashMap<TaskCategory, CategoryModelStats>> {
+        let mut by_model: HashMap<String, HashMap<TaskCategory, CategoryModelStats>> =
+            HashMap::new();
+        for ((slug, category), stats) in self.category_stats.lock().iter() {
+            by_model
+                .entry(slug.clone())
+                .or_default()
+                .insert(*category, stats.clone());
+        }
+        by_model
     }
 
     /// Save what this router has learned into the snapshot at `path`.
@@ -2416,6 +2489,7 @@ impl CascadeRouter {
             stage_transitions,
             linucb_state,
             pareto_frontier,
+            category_stats,
         } = snapshot;
 
         let slugs = if model_slugs.is_empty() {
@@ -2481,6 +2555,17 @@ impl CascadeRouter {
         if !pareto_frontier.is_empty() {
             let mut frontier_state = router.pareto_frontier.lock();
             frontier_state.frontier = pareto_frontier;
+        }
+
+        // Restore the per-category counts, under the slugs they were
+        // recorded for (bug-a6a3cd).
+        {
+            let mut restored = router.category_stats.lock();
+            for (slug, categories) in category_stats {
+                for (category, stats) in categories {
+                    restored.insert((slug.clone(), category), stats);
+                }
+            }
         }
 
         // The router has learned nothing yet. Its baseline keeps the counters

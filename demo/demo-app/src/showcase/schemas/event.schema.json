@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "showcase-event/1",
+  "description": "One live SSE or replay timeline event (S10 §5.4).",
+  "type": "object",
+  "required": ["schema", "seq", "t_ms", "source", "run_id", "attempt_key", "type", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "showcase-event/1"},
+    "seq": {"type": "integer"},
+    "t_ms": {"type": "integer"},
+    "source": {"enum": ["replay", "live"]},
+    "run_id": {"type": ["string", "null"]},
+    "attempt_key": {"type": ["string", "null"]},
+    "type": {
+      "enum": [
+        "run.started",
+        "run.finished",
+        "task.started",
+        "task.finished",
+        "m3.prediction",
+        "route.decision",
+        "escalation",
+        "gate.verdict",
+        "m4.audit",
+        "m1.ev",
+        "m1.disturbance",
+        "m1.action",
+        "m2.verdict",
+        "metric.update",
+        "budget.update"
+      ]
+    },
+    "payload": {"type": "object"}
+  }
+}

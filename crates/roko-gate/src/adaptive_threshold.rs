@@ -56,6 +56,11 @@ pub struct RungStats {
     /// at its pre-poisoning value until diversity is restored.
     #[serde(default)]
     pub poisoning_defense: PoisoningDefense,
+    /// Fields that another writer of `gate-thresholds.json` keeps for the
+    /// rung, such as the Graph path's `pass_count`, carried through a load
+    /// and save unchanged (bug-35c901).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for RungStats {
@@ -68,6 +73,7 @@ impl Default for RungStats {
             cusum_low: 0.0,
             cusum_shift_detected: false,
             poisoning_defense: PoisoningDefense::default(),
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -312,39 +318,12 @@ impl AdaptiveThresholds {
         }
     }
 
-    /// Create adaptive thresholds pre-populated from a `[gates]` config section.
-    ///
-    /// This is the preferred constructor in production: it reads
-    /// `ema_alpha`, `adaptive_min_retries`, `adaptive_max_retries`,
-    /// `skip_streak_threshold`, and `convergence_min_observations` from
-    /// the operator-supplied config and applies them at runtime without
-    /// changing the persisted `gate-thresholds.json` schema.
-    pub fn from_gates_config(cfg: &GatesConfig) -> Self {
-        let mut at = Self::new();
-        // Clamp EMA alpha to (0, 1) exclusive so the EMA stays well-defined.
-        if cfg.ema_alpha > 0.0 && cfg.ema_alpha < 1.0 {
-            at.ema_alpha = cfg.ema_alpha;
-        }
-        if cfg.adaptive_min_retries >= 1 {
-            at.min_retries = cfg.adaptive_min_retries;
-        }
-        if cfg.adaptive_max_retries >= at.min_retries {
-            at.max_retries = cfg.adaptive_max_retries;
-        }
-        if cfg.skip_streak_threshold >= 1 {
-            at.skip_streak_threshold = cfg.skip_streak_threshold;
-        }
-        if cfg.convergence_min_observations >= 1 {
-            at.convergence_min_observations = cfg.convergence_min_observations;
-        }
-        at
-    }
-
     /// Apply operator-tunable parameters from a `[gates]` config section to an
     /// already-loaded `AdaptiveThresholds` (e.g., one loaded from disk).
     ///
     /// Call this after `load_or_new` to layer in the current operator config
-    /// without overwriting the learned per-rung statistics.
+    /// without overwriting the learned per-rung statistics. An `ema_alpha`
+    /// outside (0, 1) keeps the current one.
     pub fn apply_gates_config(&mut self, cfg: &GatesConfig) {
         if cfg.ema_alpha > 0.0 && cfg.ema_alpha < 1.0 {
             self.ema_alpha = cfg.ema_alpha;
@@ -1274,12 +1253,19 @@ mod tests {
 
     // ─── P1-37: Config-sourced EMA alpha, retries, skip streak ────
 
+    /// Fresh thresholds with `cfg` applied, as a loaded file gets it.
+    fn configured(cfg: &GatesConfig) -> AdaptiveThresholds {
+        let mut at = AdaptiveThresholds::new();
+        at.apply_gates_config(cfg);
+        at
+    }
+
     #[test]
-    fn from_gates_config_applies_ema_alpha() {
+    fn gates_config_applies_ema_alpha() {
         let mut cfg = GatesConfig::default();
         cfg.ema_alpha = 0.5; // Fast adaptation.
 
-        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        let mut at = configured(&cfg);
         // With alpha=0.5, after one pass the EMA should move from 0.5 toward 1.0
         // by half the gap: 0.5 + 0.5*(1.0 - 0.5) = 0.75.
         at.observe(0, true);
@@ -1302,12 +1288,12 @@ mod tests {
     }
 
     #[test]
-    fn from_gates_config_applies_retry_bounds() {
+    fn gates_config_applies_retry_bounds() {
         let mut cfg = GatesConfig::default();
         cfg.adaptive_min_retries = 2;
         cfg.adaptive_max_retries = 8;
 
-        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        let mut at = configured(&cfg);
         // No data → midpoint = (2+8)/2 = 5.
         assert_eq!(at.suggested_max_retries(0), 5);
 
@@ -1318,7 +1304,7 @@ mod tests {
         assert_eq!(at.suggested_max_retries(0), 8);
 
         // All passes → min retries.
-        let mut at2 = AdaptiveThresholds::from_gates_config(&cfg);
+        let mut at2 = configured(&cfg);
         for _ in 0..20 {
             at2.update(0, true);
         }
@@ -1326,11 +1312,11 @@ mod tests {
     }
 
     #[test]
-    fn from_gates_config_applies_skip_streak() {
+    fn gates_config_applies_skip_streak() {
         let mut cfg = GatesConfig::default();
         cfg.skip_streak_threshold = 5; // Very low threshold for testing.
 
-        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        let mut at = configured(&cfg);
         // 4 passes: not yet at threshold.
         for _ in 0..4 {
             at.update(0, true);
@@ -1368,13 +1354,13 @@ mod tests {
     fn invalid_ema_alpha_ignored() {
         let mut cfg = GatesConfig::default();
         cfg.ema_alpha = 0.0; // Invalid: must be (0, 1).
-        let at = AdaptiveThresholds::from_gates_config(&cfg);
+        let at = configured(&cfg);
         // Should fall back to the constant default.
         assert!((at.ema_alpha - EMA_ALPHA).abs() < 1e-10);
 
         let mut cfg2 = GatesConfig::default();
         cfg2.ema_alpha = 1.5; // Invalid: > 1.0.
-        let at2 = AdaptiveThresholds::from_gates_config(&cfg2);
+        let at2 = configured(&cfg2);
         assert!((at2.ema_alpha - EMA_ALPHA).abs() < 1e-10);
     }
 
@@ -1385,7 +1371,7 @@ mod tests {
         let mut cfg = GatesConfig::default();
         cfg.convergence_min_observations = 10;
 
-        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        let mut at = configured(&cfg);
         for _ in 0..9 {
             at.observe(0, true);
         }
@@ -1398,7 +1384,7 @@ mod tests {
         let mut cfg = GatesConfig::default();
         cfg.convergence_min_observations = 5;
 
-        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        let mut at = configured(&cfg);
         for _ in 0..5 {
             at.observe(0, true);
         }
@@ -1416,7 +1402,7 @@ mod tests {
         let mut cfg = GatesConfig::default();
         cfg.convergence_min_observations = 1;
 
-        let mut at = AdaptiveThresholds::from_gates_config(&cfg);
+        let mut at = configured(&cfg);
         at.observe(3, true);
         let entries = at.promote_converged();
         let rung3 = entries.iter().find(|e| e.key.contains(".3.")).unwrap();

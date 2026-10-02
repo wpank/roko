@@ -12,7 +12,7 @@ use roko_agent::dispatcher::HandlerResolver;
 use roko_agent::mcp::handler::capability_for_tool;
 use roko_agent::mcp::{McpClient, StdioTransport as McpStdioTransport, mcp_to_tool_def};
 use roko_agent::safety::capabilities::{PluginTier, check_plugin_tier};
-use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
+use roko_agent::safety::contract::{AgentContract, ContractLoadMode, GovernanceRule};
 use roko_core::defaults::DEFAULT_MCP_DISCOVERY_TIMEOUT_SECS;
 use roko_core::tool::{
     ToolCall, ToolContext, ToolDef, ToolError, ToolHandler, ToolResult, ToolSource,
@@ -90,11 +90,14 @@ pub(crate) struct SessionMcpRuntime {
 /// `plugin_tier` is the trust tier applied to every discovered tool in this
 /// session's MCP servers. ACP sessions default to [`PluginTier::Sandboxed`]
 /// because MCP servers connect over stdio and may be third-party. Callers that
-/// have verified server provenance may pass a higher tier.
+/// have verified server provenance may pass a higher tier. `role` is the
+/// session's contract role; a tool whose own name that contract forbids is
+/// refused.
 pub(crate) async fn setup_session_mcp_tools(
     session_id: &str,
     mcp_servers: &[crate::types::McpServerConfig],
     plugin_tier: PluginTier,
+    role: &str,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> (SessionMcpRuntime, Vec<McpServerStatus>) {
     let mut tools = Vec::new();
@@ -243,6 +246,7 @@ pub(crate) async fn setup_session_mcp_tools(
                     remote_name: tool.name.clone(),
                     event_sender: event_sender.clone(),
                     plugin_tier,
+                    role: role.to_owned(),
                 }),
             );
             tools.push(def);
@@ -317,6 +321,8 @@ pub(crate) struct AcpMcpToolHandler {
     /// tool may exercise: `Sandboxed` allows only reads, `Standard` and above
     /// permit writes/exec/network according to the `check_plugin_tier` policy.
     pub(crate) plugin_tier: PluginTier,
+    /// The session's contract role, checked against the remote tool name.
+    role: String,
 }
 
 #[async_trait]
@@ -340,6 +346,22 @@ impl ToolHandler for AcpMcpToolHandler {
             return ToolResult::err(ToolError::PermissionDenied(format!(
                 "MCP tool '{}' denied: {reason}",
                 self.exposed_name
+            )));
+        }
+
+        // The dispatcher checks the role contract against the exposed name.
+        // Contracts name builtin tools, so also refuse a server's tool that
+        // carries a forbidden name such as `bash` or `web_search`.
+        if contract_forbids_tool(&self.role, &self.remote_name) {
+            warn!(
+                tool = %self.exposed_name,
+                remote_tool = %self.remote_name,
+                role = %self.role,
+                "ACP MCP tool call denied by role contract"
+            );
+            return ToolResult::err(ToolError::PermissionDenied(format!(
+                "MCP tool '{}' is forbidden for role '{}'",
+                self.exposed_name, self.role
             )));
         }
 
@@ -388,6 +410,19 @@ impl ToolHandler for AcpMcpToolHandler {
 
         result
     }
+}
+
+/// Whether `role`'s contract names `tool` in its `ForbiddenTools`. A role
+/// without a bundled contract gets the restricted fallback, which refuses
+/// tools through its empty allow-list, so the dispatcher handles that case.
+fn contract_forbids_tool(role: &str, tool: &str) -> bool {
+    let contract =
+        AgentContract::load_for_role_with_mode(role, ContractLoadMode::RestrictedFallback)
+            .unwrap_or_else(|_| AgentContract::restricted(role));
+    contract.governance.iter().any(|rule| match rule {
+        GovernanceRule::ForbiddenTools(tools) => tools.iter().any(|name| name == tool),
+        _ => false,
+    })
 }
 
 #[derive(Clone)]

@@ -701,6 +701,10 @@ pub struct AppState {
     /// set of active session hashes for this process lifetime.
     /// Never persisted; reset on every server start.
     pub local_access: LocalAccess,
+
+    /// Job execution service shared by `POST /api/jobs/{id}/cancel` and the
+    /// job runner, so a cancel reaches the run it targets (gap-2a9ed7).
+    pub job_execution: roko_core::JobExecutionService,
 }
 
 /// A tracked bench run with its background task handle.
@@ -832,6 +836,15 @@ pub(crate) fn register_observability_foundation_metrics(registry: &MetricRegistr
     // Gate metrics (separate from the standard roko_gate_verdicts_total which
     // is already registered by register_standard_metrics)
     // -- no additional gate counter needed; the standard one covers it.
+
+    // Conductor evaluations and provider failures (gap-a95898): a hosted run's
+    // conductor and the provider health registry count into these.
+    for descriptor in [
+        roko_core::obs::schema::ROKO_CONDUCTOR_EVALUATIONS_TOTAL_DESCRIPTOR,
+        roko_core::obs::schema::ROKO_PROVIDER_FAILURES_TOTAL_DESCRIPTOR,
+    ] {
+        registry.register_counter(descriptor.name, descriptor.help, LabelSet::new());
+    }
 
     // LLM provider metrics
     registry.register_counter(
@@ -1040,6 +1053,8 @@ impl AppState {
             .map_err(|e| anyhow::anyhow!("build shared service bundle: {e}"))?;
         let model_call_service = service_bundle.model_call_service;
         let provider_health_registry = service_bundle.provider_health_registry;
+        // Provider failures count on `/metrics` too (gap-a95898).
+        provider_health_registry.attach_metrics(Arc::clone(&metrics));
         let cascade_journal = service_bundle.cascade_journal;
         let effective_models = roko_config.effective_models();
         // One cascade router for every surface (bug-012303), saved by
@@ -1186,6 +1201,8 @@ impl AppState {
         let connectors = Arc::new(RwLock::new(roko_core::ConnectorRegistry::new()));
         let connector_runtime =
             Arc::new(roko_runtime::ConnectorRuntime::new(Arc::clone(&connectors)));
+        let jobs_root = workdir.join(".roko").join("jobs");
+        let job_execution = roko_core::JobExecutionService::new(jobs_root);
 
         Ok(Self {
             workdir,
@@ -1279,6 +1296,7 @@ impl AppState {
                 .filter(|s| !s.is_empty()),
             live_agent_output: AtomicBool::new(false),
             local_access: LocalAccess::new(None),
+            job_execution,
         })
     }
 

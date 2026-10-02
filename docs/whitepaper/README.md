@@ -25,7 +25,8 @@ Golden path plus cybernetics. A frontier model plans; cheap models execute granu
 in worktrees; gates and a whole-plan check verify the result; and feedback loops make the system improve
 measurably. The paper describes this ideal state and tags every mechanism with its status at a commit, so that a
 reader can tell what runs today from what is only designed. Much of it is only designed so far, and the
-cheap-model half of the thesis is untested on real work: every portal task ran on one pinned model (§4.12, §7).
+cheap-model half of the thesis is untested on real work: every portal task ran on one pinned model, and the one
+live run on cheap models was ten small tasks in a test repository (§4.12, §7).
 
 ## Outline and reading order
 
@@ -86,7 +87,7 @@ Line 1 of every section file (`NN-*.md` and `appendix-*.md`) is its status heade
 
 ### Status tags
 
-- Write a tag as `TAG@<sha>`, e.g. `PARTIAL@41228d7b2`: the tag in capitals, `@`, and a short sha of at least 7 hex
+- Write a tag as `TAG@<sha>`, e.g. `PARTIAL@a43288b5f`: the tag in capitals, `@`, and a short sha of at least 7 hex
   digits (use the 9 that `git log --oneline` prints). The commit must be an ancestor of HEAD.
 - Take tags from the status matrix (the appendix, rendered from `data/mechanisms.toml`) at its pinned commit, never
   from older notes: several mechanisms moved in the merges of 2026-09-29.

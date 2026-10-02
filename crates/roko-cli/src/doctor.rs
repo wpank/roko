@@ -2,11 +2,15 @@
 
 use crate::auth_detect::{AuthMethod, detect_auth_from_config, version_probe};
 use crate::config::{ConfigPaths, resolve_paths};
+use crate::orchestrator::worktree::{
+    LEFTOVER_CHECKOUT_MIN_AGE, LeftoverCheckout, WorktreeConfig, WorktreeManager,
+};
 use crate::{Config, load_resolved_config};
 use anyhow::{Context as _, Result};
 use reqwest::Url;
 use roko_core::agent::ProviderKind;
 use roko_core::child_env::CredentialScrub;
+use roko_core::config::model_registry::cheapest_builtin_model;
 use roko_core::config::provider::{ProviderConfig, ProviderNetworkPolicy};
 use roko_execution::diagnostics::{
     DiagnosticCheckId, DiagnosticFinding, DiagnosticRequest, DiagnosticService, DiagnosticSeverity,
@@ -373,6 +377,48 @@ pub async fn run_disk_doctor(workdir: &Path, config_override: Option<&Path>) -> 
     let resources = load_resources_config(workdir, config_override);
     let (_, report) = check_disk_health(workdir, &resources).await;
     report
+}
+
+/// Remove the leftover attempt checkouts under `workdir`'s `.roko/worktrees/`
+/// that no run will use again, for `roko doctor disk --fix` (gap-f67a72):
+/// those of plans whose checkpoint succeeded, failed or was cancelled, that
+/// nothing touched for [`LEFTOVER_CHECKOUT_MIN_AGE`] and that have no
+/// changes. [`WorktreeManager::remove_leftover_checkouts`] has the whole
+/// rule. Branches are kept. The caller holds the runner lock.
+pub async fn fix_leftover_checkouts(workdir: &Path) -> Vec<LeftoverCheckout> {
+    // The manager mutates git only under an absolute repository root.
+    let workdir = std::path::absolute(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    let manager = WorktreeManager::new(WorktreeConfig {
+        repo_root: workdir.clone(),
+        base_branch: "HEAD".to_string(),
+        worktrees_root: workdir.join(".roko").join("worktrees"),
+        max_live: None,
+        idle_ttl: LEFTOVER_CHECKOUT_MIN_AGE,
+    });
+    manager
+        .remove_leftover_checkouts(LEFTOVER_CHECKOUT_MIN_AGE)
+        .await
+}
+
+/// Render what [`fix_leftover_checkouts`] removed and what it kept, and why.
+#[must_use]
+pub fn render_leftover_checkouts(checkouts: &[LeftoverCheckout]) -> String {
+    let removed = checkouts
+        .iter()
+        .filter(|checkout| checkout.kept.is_none())
+        .count();
+    let mut out = format!(
+        "leftover attempt checkouts: {removed} removed, {} kept\n",
+        checkouts.len() - removed
+    );
+    for checkout in checkouts {
+        let path = checkout.path.display();
+        let _ = match &checkout.kept {
+            None => writeln!(&mut out, "[removed] {path}"),
+            Some(reason) => writeln!(&mut out, "[kept] {path}: {reason}"),
+        };
+    }
+    out
 }
 
 /// Check whether raw TOML text contains a given top-level key.
@@ -1224,6 +1270,18 @@ async fn probe_provider_credit(
 
     let result = match provider.kind {
         ProviderKind::AnthropicApi => {
+            // The registry's cheapest Anthropic model: the probe only needs an answer.
+            let Some(model) = cheapest_builtin_model(ProviderKind::AnthropicApi) else {
+                return DoctorCheck {
+                    id: format!("provider_credit_{provider_id}"),
+                    status: DoctorStatus::Skipped,
+                    message: format!("provider `{provider_id}`: no built-in model to probe with"),
+                    detail: None,
+                    path: None,
+                    url: None,
+                    fix: None,
+                };
+            };
             let base = provider
                 .base_url
                 .as_deref()
@@ -1231,7 +1289,7 @@ async fn probe_provider_credit(
                 .trim_end_matches('/');
             let endpoint = format!("{base}/v1/messages");
             let body = json!({
-                "model": "claude-3-5-haiku-20241022",
+                "model": model.slug,
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "hi"}]
             });
@@ -4418,6 +4476,26 @@ mod tests {
         let mut report = clean_disk_report();
         report.large_jsonl_files.push("/tmp/big.jsonl".to_string());
         assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn leftover_checkouts_render_what_went_and_why_the_rest_stayed() {
+        let rendered = render_leftover_checkouts(&[
+            LeftoverCheckout {
+                path: PathBuf::from("/w/.roko/worktrees/attempt-a"),
+                kept: None,
+            },
+            LeftoverCheckout {
+                path: PathBuf::from("/w/.roko/worktrees/attempt-b"),
+                kept: Some("it has uncommitted changes".to_string()),
+            },
+        ]);
+        assert_eq!(
+            rendered,
+            "leftover attempt checkouts: 1 removed, 1 kept\n\
+             [removed] /w/.roko/worktrees/attempt-a\n\
+             [kept] /w/.roko/worktrees/attempt-b: it has uncommitted changes\n"
+        );
     }
 
     #[test]

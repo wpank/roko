@@ -148,6 +148,8 @@ impl VisionEvaluator {
 
         let cascade_model_slugs = capture_runtime_model_slugs(&self.config, &model_slug);
         let recorder = ModelCallFeedbackRecorder::from_workdir(&self.workdir, cascade_model_slugs);
+        // Nothing else costs the evaluator's model calls (bug-724982).
+        let recorder = recorder.with_cost_records();
         if let Err(error) = recorder
             .record(ModelCallFeedback {
                 run_id: None,

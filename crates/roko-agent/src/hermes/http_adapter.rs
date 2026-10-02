@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use futures::StreamExt as _;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
@@ -400,7 +401,7 @@ impl Agent for HermesHttpAgent {
         &self,
         input: &Signal,
         _ctx: &Context,
-        _event_tx: mpsc::Sender<StreamEvent>,
+        event_tx: mpsc::Sender<StreamEvent>,
     ) -> AgentResult {
         let started = Instant::now();
 
@@ -431,6 +432,20 @@ impl Agent for HermesHttpAgent {
             }
         };
 
+        // Hand each event to the caller as it arrives (bug-e139f9), then
+        // collect the turn's response from the same events.
+        let stream = stream
+            .then(move |event| {
+                let event_tx = event_tx.clone();
+                async move {
+                    if let Some(forwarded) = event.as_ref().ok().cloned() {
+                        // A caller that stopped listening does not stop the turn.
+                        let _ = event_tx.send(forwarded).await;
+                    }
+                    event
+                }
+            })
+            .boxed();
         let result = collect_stream_to_response(stream, started).await;
         match result {
             Ok(response) => {
@@ -505,6 +520,46 @@ mod tests {
     use crate::tool_loop::StreamEventKind;
     use roko_core::sse::parse_sse_text;
 
+    /// bug-e139f9: a streaming Hermes HTTP turn hands each event to the
+    /// caller as it arrives, and still returns the collected answer.
+    #[tokio::test]
+    async fn hermes_http_streaming_forwards_each_event() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let sse = include_str!("../../tests/fixtures/hermes/http/chat_basic.sse");
+        let response = ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream");
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+        let agent = HermesHttpAgent::new(HermesConfig {
+            endpoint: server.uri(),
+            ..HermesConfig::default()
+        });
+        let input = Signal::builder(Kind::Prompt)
+            .body(Body::text("hello"))
+            .build();
+        let ctx = Context::at(0);
+        let (event_tx, mut event_rx) = mpsc::channel(256);
+
+        let result = agent.run_streaming(&input, &ctx, event_tx).await;
+
+        assert!(result.success);
+        let (mut text, mut done) = (String::new(), false);
+        while let Ok(event) = event_rx.try_recv() {
+            match event.kind {
+                StreamEventKind::TextDelta(delta) => text.push_str(&delta),
+                StreamEventKind::Done { .. } => done = true,
+                _ => {}
+            }
+        }
+        assert_eq!(text, "Hello! I'm Hermes.");
+        assert!(done, "the caller sees the turn end");
+    }
+
     #[test]
     fn basic_sse_fixture_parses_correctly() {
         let fixture = include_str!("../../tests/fixtures/hermes/http/chat_basic.sse");
@@ -512,7 +567,7 @@ mod tests {
         let mut saw_done = false;
 
         for line in fixture.lines() {
-            if let Some(event) = parse_sse_line(line) {
+            for event in parse_sse_line(line) {
                 match &event.kind {
                     StreamEventKind::TextDelta(delta) => content.push_str(delta),
                     StreamEventKind::Done { .. } => saw_done = true,
@@ -539,7 +594,7 @@ mod tests {
         for frame in parse_sse_text(fixture) {
             if frame.event == "message" {
                 // Standard OpenAI-compatible data line.
-                if let Some(event) = parse_sse_line(&format!("data: {}", frame.data)) {
+                for event in parse_sse_line(&format!("data: {}", frame.data)) {
                     if let StreamEventKind::TextDelta(delta) = &event.kind {
                         content.push_str(delta);
                     }
@@ -650,7 +705,7 @@ mod tests {
         let mut content = String::new();
 
         for line in fixture.lines() {
-            if let Some(event) = parse_sse_line(line) {
+            for event in parse_sse_line(line) {
                 match &event.kind {
                     StreamEventKind::TextDelta(delta) => content.push_str(delta),
                     StreamEventKind::Done { .. } => saw_done = true,

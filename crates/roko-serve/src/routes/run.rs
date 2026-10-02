@@ -107,9 +107,17 @@ pub(crate) async fn spawn_background_run(
             let _ = start_rx.await;
             publish_run_started(&bus, &run_id, &prompt_for_handle, agent_target.as_deref());
 
-            // Emit rich DashboardEvents so the TUI shows run activity.
-            let plan_id = format!("run-{}", &run_id[..8]);
-            let task_id: String = prompt_for_handle.chars().take(60).collect();
+            // Emit rich DashboardEvents so the TUI shows run activity. The
+            // plan is the one `RunStarted` and `RunCompleted` start and end.
+            let plan_id = crate::run_plan_id(&run_id);
+            // The hub keeps every event under `.roko/`, so the prompt that
+            // names the task is scrubbed before it is cut short.
+            let task_id: String = state_for_task
+                .scrubber
+                .scrub(&prompt_for_handle)
+                .chars()
+                .take(60)
+                .collect();
             let agent_label = agent_target.as_deref().unwrap_or("claude");
             {
                 use roko_core::DashboardEvent;
@@ -139,10 +147,9 @@ pub(crate) async fn spawn_background_run(
                 ]);
             }
 
-            match runtime
-                .run_once(workdir.as_path(), &prompt_for_handle)
-                .await
-            {
+            let run = runtime.run_once(workdir.as_path(), &prompt_for_handle);
+            let hub = &state_for_task.state_hub;
+            match run_with_heartbeats(hub, agent_label, &plan_id, &task_id, run).await {
                 Ok(result) => {
                     record_run_result(&state_for_task, &run_id, result.clone()).await;
                     publish_run_completed(
@@ -257,6 +264,51 @@ pub(crate) async fn spawn_background_run(
         .insert(run_id.clone(), run_handle);
     let _ = start_tx.send(());
     run_id
+}
+
+/// How often a one-shot run's agent reports that it is still working.
+const RUN_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Drive `run` to its end, publishing a heartbeat for the run's agent every
+/// [`RUN_HEARTBEAT_INTERVAL`], as a plan run's agents do, so the dashboard
+/// shows how long it has worked; then publish the agent's completion
+/// (gap-8a1fb3).
+async fn run_with_heartbeats<T>(
+    hub: &roko_runtime::SharedStateHub,
+    agent_id: &str,
+    plan_id: &str,
+    task_id: &str,
+    run: impl std::future::Future<Output = T>,
+) -> T {
+    use roko_core::DashboardEvent;
+
+    let started = tokio::time::Instant::now();
+    let mut heartbeat = tokio::time::interval(RUN_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first tick is immediate; the first heartbeat comes one interval in.
+    heartbeat.tick().await;
+    tokio::pin!(run);
+    let result = loop {
+        tokio::select! {
+            result = &mut run => break result,
+            _ = heartbeat.tick() => {
+                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                hub.publish(DashboardEvent::AgentHeartbeat {
+                    agent_id: agent_id.to_string(),
+                    plan_id: plan_id.to_string(),
+                    task_id: task_id.to_string(),
+                    elapsed_ms,
+                });
+            }
+        }
+    };
+    hub.publish(DashboardEvent::AgentCompleted {
+        agent_id: agent_id.to_string(),
+        plan_id: plan_id.to_string(),
+        task_id: task_id.to_string(),
+        attempt: 0,
+    });
+    result
 }
 
 async fn record_run_result(state: &AppState, run_id: &str, result: RunResult) {
@@ -421,4 +473,191 @@ fn run_now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use roko_core::DashboardEvent;
+
+    /// A key planted among the process's secrets, as a `.env` file plants one.
+    const PLANTED_KEY: &str = "canary-serve-6f2c9a41d8";
+
+    /// Puts a process secret scrubber that knows the planted key in place,
+    /// and the previous one back when dropped.
+    struct PlantedKeyScrubber(Option<Arc<roko_core::obs::LogScrubber>>);
+
+    impl PlantedKeyScrubber {
+        fn install() -> Self {
+            let scrubber = roko_core::obs::LogScrubber::empty();
+            scrubber
+                .add_literal_value(PLANTED_KEY, "PLANTED_KEY")
+                .expect("register the planted key");
+            let previous = roko_core::obs::install_secret_scrubber(Some(Arc::new(scrubber)));
+            Self(previous)
+        }
+    }
+
+    impl Drop for PlantedKeyScrubber {
+        fn drop(&mut self) {
+            roko_core::obs::install_secret_scrubber(self.0.take());
+        }
+    }
+
+    /// A runtime whose agent prints the planted key.
+    struct PrintsPlantedKey;
+
+    #[async_trait::async_trait]
+    impl crate::runtime::CliRuntime for PrintsPlantedKey {
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<RunResult> {
+            Ok(RunResult {
+                success: true,
+                output_text: Some(format!("Deployed.\nThe deploy key is {PLANTED_KEY}.\n")),
+                usage: None,
+                gate_results: Vec::new(),
+            })
+        }
+
+        fn session_status(&self, workdir: PathBuf) -> crate::runtime::SessionStatusInfo {
+            crate::runtime::SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
+            crate::runtime::DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+    }
+
+    /// Every regular file under `root`, at any depth.
+    fn files_under(root: &std::path::Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut dirs = vec![root.to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read a directory").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.is_file() {
+                    files.push(path);
+                }
+            }
+        }
+        files
+    }
+
+    /// bug-a9788a: what serve keeps under `.roko/` is scrubbed of the
+    /// process's secrets, as the CLI's event log is (the C2 canary). A
+    /// serve-hosted run whose agent prints a planted key, the stream record a
+    /// hosted plan run's agent publishes and an agent's output ingested as a
+    /// runtime event leave the key nowhere under `.roko/`: serve's event logs
+    /// hold it redacted.
+    #[tokio::test]
+    async fn serve_event_log_is_scrubbed() {
+        let _scrubber = PlantedKeyScrubber::install();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(PrintsPlantedKey),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+
+        let run_id = spawn_background_run(&state, "deploy the site".into(), None, None).await;
+        let run = state
+            .active_runs
+            .write()
+            .await
+            .remove(&run_id)
+            .expect("the run is tracked");
+        tokio::time::timeout(std::time::Duration::from_secs(10), run.handle)
+            .await
+            .expect("the run ends in time")
+            .expect("the run's task");
+        state.state_hub.publish(DashboardEvent::AgentOutput {
+            agent_id: "plan-a/T1".into(),
+            plan_id: "plan-a".into(),
+            task_id: "T1".into(),
+            attempt: 1,
+            content: format!(
+                "\u{1e}roko.stream.v1 {}",
+                json!({ "kind": "tool_result", "payload": { "output": PLANTED_KEY } })
+            ),
+        });
+        state
+            .runtime_event_logger
+            .consume_with_run_cursor(&roko_core::RuntimeEvent::AgentOutput {
+                run_id: "run-1".into(),
+                agent_id: "worker".into(),
+                chunk: format!("the key is {PLANTED_KEY}"),
+            });
+
+        let roko_dir = dir.path().join(".roko");
+        let events = std::fs::read_to_string(roko_dir.join("events.jsonl")).expect("the event log");
+        assert!(events.contains("[REDACTED:PLANTED_KEY]"), "{events}");
+        let runtime_events = std::fs::read_to_string(state.runtime_event_logger.path())
+            .expect("the runtime event log");
+        assert!(
+            runtime_events.contains("[REDACTED:PLANTED_KEY]"),
+            "{runtime_events}"
+        );
+        for path in files_under(&roko_dir) {
+            let bytes = std::fs::read(&path).expect("read a file");
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains(PLANTED_KEY),
+                "{} holds the planted key",
+                path.display()
+            );
+        }
+    }
+
+    /// gap-8a1fb3: a one-shot run's agent reports how long it has worked while
+    /// the run goes on, as a plan run's agents do, and completes with it.
+    #[tokio::test(start_paused = true)]
+    async fn one_shot_run_agent_beats_while_it_works_then_completes() {
+        let hub = roko_runtime::SharedStateHub::new_in_process();
+        hub.publish(DashboardEvent::AgentSpawned {
+            agent_id: "claude".into(),
+            plan_id: "run-0123abcd".into(),
+            task_id: "say hi".into(),
+            attempt: 0,
+            role: "run".into(),
+            model: "claude".into(),
+            provider: String::new(),
+        });
+        let work = tokio::time::sleep(std::time::Duration::from_secs(12));
+        run_with_heartbeats(&hub, "claude", "run-0123abcd", "say hi", work).await;
+
+        let beats: Vec<u64> = hub
+            .subscribe_events_from(0)
+            .replay
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                DashboardEvent::AgentHeartbeat { elapsed_ms, .. } => Some(*elapsed_ms),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(beats, [5_000, 10_000]);
+        let snapshot = hub.current_snapshot();
+        let agent = snapshot.agents.get("claude").expect("the run's agent");
+        assert!(!agent.active, "the agent completes with the run");
+        assert_eq!(agent.elapsed_ms, 10_000);
+    }
 }

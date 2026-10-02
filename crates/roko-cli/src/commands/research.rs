@@ -3,6 +3,87 @@
 use crate::*;
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 
+/// Backend selection for grounded research operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum ResearchBackend {
+    /// Automatic selection: configured deep -> Perplexity -> Gemini -> agent fallback.
+    Auto,
+    /// Force Gemini with Google Search grounding.
+    Gemini,
+    /// Force Perplexity search-grounded research.
+    Perplexity,
+    /// Force agent (Claude CLI) fallback.
+    Agent,
+}
+
+/// Validated recency filter for Perplexity search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum SearchRecency {
+    Hour,
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ResearchCmd {
+    /// Deep-dive research on a topic. Produces .roko/research/<slug>.md with citations.
+    Topic {
+        /// The research topic.
+        topic: Vec<String>,
+        /// Use Perplexity deep research (async, 1-10 min).
+        #[arg(long, help = "Use Perplexity deep research (async, 1-10 min)")]
+        deep: bool,
+        /// Backend to use for research. Default: auto (selects best available).
+        #[arg(long, value_enum, default_value_t = ResearchBackend::Auto)]
+        backend: ResearchBackend,
+    },
+    /// Enhance a PRD with academic citations, diagrams, and research-backed improvements.
+    EnhancePrd {
+        /// PRD slug (filename without .md).
+        slug: String,
+    },
+    /// Optimize an implementation plan with research-backed task decomposition techniques.
+    EnhancePlan {
+        /// Plan directory name under plans/.
+        plan: String,
+    },
+    /// Optimize tasks for efficiency, parallelism, and cheapest viable model.
+    EnhanceTasks {
+        /// Plan directory name under plans/.
+        plan: String,
+    },
+    /// Analyze execution episodes for self-learning insights and bandit weight recommendations.
+    Analyze,
+    /// List all research artifacts.
+    List {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Include generated INDEX.md in listing (excluded by default).
+        #[arg(long)]
+        include_generated: bool,
+    },
+    /// Direct web search using Perplexity's pure search API. Returns raw results without synthesis.
+    Search {
+        /// The search query.
+        query: Vec<String>,
+        /// Restrict results to these domains (comma-separated, e.g. "docs.rs,github.com").
+        #[arg(long, value_delimiter = ',')]
+        domains: Vec<String>,
+        /// Recency filter: hour, day, week, month, year.
+        #[arg(long, value_enum)]
+        recency: Option<SearchRecency>,
+        /// Output file path. Default: .roko/research/search-<slug>.md
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Do not save search results to disk.
+        #[arg(long)]
+        no_save: bool,
+    },
+}
+
 /// Maximum number of episode lines to include in analyze context.
 const ANALYZE_MAX_LINES: usize = 2_000;
 
@@ -99,7 +180,8 @@ pub(crate) async fn cmd_research(
     resolved: &roko_cli::resolved_overrides::ResolvedExecutionOverrides,
 ) -> Result<i32> {
     use roko_cli::agent_config::{command_from_config, load_gateway_env, model_from_config};
-    use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent};
+    use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent_recorded};
+    use roko_cli::plan_authoring::AuthoringSpend;
     use roko_cli::research::{ResearchMode, build_research_prompt};
 
     let workdir = resolve_workdir(cli);
@@ -304,17 +386,22 @@ pub(crate) async fn cmd_research(
             );
             let system = build_research_prompt(&workdir, &slug, content, ResearchMode::EnhancePrd);
             let started = Instant::now();
-            let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
-                prompt: &task_prompt,
-                workdir: &workdir,
-                model: model_ref,
-                effort: Some(researcher_effort),
-                system_prompt: Some(&system),
-                resume_session,
-                env_vars: &gw.vars,
-                role: Some(resolved_role),
-                allowed_tools: Some("Read,Write,Edit"),
-            })
+            let task_id = format!("research:enhance-prd:{slug}");
+            let spend = AuthoringSpend::operation(&workdir, &task_id, resolved_role);
+            let (exit_code, output) = run_agent_capture_silent_recorded(
+                AgentExecOpts {
+                    prompt: &task_prompt,
+                    workdir: &workdir,
+                    model: model_ref,
+                    effort: Some(researcher_effort),
+                    system_prompt: Some(&system),
+                    resume_session,
+                    env_vars: &gw.vars,
+                    role: Some(resolved_role),
+                    allowed_tools: Some("Read,Write,Edit"),
+                },
+                &spend,
+            )
             .await?;
             if !output.is_empty() {
                 print!("{output}");
@@ -324,7 +411,7 @@ pub(crate) async fn cmd_research(
                 &agent_command,
                 model_ref,
                 "research-enhance-prd",
-                &format!("research:enhance-prd:{slug}"),
+                &task_id,
                 &task_prompt,
                 &output,
                 exit_code == 0,
@@ -373,17 +460,22 @@ pub(crate) async fn cmd_research(
             let system =
                 build_research_prompt(&workdir, &plan, &context, ResearchMode::EnhancePlan);
             let started = Instant::now();
-            let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
-                prompt: &task_prompt,
-                workdir: &workdir,
-                model: model_ref,
-                effort: Some(researcher_effort),
-                system_prompt: Some(&system),
-                resume_session,
-                env_vars: &gw.vars,
-                role: Some(resolved_role),
-                allowed_tools: Some("Read,Write,Edit"),
-            })
+            let task_id = format!("research:enhance-plan:{plan}");
+            let spend = AuthoringSpend::operation(&workdir, &task_id, resolved_role);
+            let (exit_code, output) = run_agent_capture_silent_recorded(
+                AgentExecOpts {
+                    prompt: &task_prompt,
+                    workdir: &workdir,
+                    model: model_ref,
+                    effort: Some(researcher_effort),
+                    system_prompt: Some(&system),
+                    resume_session,
+                    env_vars: &gw.vars,
+                    role: Some(resolved_role),
+                    allowed_tools: Some("Read,Write,Edit"),
+                },
+                &spend,
+            )
             .await?;
             if !output.is_empty() {
                 print!("{output}");
@@ -393,7 +485,7 @@ pub(crate) async fn cmd_research(
                 &agent_command,
                 model_ref,
                 "research-enhance-plan",
-                &format!("research:enhance-plan:{plan}"),
+                &task_id,
                 &task_prompt,
                 &output,
                 exit_code == 0,
@@ -434,17 +526,22 @@ pub(crate) async fn cmd_research(
             let system =
                 build_research_prompt(&workdir, &plan, &content, ResearchMode::EnhanceTasks);
             let started = Instant::now();
-            let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
-                prompt: &task_prompt,
-                workdir: &workdir,
-                model: model_ref,
-                effort: Some(researcher_effort),
-                system_prompt: Some(&system),
-                resume_session,
-                env_vars: &gw.vars,
-                role: Some(resolved_role),
-                allowed_tools: Some("Read,Write,Edit"),
-            })
+            let task_id = format!("research:enhance-tasks:{plan}");
+            let spend = AuthoringSpend::operation(&workdir, &task_id, resolved_role);
+            let (exit_code, output) = run_agent_capture_silent_recorded(
+                AgentExecOpts {
+                    prompt: &task_prompt,
+                    workdir: &workdir,
+                    model: model_ref,
+                    effort: Some(researcher_effort),
+                    system_prompt: Some(&system),
+                    resume_session,
+                    env_vars: &gw.vars,
+                    role: Some(resolved_role),
+                    allowed_tools: Some("Read,Write,Edit"),
+                },
+                &spend,
+            )
             .await?;
             if !output.is_empty() {
                 print!("{output}");
@@ -454,7 +551,7 @@ pub(crate) async fn cmd_research(
                 &agent_command,
                 model_ref,
                 "research-enhance-tasks",
-                &format!("research:enhance-tasks:{plan}"),
+                &task_id,
                 &task_prompt,
                 &output,
                 exit_code == 0,
@@ -506,17 +603,22 @@ pub(crate) async fn cmd_research(
                 ResearchMode::AnalyzeExecution,
             );
             let started = Instant::now();
-            let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
-                prompt: &task_prompt,
-                workdir: &workdir,
-                model: model_ref,
-                effort: Some(researcher_effort),
-                system_prompt: Some(&system),
-                resume_session,
-                env_vars: &gw.vars,
-                role: Some(resolved_role),
-                allowed_tools: Some("Read,Write,Edit"),
-            })
+            let spend =
+                AuthoringSpend::operation(&workdir, "research:analyze:execution", resolved_role);
+            let (exit_code, output) = run_agent_capture_silent_recorded(
+                AgentExecOpts {
+                    prompt: &task_prompt,
+                    workdir: &workdir,
+                    model: model_ref,
+                    effort: Some(researcher_effort),
+                    system_prompt: Some(&system),
+                    resume_session,
+                    env_vars: &gw.vars,
+                    role: Some(resolved_role),
+                    allowed_tools: Some("Read,Write,Edit"),
+                },
+                &spend,
+            )
             .await?;
             if !output.is_empty() {
                 print!("{output}");
@@ -645,6 +747,15 @@ pub(crate) async fn cmd_research(
                 .search_batch(&[search_query])
                 .await
                 .map_err(|e| anyhow::anyhow!("search error: {e}"))?;
+            // Each query is one billed Search API request (bug-2dfd23).
+            roko_cli::research::record_search_spend(
+                &workdir,
+                &query_str,
+                resolved_role,
+                responses.len(),
+                started.elapsed().as_millis() as u64,
+            )
+            .await;
 
             let results: Vec<_> = responses.into_iter().flat_map(|r| r.results).collect();
 
@@ -786,6 +897,17 @@ async fn run_perplexity_deep(
             }
         }
     };
+    roko_cli::research::record_run_spend(
+        workdir,
+        &routing_config,
+        topic,
+        role,
+        "perplexity",
+        &model_slug,
+        &result,
+        started,
+    )
+    .await;
 
     if !result.success {
         let err_text = result.output.body.as_text().unwrap_or("unknown error");
@@ -975,6 +1097,17 @@ async fn run_gemini_grounded(
         .build();
     let started = Instant::now();
     let result = agent.run(&input, &Context::now()).await;
+    roko_cli::research::record_run_spend(
+        workdir,
+        &routing_config,
+        topic,
+        role,
+        "gemini",
+        &model_slug,
+        &result,
+        started,
+    )
+    .await;
 
     if !result.success {
         let err_text = result.output.body.as_text().unwrap_or("unknown error");
@@ -1099,6 +1232,17 @@ async fn run_perplexity_standard(
         .build();
     let started = Instant::now();
     let result = agent.run(&input, &Context::now()).await;
+    roko_cli::research::record_run_spend(
+        workdir,
+        &routing_config,
+        topic,
+        role,
+        "perplexity",
+        &model_slug,
+        &result,
+        started,
+    )
+    .await;
 
     if !result.success {
         let err_text = result.output.body.as_text().unwrap_or("unknown error");
@@ -1169,7 +1313,8 @@ async fn run_agent_fallback(
     agent_command: &str,
     role: &str,
 ) -> Result<i32> {
-    use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent};
+    use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent_recorded};
+    use roko_cli::plan_authoring::AuthoringSpend;
     use roko_cli::research::{ResearchMode, build_research_prompt};
 
     let slug = topic.to_lowercase().replace(' ', "-");
@@ -1180,17 +1325,22 @@ async fn run_agent_fallback(
     );
     let system = build_research_prompt(workdir, topic, "", ResearchMode::Topic);
     let started = Instant::now();
-    let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
-        prompt: &task_prompt,
-        workdir,
-        model: model_ref,
-        effort: Some(researcher_effort),
-        system_prompt: Some(&system),
-        resume_session,
-        env_vars,
-        role: Some(role),
-        allowed_tools: Some("Read,Write,Edit"),
-    })
+    let task_id = format!("research:topic:{slug}");
+    let spend = AuthoringSpend::operation(workdir, &task_id, role);
+    let (exit_code, output) = run_agent_capture_silent_recorded(
+        AgentExecOpts {
+            prompt: &task_prompt,
+            workdir,
+            model: model_ref,
+            effort: Some(researcher_effort),
+            system_prompt: Some(&system),
+            resume_session,
+            env_vars,
+            role: Some(role),
+            allowed_tools: Some("Read,Write,Edit"),
+        },
+        &spend,
+    )
     .await?;
     if !output.is_empty() {
         print!("{output}");
@@ -1200,7 +1350,7 @@ async fn run_agent_fallback(
         agent_command,
         model_ref,
         "research-topic-claude",
-        &format!("research:topic:{}", topic.to_lowercase().replace(' ', "-")),
+        &task_id,
         &task_prompt,
         &output,
         exit_code == 0,

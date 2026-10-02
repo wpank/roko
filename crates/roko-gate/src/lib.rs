@@ -78,6 +78,7 @@ pub mod adaptive_threshold;
 pub mod chaos;
 
 pub mod acceptance_contract;
+pub mod agent_judge;
 pub mod artifact_store;
 pub mod attempt_diff;
 /// Criterion benchmark regression detection: parse JSON output, compare against baselines.
@@ -147,6 +148,7 @@ pub use acceptance_contract::{
     StructuredOutputEvidence,
 };
 pub use adaptive_threshold::{AdaptiveThresholds, RungStats, TOTAL_RUNGS};
+pub use agent_judge::AgentJudgeOracle;
 pub use artifact_store::ArtifactStore;
 pub use benchmark_gate::{BenchmarkComparison, BenchmarkRegressionGate};
 pub use clippy_gate::ClippyGate;
@@ -211,8 +213,8 @@ pub use verdict_publisher::VerdictPublisher;
 pub use graph_cell::{GatePipelineCell, GatePipelineCellInput, GraphEventProgressSink};
 pub use production_request::{GateTaskContextSpec, ProductionGateRequest, VerifyStepSpec};
 pub use production_service::{
-    DefaultGateService, GatePipelineProgress, NoopProgressSink, ProductionGateRunner,
-    ProductionGateService, ProgressSink,
+    GatePipelineProgress, NoopProgressSink, ProductionGateRunner, ProductionGateService,
+    ProgressSink,
 };
 pub use production_verdict::{
     EvidenceRef, PipelineOutcome, ProductionGateRungVerdict, ProductionGateVerdictV1, RungState,

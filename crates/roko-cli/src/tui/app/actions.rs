@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// What the inject key says: the TUI cannot send a directive itself yet.
+const INJECT_UNAVAILABLE: &str =
+    "inject is not available in the TUI yet; send it with `roko inject <plan> <text>`";
+
 impl App {
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
         if key.code == crossterm::event::KeyCode::Esc {
@@ -257,7 +261,6 @@ impl App {
                 if let Some(modal) = self.tui_state.active_modal.as_mut() {
                     match modal {
                         ModalState::WaveOverview { scroll_offset, .. }
-                        | ModalState::AgentPool { scroll_offset, .. }
                         | ModalState::BatchReview { scroll_offset, .. } => {
                             *scroll_offset = scroll_offset.saturating_sub(1);
                         }
@@ -283,7 +286,6 @@ impl App {
                 if let Some(modal) = self.tui_state.active_modal.as_mut() {
                     match modal {
                         ModalState::WaveOverview { scroll_offset, .. }
-                        | ModalState::AgentPool { scroll_offset, .. }
                         | ModalState::BatchReview { scroll_offset, .. } => {
                             *scroll_offset = scroll_offset.saturating_add(1);
                         }
@@ -655,56 +657,18 @@ impl App {
                     self.tui_state.pending_approval = None;
                 }
             }
+            // No transport reaches a live run yet, so inject fails closed, as
+            // `roko inject` does: no prompt for a directive nothing would
+            // read, and nothing written (bug-6c3491, gap-f118b3).
             TuiAction::StartInject => {
-                self.tui_state.input_mode = InputMode::Inject;
-                self.tui_state.message_input.clear();
+                self.notifications
+                    .push_back(super::super::modals::Notification::warn(INJECT_UNAVAILABLE));
             }
             TuiAction::SubmitInject => {
-                let msg = self.tui_state.message_input.clone();
                 self.tui_state.input_mode = InputMode::Normal;
                 self.tui_state.message_input.clear();
-                if !msg.is_empty() {
-                    // Write inject signal to .roko/signals.jsonl for the plan runner
-                    let signal_path = self.workdir.join(".roko").join("signals.jsonl");
-                    let ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis();
-                    let entry = serde_json::json!({
-                        "id": format!("inject-{ts}"),
-                        "kind": "roko.inject.directive",
-                        "created_at_ms": ts,
-                        "payload": { "message": msg },
-                    });
-                    std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&signal_path)
-                        .inspect_err(|err| {
-                            tracing::warn!(
-                                error = %err,
-                                path = %signal_path.display(),
-                                "failed to open signal file for inject"
-                            );
-                        })
-                        .ok()
-                        .and_then(|mut f| {
-                            roko_core::io::write_jsonl_line(&mut f, &entry.to_string())
-                                .inspect_err(|err| {
-                                    tracing::warn!(
-                                        error = %err,
-                                        path = %signal_path.display(),
-                                        "failed to append inject signal"
-                                    );
-                                })
-                                .ok()
-                        });
-                    self.notifications
-                        .push_back(super::super::modals::Notification::info(format!(
-                            "Injected: {}",
-                            truncate_str(&msg, 40)
-                        )));
-                }
+                self.notifications
+                    .push_back(super::super::modals::Notification::warn(INJECT_UNAVAILABLE));
             }
             TuiAction::CancelInject => {
                 self.tui_state.input_mode = InputMode::Normal;
@@ -1074,7 +1038,7 @@ impl App {
                     self.tui_state.pending_confirm =
                         Some(ConfirmAction::ResetSelectedPlan(plan_id.clone()));
                     let modal_action = modals_mod::ConfirmAction::Custom {
-                        message: format!("Restart plan '{plan_id}'?"),
+                        message: format!("Reset plan '{plan_id}'?"),
                     };
                     self.tui_state.active_modal = Some(ModalState::Confirm {
                         action: modal_action,
@@ -1095,14 +1059,14 @@ impl App {
                     });
                 }
             }
-            TuiAction::ResetPlanState => {
+            TuiAction::CancelSelectedPlan => {
                 if let Some(plan) = self.tui_state.plans.get(self.tui_state.selected_plan_idx) {
                     let plan_id = plan.id.clone();
                     self.tui_state.input_mode = InputMode::Confirm;
                     self.tui_state.pending_confirm =
-                        Some(ConfirmAction::ResetSelectedPlan(plan_id.clone()));
+                        Some(ConfirmAction::CancelPlan(plan_id.clone()));
                     let modal_action = modals_mod::ConfirmAction::Custom {
-                        message: format!("Reset state for plan '{plan_id}'?"),
+                        message: format!("Cancel plan '{plan_id}'?"),
                     };
                     self.tui_state.active_modal = Some(ModalState::Confirm {
                         action: modal_action,

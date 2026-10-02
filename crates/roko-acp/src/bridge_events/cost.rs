@@ -3,7 +3,10 @@
 use std::{
     collections::HashSet,
     path::Path,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Instant,
 };
 
@@ -226,7 +229,6 @@ pub(crate) async fn append_acp_episode(
     }
 
     // Spawn background distillation so the knowledge store learns from each ACP interaction.
-    let distill_workdir = workdir.to_path_buf();
     let distill_model = roko_config.agent.default_model.clone();
     let distill_caller: Arc<dyn roko_core::foundation::ModelCaller> = Arc::new(
         ModelCallService::new(distill_model)
@@ -234,7 +236,7 @@ pub(crate) async fn append_acp_episode(
             .with_working_dir(workdir)
             .with_immune_root(workdir),
     );
-    roko_neuro::spawn_episode_distillation(distill_workdir, episode, Some(distill_caller));
+    spawn_acp_distillation(workdir, episode, distill_caller);
 
     // Auto-dream consolidation (opt-in): after enough episodes accumulate,
     // spawn a background dream cycle so patterns are extracted into
@@ -288,11 +290,74 @@ pub(crate) fn acp_dream_due(workdir: &Path, config: &RokoConfig) -> Option<usize
         .then_some(episodes_since_dream)
 }
 
-/// Spawn a background dream consolidation when [`acp_dream_due`] reports one
-/// is due. This is fire-and-forget: failures are logged but never block the
-/// caller.
+/// The dream consolidations ACP sessions run in this process.
+static ACP_DREAM_SLOTS: DreamSlots = DreamSlots::new();
+
+/// Counts running dream consolidations against
+/// `learning.dreams.max_concurrent`.
+///
+/// A dream is due on every ACP turn until it writes its report, so without
+/// this count each turn would start another one while the first runs.
+#[derive(Debug, Default)]
+pub(crate) struct DreamSlots {
+    running: AtomicUsize,
+}
+
+impl DreamSlots {
+    pub(crate) const fn new() -> Self {
+        Self {
+            running: AtomicUsize::new(0),
+        }
+    }
+
+    /// Take a slot when fewer than `max_concurrent` dreams are running.
+    pub(crate) fn try_acquire(&self, max_concurrent: usize) -> Option<DreamSlot<'_>> {
+        self.running
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |running| {
+                (running < max_concurrent).then_some(running + 1)
+            })
+            .ok()
+            .map(|_| DreamSlot { slots: self })
+    }
+}
+
+/// A running dream's place in [`DreamSlots`], given back when dropped.
+#[derive(Debug)]
+pub(crate) struct DreamSlot<'a> {
+    slots: &'a DreamSlots,
+}
+
+impl Drop for DreamSlot<'_> {
+    fn drop(&mut self) {
+        self.slots.running.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Claim a dream for an ACP turn: [`acp_dream_due`] reports one is due and
+/// `slots` has room under `learning.dreams.max_concurrent`. Returns the
+/// episode count and the slot, which the dream holds until it ends.
+pub(crate) fn claim_acp_dream<'a>(
+    slots: &'a DreamSlots,
+    workdir: &Path,
+    config: &RokoConfig,
+) -> Option<(usize, DreamSlot<'a>)> {
+    let episodes_since_dream = acp_dream_due(workdir, config)?;
+    let max_concurrent = config.learning.dreams.effective_max_concurrent();
+    let Some(slot) = slots.try_acquire(max_concurrent) else {
+        debug!(
+            episodes_since_dream,
+            max_concurrent, "skipping dream consolidation: the running dreams fill max_concurrent"
+        );
+        return None;
+    };
+    Some((episodes_since_dream, slot))
+}
+
+/// Spawn a background dream consolidation when [`claim_acp_dream`] gets one.
+/// This is fire-and-forget: failures are logged but never block the caller.
 pub(crate) fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfig) {
-    let Some(episodes_since_dream) = acp_dream_due(workdir, config) else {
+    let Some((episodes_since_dream, slot)) = claim_acp_dream(&ACP_DREAM_SLOTS, workdir, config)
+    else {
         return;
     };
     let workdir = workdir.to_path_buf();
@@ -334,6 +399,8 @@ pub(crate) fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfi
         if let Err(err) = runner.consolidate_async().await {
             warn!(?err, "background dream consolidation failed");
         }
+        // The dream is over, failed or not: free its slot.
+        drop(slot);
     });
 }
 
@@ -416,6 +483,17 @@ pub(crate) fn acp_role_for_mode(mode: &str) -> AgentRole {
         "plan" => AgentRole::Strategist,
         "research" => AgentRole::Researcher,
         _ => AgentRole::Implementer,
+    }
+}
+
+/// The role whose bundled `AgentContract` gates an ACP session's tools. Contracts are
+/// named after roles, not modes, so `code` maps to `implementer`, `plan` to
+/// `strategist` and `research` to `researcher`. Any other mode keeps its name, finds no
+/// contract, and gets the deny-all restricted fallback.
+pub(crate) fn acp_contract_role_for_mode(mode: &str) -> String {
+    match mode.trim() {
+        mode @ ("code" | "plan" | "research") => acp_role_for_mode(mode).to_string(),
+        other => other.to_owned(),
     }
 }
 
@@ -586,4 +664,71 @@ pub(crate) fn knowledge_tier_label(tier: KnowledgeTier) -> &'static str {
 pub(crate) fn score_to_confidence(score: f64) -> f64 {
     let score = score.max(0.0);
     score / (1.0 + score)
+}
+
+/// Distil a logged ACP `episode` into durable knowledge in the background,
+/// recording what the distillation call costs (bug-aad63e): the bare
+/// `ModelCallService` ACP distils through records nothing itself.
+pub(crate) fn spawn_acp_distillation(
+    workdir: &Path,
+    episode: Episode,
+    caller: Arc<dyn roko_core::foundation::ModelCaller>,
+) {
+    roko_neuro::spawn_recorded_episode_distillation(workdir.to_path_buf(), episode, caller);
+}
+
+#[cfg(test)]
+mod distillation_tests {
+    use async_trait::async_trait;
+    use roko_core::foundation::{ModelCallRequest, ModelCallResponse, ModelCaller, TokenUsage};
+
+    use super::*;
+
+    /// A distillation model that reports a known cost and distils nothing.
+    struct FakeDistiller;
+
+    #[async_trait]
+    impl ModelCaller for FakeDistiller {
+        async fn call(&self, _req: ModelCallRequest) -> roko_core::Result<ModelCallResponse> {
+            Ok(ModelCallResponse {
+                content: r#"{"entries": []}"#.to_string(),
+                model: "fake-distiller".to_string(),
+                usage: TokenUsage {
+                    input_tokens: 700,
+                    output_tokens: 30,
+                    total_tokens: 730,
+                    cost_usd: 0.125,
+                },
+                stop_reason: Some("end_turn".to_string()),
+                request_id: None,
+            })
+        }
+    }
+
+    /// bug-aad63e: the distillation call that follows each ACP episode
+    /// records its spend once, under the distiller's role and the episode's
+    /// task.
+    #[tokio::test]
+    async fn acp_distillation_records_spend() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let episode = Episode::new("acp", "acp-session-1");
+
+        spawn_acp_distillation(tmp.path(), episode, Arc::new(FakeDistiller));
+
+        // The distillation runs detached; the efficiency row is written last.
+        let learn = tmp.path().join(".roko").join("learn");
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !learn.join("efficiency.jsonl").exists() && Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let costs = std::fs::read_to_string(learn.join("costs.jsonl")).expect("cost log");
+        let rows: Vec<serde_json::Value> = costs
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("JSONL row"))
+            .collect();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["role"], roko_neuro::DISTILLATION_ROLE);
+        assert_eq!(rows[0]["cost_usd"], 0.125);
+        assert_eq!(rows[0]["task_id"], "acp-session-1");
+    }
 }

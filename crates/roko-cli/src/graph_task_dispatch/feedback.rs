@@ -1,9 +1,17 @@
 //! The learning/feedback context of a Graph plan run and the feedback each task
 //! attempt emits once its outcome is settled.
 
+use roko_agent::safety::provenance_sink::arguments_digest;
+use roko_agent::safety::{
+    ProvenanceCall, ProvenanceOutcome, ProvenanceVerdict, SafetyProvenanceSink,
+};
+use roko_core::ContentHash;
+use roko_core::extension::CamelTaintLevel;
+
 use super::tui_forward::append_jsonl_line_async;
 use super::verification::verify_step_label;
 use super::*;
+use crate::dispatch_v2::ToolCallRecord;
 
 /// Learning/feedback subsystem context for the Graph engine.
 ///
@@ -47,12 +55,11 @@ pub struct GraphFeedbackContext {
     /// P2-LRN-6 Loop 1: Path to `.roko/learn/gate-thresholds.json` for
     /// adaptive EMA threshold updates after each verify run.
     ///
-    /// When set, each verify step outcome is fed into `GateThresholds::observe`
+    /// When set, each verify step outcome is fed into `GateThresholds::observe_with_alpha`
     /// so the EMA pass-rate converges toward the workspace's real gate history.
     /// The file is written atomically after every task's verify sequence
     /// completes (both pass and fail), and a `GateThresholdsUpdated` event is
-    /// published to the TUI bridge. The gate ratchet, `gate-ratchet.json`,
-    /// is kept beside it (find-4b4344).
+    /// published to the TUI bridge.
     pub gate_thresholds_path: Option<PathBuf>,
 
     /// RAG-10: Path to `.roko/learn/retrieval-outcomes.jsonl`.
@@ -71,6 +78,10 @@ pub struct GraphFeedbackContext {
     /// reuses an attempt key. When unset, ordinals live in memory and no
     /// attempt is recorded.
     pub runs_dir: Option<PathBuf>,
+
+    /// The safety provenance sinks of the runs in flight (gap-ca8022): a
+    /// CLI provider's dispatch turn leaves one record with its run's sink.
+    pub provenance_sinks: Option<crate::safety_provenance::ProvenanceSinks>,
 }
 
 /// A `costs.jsonl` row with its attempt's settled verdict beside it: the
@@ -107,6 +118,7 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("gate_thresholds_path", &self.gate_thresholds_path)
             .field("retrieval_outcomes_path", &self.retrieval_outcomes_path)
             .field("runs_dir", &self.runs_dir)
+            .field("provenance_sinks", &self.provenance_sinks.is_some())
             .finish()
     }
 }
@@ -131,6 +143,7 @@ impl Default for GraphFeedbackContext {
             gate_thresholds_path: None,
             retrieval_outcomes_path: None,
             runs_dir: None,
+            provenance_sinks: None,
         }
     }
 }
@@ -306,6 +319,7 @@ impl GraphTaskDispatcher {
             }
         }
         self.publish_settlement(spec, task, settled).await;
+        self.record_cli_turn_provenance(settled, dispatch).await;
 
         // ── W05: Efficiency event ────────────────────────────────────────
         if let Some(eff_path) = &self.feedback.efficiency_path {
@@ -325,25 +339,32 @@ impl GraphTaskDispatcher {
                 })
                 .collect();
             let eff_system_prompt_tokens = dispatch_plan.prompt.diagnostics.estimated_tokens;
-            let eff_tool_calls: Vec<roko_learn::efficiency::ToolCallMeta> = dispatch
-                .events
-                .iter()
-                .filter_map(|ev| match ev {
-                    roko_agent::AgentRuntimeEvent::ToolCall { name, .. } => {
-                        Some(roko_learn::efficiency::ToolCallMeta {
-                            tool_name: name.clone(),
-                            duration_ms: 0,
-                            result_tokens: 0,
-                            succeeded: true,
-                            advanced_task: false,
-                            was_redundant: false,
-                            error_category: None,
-                        })
-                    }
-                    _ => None,
-                })
-                .collect();
+            let live_tool_calls = settled.live_tool_calls.finish().await;
+            let eff_tool_calls =
+                efficiency_tool_calls(&dispatch.events, &live_tool_calls, &dispatch.tool_calls);
             let eff_tools_used = eff_tool_calls.len() as u32;
+            // The tools the contract allows, or 0 (unknown) when the
+            // provider's own tool set applies (gap-7a8474).
+            let eff_tools_available = effective_agent_contract(role, task, &self.config)
+                .allowed_tools
+                .map_or(0, |tools| tools.len() as u32);
+            // Without pricing for the model the saving is unknown, and the
+            // row records none; a price list never undercuts the reported cost.
+            let eff_cost_without_cache = crate::dispatch_v2::usage_cost_without_cache(
+                &dispatch.result.usage,
+                dispatch.target.model_profile.as_ref(),
+                &dispatch.target.model_slug,
+            )
+            .map_or(cost_usd, |uncached| uncached.max(cost_usd));
+            // The task's first attempt, or a retry of a failed one, which
+            // a replan follows when gate failures trigger one.
+            let eff_strategy = if settled.key().attempt <= 1 {
+                "initial"
+            } else if self.feedback.replan_on_gate_failure {
+                "replan"
+            } else {
+                "retry"
+            };
             let event = roko_learn::efficiency::AgentEfficiencyEvent {
                 agent_id: format!("{}/{}", spec.plan_id, task.id),
                 role: role.to_string(),
@@ -354,20 +375,25 @@ impl GraphTaskDispatcher {
                 attempt_id: attempt_key.to_string(),
                 input_tokens: tokens_in,
                 output_tokens: tokens_out,
-                reasoning_tokens: 0,
+                reasoning_tokens: reported_reasoning_tokens(
+                    &dispatch.result.usage,
+                    dispatch.result.usage_obs.as_ref(),
+                    &dispatch.events,
+                ),
                 cache_read_tokens: u64::from(dispatch.result.usage.cache_read_tokens),
                 cache_write_tokens: u64::from(dispatch.result.usage.cache_create_tokens),
                 cost_usd,
-                cost_usd_without_cache: cost_usd,
+                cost_usd_without_cache: eff_cost_without_cache,
                 prompt_sections: eff_prompt_sections,
                 total_prompt_tokens: tokens_in,
                 system_prompt_tokens: u64::from(eff_system_prompt_tokens),
-                tools_available: eff_tool_calls.len() as u32,
+                tools_available: eff_tools_available,
                 tools_used: eff_tools_used,
                 tool_calls: eff_tool_calls,
                 wall_time_ms: duration_ms,
                 duration_ms,
-                time_to_first_token_ms: 0,
+                // 0 when no stream showed model output (gap-7a8474).
+                time_to_first_token_ms: dispatch.result.ttft_ms.unwrap_or(0),
                 // No provider process is pre-spawned or reused, so every
                 // dispatch is a cold start.
                 was_warm_start: false,
@@ -383,7 +409,7 @@ impl GraphTaskDispatcher {
                 gate_errors: vec![],
                 model_used: model_slug.clone(),
                 frequency: roko_core::OperatingFrequency::Gamma,
-                strategy_attempted: String::new(),
+                strategy_attempted: eff_strategy.to_string(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
             };
             let row = AttemptKeyed {
@@ -558,6 +584,40 @@ impl GraphTaskDispatcher {
     /// one did, learns from it ([`Self::credit_reflex_rule`]), and the
     /// settlement counts toward the task's standing on the model ladder
     /// (gap-460230).
+    /// Record a CLI provider's dispatch turn with its run's safety
+    /// provenance sink (gap-ca8022). A CLI agent such as the Claude CLI runs
+    /// its tools itself, outside roko's tool dispatcher, so nothing records
+    /// an intent before they run. The turn instead leaves one outcome
+    /// afterwards: whether it succeeded, and a keyed digest of the tool calls
+    /// its live output showed. A failed write is logged: the tools have run.
+    async fn record_cli_turn_provenance(
+        &self,
+        settled: &SettledAttempt,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+    ) {
+        use roko_core::agent::ProviderKind;
+
+        let cli = matches!(
+            dispatch.target.provider_kind,
+            ProviderKind::ClaudeCli | ProviderKind::CodexCli
+        );
+        let Some(sinks) = self.feedback.provenance_sinks.as_ref().filter(|_| cli) else {
+            return;
+        };
+        let Some(sink) = sinks.for_run(&settled.key().run_id) else {
+            return;
+        };
+        let calls = settled.live_tool_calls.finish().await;
+        let outcome = cli_turn_outcome(sink.as_ref(), settled, dispatch, &calls);
+        if let Err(error) = sink.record_outcome(&outcome) {
+            tracing::warn!(
+                attempt_key = settled.attempt_key(),
+                %error,
+                "safety provenance: the CLI turn was not recorded"
+            );
+        }
+    }
+
     pub(super) async fn publish_settlement(
         &self,
         spec: &TaskExecutionSpec,
@@ -581,6 +641,191 @@ impl GraphTaskDispatcher {
     }
 }
 
+/// Reasoning (thinking) tokens a dispatch reported (gap-7a8474): its usage,
+/// else its usage observation, else the sum of its token-usage events, which
+/// some CLI providers stream.
+fn reported_reasoning_tokens(
+    usage: &roko_core::Usage,
+    observed: Option<&roko_core::UsageObservation>,
+    events: &[roko_agent::AgentRuntimeEvent],
+) -> u64 {
+    let reported = u64::from(usage.reasoning_tokens);
+    if reported > 0 {
+        return reported;
+    }
+    if let Some(observed) = observed.and_then(|observed| observed.reasoning_tokens)
+        && observed > 0
+    {
+        return observed;
+    }
+    events
+        .iter()
+        .map(|event| match event {
+            roko_agent::AgentRuntimeEvent::TokenUsage {
+                reasoning_tokens, ..
+            } => *reasoning_tokens,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// The tool calls a dispatch made, one per call (bug-f9ae3e), with each
+/// one's outcome where something recorded it.
+///
+/// A streaming provider sends a call's start, each argument delta and its
+/// end as separate tool-call events under one id, and a delta may name no
+/// tool; a call without an id counts once for each event that names a
+/// tool. A call's tool output gives its result size. The events don't say
+/// whether a call succeeded, and the result bridge sends none. Two records
+/// do: the calls the attempt's live output showed (`live`, bug-264c41),
+/// with the outcome a CLI provider's tool result reports, and the calls
+/// roko's own tool loop ran (`audited`, gap-4d5e2d), with the outcome the
+/// tool audit holds, which wins. Each record settles the earliest call under
+/// its id that the record hasn't settled yet, or is added as a call of its
+/// own. A call no record settled keeps an unknown outcome.
+fn efficiency_tool_calls(
+    events: &[roko_agent::AgentRuntimeEvent],
+    live: &[crate::dispatch_v2::ToolCallRecord],
+    audited: &[crate::dispatch_v2::ToolCallRecord],
+) -> Vec<roko_learn::efficiency::ToolCallMeta> {
+    let mut calls: Vec<roko_learn::efficiency::ToolCallMeta> = Vec::new();
+    // The call id of each entry of `calls`; empty for a call without one.
+    let mut ids: Vec<String> = Vec::new();
+    let mut by_id: HashMap<&str, usize> = HashMap::new();
+    for event in events {
+        match event {
+            roko_agent::AgentRuntimeEvent::ToolCall { id, name } if !id.is_empty() => {
+                match by_id.entry(id.as_str()) {
+                    Entry::Occupied(entry) => {
+                        let call = &mut calls[*entry.get()];
+                        if call.tool_name.is_empty() {
+                            call.tool_name.clone_from(name);
+                        }
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(calls.len());
+                        calls.push(unobserved_tool_call(name));
+                        ids.push(id.clone());
+                    }
+                }
+            }
+            roko_agent::AgentRuntimeEvent::ToolCall { name, .. } if !name.is_empty() => {
+                calls.push(unobserved_tool_call(name));
+                ids.push(String::new());
+            }
+            roko_agent::AgentRuntimeEvent::ToolOutput { id, output } => {
+                if let Some(&index) = by_id.get(id.as_str()) {
+                    calls[index].result_tokens += roko_compose::estimate_tokens(output) as u64;
+                }
+            }
+            _ => {}
+        }
+    }
+    settle_tool_calls(&mut calls, &mut ids, live);
+    settle_tool_calls(&mut calls, &mut ids, audited);
+    calls
+}
+
+/// An efficiency record of a call to `name` whose outcome is unknown.
+fn unobserved_tool_call(name: &str) -> roko_learn::efficiency::ToolCallMeta {
+    roko_learn::efficiency::ToolCallMeta {
+        tool_name: name.to_string(),
+        duration_ms: 0,
+        result_tokens: 0,
+        succeeded: None,
+        advanced_task: false,
+        was_redundant: false,
+        error_category: None,
+    }
+}
+
+/// Settle `calls`, whose call ids are `ids`, with `records`: each record
+/// settles the earliest call under its id that no earlier record of
+/// `records` settled, giving it the record's outcome when it has one and
+/// its tool name when it lacks one. A record with no such call is added.
+fn settle_tool_calls(
+    calls: &mut Vec<roko_learn::efficiency::ToolCallMeta>,
+    ids: &mut Vec<String>,
+    records: &[crate::dispatch_v2::ToolCallRecord],
+) {
+    let mut settled = vec![false; calls.len()];
+    for record in records {
+        let earliest = (0..calls.len()).find(|&index| !settled[index] && ids[index] == record.id);
+        match earliest {
+            Some(index) => {
+                settled[index] = true;
+                let call = &mut calls[index];
+                if record.succeeded.is_some() {
+                    call.succeeded = record.succeeded;
+                }
+                if call.tool_name.is_empty() {
+                    call.tool_name.clone_from(&record.name);
+                }
+            }
+            None => {
+                calls.push(roko_learn::efficiency::ToolCallMeta {
+                    succeeded: record.succeeded,
+                    ..unobserved_tool_call(&record.name)
+                });
+                ids.push(record.id.clone());
+                settled.push(true);
+            }
+        }
+    }
+}
+
+/// The provenance record of a CLI provider's dispatch turn `dispatch`, for
+/// attempt `settled` (gap-ca8022). It is an outcome with no intent, since the
+/// CLI ran its tools before roko saw them, and its argument digest commits to
+/// the tool calls `calls` the turn's live output showed. A turn that made tool
+/// calls carries external taint: roko cannot see where their inputs came from.
+fn cli_turn_outcome(
+    sink: &dyn SafetyProvenanceSink,
+    settled: &SettledAttempt,
+    dispatch: &crate::dispatch_v2::AgentResultDispatch,
+    calls: &[ToolCallRecord],
+) -> ProvenanceOutcome {
+    let identity = &settled.verdict.identity;
+    let verdict = if dispatch.result.success {
+        ProvenanceVerdict::Succeeded
+    } else {
+        ProvenanceVerdict::Failed
+    };
+    let taint = if calls.is_empty() {
+        CamelTaintLevel::Trusted
+    } else {
+        CamelTaintLevel::External
+    };
+    ProvenanceOutcome {
+        call: ProvenanceCall {
+            run_id: identity.run_id.clone(),
+            task_id: identity.task_id.clone(),
+            attempt_id: identity.attempt_key.clone(),
+            turn_id: String::new(),
+            call_id: "cli-turn".to_string(),
+            tool: format!("cli:{}", dispatch.target.provider_id),
+            args_digest: cli_tool_calls_digest(&sink.digest_key(), calls),
+        },
+        intent: None,
+        verdict,
+        reason: None,
+        result_digest: None,
+        taint,
+    }
+}
+
+/// Keyed digest of the tool calls `calls` a CLI turn's live output showed:
+/// each call's id, tool and outcome, in the order the provider made them.
+fn cli_tool_calls_digest(key: &[u8; 32], calls: &[ToolCallRecord]) -> ContentHash {
+    let observed: Vec<serde_json::Value> = calls
+        .iter()
+        .map(|call| {
+            serde_json::json!({ "id": call.id, "name": call.name, "succeeded": call.succeeded })
+        })
+        .collect();
+    arguments_digest(key, &serde_json::Value::Array(observed))
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -591,7 +836,8 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
+        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix,
+        verify_step,
     };
 
     /// Save a prompt experiment on the implementer's role section at
@@ -739,6 +985,338 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             router_counts(&router),
             ((2, 1), 2),
             "unverified, provider-failed and exhausted attempts are not quality evidence"
+        );
+    }
+
+    /// bug-f9ae3e: a streamed call's start, argument deltas and end make one
+    /// efficiency record, sized by its tool output and with its outcome
+    /// unknown; a call without an id counts once per event naming a tool.
+    #[test]
+    fn efficiency_counts_distinct_tool_call_ids() {
+        use roko_agent::AgentRuntimeEvent as Event;
+
+        let call = |id: &str, name: &str| Event::ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+        };
+        let events = vec![
+            call("tu_1", "Read"),
+            call("tu_1", ""),
+            call("tu_1", ""),
+            call("tu_1", "Read"),
+            Event::ToolOutput {
+                id: "tu_1".to_string(),
+                output: "x".repeat(40),
+            },
+            call("tu_2", "Bash"),
+            call("", ""),
+            call("", "Grep"),
+            Event::MessageDelta {
+                text: "done".to_string(),
+            },
+        ];
+
+        let calls = efficiency_tool_calls(&events, &[], &[]);
+        let names: Vec<&str> = calls.iter().map(|call| call.tool_name.as_str()).collect();
+        assert_eq!(names, ["Read", "Bash", "Grep"]);
+        assert_eq!(calls[0].result_tokens, 10, "40 bytes of tool output");
+        assert_eq!(calls[1].result_tokens, 0, "no output observed");
+        assert!(calls.iter().all(|call| call.succeeded.is_none()));
+    }
+
+    /// gap-4d5e2d: a call the tool audit recorded takes its audited outcome.
+    /// An audited call the events missed is added with its outcome, and a
+    /// call only the events saw, or one the audit holds no result for, keeps
+    /// an unknown outcome.
+    #[test]
+    fn efficiency_tool_calls_record_outcome_from_the_tool_audit() {
+        use crate::dispatch_v2::ToolCallRecord;
+        use roko_agent::AgentRuntimeEvent as Event;
+
+        let call = |id: &str, name: &str| Event::ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+        };
+        let audited = |id: &str, name: &str, succeeded: Option<bool>| ToolCallRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            succeeded,
+        };
+        let events = [call("call-1", "read_file"), call("call-2", "Bash")];
+
+        let calls = efficiency_tool_calls(
+            &events,
+            &[],
+            &[
+                audited("call-1", "read_file", Some(false)),
+                audited("call-3", "write_file", Some(true)),
+                audited("call-4", "grep", None),
+            ],
+        );
+        let outcomes: Vec<(&str, Option<bool>)> = calls
+            .iter()
+            .map(|call| (call.tool_name.as_str(), call.succeeded))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("read_file", Some(false)),
+                ("Bash", None),
+                ("write_file", Some(true)),
+                ("grep", None),
+            ]
+        );
+    }
+
+    /// bug-264c41: the calls a CLI provider streamed take the outcomes its
+    /// tool results reported. A call roko's tool loop ran shows up in the
+    /// live output too: the audit settles that one call instead of adding a
+    /// second, and its outcome wins; a call it left open keeps the live one.
+    #[test]
+    fn efficiency_tool_calls_record_outcome_from_the_live_output() {
+        use crate::dispatch_v2::ToolCallRecord;
+
+        let record = |id: &str, name: &str, succeeded: Option<bool>| ToolCallRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            succeeded,
+        };
+        let live = [
+            record("tu_1", "Read", Some(true)),
+            record("tu_2", "Bash", Some(false)),
+            record("call-1", "read_file", None),
+            record("call-2", "grep", Some(true)),
+            record("tu_3", "Grep", None),
+        ];
+        let audited = [
+            record("call-1", "read_file", Some(false)),
+            record("call-2", "grep", None),
+        ];
+
+        let calls = efficiency_tool_calls(&[], &live, &audited);
+        let outcomes: Vec<(&str, Option<bool>)> = calls
+            .iter()
+            .map(|call| (call.tool_name.as_str(), call.succeeded))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("Read", Some(true)),
+                ("Bash", Some(false)),
+                ("read_file", Some(false)),
+                ("grep", Some(true)),
+                ("Grep", None),
+            ]
+        );
+    }
+
+    /// A fake Claude CLI whose agent reads a file and runs a command that
+    /// fails; the failed call's tool result is marked `is_error`.
+    const TOOL_CALLING_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Read","input":{"file_path":"notes.txt"}},{"type":"tool_use","id":"tu_2","name":"Bash","input":{"command":"false"}}],"usage":{"input_tokens":10,"output_tokens":5}}}'
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"notes"},{"type":"tool_result","tool_use_id":"tu_2","content":"Exit code 1","is_error":true}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-tools","model":"claude-sonnet-4-6","total_cost_usd":0.01,"num_turns":2,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// bug-264c41: a Claude CLI attempt's efficiency row lists the tool calls
+    /// its agent made, which the attempt's live output showed, each with the
+    /// outcome its tool result reported.
+    #[tokio::test]
+    async fn cli_attempt_records_its_tool_calls() {
+        let temp = tempdir().expect("tempdir");
+        let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
+        let feedback = GraphFeedbackContext {
+            efficiency_path: Some(efficiency_path.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        // The attempt tracks its progress (bug-3a3b0f), so its live-output
+        // tap is open and sees the calls.
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, TOOL_CALLING_PROVIDER, no_auto_fix, feedback).await;
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the attempt completes");
+
+        let rows = jsonl_rows_where(&efficiency_path, 1, |row| {
+            row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+                && !row["attempt_id"].as_str().unwrap_or("/").contains('/')
+        })
+        .await;
+        let calls: Vec<(&str, Option<bool>)> = rows[0]["tool_calls"]
+            .as_array()
+            .expect("tool calls")
+            .iter()
+            .map(|call| {
+                (
+                    call["tool_name"].as_str().unwrap_or_default(),
+                    call["succeeded"].as_bool(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            calls,
+            [("Read", Some(true)), ("Bash", Some(false))],
+            "{:#}",
+            rows[0]
+        );
+        assert_eq!(rows[0]["tools_used"], 2, "{:#}", rows[0]);
+    }
+
+    /// gap-ca8022: a Claude CLI attempt runs its tools itself, outside roko's
+    /// tool dispatcher, and its dispatch turn leaves one provenance record:
+    /// an outcome with no intent, whose argument digest commits to the tool
+    /// calls the attempt's live output showed.
+    #[tokio::test]
+    async fn cli_attempts_record_provenance() {
+        use roko_agent::safety::{ProvenanceRecord, WitnessLogger};
+
+        use crate::safety_provenance::{GraphProvenanceSink, ProvenanceSinks};
+
+        let temp = tempdir().expect("tempdir");
+        let sinks = ProvenanceSinks::default();
+        let feedback = GraphFeedbackContext {
+            provenance_sinks: Some(sinks.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, TOOL_CALLING_PROVIDER, no_auto_fix, feedback).await;
+        let sink = Arc::new(GraphProvenanceSink::start(temp.path()).expect("provenance sink"));
+        let _registered = sinks.register("run-cli", Arc::clone(&sink));
+        let ctx = CellContext::new().with_run_id("run-cli".to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the attempt completes");
+
+        let summary = sink.summary();
+        assert_eq!(summary.records, 1, "one record for the turn");
+        let head = summary.witness_head.expect("the turn's vertex");
+        let dag = WitnessLogger::new(temp.path().join(".roko/witness.jsonl"))
+            .read_all()
+            .expect("witness log");
+        let vertex = dag.get(&head).expect("the turn's vertex");
+        let record: ProvenanceRecord =
+            serde_json::from_value(vertex.content["record"].clone()).expect("a record");
+        let ProvenanceRecord::Outcome(outcome) = record else {
+            panic!("expected an outcome: {record:?}");
+        };
+        assert_eq!(outcome.intent, None);
+        assert_eq!(outcome.verdict, ProvenanceVerdict::Succeeded);
+        assert_eq!(outcome.call.tool, "cli:stream-cli");
+        assert_eq!(outcome.call.run_id, "run-cli");
+        assert_eq!(outcome.taint, CamelTaintLevel::External);
+        let calls = [
+            ToolCallRecord {
+                id: "tu_1".to_string(),
+                name: "Read".to_string(),
+                succeeded: Some(true),
+            },
+            ToolCallRecord {
+                id: "tu_2".to_string(),
+                name: "Bash".to_string(),
+                succeeded: Some(false),
+            },
+        ];
+        assert_eq!(
+            outcome.call.args_digest,
+            cli_tool_calls_digest(&sink.digest_key(), &calls)
+        );
+    }
+
+    /// A fake Claude CLI that answers after 100 ms.
+    const SLOW_FIRST_TOKEN_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+sleep 0.1
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"output_tokens":5}}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-ttft","model":"claude-sonnet-4-6","total_cost_usd":0.01,"num_turns":1,"usage":{"input_tokens":10,"output_tokens":5}}'
+"#;
+
+    /// gap-7a8474: a Graph attempt's efficiency row records its time to
+    /// first token, from the provider call's start to its first streamed
+    /// output.
+    #[tokio::test]
+    async fn cli_attempt_records_its_time_to_first_token() {
+        let temp = tempdir().expect("tempdir");
+        let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
+        let feedback = GraphFeedbackContext {
+            efficiency_path: Some(efficiency_path.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, SLOW_FIRST_TOKEN_PROVIDER, no_auto_fix, feedback).await;
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the attempt completes");
+
+        let rows = jsonl_rows_where(&efficiency_path, 1, |row| {
+            row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+                && !row["attempt_id"].as_str().unwrap_or("/").contains('/')
+        })
+        .await;
+        let ttft_ms = rows[0]["time_to_first_token_ms"]
+            .as_u64()
+            .expect("time to first token");
+        assert!(ttft_ms >= 100, "{ttft_ms} ms: {:#}", rows[0]);
+    }
+
+    /// gap-7a8474: the Graph efficiency row's usage fields come from what the
+    /// dispatch reported. Reasoning tokens fall back from the usage to its
+    /// observation to the streamed token events, and cache reads on a priced
+    /// model make the uncached cost higher than the cost.
+    #[test]
+    fn graph_efficiency_event_populates_usage_fields() {
+        use crate::dispatch_v2::usage_cost_without_cache;
+        use roko_agent::AgentRuntimeEvent as Event;
+        use roko_core::config::schema::ModelProfile;
+
+        let streamed = |reasoning_tokens: u64| Event::TokenUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens,
+        };
+        let events = [streamed(40), streamed(2)];
+        let mut usage = roko_core::Usage::zero();
+        assert_eq!(reported_reasoning_tokens(&usage, None, &events), 42);
+        let observed = roko_core::UsageObservation {
+            reasoning_tokens: Some(7),
+            ..roko_core::UsageObservation::default()
+        };
+        assert_eq!(
+            reported_reasoning_tokens(&usage, Some(&observed), &events),
+            7
+        );
+        usage.reasoning_tokens = 9;
+        assert_eq!(
+            reported_reasoning_tokens(&usage, Some(&observed), &events),
+            9
+        );
+
+        usage.input_tokens = 1_000;
+        usage.output_tokens = 500;
+        usage.cache_read_tokens = 9_000;
+        usage.fill_cost_from_pricing(Some(3.0), Some(15.0), None, None);
+        let profile = ModelProfile {
+            cost_input_per_m: Some(3.0),
+            cost_output_per_m: Some(15.0),
+            ..ModelProfile::default()
+        };
+        let uncached = usage_cost_without_cache(&usage, Some(&profile), "unpriced-model")
+            .expect("the profile prices the model");
+        assert!(
+            uncached > f64::from(usage.cost_usd),
+            "{uncached} against {}",
+            usage.cost_usd
+        );
+        assert_eq!(
+            usage_cost_without_cache(&usage, None, "unpriced-model"),
+            None
         );
     }
 

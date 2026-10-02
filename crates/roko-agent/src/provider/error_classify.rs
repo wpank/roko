@@ -246,6 +246,89 @@ pub fn is_billing_message(lower: &str) -> bool {
     false
 }
 
+/// Whether a lower-cased error message reports HTTP status 401: a standalone
+/// `401` within three words of `http`, `status`, `code`, `unauthorized`,
+/// `request` or `returned` (bug-e03f92, the shape of roko-cli's bug-28c193
+/// check). A 401 inside a path, an id or a longer number (`run-1401/`,
+/// `req_401`, `14015 tokens`) is not a status.
+#[must_use]
+pub fn mentions_http_401(lower: &str) -> bool {
+    // Path and id characters stay inside a word, so `/tmp/run-1401/x.json`
+    // is one word.
+    let words: Vec<&str> = lower
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
+        .map(|word| word.trim_end_matches('.'))
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.iter().enumerate().any(|(at, &word)| {
+        word == "401"
+            && words[at.saturating_sub(3)..words.len().min(at + 4)]
+                .iter()
+                .copied()
+                .any(is_http_status_word)
+    })
+}
+
+fn is_http_status_word(word: &str) -> bool {
+    word.starts_with("http")
+        || matches!(
+            word,
+            "status" | "code" | "unauthorized" | "request" | "returned"
+        )
+}
+
+/// Classify the lowercase text of a failed provider call into the class name
+/// provider health records: `provider_exhausted`, `insufficient_credits`,
+/// `auth_failure`, `rate_limit`, `timeout`, `server_error`,
+/// `empty_response` or `unknown`.
+///
+/// The order matters: a usage-window refusal mentions limits and quotas, and
+/// a billing message can mention a quota, so both come before the
+/// rate-limit wording (gap-28ceb9); a login failure comes before them all
+/// but those two, so a CLI that is not logged in is never retried as a
+/// transient error (backlog 1113).
+#[must_use]
+pub fn classify_failure_text(lower: &str) -> &'static str {
+    if detect_provider_exhaustion(lower).is_some() {
+        "provider_exhausted"
+    } else if is_billing_message(lower) {
+        "insufficient_credits"
+    } else if is_auth_failure_text(lower) {
+        "auth_failure"
+    } else if lower.contains("rate limit")
+        || lower.contains("rate_limit")
+        || lower.contains("429")
+        || lower.contains("too many requests")
+    {
+        "rate_limit"
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        "timeout"
+    } else if lower.contains("503")
+        || lower.contains("502")
+        || lower.contains("server error")
+        || lower.contains("temporarily unavailable")
+    {
+        "server_error"
+    } else if lower.contains("empty_response") {
+        "empty_response"
+    } else {
+        "unknown"
+    }
+}
+
+/// Whether lowercase failure text says the provider refused the caller's
+/// credentials: a CLI that is not logged in, a 401, an invalid API key, or a
+/// 403 forbidden.
+fn is_auth_failure_text(lower: &str) -> bool {
+    lower.contains("not logged in")
+        || lower.contains("please run /login")
+        || lower.contains("invalid api key")
+        || lower.contains("invalid_api_key")
+        || lower.contains("unauthorized")
+        || mentions_http_401(lower)
+        || (lower.contains("403") && lower.contains("forbidden"))
+}
+
 /// Classify a 429/529 response from its error message and `Retry-After`.
 ///
 /// Billing text wins, then usage-window exhaustion (named in the message, or a
@@ -654,16 +737,66 @@ pub fn detect_turn_cap(text: &str) -> Option<TurnCapHit> {
 /// boundary.
 pub const ATTEMPT_TIMEOUT_MARKER: &str = "timed out after";
 
-/// Whether `text` reports an agent run killed at its wall-clock timeout.
+/// Whether `text` reports an agent run killed at its wall-clock timeout, in
+/// the adapters' own form: `"timed out after <N> ms"`. A provider's own
+/// request timeout ("request timed out after 90s") is the provider's failure,
+/// not the attempt's.
 #[must_use]
 pub fn detect_attempt_timeout(text: &str) -> bool {
-    text.contains(ATTEMPT_TIMEOUT_MARKER)
+    text.match_indices(ATTEMPT_TIMEOUT_MARKER)
+        .any(|(at, marker)| {
+            let rest = text[at + marker.len()..].trim_start();
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            digits > 0 && rest[digits..].trim_start().starts_with("ms")
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ── Failure-text classification ─────────────────────────────────
+
+    /// backlog 1113: one ordered classifier names every class provider
+    /// health records, auth failures included.
+    #[test]
+    fn failure_text_classes_in_order() {
+        let cases = [
+            (
+                "you've hit your session limit · resets 4pm",
+                "provider_exhausted",
+            ),
+            ("insufficient credits", "insufficient_credits"),
+            ("exit 1: not logged in · please run /login", "auth_failure"),
+            ("http 401: unauthorized", "auth_failure"),
+            ("error: invalid api key provided", "auth_failure"),
+            (
+                "403 forbidden: the key cannot use this model",
+                "auth_failure",
+            ),
+            ("429 too many requests", "rate_limit"),
+            ("request timed out after 30s", "timeout"),
+            ("upstream returned 503 service unavailable", "server_error"),
+            (
+                "empty_response: the model returned no text and no tool call",
+                "empty_response",
+            ),
+            (
+                "provider returned an empty response (empty_response)",
+                "empty_response",
+            ),
+            ("something else went wrong", "unknown"),
+        ];
+        for (text, class) in cases {
+            assert_eq!(classify_failure_text(text), class, "{text}");
+        }
+        // A file path holding 401 is not an auth failure (bug-e03f92).
+        assert_eq!(
+            classify_failure_text("could not read /tmp/run-1401/x.json"),
+            "unknown"
+        );
+    }
 
     // ── CLI classification ──────────────────────────────────────────
 
@@ -1187,6 +1320,28 @@ mod tests {
         );
         assert!(matches!(err, ProviderError::InsufficientCredits), "{err:?}");
     }
+
+    /// bug-e03f92: 401 counts only as an HTTP status, never inside a path,
+    /// an id or a longer number.
+    #[test]
+    fn http_401_matches_only_an_http_status() {
+        for status in [
+            "http 401: bad key",
+            "request returned status 401",
+            "HTTP/1.1 401 Unauthorized",
+            "error code 401.",
+        ] {
+            assert!(mentions_http_401(&status.to_ascii_lowercase()), "{status}");
+        }
+        for other in [
+            "wrote 14015 bytes",
+            "/tmp/run-1401/checkpoint.json: no such file",
+            "task 401 of plan p1 failed verification",
+            "the turn used 401 tokens",
+        ] {
+            assert!(!mentions_http_401(&other.to_ascii_lowercase()), "{other}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1223,5 +1378,18 @@ mod turn_cap_tests {
         assert_eq!(detect_turn_cap(&text), None);
         assert!(detect_provider_exhaustion(&text).is_none(), "{text}");
         assert!(!detect_attempt_timeout("exit 1: claude failed"));
+    }
+
+    /// Only the adapters' own `"timed out after <N> ms"` is an attempt
+    /// timeout: a provider's request timeout is the provider's failure.
+    #[test]
+    fn a_provider_request_timeout_is_not_an_attempt_timeout() {
+        assert!(detect_attempt_timeout("timed out after 600000ms"));
+        assert!(!detect_attempt_timeout("request timed out after 90s"));
+        assert!(!detect_attempt_timeout(
+            "MCP server response timed out after 30s"
+        ));
+        assert!(!detect_attempt_timeout("openclaw-acp timed out after 1.5s"));
+        assert!(!detect_attempt_timeout("the call timed out after a while"));
     }
 }

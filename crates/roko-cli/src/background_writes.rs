@@ -6,9 +6,8 @@
 //! [`settled`] waits until no write to a file under a directory is still
 //! pending, so a test reads its rows once those writes have finished instead
 //! of polling the files against a deadline that a loaded machine can miss
-//! (bug-779ae7). In production only an interrupted plan run waits, for a
-//! bounded time, so its rows reach the disk before the process exits
-//! (bug-2b1ddc).
+//! (bug-779ae7). In production a plan run waits, for a bounded time, so its
+//! rows reach the disk before the process exits (bug-2b1ddc, q-1faa0c).
 
 use std::collections::BTreeMap;
 use std::future::Future;

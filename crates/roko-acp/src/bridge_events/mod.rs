@@ -2,14 +2,14 @@
 //!
 //! Bridges Roko's provider system (via `roko-agent`) to ACP
 //! `session/update` notifications.
-//! All cognitive workflow dispatch now goes through
-//! [`crate::runner::run_with_workflow_engine`], which uses `ModelCallService`
-//! for provider-agnostic model calls.
+//! A session with a workflow template runs its prompts through
+//! [`crate::runner::run_workflow_pipeline`]; other prompts dispatch to one agent.
 
 pub mod context;
 pub mod cost;
 pub mod dispatch;
 pub mod experiments;
+mod failover;
 mod helpers;
 pub mod permissions;
 pub mod protocol;
@@ -24,14 +24,14 @@ mod tests;
 
 pub(crate) use context::resolve_context_items;
 pub(crate) use context::{
-    extract_prompt_text, extract_resource_uris, inject_image_parts, model_input_blocks_from_prompt,
-    model_input_messages_from_wire, read_file_context,
+    embedded_resource_context, extract_prompt_text, extract_resource_uris, inject_image_parts,
+    model_input_blocks_from_prompt, model_input_messages_from_wire, read_file_context,
 };
 pub use cost::calculate_cost_for_model_slug;
 pub(crate) use cost::{
-    acp_dispatch_succeeded, acp_efficiency_event, acp_routing_context, append_acp_episode,
-    derive_acp_tool_capabilities, emit_acp_efficiency_event, truncate_assistant_history,
-    truncate_to_title,
+    acp_contract_role_for_mode, acp_dispatch_succeeded, acp_efficiency_event, acp_routing_context,
+    append_acp_episode, derive_acp_tool_capabilities, emit_acp_efficiency_event,
+    truncate_assistant_history, truncate_to_title,
 };
 pub(crate) use dispatch::{run_anthropic_cognitive_task, run_openai_compat_cognitive_task};
 pub(crate) use experiments::{
@@ -41,8 +41,8 @@ pub(crate) use experiments::{
     replace_experiment_section, resolve_acp_dispatch_model,
 };
 pub(crate) use helpers::{
-    dispatch_failure_update, emit_dispatch_failure, map_event_to_update, send_cognitive_event,
-    send_session_update, workflow_template_name,
+    append_assistant_text, dispatch_failure_update, emit_dispatch_failure, map_event_to_update,
+    roko_meta_update, send_cognitive_event, send_session_update,
 };
 pub use permissions::request_permission;
 pub(crate) use permissions::request_permission_for_event;
@@ -58,11 +58,7 @@ pub(crate) use tools::write_session_mcp_config;
 
 // ── Imports for this module ─────────────────────────────────────────
 
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::{path::Path, sync::Arc, time::Instant};
 
 use roko_agent::safety::{DispatchSafetyContext, SafetyLayer, ViolationSeverity};
 use roko_core::agent::{ProviderKind, resolve_model};
@@ -76,7 +72,6 @@ use tracing::{debug, error, info, warn};
 
 use crate::event_forward::AcpEventForwarder;
 use crate::knowledge::{DispatchKnowledge, append_context, query_dispatch_knowledge};
-use crate::runner::run_with_workflow_engine;
 use crate::{
     session::{AcpSession, CancelToken},
     transport::{StdioTransport, TransportResult},
@@ -94,6 +89,13 @@ pub(crate) mod knowledge_helpers {
 }
 
 // ── Core entry points ───────────────────────────────────────────────
+
+/// The safety layer for a prompt's pre- and post-dispatch checks: the configured
+/// policies plus the contract of the session mode's role. Missing contracts fall
+/// closed.
+fn session_safety_layer(roko_config: &RokoConfig, mode: &str) -> SafetyLayer {
+    SafetyLayer::from_config(roko_config).with_role(acp_contract_role_for_mode(mode))
+}
 
 /// Maps cognitive events to ACP `session/update` notifications and streams them to the editor.
 /// Returns both the prompt result and the accumulated assistant response text.
@@ -119,11 +121,14 @@ where
             Inbound(TransportResult<Option<JsonRpcMessage>>),
         }
 
+        // Under the server's request loop, that loop reads stdin and routes the
+        // client's cancels and responses here; reading it too would race it.
+        let read_inbound = !session.inbound_routed;
         let action = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => StreamAction::Cancelled,
             maybe_event = events.recv() => StreamAction::Event(maybe_event),
-            inbound = transport.read_message() => StreamAction::Inbound(inbound),
+            inbound = transport.read_message(), if read_inbound => StreamAction::Inbound(inbound),
         };
 
         match action {
@@ -188,7 +193,8 @@ where
                         });
                     }
                     CognitiveEvent::PermissionRequest { payload, reply } => {
-                        let decision = request_permission_for_event(
+                        // Delivers the decision on `reply` itself.
+                        request_permission_for_event(
                             transport,
                             session,
                             workdir,
@@ -197,15 +203,14 @@ where
                             cancel_token,
                         )
                         .await;
-                        if !reply.reply(decision) {
-                            warn!(
-                                session_id,
-                                "permission requester disappeared before receiving the decision"
-                            );
-                        }
                     }
                     CognitiveEvent::TokenChunk(ref text) => {
-                        assistant_text.push_str(text);
+                        if append_assistant_text(&mut assistant_text, text) {
+                            warn!(
+                                session_id,
+                                "assistant text reached its cap; the rest is only streamed"
+                            );
+                        }
                         if let Some(update) = map_event_to_update(event) {
                             send_session_update(transport, session_id, update).await?;
                         }
@@ -248,11 +253,13 @@ where
                     transport.handle_incoming_response(response);
                 }
                 Some(JsonRpcMessage::Request(request)) => {
-                    warn!(
+                    // The server answers it after the prompt, in arrival order.
+                    debug!(
                         session_id,
                         method = %request.method,
-                        "ignoring inbound request while prompt was active"
+                        "deferring inbound request until the prompt finishes"
                     );
+                    session.deferred_requests.push(request);
                 }
                 None => {
                     warn!(
@@ -290,7 +297,22 @@ where
     if !session.try_begin_prompt() {
         return Err(BridgeEventsError::SessionBusy(session.session_id.clone()));
     }
+    run_begun_prompt(transport, session, params, workdir, roko_config).await
+}
 
+/// Runs a prompt for a session that has already begun it
+/// ([`AcpSession::try_begin_prompt`]), then marks the session idle.
+pub(crate) async fn run_begun_prompt<R, W>(
+    transport: &mut StdioTransport<R, W>,
+    session: &mut AcpSession,
+    params: SessionPromptParams,
+    workdir: &Path,
+    roko_config: &RokoConfig,
+) -> Result<SessionPromptResult>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let outcome =
         handle_session_prompt_inner(transport, session, params, workdir, roko_config).await;
     session.finish_prompt();
@@ -344,7 +366,13 @@ where
         let sid = session.session_id.clone();
         tokio::task::spawn_blocking(move || assign_acp_experiment(&path, &mode, &sid))
             .await
-            .unwrap_or(None)
+            .unwrap_or_else(|error| {
+                warn!(
+                    error = %error,
+                    "ACP experiment assignment task failed; continuing without one"
+                );
+                None
+            })
     };
     let (experiment_assignment, experiment_model_key) = applicable_acp_experiment(
         roko_config,
@@ -400,8 +428,8 @@ where
         );
     }
 
-    let pipeline_accepts_images =
-        pipeline_template.is_none() || std::env::var_os("ROKO_ACP_LEGACY").is_none();
+    // The workflow pipeline takes text only.
+    let pipeline_accepts_images = pipeline_template.is_none();
     let prompt_capabilities = advertised_prompt_capabilities_for_model(
         resolved.provider_kind,
         !is_slash_command
@@ -491,11 +519,11 @@ where
             resolve_context_items(&params.prompt, workdir).await
         } else {
             let uris = extract_resource_uris(&params.prompt);
-            if uris.is_empty() {
-                String::new()
-            } else {
-                read_file_context(&uris, workdir)
+            let mut context = embedded_resource_context(&params.prompt);
+            if !uris.is_empty() {
+                context.push_str(&read_file_context(&uris, workdir));
             }
+            context
         }
     } else {
         String::new()
@@ -540,13 +568,11 @@ where
         inject_image_parts(&mut msgs, &params.prompt, resolved.provider_kind);
         msgs
     };
-    let input_messages = if prompt_has_images {
+    if prompt_has_images {
         model_input_messages_from_wire(&messages).map_err(|error| {
             BridgeEventsError::UnsupportedPromptContent(format!("invalid image input: {error}"))
-        })?
-    } else {
-        Vec::new()
-    };
+        })?;
+    }
 
     let (event_sender, event_receiver) = mpsc::channel(256);
     if !is_slash_command {
@@ -604,7 +630,7 @@ where
     let session_mcp_servers = session.mcp_servers.clone();
     let session_mcp_config_path = session.mcp_config_path.clone();
     let session_tools_enabled = session.tools_enabled;
-    let session_agent_role = session.config_state.agent_mode.clone();
+    let session_agent_role = acp_contract_role_for_mode(&session.config_state.agent_mode);
     let session_tool_capabilities = derive_acp_tool_capabilities(
         &session.config_state.agent_mode,
         &session.client_capabilities,
@@ -620,12 +646,11 @@ where
     let shared_run = session.shared_run.clone();
     // SP-1: build a restrictive layer per dispatch; missing contracts fall closed.
     let pre_dispatch_violation = {
-        let safety =
-            SafetyLayer::from_config(&roko_config).with_role(&session.config_state.agent_mode);
+        let safety = session_safety_layer(&roko_config, &session.config_state.agent_mode);
         match safety.pre_dispatch_check_with_context(
             &session.session_id,
             "session-prompt",
-            &session.config_state.agent_mode,
+            &session_agent_role,
             &workdir,
             &DispatchSafetyContext::for_local_action(&prompt_text).with_network_requirement(true),
         ) {
@@ -653,13 +678,15 @@ where
         }
     };
 
-    // Shared channel for the workflow engine path: the cognitive task writes the
-    // WorkflowRunReport's actual cost (which was aggregated from AgentCompleted events)
-    // here so that append_acp_episode can use it instead of the pricing-table estimate.
     let prompt_text_for_title = prompt_text.clone();
-
-    let workflow_cost_sink: Arc<Mutex<Option<f64>>> = Arc::new(Mutex::new(None));
-    let workflow_cost_sink_task = Arc::clone(&workflow_cost_sink);
+    // An explicit model selection or an experiment's model pins the prompt to
+    // its model, which never fails over (gap-28ceb9).
+    let dispatch_pinned =
+        session.config_state.model_selection_explicit || experiment_model_key.is_some();
+    // The model a failover ran the prompt on instead of the planned one.
+    let failover_model: Arc<std::sync::Mutex<Option<(String, roko_core::agent::ResolvedModel)>>> =
+        Arc::default();
+    let failover_model_for_task = Arc::clone(&failover_model);
 
     let cognitive_task = tokio::spawn(async move {
         if let Some(violation) = pre_dispatch_violation {
@@ -692,150 +719,169 @@ where
             .await;
         }
 
+        // A workflow template runs the ACP pipeline (gap-38a529: the graph
+        // controller it once fell back to was never driven).
         if let Some(template) = pipeline_template {
-            if std::env::var_os("ROKO_ACP_LEGACY").is_some() {
-                let legacy_run = shared_run.clone();
-                let result = crate::runner::run_workflow_pipeline(
-                    &session_id,
-                    &prompt_text_for_dispatch,
-                    knowledge_context.clone(),
-                    provenance_card.clone(),
-                    &workdir,
-                    crate::runner::PipelineConfig {
-                        template,
-                        max_iterations,
-                        clippy_enabled,
-                        tests_enabled,
-                        review_strictness,
-                        model_slug: resolved.slug.clone(),
-                        mcp_config: write_session_mcp_config(&session_mcp_servers, &workdir),
-                        sandbox_level: roko_config.runner.sandbox_level,
-                    },
-                    cancel_token,
-                    event_sender,
-                    legacy_run.clone(),
-                )
-                .await;
-
-                result?;
-
-                let final_phase = legacy_run
-                    .lock()
-                    .await
-                    .as_ref()
-                    .map(|run| run.pipeline.phase.clone());
-
-                return match final_phase {
-                    Some(crate::pipeline::PipelinePhase::Complete) => Ok(()),
-                    Some(crate::pipeline::PipelinePhase::Halted { reason }) => {
-                        Err(anyhow::anyhow!("workflow pipeline halted: {reason}").into())
-                    }
-                    Some(crate::pipeline::PipelinePhase::Cancelled) => {
-                        Err(anyhow::anyhow!("workflow pipeline cancelled").into())
-                    }
-                    Some(phase) => Err(anyhow::anyhow!(
-                        "workflow pipeline ended in unexpected phase: {phase:?}"
-                    )
-                    .into()),
-                    None => Err(anyhow::anyhow!(
-                        "workflow pipeline completed without shared run state"
-                    )
-                    .into()),
-                };
-            }
-
-            let mcp_config_path = write_session_mcp_config(&session_mcp_servers, &workdir);
-            let report = run_with_workflow_engine(
+            let pipeline_run = shared_run.clone();
+            let result = crate::runner::run_workflow_pipeline(
                 &session_id,
                 &prompt_text_for_dispatch,
+                knowledge_context.clone(),
+                provenance_card.clone(),
                 &workdir,
-                workflow_template_name(&template),
-                crate::runner::GraphEngineOptions {
-                    model_key: model_key_for_dispatch,
-                    input_messages: input_messages.clone(),
-                    mcp_config: mcp_config_path,
-                    provenance_card,
-                    route: crate::runner::AcpWorkflowRoute::LegacyDefault,
+                crate::runner::PipelineConfig {
+                    template,
+                    max_iterations,
+                    clippy_enabled,
+                    tests_enabled,
+                    review_strictness,
+                    model_slug: resolved.slug.clone(),
+                    mcp_config: write_session_mcp_config(&session_mcp_servers, &workdir),
+                    sandbox_level: roko_config.runner.sandbox_level,
                 },
+                cancel_token,
                 event_sender,
+                pipeline_run.clone(),
             )
-            .await?;
+            .await;
 
-            // Thread the actual cost from the report back to the main task so
-            // append_acp_episode can record it instead of using the pricing-table estimate.
-            if let Some(cost) = report.cost
-                && let Ok(mut sink) = workflow_cost_sink_task.lock()
-            {
-                *sink = Some(cost);
-            }
+            result?;
 
-            if !report.success {
-                return Err(anyhow::anyhow!(
-                    "workflow engine reported unsuccessful run: {}",
-                    report.output
+            let final_phase = pipeline_run
+                .lock()
+                .await
+                .as_ref()
+                .map(|run| run.pipeline.phase.clone());
+
+            return match final_phase {
+                Some(crate::pipeline::PipelinePhase::Complete) => Ok(()),
+                Some(crate::pipeline::PipelinePhase::Halted { reason }) => {
+                    Err(anyhow::anyhow!("workflow pipeline halted: {reason}").into())
+                }
+                Some(crate::pipeline::PipelinePhase::Cancelled) => {
+                    Err(anyhow::anyhow!("workflow pipeline cancelled").into())
+                }
+                Some(phase) => Err(anyhow::anyhow!(
+                    "workflow pipeline ended in unexpected phase: {phase:?}"
                 )
-                .into());
-            }
-
-            return Ok(());
+                .into()),
+                None => Err(anyhow::anyhow!(
+                    "workflow pipeline completed without shared run state"
+                )
+                .into()),
+            };
         }
 
-        // Default: single-agent dispatch (workflow = "none").
-        let provider_kind = resolved.provider_kind;
-
-        info!(
-            requested_model = %model_key,
-            model_key = %model_key_for_dispatch,
-            slug = %resolved.slug,
-            provider_kind = ?provider_kind,
-            "resolved model for ACP prompt"
+        // Default: single-agent dispatch (workflow = "none"). The planned
+        // model is a preference (gap-28ceb9): a provider that cannot take the
+        // prompt is passed over, and one out of usage hands it to the next
+        // usable model in the same turn.
+        let mut model_failover = roko_learn::provider_failover::Failover::new(
+            Arc::new(failover::failover_config(&roko_config)),
+            dispatch_pinned,
+            session_tools_enabled,
         );
-
-        match provider_kind {
-            // AnthropicApi uses the dedicated Anthropic model caller path.
-            // The provider must be present in explicit RokoConfig; ACP does
-            // not synthesize providers from ANTHROPIC_API_KEY.
-            ProviderKind::AnthropicApi => {
-                run_anthropic_cognitive_task(
-                    &session_id,
-                    &messages,
-                    &model_key_for_dispatch,
-                    &resolved.slug,
-                    &roko_config,
-                    Arc::clone(&provider_health),
-                    Arc::clone(&provider_rate_limiter),
-                    &workdir,
-                    &session_mcp_servers,
-                    &session_effort,
-                    session_tools_enabled,
-                    session_tool_capabilities,
-                    &session_agent_role,
-                    cancel_token,
-                    event_sender,
-                )
-                .await
+        let mut candidate = match model_failover.start(&provider_health, &model_key_for_dispatch) {
+            Ok(candidate) => candidate,
+            Err(why) => {
+                emit_dispatch_failure(&event_sender, format!("Error: {why}")).await;
+                return Err(anyhow::anyhow!("no usable provider for the prompt: {why}").into());
             }
-            // All other providers (ClaudeCli, OpenAiCompat, etc.) go through
-            // ModelCallService which handles each provider kind natively.
-            _ => {
-                run_openai_compat_cognitive_task(
-                    &session_id,
-                    &messages,
-                    &model_key_for_dispatch,
-                    &roko_config,
-                    Arc::clone(&provider_health),
-                    Arc::clone(&provider_rate_limiter),
-                    &workdir,
-                    &session_mcp_servers,
-                    session_mcp_config_path.as_deref(),
-                    &session_effort,
-                    session_tools_enabled,
-                    session_tool_capabilities,
-                    &session_agent_role,
-                    cancel_token,
-                    event_sender,
-                )
-                .await
+        };
+        loop {
+            let config = candidate.config.as_deref().unwrap_or(&roko_config);
+            let resolved = resolve_model(config, &candidate.model_key);
+            info!(
+                requested_model = %model_key,
+                model_key = %candidate.model_key,
+                slug = %resolved.slug,
+                provider_kind = ?resolved.provider_kind,
+                "resolved model for ACP prompt"
+            );
+            let (attempt_sender, attempt_events) = mpsc::channel(256);
+            let attempt = async {
+                match resolved.provider_kind {
+                    // AnthropicApi uses the dedicated Anthropic model caller
+                    // path. The provider must be present in explicit
+                    // RokoConfig; ACP does not synthesize providers from
+                    // ANTHROPIC_API_KEY.
+                    ProviderKind::AnthropicApi => {
+                        run_anthropic_cognitive_task(
+                            &session_id,
+                            &messages,
+                            &candidate.model_key,
+                            &resolved.slug,
+                            config,
+                            Arc::clone(&provider_health),
+                            Arc::clone(&provider_rate_limiter),
+                            &workdir,
+                            &session_mcp_servers,
+                            &session_effort,
+                            session_tools_enabled,
+                            session_tool_capabilities,
+                            &session_agent_role,
+                            cancel_token.clone(),
+                            attempt_sender,
+                        )
+                        .await
+                    }
+                    // All other providers (ClaudeCli, OpenAiCompat, etc.) go
+                    // through ModelCallService which handles each provider
+                    // kind natively.
+                    _ => {
+                        run_openai_compat_cognitive_task(
+                            &session_id,
+                            &messages,
+                            &candidate.model_key,
+                            config,
+                            Arc::clone(&provider_health),
+                            Arc::clone(&provider_rate_limiter),
+                            &workdir,
+                            &session_mcp_servers,
+                            session_mcp_config_path.as_deref(),
+                            &session_effort,
+                            session_tools_enabled,
+                            session_tool_capabilities,
+                            &session_agent_role,
+                            cancel_token.clone(),
+                            attempt_sender,
+                        )
+                        .await
+                    }
+                }
+            };
+            let (result, withheld) = tokio::join!(
+                attempt,
+                failover::forward_attempt_events(attempt_events, &event_sender)
+            );
+            let Some(failure) = withheld else {
+                if !model_failover.refusals().is_empty()
+                    && let Ok(mut ran) = failover_model_for_task.lock()
+                {
+                    *ran = Some((candidate.model_key.clone(), resolved.clone()));
+                }
+                return result;
+            };
+            match model_failover.after_refusal(&provider_health, &candidate, &failure) {
+                Ok(Some(next)) => candidate = next,
+                Ok(None) => {
+                    send_cognitive_event(
+                        &event_sender,
+                        CognitiveEvent::Failure { message: failure },
+                    )
+                    .await;
+                    return result;
+                }
+                Err(why) => {
+                    send_cognitive_event(
+                        &event_sender,
+                        CognitiveEvent::Failure {
+                            message: format!("{failure}\n\n{why}"),
+                        },
+                    )
+                    .await;
+                    return result;
+                }
             }
         }
     });
@@ -883,6 +929,13 @@ where
     }
 
     let task_result = cognitive_task.await;
+    // A failover ran the prompt on another model (gap-28ceb9): the episode,
+    // the efficiency event and the router observation name the one that ran.
+    let ran_instead = failover_model.lock().ok().and_then(|mut ran| ran.take());
+    let (model_key_for_logging, resolved_for_logging) = match ran_instead {
+        Some((model_key, resolved)) => (model_key, resolved),
+        None => (model_key_for_logging, resolved_for_logging),
+    };
     let (task_error, task_join_error) = match task_result {
         Ok(Ok(())) => (None, None),
         Ok(Err(e)) => {
@@ -909,12 +962,12 @@ where
         && !sr.assistant_text.is_empty()
     {
         let changed_files = worktree_before.changed_files(&workdir_for_logging);
-        let safety = SafetyLayer::from_config(&roko_config_for_logging)
-            .with_role(&session.config_state.agent_mode);
+        let mode = &session.config_state.agent_mode;
+        let safety = session_safety_layer(&roko_config_for_logging, mode);
         let violations = safety.post_dispatch_check(
             &session.session_id,
             "session-prompt",
-            &session.config_state.agent_mode,
+            &acp_contract_role_for_mode(mode),
             &sr.assistant_text,
             &changed_files,
         );
@@ -946,10 +999,9 @@ where
     }
 
     if !is_slash_command {
-        // For the workflow engine path, the cognitive task wrote the actual provider cost
-        // (from WorkflowRunReport) to workflow_cost_sink. Use it to override the
-        // pricing-table estimate in append_acp_episode so the episode has accurate cost data.
-        let cost_override = workflow_cost_sink.lock().ok().and_then(|g| *g);
+        // No dispatch path reports a measured cost here, so the episode uses the
+        // pricing-table estimate.
+        let cost_override: Option<f64> = None;
         append_acp_episode(
             &roko_config_for_logging,
             &workdir_for_logging,
@@ -983,20 +1035,13 @@ where
         );
         session.record_efficiency_cost(efficiency_event.cost_usd);
         let budget_status = session.budget_status();
-        if let (Some(cost_budget_usd), Some(accumulated_cost_usd), Some(budget_remaining_usd)) = (
-            budget_status.cost_budget_usd,
-            budget_status.accumulated_cost_usd,
-            budget_status.budget_remaining_usd,
-        ) && let Err(error) = send_session_update(
-            transport,
-            &session.session_id,
-            SessionUpdate::BudgetStatusUpdate {
-                cost_budget_usd,
-                accumulated_cost_usd,
-                budget_remaining_usd,
-            },
-        )
-        .await
+        if budget_status.cost_budget_usd.is_some()
+            && let Err(error) = send_session_update(
+                transport,
+                &session.session_id,
+                roko_meta_update("budget", &budget_status),
+            )
+            .await
         {
             warn!(
                 session_id = %session.session_id,
@@ -1055,8 +1100,8 @@ where
         let title = truncate_to_title(&prompt_text_for_title, 60);
         session.session_name = Some(title.clone());
         let title_update = SessionUpdate::SessionInfoUpdate {
-            session_id: session.session_id.clone(),
-            session_name: Some(title),
+            title: Some(title),
+            _meta: None,
         };
         if let Err(error) = send_session_update(transport, &session.session_id, title_update).await
         {

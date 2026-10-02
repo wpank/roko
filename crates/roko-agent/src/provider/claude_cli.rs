@@ -110,6 +110,12 @@ impl ProviderAdapter for ClaudeCliAdapter {
         for (key, value) in &options.env {
             agent = agent.with_env_var(key.clone(), value.clone());
         }
+        if let Some(provider_semaphores) = options.provider_semaphores.clone() {
+            agent = agent.with_provider_semaphores(model.provider.clone(), provider_semaphores);
+        }
+        if let Some(live_output) = options.live_output.clone() {
+            agent = agent.with_live_output(live_output);
+        }
 
         Ok(Box::new(agent))
     }
@@ -144,6 +150,17 @@ impl ProviderAdapter for CodexCliAdapter {
     ) -> Result<Box<dyn Agent>, AgentCreationError> {
         if provider.kind != self.kind() {
             return Err(AgentCreationError::InvalidKind(provider.kind));
+        }
+        // Codex's built-in tools have no binding allowlist: it reads, searches
+        // and edits through its shell, so a contract naming the only tools a
+        // role may use cannot be honoured. Refuse it, so that failover picks a
+        // provider that can (gap-baab0a).
+        if options
+            .agent_contract
+            .as_ref()
+            .is_some_and(|contract| contract.allowed_tools.is_some())
+        {
+            return Err(AgentCreationError::ToolAllowlistUnsupported(self.kind()));
         }
 
         let command = provider
@@ -180,6 +197,7 @@ impl ProviderAdapter for CodexCliAdapter {
             args.push("--sandbox".to_string());
             args.push("workspace-write".to_string());
         }
+        args.extend(codex_network_pins(options.agent_contract.as_ref()));
 
         // Only pass --model for non-Claude models (codex defaults to its own)
         if !model.slug.is_empty() && !model.slug.starts_with("claude") {
@@ -210,10 +228,11 @@ impl ProviderAdapter for CodexCliAdapter {
 
         // ── Operation policy broker (RG-2) ──────────────────────────────────
         // Derive a CodexOperationPolicy from the AgentContract so that Codex
-        // built-in operations (command_execution, file_change) are screened
-        // against the configured deny/allow list.  The broker fires on the
-        // JSONL output stream, which is the only post-execution enforcement
-        // boundary available for a subprocess provider.
+        // built-in operations (command_execution, file_change, web_search,
+        // mcp_tool_call) are screened against the configured deny/allow list,
+        // and file changes against the worktree.  The broker reads the JSONL
+        // output stream as Codex writes it and stops the process at the first
+        // denied operation; a subprocess provider offers no earlier boundary.
         let operation_policy = options
             .agent_contract
             .as_ref()
@@ -272,11 +291,28 @@ impl ProviderAdapter for CodexCliAdapter {
         ClaudeCliAdapter.classify_error(status, body)
     }
 
-    /// `codex exec` has no turn-count flag or setting, and roko reads its
-    /// JSONL only after the process exits, so nothing stops it at the cap:
+    /// `codex exec` has no turn-count flag or setting, and roko does not count
+    /// its turns while it runs, so nothing stops it at the cap:
     /// the cap is advisory, and only the attempt timeout bounds a long run.
     fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
         TurnCapEnforcement::Advisory
+    }
+}
+
+/// `codex exec` overrides that switch off web search and the workspace
+/// sandbox's network access, for a run whose contract keeps the role off the
+/// network. Other runs keep the user's Codex configuration. Checked against
+/// codex-cli 0.152.0, whose `web_search` takes `disabled`, `cached`,
+/// `indexed` or `live`.
+fn codex_network_pins(contract: Option<&crate::safety::contract::AgentContract>) -> Vec<String> {
+    match contract {
+        Some(contract) if !contract.permits_network() => vec![
+            "-c".to_string(),
+            "web_search=\"disabled\"".to_string(),
+            "-c".to_string(),
+            "sandbox_workspace_write.network_access=false".to_string(),
+        ],
+        _ => Vec::new(),
     }
 }
 
@@ -310,6 +346,93 @@ mod tests {
 
     fn prompt(text: &str) -> Signal {
         Signal::builder(Kind::Prompt).body(Body::text(text)).build()
+    }
+
+    fn codex_provider(command: &str) -> ProviderConfig {
+        ProviderConfig {
+            kind: ProviderKind::CodexCli,
+            base_url: None,
+            api_key_env: None,
+            command: Some(command.to_string()),
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+        }
+    }
+
+    /// gap-baab0a: Codex cannot honour a tool allowlist, so the adapter
+    /// refuses a contract with one, before it looks for the binary. A role's
+    /// forbidden tools alone are fine: the operation broker enforces them.
+    #[test]
+    fn codex_adapter_refuses_a_tool_allowlist() {
+        use crate::safety::contract::{AgentContract, GovernanceRule};
+
+        let model = ModelProfile {
+            provider: "codex_cli".to_string(),
+            slug: "gpt-5-codex".to_string(),
+            ..ModelProfile::default()
+        };
+        let allowlist = AgentContract {
+            allowed_tools: Some(vec!["read_file".to_string(), "grep".to_string()]),
+            ..AgentContract::default()
+        };
+        let options = AgentOptions {
+            agent_contract: Some(allowlist),
+            ..Default::default()
+        };
+        let missing_binary = codex_provider("not-on-path");
+        let refused = CodexCliAdapter.create_agent(&missing_binary, &model, &options);
+        assert!(
+            matches!(
+                refused,
+                Err(AgentCreationError::ToolAllowlistUnsupported(
+                    ProviderKind::CodexCli
+                ))
+            ),
+            "{:?}",
+            refused.err()
+        );
+
+        let forbids_bash = AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".to_string()])],
+            ..AgentContract::default()
+        };
+        let options = AgentOptions {
+            agent_contract: Some(forbids_bash),
+            ..Default::default()
+        };
+        let created = CodexCliAdapter.create_agent(&codex_provider("sh"), &model, &options);
+        assert!(created.is_ok(), "{:?}", created.err());
+    }
+
+    /// gap-baab0a: a Codex run whose contract keeps the role off the network
+    /// gets web search and sandbox networking switched off; other runs keep
+    /// the user's Codex configuration.
+    #[test]
+    fn codex_network_is_pinned_off_unless_the_contract_permits_it() {
+        use crate::safety::contract::{AgentContract, GovernanceRule};
+
+        let implementer = AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec![
+                "web_fetch".into(),
+                "web_search".into(),
+            ])],
+            ..AgentContract::default()
+        };
+        let expected = [
+            "-c",
+            "web_search=\"disabled\"",
+            "-c",
+            "sandbox_workspace_write.network_access=false",
+        ];
+        assert_eq!(codex_network_pins(Some(&implementer)), expected);
+        assert!(codex_network_pins(Some(&AgentContract::default())).is_empty());
+        assert!(codex_network_pins(None).is_empty());
     }
 
     #[test]
@@ -455,9 +578,11 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             trace_sink: None,
             metrics_sink: None,
             tool_correlation: None,
+            provenance_sink: None,
             max_turns: None,
             live_output: None,
             thinking: None,
+            data_llm: None,
         };
         let model = claude_model();
 

@@ -18,11 +18,11 @@ pub struct InertGraphSetting {
 /// `roko config doctor`, so operators stop relying on them.
 #[must_use]
 pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting> {
-    const LEGACY_GATES: &str = "only the legacy Runner-v2 gate pipeline (--engine legacy) reads it";
+    const LEGACY_GATES: &str = "only the deleted Runner-v2 gate pipeline read it";
     const ADAPTIVE: &str = "of the adaptive-threshold settings the Graph engine reads only \
-                            adaptive_min_retries and adaptive_max_retries (task retry budgets); \
-                            its gate EMA uses a fixed alpha";
-    const NO_READER: &str = "no production code reads it";
+                            adaptive_min_retries, adaptive_max_retries (task retry budgets) and \
+                            ema_alpha (its gate EMA); it never skips a verify step or promotes a \
+                            converged threshold";
     const NO_LONG_LIVED_AGENT: &str = "no production code reads it: each plan-run attempt is a \
                                        fresh provider session, bounded by budget.max_task_usd and \
                                        budget.max_task_retry_usd";
@@ -31,12 +31,22 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
                           plan-task models";
     const NO_WARM_POOL: &str = "no dispatch path pre-spawns or reuses agents";
     const PIPELINE_BAND: &str = "only `max_turns` in [pipeline.<tier>] affects plan run";
+    const NO_EVAL_SOURCE: &str = "the built-in eval template needs an assertion body that plan \
+                                  tasks do not author, so nothing is written (bug-017c2d), and \
+                                  nothing in plan run executes generated tests";
 
     let defaults = RokoConfig::default();
     let (gates, default_gates) = (&config.gates, &defaults.gates);
     let (routing, default_routing) = (&config.routing, &defaults.routing);
+    // Focused mode scopes authored Cargo tests with the impact settings
+    // (gap-1426e4); the other non-default modes stay legacy-only.
+    let focused = gates.mode == roko_core::config::GateMode::Focused;
     let mut checks = vec![
-        (gates.mode != default_gates.mode, "gates.mode", LEGACY_GATES),
+        (
+            gates.mode != default_gates.mode && !focused,
+            "gates.mode",
+            LEGACY_GATES,
+        ),
         (
             gates.clippy_enabled != default_gates.clippy_enabled,
             "gates.clippy_enabled",
@@ -53,17 +63,18 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             LEGACY_GATES,
         ),
         (
-            gates.impact_timeout_ms != default_gates.impact_timeout_ms,
+            gates.impact_timeout_ms != default_gates.impact_timeout_ms && !focused,
             "gates.impact_timeout_ms",
             LEGACY_GATES,
         ),
         (
-            gates.impact_max_reverse_dependents != default_gates.impact_max_reverse_dependents,
+            gates.impact_max_reverse_dependents != default_gates.impact_max_reverse_dependents
+                && !focused,
             "gates.impact_max_reverse_dependents",
             LEGACY_GATES,
         ),
         (
-            gates.impact_max_targets != default_gates.impact_max_targets,
+            gates.impact_max_targets != default_gates.impact_max_targets && !focused,
             "gates.impact_max_targets",
             LEGACY_GATES,
         ),
@@ -73,14 +84,9 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             LEGACY_GATES,
         ),
         (
-            gates.domain_gates != default_gates.domain_gates,
-            "gates.domain_gates",
-            NO_READER,
-        ),
-        (
-            gates.ema_alpha.to_bits() != default_gates.ema_alpha.to_bits(),
-            "gates.ema_alpha",
-            ADAPTIVE,
+            gates.write_eval_artifacts != default_gates.write_eval_artifacts,
+            "gates.write_eval_artifacts",
+            NO_EVAL_SOURCE,
         ),
         (
             gates.skip_streak_threshold != default_gates.skip_streak_threshold,
@@ -98,17 +104,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             "budget.max_agent_lifetime_usd",
             NO_LONG_LIVED_AGENT,
         ),
-        (
-            config.learning.replan_max_per_plan != defaults.learning.replan_max_per_plan,
-            "learning.replan_max_per_plan",
-            NO_READER,
-        ),
-        (
-            config.learning.replan_gate_attempts != defaults.learning.replan_gate_attempts,
-            "learning.replan_gate_attempts",
-            NO_READER,
-        ),
-        (config.agent.data_llm.is_some(), "agent.data_llm", NO_READER),
         (
             routing.algorithm != default_routing.algorithm,
             "routing.algorithm",
@@ -219,21 +214,35 @@ pub(super) fn warn_inert_graph_settings_once(config: &RokoConfig) {
 mod tests {
     use super::*;
 
+    /// bug-05a434: with no property-body source on the Graph path,
+    /// `gates.write_eval_artifacts` writes nothing, and `plan run` says so.
+    #[test]
+    fn write_eval_artifacts_is_reported_inert_on_graph() {
+        let mut config = RokoConfig::default();
+        config.gates.write_eval_artifacts = true;
+        let inert = graph_engine_inert_settings(&config);
+        let setting = inert
+            .iter()
+            .find(|setting| setting.key == "gates.write_eval_artifacts")
+            .expect("write_eval_artifacts is reported");
+        assert!(
+            setting.reason.contains("assertion body"),
+            "{}",
+            setting.reason
+        );
+    }
+
     #[test]
     fn inert_settings_list_only_changed_keys_the_graph_engine_ignores() {
         assert!(graph_engine_inert_settings(&RokoConfig::default()).is_empty());
 
         let mut config = RokoConfig::default();
-        config
-            .gates
-            .domain_gates
-            .insert("docs".to_string(), vec!["shell:true".to_string()]);
+        config.gates.max_rung = Some(2);
         config.runner.warm_pool_size = 4;
         // Wired keys are never reported.
         config.pipeline.focused.max_turns = 50;
         config.budget.max_task_usd = 2.0;
         config.budget.max_daily_usd = 20.0;
-        config.gates.write_eval_artifacts = true;
         config.gates.adaptive_max_retries = 8;
         // Every plan task runs the workspace's required rungs.
         config.gates.custom_rungs = vec![roko_core::config::GateRungConfig {
@@ -247,7 +256,25 @@ mod tests {
             .iter()
             .map(|setting| setting.key)
             .collect::<Vec<_>>();
-        assert_eq!(keys, ["gates.domain_gates", "runner.warm_pool_size"]);
+        assert_eq!(keys, ["gates.max_rung", "runner.warm_pool_size"]);
+
+        // Focused mode and its impact settings scope authored Cargo tests
+        // (gap-1426e4), so they add no inert key; structural mode is still
+        // legacy-only.
+        let mut focused = config.clone();
+        focused.gates.mode = roko_core::config::GateMode::Focused;
+        focused.gates.impact_timeout_ms += 1;
+        let focused_keys = graph_engine_inert_settings(&focused)
+            .iter()
+            .map(|setting| setting.key)
+            .collect::<Vec<_>>();
+        assert_eq!(focused_keys, keys);
+        focused.gates.mode = roko_core::config::GateMode::Structural;
+        assert!(
+            graph_engine_inert_settings(&focused)
+                .iter()
+                .any(|setting| setting.key == "gates.mode")
+        );
 
         config.pipeline.focused.strategist = true;
         assert!(
@@ -267,6 +294,14 @@ mod tests {
             lifetime.reason.contains("fresh provider session"),
             "{}",
             lifetime.reason
+        );
+
+        // The agent factory builds the data-LLM boundary (gap-b0d514).
+        config.agent.data_llm = Some(roko_core::config::DataLlmConfig::default());
+        assert!(
+            graph_engine_inert_settings(&config)
+                .iter()
+                .all(|setting| setting.key != "agent.data_llm")
         );
     }
 }

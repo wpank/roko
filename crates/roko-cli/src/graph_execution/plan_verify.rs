@@ -7,12 +7,15 @@
 //! regression check, see [`super::batch`]); otherwise the shared working tree
 //! its tasks edited.
 //! A plan whose tasks all passed but whose check fails does not succeed.
+//! The check runs code the plan's agents wrote, so its steps get the
+//! environment verify steps get, without provider keys (G09).
 //!
 //! A plan without `[meta] verify` in a Cargo workspace checks formatting,
 //! lints and tests over the crates it affects: the ones its tasks write, and
 //! every workspace crate that depends on them. That default never runs
 //! `cargo test --workspace`. Other projects get no default.
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::time::Duration;
 
@@ -76,6 +79,8 @@ fn step(phase: &str, command: impl Into<String>) -> VerifyStep {
         fail_msg: None,
         timeout_ms: crate::task_parser::default_verify_timeout(),
         scope: Vec::new(),
+        covers: Vec::new(),
+        expect: None,
     }
 }
 
@@ -99,23 +104,46 @@ impl std::fmt::Display for PlanVerifyFailure {
 /// Run `steps` in order in `dir` (`sh -c`), each within its timeout, and
 /// stop at the first that fails.
 ///
+/// Each step starts from the environment a task's verify steps get
+/// ([`roko_gate::inherit_gate_env`]): roko's own, without provider keys or
+/// other secrets, plus the names `env_passthrough` (`[gates]
+/// env_passthrough`) lists.
+///
 /// # Errors
 ///
 /// The first step that exits unsuccessfully, cannot start, or runs out of
 /// time.
-pub async fn run_plan_verify(dir: &Path, steps: &[VerifyStep]) -> Result<(), PlanVerifyFailure> {
+pub async fn run_plan_verify(
+    dir: &Path,
+    steps: &[VerifyStep],
+    env_passthrough: &[String],
+) -> Result<(), PlanVerifyFailure> {
+    let parent_env = roko_core::child_env::process_env();
+    run_plan_verify_from(dir, steps, &parent_env, env_passthrough).await
+}
+
+/// [`run_plan_verify`], with `parent_env` standing in for roko's own
+/// environment. The gate policy filters it just the same.
+async fn run_plan_verify_from(
+    dir: &Path,
+    steps: &[VerifyStep],
+    parent_env: &[(String, OsString)],
+    passthrough: &[String],
+) -> Result<(), PlanVerifyFailure> {
     for step in steps {
         let failure = |output: String| PlanVerifyFailure {
             phase: step.phase.clone(),
             command: step.command.clone(),
             output,
         };
-        let run = tokio::process::Command::new("sh")
+        let mut command = tokio::process::Command::new("sh");
+        command
             .arg("-c")
             .arg(&step.command)
             .current_dir(dir)
-            .kill_on_drop(true)
-            .output();
+            .kill_on_drop(true);
+        roko_gate::inherit_gate_env_from(&mut command, parent_env.iter().cloned(), passthrough);
+        let run = command.output();
         let timeout = Duration::from_millis(step.timeout_ms.max(1));
         let output = match tokio::time::timeout(timeout, run).await {
             Ok(Ok(output)) => output,
@@ -165,7 +193,7 @@ mod tests {
             verify_step("touch never"),
         ];
 
-        let failure = run_plan_verify(dir.path(), &steps)
+        let failure = run_plan_verify(dir.path(), &steps, &[])
             .await
             .expect_err("the second step fails");
 
@@ -176,6 +204,42 @@ mod tests {
         );
         assert!(dir.path().join("first").exists());
         assert!(!dir.path().join("never").exists());
-        assert!(run_plan_verify(dir.path(), &steps[..1]).await.is_ok());
+        assert!(run_plan_verify(dir.path(), &steps[..1], &[]).await.is_ok());
+    }
+
+    /// G09: a step runs the agents' code with the environment verify steps
+    /// get, so a provider key in roko's environment does not reach it, while
+    /// a name in `[gates] env_passthrough` does.
+    #[tokio::test]
+    async fn plan_verify_step_sees_no_provider_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = std::env::var_os("PATH")
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| "/usr/bin:/bin".into());
+        let parent_env = [
+            ("PATH", path),
+            ("HOME", OsString::from("/tmp/plan-verify-home")),
+            ("OPENAI_API_KEY", OsString::from("sk-plan-verify-canary")),
+            ("PLAN_VERIFY_PROBE", OsString::from("passed-through")),
+        ]
+        .map(|(name, value)| (name.to_string(), value));
+        let steps = [verify_step("env > out.txt")];
+
+        run_plan_verify_from(
+            dir.path(),
+            &steps,
+            &parent_env,
+            &["PLAN_VERIFY_PROBE".to_string()],
+        )
+        .await
+        .expect("the step runs");
+
+        let env = std::fs::read_to_string(dir.path().join("out.txt")).expect("read out.txt");
+        assert!(env.lines().any(|line| line.starts_with("PATH=")), "{env}");
+        assert!(env.contains("PLAN_VERIFY_PROBE=passed-through"), "{env}");
+        assert!(
+            !env.contains("sk-plan-verify-canary"),
+            "a provider key reached the plan check:\n{env}"
+        );
     }
 }

@@ -533,11 +533,22 @@ Available override fields: `model`, `backend`, `effort`, `temperament`, `context
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `model` | String | `"claude-haiku-3-5"` | Model for data extraction |
-| `max_tokens` | u64 | `4096` | Output token limit |
-| `temperature` | f64 | `0.0` | Temperature (0 = deterministic) |
-| `strip_tool_calls` | bool | `true` | Remove tool calls from output |
-| `sanitize_input` | bool | `true` | Sanitize inputs before sending |
+| `model` | String | `"claude-haiku-4-5"` | Model for data extraction: a `[models.*]` key or a builtin slug |
+| `max_tokens` | u64 | 4096 | Output token limit |
+| `temperature` | f64 | 0.0 | Temperature (0 = deterministic) |
+| `strip_tool_calls` | bool | true | The data LLM gets no tools; `false` fails config loading |
+| `output_schema` | JSON | none | Keys the data LLM's JSON output must have (`required`) |
+| `sanitize_input` | bool | true | Strip known injection phrases before the call |
+| `timeout_ms` | u64 | 30000 | Time limit for one data-LLM call; a slower call withholds the content |
+| `max_input_bytes` | usize | 32768 | Most untrusted text one call is given; the rest is cut off |
+
+Leaving the section out turns the boundary off. With it set, the tool loops roko runs itself send
+the output of MCP, plugin, web-search, retrieval and network tools through the data LLM: those of
+every agent roko builds for an API provider (Anthropic, OpenAI-compatible, Gemini, Perplexity,
+Cerebras), and ACP's. The model sees only the extracted summary and facts, or a notice that they
+were withheld. CLI providers run their own tool loops, so it cannot cover them. The data model
+must be one roko calls over an API: if roko cannot build it, the agent fails to start, or the ACP
+turn fails, rather than run without the boundary.
 
 ### 8.5 `[[agents]]` -- agent definitions
 
@@ -674,7 +685,6 @@ Per-complexity overrides: `[routing.weights.mechanical]`, `[routing.weights.focu
 | `impact_timeout_ms` | u64 | `5000` | Timeout for changed-target analysis |
 | `compile_concurrency` | usize | `1` | Per-repository Cargo command ownership limit |
 | `env_passthrough` | Vec\<String\> | `[]` | Extra variables gate commands inherit beyond the allowlist, secret-looking or not: exact names or `PREFIX*` patterns, e.g. `["DATABASE_URL", "AWS_*"]` (see *Child process environments* under `[agent]`) |
-| `domain_gates` | HashMap | `{}` | Per-domain custom gate lists |
 | `rungs` | Vec\<GateRungConfig\> | `[]` | Custom gate rungs (alias: `custom_rungs`) |
 
 Custom rungs replace the built-in compile/lint/test defaults. Each rung is a `{ name, command, timeout_secs, required, parallel_with }` table. Legacy `[[gate]]` syntax is migrated to `[[gates.rungs]]` by `roko config migrate`.
@@ -738,8 +748,6 @@ set -- operator and author intent always take precedence.
 | `file_intel_max_entries` | usize | `15` | Max file intel entries per prompt |
 | `warning_max_entries` | usize | `5` | Max warning entries per prompt |
 | `replan_on_gate_failure` | bool | `true` | Trigger replan on gate failure |
-| `replan_max_per_plan` | u32 | `2` | Max replans per plan |
-| `replan_gate_attempts` | u32 | `3` | Gate attempts before replan |
 | `gate_threshold_flush_interval` | u64 | `10` | Gate observations between adaptive-threshold writes; zero normalizes to one |
 
 ### 8.14 `[demurrage]` -- signal decay

@@ -11,24 +11,22 @@
 //! The module is deliberately decoupled from the concrete `Episode` type used
 //! by the episode logger — it depends only on the opaque [`EpisodeView`]
 //! trait. That keeps pattern mining composable with anything that exposes an
-//! ordered list of action kinds and a success flag, including synthetic
-//! fixtures and downstream replayers.
+//! ordered list of action kinds, including synthetic fixtures and downstream
+//! replayers.
 //!
 //! # Example
 //!
 //! ```
 //! use roko_learn::pattern_discovery::{EpisodeView, PatternMiner};
 //!
-//! struct Ep { actions: Vec<String>, ok: bool }
+//! struct Ep { actions: Vec<String> }
 //! impl EpisodeView for Ep {
 //!     fn actions(&self) -> &[String] { &self.actions }
-//!     fn succeeded(&self) -> bool { self.ok }
 //! }
 //!
 //! let mut miner = PatternMiner::new(2, 0.5);
 //! let run = |words: &[&str]| Ep {
 //!     actions: words.iter().map(|s| (*s).to_string()).collect(),
-//!     ok: true,
 //! };
 //! miner.ingest_episode(&run(&["a", "b", "c", "d"]));
 //! miner.ingest_episode(&run(&["a", "b", "c", "e"]));
@@ -47,14 +45,13 @@ use crate::hdc_clustering::{KMedoidsConfig, k_medoids};
 /// Read-only projection of an episode that is sufficient for trigram mining.
 ///
 /// Implementors only need to expose an ordered list of action kinds (as
-/// strings) and whether the episode ultimately succeeded. Keeping the trait
-/// minimal lets `roko-learn` remain independent of any particular `Episode`
-/// type — including [`crate::episode_logger`]'s canonical struct.
+/// strings). Keeping the trait minimal lets `roko-learn` remain independent of
+/// any particular `Episode` type — including [`crate::episode_logger`]'s
+/// canonical struct. Trigram support does not depend on the outcome, so the
+/// trait asks for none (bug-05a434 removed an unread `succeeded`).
 pub trait EpisodeView {
     /// Ordered slice of action kind labels recorded during the episode.
     fn actions(&self) -> &[String];
-    /// Whether the episode reached a successful terminal state.
-    fn succeeded(&self) -> bool;
 }
 
 /// A recurring structural signal mined from episode action sequences.
@@ -658,22 +655,17 @@ mod tests {
 
     struct Ep {
         actions: Vec<String>,
-        ok: bool,
     }
 
     impl EpisodeView for Ep {
         fn actions(&self) -> &[String] {
             &self.actions
         }
-        fn succeeded(&self) -> bool {
-            self.ok
-        }
     }
 
-    fn ep(words: &[&str], ok: bool) -> Ep {
+    fn ep(words: &[&str]) -> Ep {
         Ep {
             actions: words.iter().map(|s| (*s).to_string()).collect(),
-            ok,
         }
     }
 
@@ -688,7 +680,7 @@ mod tests {
     #[test]
     fn single_episode_short_sequence_has_no_trigrams() {
         let mut miner = PatternMiner::new(1, 0.0);
-        miner.ingest_episode(&ep(&["read", "edit"], true));
+        miner.ingest_episode(&ep(&["read", "edit"]));
         assert_eq!(miner.total_episodes(), 1);
         assert_eq!(miner.distinct_trigrams(), 0);
         assert!(miner.discover().is_empty());
@@ -697,7 +689,7 @@ mod tests {
     #[test]
     fn single_episode_one_trigram_recorded() {
         let mut miner = PatternMiner::new(1, 0.0);
-        miner.ingest_episode(&ep(&["read", "edit", "test"], true));
+        miner.ingest_episode(&ep(&["read", "edit", "test"]));
         assert_eq!(miner.distinct_trigrams(), 1);
         let patterns = miner.discover();
         assert_eq!(patterns.len(), 1);
@@ -710,9 +702,9 @@ mod tests {
     #[test]
     fn trigram_above_min_support_is_emitted() {
         let mut miner = PatternMiner::new(2, 0.0);
-        miner.ingest_episode(&ep(&["read", "edit", "test", "commit"], true));
-        miner.ingest_episode(&ep(&["read", "edit", "test", "revert"], true));
-        miner.ingest_episode(&ep(&["plan", "spike", "abandon"], false));
+        miner.ingest_episode(&ep(&["read", "edit", "test", "commit"]));
+        miner.ingest_episode(&ep(&["read", "edit", "test", "revert"]));
+        miner.ingest_episode(&ep(&["plan", "spike", "abandon"]));
         let patterns = miner.discover();
         assert!(
             patterns
@@ -730,8 +722,8 @@ mod tests {
     #[test]
     fn trigram_below_min_support_is_rejected() {
         let mut miner = PatternMiner::new(3, 0.0);
-        miner.ingest_episode(&ep(&["a", "b", "c", "d"], true));
-        miner.ingest_episode(&ep(&["a", "b", "c", "e"], true));
+        miner.ingest_episode(&ep(&["a", "b", "c", "d"]));
+        miner.ingest_episode(&ep(&["a", "b", "c", "e"]));
         let patterns = miner.discover();
         assert!(patterns.is_empty());
     }
@@ -740,10 +732,10 @@ mod tests {
     fn confidence_threshold_filters_rare_patterns() {
         let mut miner = PatternMiner::new(1, 0.5);
         // trigram "a->b->c" appears in 1 of 4 episodes → confidence 0.25 < 0.5
-        miner.ingest_episode(&ep(&["a", "b", "c"], true));
-        miner.ingest_episode(&ep(&["x", "y", "z"], true));
-        miner.ingest_episode(&ep(&["x", "y", "z"], true));
-        miner.ingest_episode(&ep(&["x", "y", "z"], true));
+        miner.ingest_episode(&ep(&["a", "b", "c"]));
+        miner.ingest_episode(&ep(&["x", "y", "z"]));
+        miner.ingest_episode(&ep(&["x", "y", "z"]));
+        miner.ingest_episode(&ep(&["x", "y", "z"]));
         let patterns = miner.discover();
         assert_eq!(patterns.len(), 1);
         assert_eq!(patterns[0].description, "x -> y -> z");
@@ -754,8 +746,8 @@ mod tests {
     #[test]
     fn reset_clears_all_state() {
         let mut miner = PatternMiner::new(1, 0.0);
-        miner.ingest_episode(&ep(&["a", "b", "c"], true));
-        miner.ingest_episode(&ep(&["a", "b", "c"], true));
+        miner.ingest_episode(&ep(&["a", "b", "c"]));
+        miner.ingest_episode(&ep(&["a", "b", "c"]));
         assert_eq!(miner.total_episodes(), 2);
         assert_eq!(miner.distinct_trigrams(), 1);
         miner.reset();
@@ -769,12 +761,12 @@ mod tests {
         let mut miner = PatternMiner::new(1, 0.0);
         // "x y z" appears in 3 episodes, "a b c" in 2, "p q r" in 1.
         for _ in 0..3 {
-            miner.ingest_episode(&ep(&["x", "y", "z"], true));
+            miner.ingest_episode(&ep(&["x", "y", "z"]));
         }
         for _ in 0..2 {
-            miner.ingest_episode(&ep(&["a", "b", "c"], true));
+            miner.ingest_episode(&ep(&["a", "b", "c"]));
         }
-        miner.ingest_episode(&ep(&["p", "q", "r"], false));
+        miner.ingest_episode(&ep(&["p", "q", "r"]));
         let patterns = miner.discover();
         assert_eq!(patterns.len(), 3);
         assert_eq!(patterns[0].description, "x -> y -> z");
@@ -792,8 +784,8 @@ mod tests {
     #[test]
     fn repeated_trigram_in_one_episode_counts_once() {
         let mut miner = PatternMiner::new(1, 0.0);
-        miner.ingest_episode(&ep(&["a", "b", "c", "a", "b", "c"], true));
-        miner.ingest_episode(&ep(&["q", "r", "s"], false));
+        miner.ingest_episode(&ep(&["a", "b", "c", "a", "b", "c"]));
+        miner.ingest_episode(&ep(&["q", "r", "s"]));
         let patterns = miner.discover();
         let abc = patterns
             .iter()
@@ -805,9 +797,9 @@ mod tests {
     #[test]
     fn first_and_last_seen_track_ingestion_order() {
         let mut miner = PatternMiner::new(1, 0.0);
-        miner.ingest_episode(&ep(&["x", "y", "z"], true));
-        miner.ingest_episode(&ep(&["p", "q", "r"], true));
-        miner.ingest_episode(&ep(&["x", "y", "z"], true));
+        miner.ingest_episode(&ep(&["x", "y", "z"]));
+        miner.ingest_episode(&ep(&["p", "q", "r"]));
+        miner.ingest_episode(&ep(&["x", "y", "z"]));
         let xyz = miner
             .discover()
             .into_iter()
@@ -840,7 +832,7 @@ mod tests {
     #[test]
     fn pattern_serde_roundtrip() {
         let mut miner = PatternMiner::new(1, 0.0);
-        miner.ingest_episode(&ep(&["a", "b", "c"], true));
+        miner.ingest_episode(&ep(&["a", "b", "c"]));
         let original = miner.discover().into_iter().next().expect("one pattern");
         let json = serde_json::to_string(&original).expect("serialize");
         let decoded: Pattern = serde_json::from_str(&json).expect("deserialize");

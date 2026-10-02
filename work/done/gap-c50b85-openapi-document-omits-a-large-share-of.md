@@ -1,0 +1,67 @@
++++
+id = "gap-c50b85"
+kind = "gap"
+title = "OpenAPI document omits a large share of live routes"
+status = "done"
+triage = "verified"
+severity = "p2"
+goal = "visibility"
+subsystem = ["roko-serve/openapi"]
+created = 2026-09-28
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "6a08f9e2c"
+source = "local-audit-2026-09-26"
+discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
+anchors = ["crates/roko-serve/src/openapi.rs"]
+links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn openapi_documents_every_registered_route' crates/roko-serve/ && test \"$(grep -cvE '^(#|$)' crates/roko-serve/src/openapi_undocumented.txt)\" -eq 0 && cargo test -p roko-serve openapi_documents_every_registered_route"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T07:43:00Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+claimed_at = "2026-10-01T16:13:27Z"
+forced = false
+evidence = "all 426 /api method+path routes are documented, openapi_undocumented.txt is empty, openapi_documents_every_registered_route passes (wk-serve2 0983d8771); publishing the spec with releases is a follow-up; gate 6h2 passed at 285282248 (cargo check, clippy -D warnings, 11,366 lib tests in roko-agent/cli/core/fs/gate/graph/learn/serve, canaries C1-C8 plus integration tests, 446 roko-cli bin tests, run_evidence py, portal tsc and 809 vitest); merged in 6a08f9e2c"
++++
+
+A local measurement (2026-09-26) found `GET /api/openapi.json` with 192 paths / 221 operations while 24 of 45 sampled method+path routes were missing, so generated clients and API docs cannot reach them.
+Fix: add the missing entries plus a coverage test comparing registered routes with OpenAPI paths (ratchet), and publish the spec with releases.
+
+Verified 2026-09-28 (static check against 3d0ee4d02): crates/roko-serve/src/openapi.rs is unchanged since 244f564e1 and has no route-coverage/ratchet test; its only test is openapi_endpoint_is_served_under_api (:1370). A static comparison on 2026-09-28 (tools/http_route_inventory.py --json against the doc_* macro paths in openapi.rs, /api stripped, path params normalized, nest prefixes not applied so approximate) found 434 live method+path registrations vs 202 documented, with 237 live registrations undocumented, e.g. GET /affect/state, GET/DELETE /agent-tokens, DELETE /signals/{id}, DELETE /workspaces/{id}.
+
+Re-checked 2026-09-29: unchanged, and the gap has grown. The portal-programme backend routes (POST /api/plans/execute, /api/plans/{id}/cancel, /api/plans/{id}/revise, /api/plans/{id}/source, /api/auth/session) are not in crates/roko-serve/src/openapi.rs. The existing verify (cargo test -p roko-serve openapi) runs only openapi_endpoint_is_served_under_api and passes while routes are missing.
+
+## Notes
+
+- 2026-10-01 (wk-serve2): PARTIAL, implemented on work/bug-1cb461; cargo verification deferred to the batch check.
+  - Ratchet: test `openapi_documents_every_registered_route` (`crates/roko-serve/src/openapi.rs`) scans every
+    `.route("<literal>", <methods>)` outside test modules, maps it onto the `/api` surface (root-mounted `/api/...`
+    literals lose the prefix; `routes/providers.rs` routers get `/providers`, `/models`, `/routing`; `any(...)`
+    proxies are skipped), and compares it with `ApiDoc::openapi()`. Routes not yet documented are listed in
+    `crates/roko-serve/src/openapi_undocumented.txt`; the test fails on a new undocumented route and on a stale
+    line, so the list only shrinks. At BASE: 434 registered method+path pairs, 221 documented.
+  - Documented 14 more: `POST /plans/execute`, `POST /plans/{id}/cancel|revise|chat`, `GET|PUT /plans/{id}/source`,
+    `GET /prds/status`, `POST /prds/consolidate`, `GET /knowledge`, `GET /retrieval/stats|query`,
+    `POST|DELETE /auth/session`, and `DELETE /templates/{name}` (it was documented as a second GET).
+    199 routes remain in the list.
+  - Still open: document the 199 listed routes, and publish the spec with releases. The verify now also requires
+    `openapi_undocumented.txt` to hold no routes, so it passes only when the document is complete.
+  - When another branch adds or removes routes, the test names the exact lines to add to or delete from
+    `openapi_undocumented.txt`.
+- 2026-10-02 (wk-serve2): the list is empty. All 426 method+path routes the server serves under `/api` are in
+  `ApiDoc` (428 operations, counting the two root-only webhook entries below), documented in five chunks with
+  `doc_*!` stubs grouped by tag. A new `doc_delete_param!` covers DELETE routes whose parameter is not `id`; the
+  two-parameter task diff GET and the signal promote PATCH are hand-written blocks. Cargo verification is deferred to
+  the batch check.
+  - The coverage test is mount-aware. Routers that `build_router` mounts at the server root (`ws`, `relay_proxy`,
+    `terminal`, public share/webhook/trigger routes, `auth_session`, the `/health` `/ready` `/metrics` probes) are not
+    part of this `/api` document unless their literal path starts with `/api/`. That took `/ready`, `/roko-ws`,
+    `/ws/agents`, `/ws/terminal/{id}` and the relay sockets off the list.
+  - Still open from the original Fix: publishing the spec with releases. Suggest a follow-up item.
+  - Found, not changed: `ApiDoc` documents `POST /webhooks/github` and `/webhooks/slack` under the `/api` server, but
+    `webhooks::public_routes` mounts them at the root only, so the documented URLs `/api/webhooks/...` do not exist.

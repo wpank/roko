@@ -13,8 +13,8 @@
   },
   "tasks": {
     "T1": {
-      "score": 37,
-      "band": "D",
+      "score": 46.25,
+      "band": "C",
       "hard_fail": [],
       "verify_classes": [
         "test"
@@ -35,7 +35,7 @@
       }
     },
     "T2": {
-      "score": 29,
+      "score": 36.25,
       "band": "D",
       "hard_fail": [],
       "verify_classes": [
@@ -57,7 +57,7 @@
       }
     },
     "T3": {
-      "score": 29.5,
+      "score": 36.88,
       "band": "D",
       "hard_fail": [],
       "verify_classes": [
@@ -79,7 +79,7 @@
       }
     },
     "T4": {
-      "score": 20.75,
+      "score": 25.94,
       "band": "D",
       "hard_fail": [],
       "verify_classes": [
@@ -101,7 +101,7 @@
       }
     },
     "T5": {
-      "score": 20.75,
+      "score": 25.94,
       "band": "D",
       "hard_fail": [],
       "verify_classes": [
@@ -123,7 +123,7 @@
       }
     },
     "T6": {
-      "score": 20.75,
+      "score": 25.94,
       "band": "D",
       "hard_fail": [],
       "verify_classes": [
@@ -145,7 +145,7 @@
       }
     },
     "T7": {
-      "score": 17,
+      "score": 21.25,
       "band": "D",
       "hard_fail": [],
       "verify_classes": [],

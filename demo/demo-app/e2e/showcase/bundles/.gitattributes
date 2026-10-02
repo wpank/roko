@@ -1,0 +1,2 @@
+# Fixture bundles are checked byte for byte against their SHA256SUMS: never convert line endings.
+* -text

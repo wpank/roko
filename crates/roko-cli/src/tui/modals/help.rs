@@ -100,7 +100,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("Ctrl-t", "agent topology panel", theme));
     lines.push(kb("Ctrl-e", "toggle post-processing effects", theme));
     lines.push(kb("Ctrl-x", "force-advance (confirm)", theme));
-    lines.push(kb("Ctrl-d", "reset selected plan (confirm)", theme));
+    lines.push(kb("Ctrl-d", "cancel selected plan (confirm)", theme));
     lines.push(kb("Ctrl-g", "git reconcile (confirm)", theme));
     lines.push(Line::from(""));
 
@@ -115,7 +115,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("Esc", "close plan detail", theme));
     lines.push(kb("w", "wave overview modal", theme));
     lines.push(kb("p", "pause/resume pipeline (wired to executor)", theme));
-    lines.push(kb("i", "inject directive to agent", theme));
+    lines.push(kb("i", "inject directive (not available yet)", theme));
     lines.push(kb("y", "approve pending command", theme));
     lines.push(kb("`", "cycle agent role tabs", theme));
     lines.push(sub_label("Right-panel sub-tab shortcuts:", theme));
@@ -158,7 +158,12 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("c", "re-verify gates only", theme));
     lines.push(kb("V", "re-verify plan", theme));
     lines.push(kb("F", "force-advance past current task", theme));
-    lines.push(kb("R", "restart plan (confirm)", theme));
+    lines.push(kb(
+        "R",
+        "reset a failed plan: run it again (confirm)",
+        theme,
+    ));
+    lines.push(kb("C", "cancel plan (confirm)", theme));
     lines.push(kb("m", "merge plan branch (confirm)", theme));
     lines.push(kb("M", "merge all completed (confirm)", theme));
     lines.push(Line::from(""));
@@ -178,8 +183,8 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("a", "approve pending command", theme));
     lines.push(kb("A", "approve all pending", theme));
     lines.push(kb("x", "reject pending command", theme));
-    lines.push(kb("X", "cancel selected agent's task (skip)", theme));
-    lines.push(kb("i", "inject directive to agent", theme));
+    lines.push(kb("X", "stop selected agent's task (skip)", theme));
+    lines.push(kb("i", "inject directive (not available yet)", theme));
     lines.push(kb("g", "toggle agent pane grouping", theme));
     lines.push(kb("t", "toggle agent topology", theme));
     lines.push(sub_label("Agent output search:", theme));

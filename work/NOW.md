@@ -4,94 +4,102 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 12 anchor gone · 166 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 15 anchor gone · 66 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
-- **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
-- **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
-- **P2** [q-bc6cc5](items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md) Confirm licence coverage for another contributor's code in apps/mirage-rs [question] · size S · verified 2026-09-29
+- **P2** [gap-4119fb](items/gap-4119fb-pk83-showcase-and-deploy-browser-sessions-carry.md) PK83 Showcase and deploy: Browser sessions carry a scope, absolute and idle TTLs, and a passphrase generation (+5 more) · size L · verified 2026-10-02
+- **P2** [gap-fcb44c](items/gap-fcb44c-pk85-showcase-and-deploy-any-write-scoped.md) PK85 Showcase and deploy: Any write-scoped caller can mint a permanent public share link, also on a public bind (+8 more) · size L · verified 2026-10-02
+- **P2** [gap-3516d6](items/gap-3516d6-pk86-showcase-and-deploy-deploy-showcase-preflight.md) PK86 Showcase and deploy: `deploy/showcase/preflight.sh`: checks P1–P14, with a `--local` mode that boots a… (+1 more) · size M · verified 2026-10-02
 
-_3 more open · on hold: gap-8f8544 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_7 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
+- **P1** [gap-d4a1c1](items/gap-d4a1c1-pk95-papers-freeze-the-audit-s-live.md) PK95 Papers: Freeze the audit's live-run findings (R3, R4) as whitepaper evidence (+10 more) · size L · verified 2026-10-02
+- **P2** [gap-d2507f](items/gap-d2507f-pk97-papers-companion-fill-the-e2-and.md) PK97 Papers: Companion: fill the E2 and E3 results from the human ratings, and redraw Figure 3 (+2 more) · size M · verified 2026-10-02
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
-- **P1** [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue · size S · verified 2026-09-29
-- **P2** [gap-08d9b2](items/gap-08d9b2-whitepaper-final-matrix-re-pin-right-before.md) Whitepaper: final matrix re-pin right before the whitepaper-v1 tag · size S · verified 2026-09-30
 
-_0 more open · on hold: gap-85f86a · 2 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90650 · 2 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- nothing checked and open
+- **P1** [gap-625195](items/gap-625195-pk01-failure-paths-a-blank-provider-answer.md) PK01 Failure paths: A blank provider answer fails as `empty_response` at the immune boundary, not as a… (+11 more) · size L · verified 2026-10-02
+- **P1** [gap-e00238](items/gap-e00238-pk02-failure-paths-immune-denials-leave-provider.md) PK02 Failure paths: Immune denials leave provider health alone, and each attempt records provider health once (+7 more) · size L · verified 2026-10-02
+- **P2** [gap-d254a3](items/gap-d254a3-pk03-failure-paths-a-plan-branch-conflict.md) PK03 Failure paths: A plan-branch conflict tells the next attempt what it conflicted with (+5 more) · size L · verified 2026-10-02
 
-_0 more open · 4 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_7 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
-- nothing checked and open
+- **P2** [gap-997366](items/gap-997366-pk14-defaults-that-apply-a-plan-budget.md) PK14 Defaults that apply: A plan budget without max_turn_usd reserves a share per call, and any wait is logged (+8 more) · size L · verified 2026-10-02
+- **P1** [gap-c1f4ac](items/gap-c1f4ac-pk15-defaults-that-apply-one-resolver-for.md) PK15 Defaults that apply: One resolver for [runner] worktree_per_task, and roko run follows it (+4 more) · size L · verified 2026-10-02
+- **P2** [gap-e4bfbf](items/gap-e4bfbf-pk18-specs-a-cheap-model-can-execute.md) PK18 Specs a cheap model can execute: `plan validate --spec-quality --dynamic`: red-on-base proof inside Roko (+9 more) · size L · verified 2026-10-02
 
-_0 more open · 9 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_4 more open · on hold: gap-c013c5 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- nothing checked and open
+- **P1** [gap-1149aa](items/gap-1149aa-pk21-viabilitybench-proof-vb-run-gives-a.md) PK21 ViabilityBench proof: vb run gives a multi-model arm one endpoint and one proxy upstream per provider (+5 more) · size L · verified 2026-10-02
+- **P1** [gap-46fd19](items/gap-46fd19-pk22-viabilitybench-proof-analysis-bootstrap-py-the.md) PK22 ViabilityBench proof: analysis/bootstrap.py: the paired bootstrap stratified by family and level (+5 more) · size L · verified 2026-10-02
+- **P2** [gap-eb1aa3](items/gap-eb1aa3-pk23-viabilitybench-proof-family-f6-ts-result.md) PK23 ViabilityBench proof: Family F6 ts-result: the TypeScript transfer probe (+2 more) · size L · verified 2026-10-02
 
-_0 more open · 12 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_8 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-2ca903, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 10 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- nothing checked and open
+- **P2** [gap-cc5051](items/gap-cc5051-pk09-decision-records-and-census-s01-becomes.md) PK09 Decision records and census: S01 becomes the one schema: merge the S03/S06 addenda, the ladder source and today's… (+7 more) · size L · verified 2026-10-02
+- **P2** [gap-f61823](items/gap-f61823-pk10-decision-records-and-census-exposure-and.md) PK10 Decision records and census: Exposure and content-decision record types, and the telemetry report reads them (+9 more) · size L · verified 2026-10-02
+- **P2** [gap-b5caf3](items/gap-b5caf3-pk32-loops-re-closed-retire-the-legacy.md) PK32 Loops re-closed: Retire the legacy holdout from Graph runs: its learning gate gates nothing (+11 more) · size L · verified 2026-10-02
 
-_0 more open · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_30 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
-- **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-10-01
-- **P1** [gap-baab0a](items/gap-baab0a-da-09-11-codex-tool-policy-is.md) Codex tool policy is advisory; Roko-owned operation-level broker missing · size L · verified 2026-09-29
-- **P1** [q-1faa0c](items/q-1faa0c-da-09-10-dev-audit-runtime-fixes.md) Dev-audit runtime fixes unverified on the Graph engine after Runner-v2 deletion [question] · size L · verified 2026-09-29
+- **P1** [gap-af73a8](items/gap-af73a8-fresh-live-dogfood-rerun-of-the-full.md) Fresh live dogfood rerun of the full self-hosting workflow (blocked by SnapshotRebased arm gap) · size M · verified 2026-09-29
+- **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
+- **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-10-01
 
-_53 more open · 4 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_9 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
-- **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29
-- **P1** [gap-c002bb](items/gap-c002bb-wire-tui-recovery-keybindings-to-runner-command.md) Wire TUI Recovery Keybindings to Runner Command Channel · size L · verified 2026-09-29
-- **P2** [bug-1cb461](items/bug-1cb461-aggregator-truncates-content-by-byte-index-and.md) Aggregator truncates content by byte index and can panic on non-ASCII text [bug] · size S · verified 2026-09-29
+- **P3** [gap-59ebfd](items/gap-59ebfd-pk84-m3-self-model-serve-the-economics.md) PK84 M3 self-model: Serve the economics report and the calibration stream for the showcase · size S · verified 2026-10-02
+- **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
+- **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
 
-_21 more open · 3 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
+_2 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
-- **P1** [find-34a4b5](items/find-34a4b5-cybernetic-re-verify-learning-16-learning-routing.md) 16 learning/routing closures wired into deleted Runner-v2 event_loop.rs [finding] · size M · verified 2026-09-29
-- **P2** [gap-7a8474](items/gap-7a8474-provider-f037-10-of-23-agentefficiencyevent-fields.md) 10 of 23 AgentEfficiencyEvent fields always zero/empty in primary live path · size M · verified 2026-09-29
-- **P2** [find-49ec18](items/find-49ec18-evals-re-verify-8-eval-closures-2026.md) 8 eval closures (2026-09-05) wired via Runner-v2 dispatch/event loop [finding] · size M · verified 2026-09-29
+- **P2** [gap-2b5d37](items/gap-2b5d37-pk11-decision-records-and-census-a-frozen.md) PK11 Decision records and census: A frozen gate settlement writes no thresholds and makes no reflection call (+1 more) · size M · verified 2026-10-02
+- **P2** [gap-aea13a](items/gap-aea13a-pk33-prompt-composition-delete-roko-execution-s.md) PK33 Prompt composition: Delete roko-execution's duplicate prompt cache, which nothing reads (+13 more) · size L · verified 2026-10-02
+- **P2** [gap-222d47](items/gap-222d47-pk39-prompt-composition-prompt-relevance-canary-over.md) PK39 Prompt composition: Prompt-relevance canary: over two scripted runs, each prompt holds only its own task's… (+3 more) · size L · verified 2026-10-02
 
-_12 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_2 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
-- **P1** [gap-759041](items/gap-759041-backlog-and-plan-state-reconciliation.md) Backlog and Plan State Reconciliation · size M · verified 2026-09-29
-- **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
-- **P2** [gap-8921a3](items/gap-8921a3-df-0925-p4-dead-code-paths-graphexecutionevent.md) Dead code paths (GraphExecutionEvent sink, duplicate streaming verify path, build_fix_prompt) · size S · verified 2026-09-29
+- **P3** [gap-2339e2](items/gap-2339e2-pk78-park-and-clean-up-five-next.md) PK78 Park and clean up: Five next-step hints tell users to run the removed `roko develop` (+11 more) · size L · verified 2026-10-02
+- **P2** [gap-425d9e](items/gap-425d9e-pk79-park-and-clean-up-park-the.md) PK79 Park and clean up: Park the chain-family HTTP routes behind the `chain` feature, with one typed 501… (+7 more) · size L · verified 2026-10-02
+- **P3** [gap-7add13](items/gap-7add13-pk80-park-and-clean-up-park-the.md) PK80 Park and clean up: Park the cognitive clock: `CorticalState`, the scheduler types and the theta/delta… (+6 more) · size L · verified 2026-10-02
 
-_37 more open · 17 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_10 more open · 4 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
-- **P1** [gap-b0d514](items/gap-b0d514-provider-f019-camel-data-llm-execution-boundary.md) CaMeL Data-LLM execution boundary not enforced · size L · verified 2026-09-29
-- **P1** [gap-f118b3](items/gap-f118b3-deliver-roko-inject-through-the-canonical-acknowledged.md) Deliver `roko inject` Through the Canonical Acknowledged Control Transport · size L · verified 2026-09-29
-- **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-09-29
+- **P2** [gap-3c3729](items/gap-3c3729-pk75-domains-and-assistant-the-citations-rung.md) PK75 Domains and assistant: The citations rung: resolve every DOI, arXiv id and URL in the artefact (+5 more) · size L · verified 2026-10-02
+- **P2** [gap-99c9ae](items/gap-99c9ae-pk76-domains-and-assistant-a-plan-run.md) PK76 Domains and assistant: A plan.run cell: a trigger can run a plan (+7 more) · size L · verified 2026-10-02
+- **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-10-01
 
-_11 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
+_7 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
 
 ## 12. Hermes and ACP integration
 
-- **P1** [bug-f0f108](items/bug-f0f108-refactor-p0-01-acp-bridge-crash-under.md) ACP bridge crash under sustained load (analyzed, not fixed) [bug] · size M · verified 2026-09-29
-- **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
-- **P1** [gap-55eada](items/gap-55eada-provider-f007-agentcontract-tool-policy-not-applied.md) AgentContract tool policy not applied to ACP tool dispatch · size M · verified 2026-09-29
+- **P2** [gap-5e9292](items/gap-5e9292-pk73-domains-and-assistant-the-runner-s.md) PK73 Domains and assistant: The runner's FeedRegistry is built empty and never read (+7 more) · size L · verified 2026-10-02
+- **P2** [gap-ce1d11](items/gap-ce1d11-pk74-domains-and-assistant-mcp-run-tools.md) PK74 Domains and assistant: /mcp run tools: run_prompt, plan_generate, plan_run and run_cancel, annotated so the… (+6 more) · size L · verified 2026-10-02
+- **P3** [gap-a9c156](items/gap-a9c156-pk77-domains-and-assistant-accept-a-scratch.md) PK77 Domains and assistant: Accept a scratch_dir attempt: copy changed files back, and refuse when the base moved (+2 more) · size L · verified 2026-10-02
 
-_14 more open · `goal = "hermes"`_
+_5 more open · `goal = "hermes"`_
 
-10 open items have no goal (later); they are listed in `STATUS.md`.
+5 open items have no goal (later); they are listed in `STATUS.md`.

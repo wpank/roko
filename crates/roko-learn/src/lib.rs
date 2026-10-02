@@ -85,6 +85,9 @@ pub mod events;
 pub mod experiment_receipt;
 /// Concrete feedback sink for workflow learning telemetry.
 pub mod feedback_service;
+/// Guarded commit (P21): last-known-good snapshots of learned stores,
+/// held-out and anchor checks, and rollback.
+pub mod guarded_commit;
 pub mod hdc_clustering;
 /// HDC fingerprint helpers for episode memory.
 pub mod hdc_fingerprint;
@@ -92,10 +95,14 @@ pub mod hdc_fingerprint;
 pub mod heuristics;
 /// Append-only hindsight corrections for recent episode outcomes.
 pub mod hindsight;
+/// M1, the ultrastable controller (S06): task resolutions, essential
+/// variables, change detectors and the controller's parts.
+pub mod homeostasis;
 /// Size-based rotation helper for append-only JSONL logs.
 /// Rolling latency EMAs and percentiles for routing feedback.
 pub mod latency;
 pub mod local_reward;
+pub mod loop_audit;
 /// Durable direct model-call feedback recorder.
 pub mod model_call_feedback;
 pub mod model_experiment;
@@ -110,6 +117,8 @@ pub mod playbook_rules;
 pub mod post_gate_reflection;
 pub mod prediction;
 pub mod prompt_experiment;
+/// Provider failover, the policy every dispatch path shares (gap-28ceb9).
+pub mod provider_failover;
 pub mod provider_health;
 /// Provider/model pass-rate outcome telemetry for future routing bandits.
 pub mod provider_model_outcome;
@@ -163,10 +172,6 @@ pub mod plasticity;
 pub mod prompt_compiler;
 /// P4-18: Adaptive model-specific tool degradation threshold learner.
 pub mod tool_cap_learner;
-/// P4-17: Persistent tool metrics aggregation store.
-pub mod tool_metrics_store;
-/// P4-19: Tool recommendation from efficiency history.
-pub mod tool_recommendation;
 /// P4-16: Trigger outcome learning.
 pub mod trigger_outcome;
 /// P4-01: LLM-generated verbal self-reflection after gate failure.

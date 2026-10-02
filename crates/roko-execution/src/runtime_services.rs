@@ -308,8 +308,8 @@ fn chrono_millis() -> u64 {
 
 /// Build [`ExecutionOverrides`] from workflow (run.rs) CLI flags.
 ///
-/// Maps the `CliOverrides` struct used by `run_with_workflow_engine` to
-/// the shared `ExecutionOverrides` type.
+/// Maps the workflow `CliOverrides` flags to the shared
+/// `ExecutionOverrides` type.
 pub fn overrides_for_workflow(
     model: Option<String>,
     role: Option<String>,

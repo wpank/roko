@@ -82,6 +82,52 @@ def test_accept_tests_count_as_verify_steps_and_acceptance():
     assert malformed["hard_fail"] == ["HF1"]
 
 
+def test_planner_written_test_counts_as_acceptance():
+    """sq-3 (decision 3202): an R3-style task whose scoped test-run step names a planner-written test it
+    cannot edit gets SQ02 = SQ03 = 1 and scores band A statically, out of the rules static mode can
+    evaluate; under sq-2 the same task got no acceptance at all and scored below 60."""
+    fixture = FIXTURES / "sq02-planner-test"
+    got = lint(fixture / "tasks.toml", fixture)
+    t1 = got["T1"]
+    assert t1["linter"] == "sq-3"
+    assert t1["features"]["planner_test"]
+    assert t1["rules"]["SQ02"] == t1["rules"]["SQ03"] == 1.0
+    assert t1["excluded"] == ["SQ06", "SQ12"]
+    assert t1["unknown"] == ["HF3", "SQ06"]
+    assert t1["score"] >= 70 and t1["band"] in ("A", "B")
+    # A test the task may edit (T2) and a step that names no test file (T3) earn nothing.
+    for task in ("T2", "T3"):
+        assert not got[task]["features"]["planner_test"], task
+        assert got[task]["rules"]["SQ02"] == 0.0, task
+        assert got[task]["score"] < t1["score"], task
+
+    records, errors = speclint.lint_files([fixture / "tasks.toml"], fixture, linter="sq-2")
+    assert errors == []
+    sq2 = {record["task_id"]: record for record in records}["T1"]
+    assert sq2["linter"] == "sq-2" and sq2["excluded"] == []
+    assert sq2["rules"]["SQ02"] == 0.0 and not sq2["features"]["planner_test"]
+    assert sq2["score"] < 60
+
+
+def test_hidden_suites_and_dynamic_mode_set_the_denominator():
+    """sq-3: SQ12 counts only in a plan that declares hidden suites, and SQ06 only once red on base is
+    known; sq-2 always scores out of 100."""
+    assert speclint.excluded_rules("sq-3", "unknown", False) == ["SQ06", "SQ12"]
+    assert speclint.excluded_rules("sq-3", "fail", True) == []
+    assert speclint.excluded_rules("sq-2", "unknown", False) == []
+    fixture = FIXTURES / "sq12-hidden-hook"
+    got = lint(fixture / "tasks.toml", fixture)
+    assert got["T1"]["excluded"] == ["SQ06"]
+    assert got["T1"]["score"] == pytest.approx(100 * 42 / 85, abs=0.01)
+
+
+def test_named_paths_resolve_modules_selectors_and_cd():
+    assert speclint.named_paths("python3 -m unittest tests.test_slug") == ["unittest", "tests.test_slug", "tests/test_slug.py"]
+    assert "tests/test_x.py" in speclint.named_paths("python3 -m pytest tests/test_x.py::test_one -q")
+    assert "apps/portal/src/x.test.ts" in speclint.named_paths("cd apps/portal && npx vitest run src/x.test.ts")
+    assert speclint.named_paths("cargo test -p roko-cli --lib plan_validate") == ["test", "roko-cli", "plan_validate"]
+
+
 def test_hf3_counts_a_pinned_acceptance_test_as_expecting_red():
     """A task that pins an acceptance test expects red whatever its own steps declare (bug-c1b845), so HF3
     flags it when the base passes; its own pass_on_base step alone expects green. roko-gate's
@@ -104,10 +150,10 @@ def test_e2e_smoke_t02_is_band_d():
     got = lint(ROOT / "plans" / "e2e-smoke-test" / "tasks.toml", ROOT)
     t02 = got["T02"]
     assert t02["role"] == "scribe"
-    assert t02["verify_classes"] == []
-    assert t02["rules"]["SQ04"] == 0
+    # Its structural step on the README it writes (3212): verify-less tasks are errors now.
+    assert t02["verify_classes"] == ["structural"]
+    assert t02["rules"]["SQ04"] == 0.25
     assert t02["band"] == "D"
-    # HF1 is for implementers only.
     assert t02["hard_fail"] == []
 
 
@@ -140,7 +186,7 @@ def test_corpus_one_record_per_task_and_runs_differ_only_in_ts(tmp_path):
     files = speclint.discover([ROOT / "plans"])
     tasks = sum(len(tomllib.loads(path.read_text()).get("task", [])) for path in files)
     assert len(runs[0]) == tasks
-    assert all(r["ev"] == "spec.quality" and r["linter"] == "sq-2" and r["ts"] for r in runs[0])
+    assert all(r["ev"] == "spec.quality" and r["linter"] == speclint.LINTER and r["ts"] for r in runs[0])
 
     def without_ts(records):
         return [{key: value for key, value in record.items() if key != "ts"} for record in records]

@@ -4,67 +4,116 @@
 //! and validate the append-only custody record chain.
 //!
 //! Records are hash-chained: each entry carries a SHA-256 digest of its
-//! canonical payload plus a `prev_hash` linking to the preceding record.
-//! `cmd_custody_verify` recomputes the chain so edited or reordered rows
-//! are detected.
+//! canonical payload plus a `prev_hash` linking to the preceding record
+//! ([`Custody::compute_hash`]). `cmd_custody_verify` recomputes the chain so
+//! edited or reordered rows are detected.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 use roko_agent::safety::provenance::{Custody, CustodyLogger};
 use roko_fs::RokoLayout;
-use sha2::{Digest, Sha256};
 
 // ─── Hash-chain helpers ────────────────────────────────────────────
 
-/// Produce the canonical payload bytes for hashing.
-///
-/// The canonical form is the JSON serialization of every field *except*
-/// `prev_hash` and `hash` — those are the chain metadata and must not
-/// feed back into themselves. We serialize a temporary clone with those
-/// fields cleared so the digest is stable regardless of their current
-/// values.
-fn canonical_payload(record: &Custody) -> Vec<u8> {
-    let mut canon = record.clone();
-    canon.prev_hash = None;
-    canon.hash = None;
-    // serde_json::to_vec produces deterministic output for the same struct
-    // layout (field order follows declaration order with derive(Serialize)).
-    serde_json::to_vec(&canon).expect("Custody serialization cannot fail")
+/// An exclusive lock on a custody log, held until it drops: the OS's
+/// advisory lock on `<log>.lock`, so that appends from other processes wait
+/// their turn instead of forking the chain (bug-2ae60f).
+struct CustodyLock {
+    _file: std::fs::File,
 }
 
-/// Compute the SHA-256 hash for a record given the previous record's hash.
-///
-/// `hash = sha256(prev_hash_hex || canonical_payload_bytes)`
-///
-/// For the first record in the chain `prev_hash` is the empty string.
-fn compute_hash(prev_hash: &str, record: &Custody) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(prev_hash.as_bytes());
-    hasher.update(&canonical_payload(record));
-    format!("{:x}", hasher.finalize())
+impl CustodyLock {
+    /// Wait for the lock on the custody log at `log`.
+    fn acquire(log: &Path) -> std::io::Result<Self> {
+        if let Some(parent) = log.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut path = log.as_os_str().to_owned();
+        path.push(".lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(PathBuf::from(path))?;
+        file.lock()?;
+        Ok(Self { _file: file })
+    }
 }
 
-/// Append a custody record to the log with hash-chain fields populated.
+/// Append a custody record to the log with hash-chain fields populated, and
+/// return the record's hash: the chain's new head.
 ///
-/// Reads the last record's `hash` (if any) to derive `prev_hash`, computes
-/// the new record's `hash`, then delegates to [`CustodyLogger::log`].
-pub fn log_chained(logger: &CustodyLogger, mut record: Custody) -> std::io::Result<()> {
-    let existing = logger.read_all()?;
-    let prev = existing
-        .last()
-        .and_then(|r| r.hash.as_deref())
-        .unwrap_or("");
-    record.prev_hash = if prev.is_empty() {
-        None
-    } else {
-        Some(prev.to_string())
+/// Under the log's lock, [`CustodyLogger::log_chained`] links the record to
+/// the last record's hash and seals it with [`Custody::compute_hash`].
+pub fn log_chained(logger: &CustodyLogger, mut record: Custody) -> std::io::Result<String> {
+    let _lock = CustodyLock::acquire(logger.path())?;
+    logger.log_chained(&mut record)?;
+    Ok(record.hash.unwrap_or_default())
+}
+
+/// Check `record`, line `idx` of a custody log, against the chain before it.
+///
+/// A sealed record's `prev_hash` must name `expected`, the hash of the sealed
+/// record before it, and its hash must match its payload. A legacy record
+/// without a hash restarts the chain. Pushes what is wrong onto `violations`,
+/// moves `expected` on, and returns whether `record` is sealed.
+fn check_chain_link(
+    idx: usize,
+    record: &Custody,
+    expected: &mut Option<String>,
+    violations: &mut Vec<String>,
+) -> bool {
+    let Some(stored_hash) = &record.hash else {
+        *expected = None;
+        return false;
     };
-    record.hash = Some(compute_hash(
-        record.prev_hash.as_deref().unwrap_or(""),
-        &record,
-    ));
-    logger.log(&record)
+    // Verify prev_hash links to the previous record's hash.
+    match (&record.prev_hash, &*expected) {
+        (None, None) => { /* first chained record, OK */ }
+        (Some(prev), Some(expected)) if prev == expected => { /* link OK */ }
+        (None, Some(expected)) => {
+            violations.push(format!(
+                "line {idx}: chain break — prev_hash is missing, expected {:.16}...",
+                expected
+            ));
+        }
+        (Some(prev), None) => {
+            violations.push(format!(
+                "line {idx}: chain break — prev_hash is {:.16}... but no prior hash exists",
+                prev
+            ));
+        }
+        (Some(prev), Some(expected)) => {
+            violations.push(format!(
+                "line {idx}: chain break — prev_hash {:.16}... != expected {:.16}...",
+                prev, expected
+            ));
+        }
+    }
+    // Recompute the hash and compare.
+    let recomputed = record.compute_hash();
+    if *stored_hash != recomputed {
+        violations.push(format!(
+            "line {idx}: hash mismatch — stored {:.16}... != recomputed {:.16}...",
+            stored_hash, recomputed
+        ));
+    }
+    *expected = Some(stored_hash.clone());
+    true
+}
+
+/// What is wrong with the hash chain of the custody records `records`, in
+/// order: empty when it verifies. `start` is the hash the first sealed record
+/// must link to, `None` for the start of a log. `cmd_custody_verify` checks
+/// the same links.
+pub(crate) fn chain_violations(records: &[Custody], start: Option<String>) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut expected = start;
+    for (idx, record) in records.iter().enumerate() {
+        check_chain_link(idx, record, &mut expected, &mut violations);
+    }
+    violations
 }
 
 // ─── CLI commands ──────────────────────────────────────────────────
@@ -293,49 +342,10 @@ pub fn cmd_custody_verify(workdir: &Path) -> Result<()> {
                 }
 
                 // ── Hash chain verification ──────────────────────────
-                // Legacy records without hash fields are allowed but we
-                // skip chain verification for those.
-                if let Some(ref stored_hash) = record.hash {
+                // Legacy records without hash fields are allowed; they
+                // restart the chain.
+                if check_chain_link(idx, &record, &mut prev_hash_expected, &mut violations) {
                     chain_checked = true;
-
-                    // Verify prev_hash links to the previous record's hash.
-                    match (&record.prev_hash, &prev_hash_expected) {
-                        (None, None) => { /* first chained record, OK */ }
-                        (Some(prev), Some(expected)) if prev == expected => { /* link OK */ }
-                        (None, Some(expected)) => {
-                            violations.push(format!(
-                                "line {idx}: chain break — prev_hash is missing, expected {:.16}...",
-                                expected
-                            ));
-                        }
-                        (Some(prev), None) => {
-                            violations.push(format!(
-                                "line {idx}: chain break — prev_hash is {:.16}... but no prior hash exists",
-                                prev
-                            ));
-                        }
-                        (Some(prev), Some(expected)) => {
-                            violations.push(format!(
-                                "line {idx}: chain break — prev_hash {:.16}... != expected {:.16}...",
-                                prev, expected
-                            ));
-                        }
-                    }
-
-                    // Recompute the hash and compare.
-                    let recomputed =
-                        compute_hash(record.prev_hash.as_deref().unwrap_or(""), &record);
-                    if *stored_hash != recomputed {
-                        violations.push(format!(
-                            "line {idx}: hash mismatch — stored {:.16}... != recomputed {:.16}...",
-                            stored_hash, recomputed
-                        ));
-                    }
-
-                    prev_hash_expected = Some(stored_hash.clone());
-                } else {
-                    // Legacy record without hash — reset chain expectation.
-                    prev_hash_expected = None;
                 }
             }
             Err(e) => {
@@ -539,6 +549,59 @@ mod tests {
             records[0].hash.as_deref(),
             "prev_hash chain link mismatch"
         );
+    }
+
+    /// Records each child of `custody_appends_are_serialized_across_processes`
+    /// appends.
+    const CHILD_APPENDS: i64 = 25;
+
+    /// The child half of `custody_appends_are_serialized_across_processes`:
+    /// with `CUSTODY_TEST_LOG` set, it appends [`CHILD_APPENDS`] records to
+    /// that log. Run on its own, it does nothing.
+    #[test]
+    #[ignore = "a child process of custody_appends_are_serialized_across_processes"]
+    fn custody_append_child() {
+        let Ok(log) = std::env::var("CUSTODY_TEST_LOG") else {
+            return;
+        };
+        let writer = std::env::var("CUSTODY_TEST_WRITER").unwrap_or_default();
+        let logger = CustodyLogger::new(log);
+        for index in 0..CHILD_APPENDS {
+            let record = Custody::new(format!("{writer}-{index}"), "child", index, vec![]);
+            log_chained(&logger, record).expect("append a record");
+        }
+    }
+
+    #[test]
+    fn custody_appends_are_serialized_across_processes() {
+        let tmp = TempDir::new().expect("tempdir");
+        let log = tmp.path().join("custody.jsonl");
+        let exe = std::env::current_exe().expect("the test binary");
+        let children: Vec<std::process::Child> = ["a", "b", "c"]
+            .into_iter()
+            .map(|writer| {
+                std::process::Command::new(&exe)
+                    .args([
+                        "--exact",
+                        "custody::tests::custody_append_child",
+                        "--ignored",
+                    ])
+                    .env("CUSTODY_TEST_LOG", &log)
+                    .env("CUSTODY_TEST_WRITER", writer)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("start a child")
+            })
+            .collect();
+        for mut child in children {
+            assert!(child.wait().expect("a child").success());
+        }
+
+        // Three processes appended at once, and the chain did not fork.
+        let records = CustodyLogger::new(&log).read_all().expect("custody log");
+        assert_eq!(records.len(), 3 * CHILD_APPENDS as usize);
+        assert_eq!(chain_violations(&records, None), Vec::<String>::new());
     }
 
     #[test]

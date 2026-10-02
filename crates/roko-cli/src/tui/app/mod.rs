@@ -57,7 +57,7 @@ use super::state::{PendingApproval, PlanEntry, TaskRowStatus, TuiState};
 use super::tabs::Tab;
 use super::verdicts::VerdictsAggregator;
 use super::views::{self, ViewState};
-use super::ws_client::{AgentStreamClient, StreamChunk};
+use super::ws_client::AgentStreamClient;
 
 pub use event_loop::run;
 
@@ -502,6 +502,10 @@ static TERMINAL_SIGNAL_CLEANUP_INSTALLED: AtomicBool = AtomicBool::new(false);
 /// SIGINT/SIGTERM, so the terminal handler only claims SIGHUP.
 static HOST_HANDLES_TERMINATION_SIGNALS: AtomicBool = AtomicBool::new(false);
 
+/// Set by [`App::with_host_hangup_signal`]: the host handles SIGHUP, so the
+/// terminal handler leaves it alone.
+static HOST_HANDLES_HANGUP_SIGNAL: AtomicBool = AtomicBool::new(false);
+
 /// Best-effort terminal reset for a host that must exit while a TUI thread
 /// may still own the terminal (e.g. a forced shutdown after a second signal).
 pub fn restore_terminal_for_forced_exit() {
@@ -566,7 +570,9 @@ fn install_terminal_signal_cleanup() {
             let _ = libc::signal(libc::SIGINT, handler);
             let _ = libc::signal(libc::SIGTERM, handler);
         }
-        let _ = libc::signal(libc::SIGHUP, handler);
+        if !HOST_HANDLES_HANGUP_SIGNAL.load(Ordering::SeqCst) {
+            let _ = libc::signal(libc::SIGHUP, handler);
+        }
     }
 }
 
@@ -1253,10 +1259,19 @@ impl App {
     /// Leave SIGINT/SIGTERM to the embedding host instead of the
     /// reset-and-reraise terminal handler. The host (e.g. `roko plan run`)
     /// cancels its work, stops this TUI through the shutdown receiver, and
-    /// exits with the signal's status; SIGHUP keeps the terminal handler.
+    /// exits with the signal's status; SIGHUP keeps the terminal handler
+    /// unless [`Self::with_host_hangup_signal`] hands it over too.
     #[must_use]
     pub fn with_host_termination_signals(self) -> Self {
         HOST_HANDLES_TERMINATION_SIGNALS.store(true, Ordering::SeqCst);
+        self
+    }
+
+    /// Leave SIGHUP to the embedding host as well: `roko plan run` stops its
+    /// run on a hangup as on SIGTERM, finalizing its checkpoint (bug-4641e3).
+    #[must_use]
+    pub fn with_host_hangup_signal(self) -> Self {
+        HOST_HANDLES_HANGUP_SIGNAL.store(true, Ordering::SeqCst);
         self
     }
 
@@ -1303,6 +1318,20 @@ impl App {
         height: u16,
         tabs: &[Tab],
     ) -> Vec<(Tab, String)> {
+        self.render_tabs_to_buffers(width, height, tabs)
+            .into_iter()
+            .map(|(tab, buffer)| (tab, super::screenshot_diff::buffer_to_text(&buffer)))
+            .collect()
+    }
+
+    /// Render the requested tabs like [`Self::render_tabs_to_text`], keeping
+    /// each tab's whole buffer, colours and modifiers included.
+    pub fn render_tabs_to_buffers(
+        &mut self,
+        width: u16,
+        height: u16,
+        tabs: &[Tab],
+    ) -> Vec<(Tab, ratatui::buffer::Buffer)> {
         use ratatui::backend::TestBackend;
 
         if width == 0 || height == 0 {
@@ -1317,23 +1346,7 @@ impl App {
                 let backend = TestBackend::new(width, height);
                 let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
                 match terminal.draw(|frame| self.draw(frame)) {
-                    Ok(_) => {
-                        let buffer = terminal.backend().buffer();
-                        let w = buffer.area.width as usize;
-                        let text = buffer
-                            .content
-                            .chunks(w)
-                            .map(|row| {
-                                row.iter()
-                                    .map(|cell| cell.symbol())
-                                    .collect::<String>()
-                                    .trim_end()
-                                    .to_string()
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        (tab, text)
-                    }
+                    Ok(_) => (tab, terminal.backend().buffer().clone()),
                     Err(e) => {
                         tracing::error!(?tab, error = %e, "tab render failed");
                         // Re-render with a fallback error message so the
@@ -1350,21 +1363,7 @@ impl App {
                                 frame.area(),
                             );
                         });
-                        let buffer = term2.backend().buffer();
-                        let w = buffer.area.width as usize;
-                        let text = buffer
-                            .content
-                            .chunks(w)
-                            .map(|row| {
-                                row.iter()
-                                    .map(|cell| cell.symbol())
-                                    .collect::<String>()
-                                    .trim_end()
-                                    .to_string()
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        (tab, text)
+                        (tab, term2.backend().buffer().clone())
                     }
                 }
             })

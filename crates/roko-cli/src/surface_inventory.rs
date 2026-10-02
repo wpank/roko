@@ -304,7 +304,8 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
         "inject",
         SurfaceStatus::Wired,
         "roko-cli inject",
-        "Injects directive/abort/context signal into a running session",
+        "Delivers to a running plan through its plan run's owner-only socket; exits 0 only on \
+         the run's acknowledgement",
     ));
     v.push(SurfaceEntry::cli(
         "plan list",

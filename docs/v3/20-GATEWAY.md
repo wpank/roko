@@ -547,7 +547,7 @@ Per request, using per-model pricing from the `CostTable`:
 ```
 fresh_input   = (input_tokens - cache_read_tokens) * input_per_m / 1e6
 cached_input  = cache_read_tokens * cache_read_per_m / 1e6
-cache_write   = cache_creation_tokens * input_per_m * 1.25 / 1e6    # 25% surcharge
+cache_write   = cache_creation_tokens * cache_write_per_m / 1e6
 regular_out   = (output_tokens - reasoning_tokens) * output_per_m / 1e6
 reasoning     = reasoning_tokens * output_per_m / 1e6
 thinking      = thinking_tokens * output_per_m / 1e6
@@ -566,8 +566,8 @@ naive_cost = total_input_tokens * input_per_m / 1e6  +  total_output_tokens * ou
 ### 11.3 Savings and Attribution
 
 `savings = naive_cost - actual_cost`. Tracked per request and aggregated along three
-attribution axes: per-agent, per-session, and per-model. Unknown models use a Sonnet
-fallback rate ($3/M input, $15/M output).
+attribution axes: per-agent, per-session, and per-model. A model the `CostTable` does
+not price has an unknown cost, recorded as zero and logged once, not a Sonnet rate.
 
 Budget deduction uses microdollar precision (`ceil(actual_cost * 1_000_000)`), applied
 atomically via `fetch_update(Ordering::AcqRel, ...)`.

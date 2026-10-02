@@ -881,7 +881,8 @@ pub struct GateFailureRecord {
     pub failure_kind: GateFailureKind,
     /// Primary failure class for remediation decisions.
     pub primary_class: FailureClass,
-    /// Concise human-readable failure summary.
+    /// Human-readable failure summary: the classification's, else the start
+    /// of the gate's output (its `raw_excerpt`).
     pub summary: String,
     /// Structured action the orchestrator should take next.
     pub recommended_action: GateFailureAction,
@@ -914,12 +915,10 @@ impl GateFailureRecord {
             rung,
             failure_kind: classification.failure_kind.clone(),
             primary_class: classification.primary.clone(),
+            // The whole excerpt, not a 200-character cut that a long verify
+            // command fills before the failure (bug-6f7f72).
             summary: if classification.summary.is_empty() {
-                classification
-                    .raw_excerpt
-                    .chars()
-                    .take(200)
-                    .collect::<String>()
+                classification.raw_excerpt.clone()
             } else {
                 classification.summary.clone()
             },

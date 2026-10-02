@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::orchestrator::ExecutorConfig;
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, ProviderRouting, RokoConfig};
 use roko_core::config::{
@@ -36,11 +35,10 @@ pub struct Config {
     /// Daimon affect-engine configuration.
     #[serde(default)]
     pub daimon: DaimonConfig,
-    /// Tool registry preferences.
-    #[serde(default)]
-    pub tools: ToolsConfig,
-    /// Prompt assembly settings.
-    #[serde(default)]
+    /// The agent role and chat prompt budget a command resolves at run time
+    /// (`--role`, `--effort`). No roko.toml key sets them: `[prompt] role` and
+    /// `token_budget` were removed, so a file's `[prompt]` is not read here.
+    #[serde(skip)]
     pub prompt: PromptConfig,
     /// Per-repository configuration blocks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -48,9 +46,6 @@ pub struct Config {
     /// Gates to run on the agent output, in declaration order.
     #[serde(default, rename = "gate")]
     pub gates: Vec<GateConfig>,
-    /// Executor runtime settings.
-    #[serde(default)]
-    pub executor: ExecutorConfig,
     /// Plan-level runner settings.
     #[serde(default)]
     pub runner: RunnerConfig,
@@ -90,13 +85,11 @@ impl Default for Config {
             auto_plan: false,
             dreams: DreamsConfig::default(),
             daimon: DaimonConfig::default(),
-            tools: ToolsConfig::default(),
             prompt: PromptConfig::default(),
             repos: Vec::new(),
             // No legacy `[[gate]]` entries, as when a file leaves them out:
             // these gates are only counted, never run.
             gates: Vec::new(),
-            executor: ExecutorConfig::default(),
             runner: RunnerConfig::default(),
             runtime: RuntimeControlConfig::default(),
             budget: BudgetConfig::default(),
@@ -142,9 +135,9 @@ impl Config {
     /// This is the primary conversion path used by `load_resolved_config()`.
     /// The core loader is the single source of truth for providers, models,
     /// agent defaults, and env overrides. CLI-only compatibility fields
-    /// (`gates`, `executor`, `runtime`, `prompt`) retain their existing
-    /// defaults because those sections are not yet part of the core schema;
-    /// once they are migrated, this function will map them directly.
+    /// (`gates`, `runtime`, `prompt`) retain their existing defaults because
+    /// those sections are not yet part of the core schema; once they are
+    /// migrated, this function will map them directly.
     pub fn from_roko_config(core: &RokoConfig) -> Result<Self> {
         let core_agent = &core.agent;
         let agent = ExecAgentConfig {
@@ -160,6 +153,7 @@ impl Config {
                 .timeout_ms
                 .unwrap_or(ExecAgentConfig::default_timeout()),
             env: core_agent.env.clone().unwrap_or_default(),
+            env_passthrough: core_agent.env_passthrough.clone(),
             fallback_model: core_agent.fallback_model.clone(),
             clean_output: ExecAgentConfig::default_clean(),
             mcp_config: None,
@@ -177,11 +171,9 @@ impl Config {
             auto_plan: core.prd.auto_plan,
             dreams,
             daimon,
-            tools: ToolsConfig::default(),
             prompt: PromptConfig::default(),
             repos: core.repos.clone(),
             gates: Vec::new(),
-            executor: ExecutorConfig::default(),
             runner: RunnerConfig {
                 plan_timeout_secs: core.runner.plan_timeout_secs,
                 dangerously_skip_permissions: core.runner.dangerously_skip_permissions,
@@ -233,6 +225,10 @@ pub struct ExecAgentConfig {
     /// API keys, `OLLAMA_HOST`, etc.
     #[serde(default)]
     pub env: Vec<(String, String)>,
+    /// `[agent] env_passthrough`: variables a provider CLI keeps although
+    /// roko loaded them from a `.env` file (an exact name or `PREFIX*`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_passthrough: Vec<String>,
     /// Whether to post-process the agent output — strip ANSI escapes and
     /// reasoning-model "thinking" traces. Default: `true` (so reasoning
     /// models like glm-4 / gemma-reasoning work out of the box).
@@ -253,36 +249,6 @@ pub struct ExecAgentConfig {
 
 /// Backward-compatibility alias. Prefer `ExecAgentConfig`.
 pub type AgentConfig = ExecAgentConfig;
-
-/// Tool registry preferences.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ToolsConfig {
-    /// When true, MCP tools win over built-ins on name collisions.
-    #[serde(default)]
-    pub prefer_mcp: bool,
-    /// Tool names that are blocked everywhere, regardless of role.
-    #[serde(default)]
-    pub global_denied: Vec<String>,
-    /// MCP server startup timeout in seconds.
-    #[serde(default = "ToolsConfig::default_mcp_timeout_secs")]
-    pub mcp_timeout_secs: u64,
-}
-
-impl Default for ToolsConfig {
-    fn default() -> Self {
-        Self {
-            prefer_mcp: false,
-            global_denied: Vec::new(),
-            mcp_timeout_secs: Self::default_mcp_timeout_secs(),
-        }
-    }
-}
-
-impl ToolsConfig {
-    const fn default_mcp_timeout_secs() -> u64 {
-        30
-    }
-}
 
 /// Automatic dream-cycle settings for daemon mode.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -464,6 +430,7 @@ impl Default for ExecAgentConfig {
             fallback_model: None,
             timeout_ms: Self::default_timeout(),
             env: Vec::new(),
+            env_passthrough: Vec::new(),
             clean_output: Self::default_clean(),
             mcp_config: None,
             tier_models: std::collections::HashMap::new(),
@@ -665,93 +632,16 @@ impl Default for RunnerConfig {
     }
 }
 
-/// Prompt assembly settings.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// The prompt settings a command resolves at run time. No roko.toml key sets
+/// them: `[prompt] role` and `token_budget` were removed (bug-d5051e).
+#[derive(Clone, Debug)]
 pub struct PromptConfig {
-    /// Token budget for the composer (approximate — 4 bytes per token).
-    #[serde(default = "PromptConfig::default_budget")]
+    /// Token budget for the chat system prompt (approximate — 4 bytes per
+    /// token). `--effort` sets it for non-Claude backends.
     pub token_budget: usize,
-    /// System/role section injected as a Critical prompt section.
-    #[serde(default = "PromptConfig::default_role")]
+    /// Agent role label (default `implementer`) that model selection uses.
+    /// `--role` sets it.
     pub role: String,
-    /// Files whose contents should be injected into the prompt as sections.
-    #[serde(default, rename = "files")]
-    pub files: Vec<PromptFile>,
-    /// Per-role prompt budgets (chars per section).
-    #[serde(default)]
-    pub budgets: std::collections::HashMap<String, RoleBudget>,
-    /// Per-tier context budgets (tokens). Overrides the defaults in ContextProvider.
-    #[serde(default)]
-    pub context_budgets: ContextBudgetConfig,
-}
-
-/// Per-tier context token budget overrides for the ContextProvider.
-///
-/// These control how much context is assembled for each model tier.
-/// If unset, defaults are: surgical=4000, focused=12000, full=24000.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ContextBudgetConfig {
-    /// Token budget for surgical tier (Haiku / Ollama / mechanical tasks).
-    #[serde(default = "ContextBudgetConfig::default_surgical")]
-    pub surgical: usize,
-    /// Token budget for focused tier (Sonnet / focused+integrative tasks).
-    #[serde(default = "ContextBudgetConfig::default_focused")]
-    pub focused: usize,
-    /// Token budget for full tier (Opus / architectural tasks).
-    #[serde(default = "ContextBudgetConfig::default_full")]
-    pub full: usize,
-}
-
-impl ContextBudgetConfig {
-    const fn default_surgical() -> usize {
-        4_000
-    }
-    const fn default_focused() -> usize {
-        12_000
-    }
-    const fn default_full() -> usize {
-        24_000
-    }
-
-    /// Convert to the ContextBudgets type used by roko-compose.
-    #[must_use]
-    pub fn to_context_budgets(&self) -> roko_compose::ContextBudgets {
-        roko_compose::ContextBudgets {
-            surgical: self.surgical,
-            focused: self.focused,
-            full: self.full,
-        }
-    }
-}
-
-impl Default for ContextBudgetConfig {
-    fn default() -> Self {
-        Self {
-            surgical: Self::default_surgical(),
-            focused: Self::default_focused(),
-            full: Self::default_full(),
-        }
-    }
-}
-
-/// Per-role prompt budget (character limits per section).
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct RoleBudget {
-    /// Plan context budget (chars).
-    #[serde(default)]
-    pub plan: usize,
-    /// PRD context budget (chars).
-    #[serde(default)]
-    pub prd: usize,
-    /// Brief context budget (chars).
-    #[serde(default)]
-    pub brief: usize,
-    /// File context budget (chars).
-    #[serde(default)]
-    pub file_context: usize,
-    /// Skills/playbook budget (chars).
-    #[serde(default)]
-    pub skills: usize,
 }
 
 impl PromptConfig {
@@ -769,27 +659,8 @@ impl Default for PromptConfig {
         Self {
             token_budget: Self::default_budget(),
             role: Self::default_role(),
-            files: Vec::new(),
-            budgets: std::collections::HashMap::new(),
-            context_budgets: ContextBudgetConfig::default(),
         }
     }
-}
-
-/// A file whose contents get injected into the prompt as a `PromptSection`.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PromptFile {
-    /// Path to the file (relative to the workdir).
-    pub path: std::path::PathBuf,
-    /// Display name for the section header. Defaults to the file name.
-    #[serde(default)]
-    pub name: Option<String>,
-    /// Priority: `"low"`, `"normal"`, `"high"`, or `"critical"`. Default: `"normal"`.
-    #[serde(default)]
-    pub priority: Option<String>,
-    /// Per-file hard cap in tokens — truncates oversized files before inclusion.
-    #[serde(default)]
-    pub hard_cap: Option<usize>,
 }
 
 /// Partial `DreamsConfig` — every field optional.
@@ -1175,10 +1046,6 @@ pub struct LearningLayer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replan_on_gate_failure: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replan_max_per_plan: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replan_gate_attempts: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_playbook_refresh: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_lookahead_router: Option<bool>,
@@ -1194,8 +1061,6 @@ impl LearningLayer {
     pub fn from_core_learning(core: &roko_core::config::LearningConfig) -> Self {
         Self {
             replan_on_gate_failure: Some(core.replan_on_gate_failure),
-            replan_max_per_plan: Some(core.replan_max_per_plan),
-            replan_gate_attempts: Some(core.replan_gate_attempts),
             auto_playbook_refresh: Some(core.auto_playbook_refresh),
             use_lookahead_router: Some(core.use_lookahead_router),
             lookahead_threshold: Some(core.lookahead_threshold),
@@ -1208,8 +1073,6 @@ impl LearningLayer {
             replan_on_gate_failure: overlay
                 .replan_on_gate_failure
                 .or(self.replan_on_gate_failure),
-            replan_max_per_plan: overlay.replan_max_per_plan.or(self.replan_max_per_plan),
-            replan_gate_attempts: overlay.replan_gate_attempts.or(self.replan_gate_attempts),
             auto_playbook_refresh: overlay.auto_playbook_refresh.or(self.auto_playbook_refresh),
             use_lookahead_router: overlay.use_lookahead_router.or(self.use_lookahead_router),
             lookahead_threshold: overlay.lookahead_threshold.or(self.lookahead_threshold),
@@ -1415,6 +1278,10 @@ pub struct ModelProfileLayer {
     pub use_max_completion_tokens: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_iterations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 impl ModelProfileLayer {
@@ -1467,6 +1334,8 @@ impl ModelProfileLayer {
                 .use_max_completion_tokens
                 .or(self.use_max_completion_tokens),
             max_tool_iterations: overlay.max_tool_iterations.or(self.max_tool_iterations),
+            temperature: overlay.temperature.or(self.temperature),
+            seed: overlay.seed.or(self.seed),
         }
     }
 
@@ -1507,6 +1376,8 @@ impl ModelProfileLayer {
             use_max_completion_tokens: self.use_max_completion_tokens.unwrap_or(false),
             max_tool_iterations: self.max_tool_iterations,
             tier: self.tier,
+            temperature: self.temperature,
+            seed: self.seed,
         })
     }
 }
@@ -1515,13 +1386,17 @@ impl ModelProfileLayer {
 ///
 /// An unknown key inside a `[providers.*]` or `[models.*]` entry is dropped
 /// with a warning, as the config loader drops it, rather than failing the
-/// parse (`strip_unknown_entry_fields`).
+/// parse (`strip_unknown_entry_fields`). So is a key roko removed, such as
+/// `[executor]` (`drop_removed_config_keys`).
 fn parse_toml_with_env<T>(text: &str, context: &'static str) -> Result<T>
 where
     T: DeserializeOwned,
 {
     let mut value: toml::Value = toml::from_str(text).context(context)?;
-    for diagnostic in roko_core::config::loader::strip_unknown_entry_fields(&mut value) {
+    let mut diagnostics = roko_core::config::loader::drop_removed_config_keys(&mut value);
+    let stripped = roko_core::config::loader::strip_unknown_entry_fields(&mut value);
+    diagnostics.extend(stripped);
+    for diagnostic in diagnostics {
         tracing::warn!(
             config_key = %diagnostic.key,
             "config warning: {}",
@@ -1571,8 +1446,12 @@ pub(crate) fn set_toml_dotted_key(doc: &mut toml::Value, key: &str, value: &str)
 }
 
 /// Determine the expected TOML type for a known dotted key and parse `value`
-/// accordingly. Returns an error for unknown keys.
+/// accordingly. Returns an error for unknown keys, and for a key roko removed,
+/// with the reason it went.
 fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
+    if let Some(reason) = roko_core::config::loader::removed_config_key_reason(key) {
+        bail!("cannot set {key}: {reason}");
+    }
     let segments: Vec<&str> = key.split('.').collect();
     match segments.as_slice() {
         // Booleans
@@ -1580,14 +1459,12 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["agent", "bare_mode"]
         | ["agent", "clean_output"]
         | ["dreams", "auto_dream"]
-        | ["tools", "prefer_mcp"]
-        | ["executor", "auto_replan"]
-        | ["executor", "use_worktrees"]
         | ["serve", "auto_start"]
         | ["serve", "auth", "enabled"]
         | ["learning", "replan_on_gate_failure"]
         | ["learning", "auto_playbook_refresh"]
-        | ["learning", "use_lookahead_router"] => {
+        | ["learning", "use_lookahead_router"]
+        | ["runner", "worktree_per_task"] => {
             let b = value
                 .parse::<bool>()
                 .with_context(|| format!("parse {key} as bool"))?;
@@ -1598,16 +1475,7 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["dreams", "idle_threshold_mins"]
         | ["dreams", "min_episodes_for_dream"]
         | ["dreams", "episode_count_trigger"]
-        | ["tools", "mcp_timeout_secs"]
-        | ["prompt", "token_budget"]
-        | ["executor", "max_concurrent_plans"]
-        | ["executor", "max_concurrent_tasks"]
-        | ["executor", "max_auto_fix_iterations"]
-        | ["executor", "max_merge_attempts"]
-        | ["executor", "task_timeout_secs"]
         | ["runner", "plan_timeout_secs"]
-        | ["learning", "replan_max_per_plan"]
-        | ["learning", "replan_gate_attempts"]
         | ["learning", "gate_threshold_flush_interval"] => {
             let n = value
                 .parse::<i64>()
@@ -1617,7 +1485,6 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         // Floats
         ["dreams", "quality_gain"]
         | ["dreams", "quality_penalty"]
-        | ["executor", "budget_usd"]
         | ["learning", "lookahead_threshold"] => {
             let f = value
                 .parse::<f64>()
@@ -1633,13 +1500,11 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["agent", "mcp_config"]
         | ["authoring", "planner_model"]
         | ["dreams", "scheduled_cron"]
-        | ["prompt", "role"]
         | ["serve", "auth", "api_key"]
         | ["serve", "deploy", "provider"]
         | ["daimon", "strategy_space", "domain"] => Ok(toml::Value::String(value.to_string())),
         // String arrays (accept JSON array or whitespace-separated)
         ["agent", "args"]
-        | ["tools", "global_denied"]
         | ["daimon", "strategy_space", "dimensions"]
         | ["serve", "deploy", "environment"] => {
             let items = parse_string_list(value, &format!("parse {key} as string list"))?;
@@ -1647,7 +1512,7 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
             Ok(toml::Value::Array(arr))
         }
         // JSON-parsed complex values
-        ["agent", "env"] | ["prompt", "files"] | ["serve", "deploy", "webhooks"] => {
+        ["agent", "env"] | ["serve", "deploy", "webhooks"] => {
             let json_val: serde_json::Value =
                 serde_json::from_str(value).with_context(|| format!("parse {key} as JSON"))?;
             json_to_toml(&json_val).with_context(|| format!("convert {key} JSON to TOML"))
@@ -1987,78 +1852,6 @@ impl AgentLayer {
     }
 }
 
-/// Partial `ToolsConfig` — every field optional.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ToolsLayer {
-    /// When true, MCP tools win over built-ins on name collisions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prefer_mcp: Option<bool>,
-    /// Tool names blocked everywhere, regardless of role.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub global_denied: Option<Vec<String>>,
-    /// MCP server startup timeout in seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mcp_timeout_secs: Option<u64>,
-}
-
-impl ToolsLayer {
-    /// Merge another layer on top — `overlay` wins.
-    #[must_use]
-    pub fn merge(self, overlay: Self) -> Self {
-        Self {
-            prefer_mcp: overlay.prefer_mcp.or(self.prefer_mcp),
-            global_denied: overlay.global_denied.or(self.global_denied),
-            mcp_timeout_secs: overlay.mcp_timeout_secs.or(self.mcp_timeout_secs),
-        }
-    }
-}
-
-/// Partial `PromptConfig` — every field optional.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct PromptLayer {
-    /// Token budget for prompt composition.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_budget: Option<usize>,
-    /// System role / persona text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    /// Files to inject as prompt sections.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub files: Option<Vec<PromptFile>>,
-}
-
-/// Partial `ExecutorConfig` — every field optional.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ExecutorLayer {
-    /// Maximum number of plans executing concurrently.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_concurrent_plans: Option<usize>,
-    /// Maximum number of tasks executing concurrently within a plan.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_concurrent_tasks: Option<usize>,
-    /// Maximum auto-fix iterations before declaring failure.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_auto_fix_iterations: Option<u32>,
-    /// Maximum merge retry attempts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_merge_attempts: Option<u32>,
-    /// Per-task timeout in seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_timeout_secs: Option<u64>,
-    /// Optional cost cap in USD.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget_usd: Option<f64>,
-    /// Whether to auto-replan after repeated gate failures.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_replan: Option<bool>,
-    /// Whether to use isolated git worktrees for plan and task execution.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub use_worktrees: Option<bool>,
-    /// Multiplier applied to expected-minutes before speculative task splits kick in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub speculative_threshold_multiplier: Option<f64>,
-}
-
 /// Partial `RuntimeControlConfig` — every field optional.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RuntimeControlLayer {
@@ -2287,40 +2080,6 @@ impl ServeDeployWebhookLayer {
     }
 }
 
-impl ExecutorLayer {
-    /// Merge another layer on top — `overlay` wins.
-    #[must_use]
-    pub fn merge(self, overlay: Self) -> Self {
-        Self {
-            max_concurrent_plans: overlay.max_concurrent_plans.or(self.max_concurrent_plans),
-            max_concurrent_tasks: overlay.max_concurrent_tasks.or(self.max_concurrent_tasks),
-            max_auto_fix_iterations: overlay
-                .max_auto_fix_iterations
-                .or(self.max_auto_fix_iterations),
-            max_merge_attempts: overlay.max_merge_attempts.or(self.max_merge_attempts),
-            task_timeout_secs: overlay.task_timeout_secs.or(self.task_timeout_secs),
-            budget_usd: overlay.budget_usd.or(self.budget_usd),
-            auto_replan: overlay.auto_replan.or(self.auto_replan),
-            use_worktrees: overlay.use_worktrees.or(self.use_worktrees),
-            speculative_threshold_multiplier: overlay
-                .speculative_threshold_multiplier
-                .or(self.speculative_threshold_multiplier),
-        }
-    }
-}
-
-impl PromptLayer {
-    /// Merge another layer on top — `overlay` wins.
-    #[must_use]
-    pub fn merge(self, overlay: Self) -> Self {
-        Self {
-            token_budget: overlay.token_budget.or(self.token_budget),
-            role: overlay.role.or(self.role),
-            files: overlay.files.or(self.files),
-        }
-    }
-}
-
 /// Absolute paths to the global and project config files (whether they
 /// exist or not).
 #[derive(Clone, Debug)]
@@ -2412,16 +2171,8 @@ pub struct ConfigSources {
     pub agent_fallback_model: Source,
     /// Where `agent.timeout_ms` came from.
     pub agent_timeout_ms: Source,
-    /// Where `tools.prefer_mcp` came from.
-    pub tools_prefer_mcp: Source,
-    /// Where `tools.global_denied` came from.
-    pub tools_global_denied: Source,
-    /// Where `tools.mcp_timeout_secs` came from.
-    pub tools_mcp_timeout_secs: Source,
-    /// Where `prompt.token_budget` came from.
+    /// Where `budget.prompt_token_budget` came from.
     pub prompt_token_budget: Source,
-    /// Where `prompt.role` came from.
-    pub prompt_role: Source,
     /// Where `providers` came from.
     pub providers: Source,
     /// Where `models` came from.
@@ -2521,11 +2272,7 @@ impl ConfigSources {
             agent_bare_mode: lookup("agent.bare_mode"),
             agent_fallback_model: lookup("agent.fallback_model"),
             agent_timeout_ms: lookup("agent.timeout_ms"),
-            tools_prefer_mcp: lookup("tools.prefer_mcp"),
-            tools_global_denied: lookup("tools.global_denied"),
-            tools_mcp_timeout_secs: lookup("tools.mcp_timeout_secs"),
-            prompt_token_budget: lookup("prompt.token_budget"),
-            prompt_role: lookup("prompt.role"),
+            prompt_token_budget: lookup("budget.prompt_token_budget"),
             providers: lookup("providers"),
             models: lookup("models"),
             dreams_auto_dream: lookup("dreams.auto_dream"),
@@ -2704,10 +2451,8 @@ mod tests {
             cfg.agent.timeout_ms,
             roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS
         );
-        assert!(!cfg.tools.prefer_mcp);
-        assert!(cfg.tools.global_denied.is_empty());
-        assert_eq!(cfg.tools.mcp_timeout_secs, 30);
         assert_eq!(cfg.prompt.token_budget, 10_000);
+        assert_eq!(cfg.prompt.role, "implementer");
         assert_eq!(cfg.runner.plan_timeout_secs, DEFAULT_PLAN_TIMEOUT_SECS);
         assert!(cfg.repos.is_empty());
     }
@@ -2731,15 +2476,6 @@ scheduled_cron = "0 0 */4 * * * *"
 episode_count_trigger = 12
 quality_gain = 0.8
 quality_penalty = 1.4
-
-[tools]
-prefer_mcp = true
-global_denied = ["write_file", "edit_file"]
-mcp_timeout_secs = 45
-
-[prompt]
-token_budget = 20000
-role = "You are a senior Rust engineer."
 
 [[repos]]
 name = "roko"
@@ -2778,13 +2514,6 @@ build_system = "cargo"
         assert_eq!(cfg.dreams.episode_count_trigger, 12);
         assert_eq!(cfg.dreams.quality_gain, 0.8);
         assert_eq!(cfg.dreams.quality_penalty, 1.4);
-        assert!(cfg.tools.prefer_mcp);
-        assert_eq!(
-            cfg.tools.global_denied,
-            vec!["write_file".to_string(), "edit_file".to_string()]
-        );
-        assert_eq!(cfg.tools.mcp_timeout_secs, 45);
-        assert_eq!(cfg.prompt.token_budget, 20_000);
         assert_eq!(cfg.repos.len(), 1);
         assert_eq!(cfg.repos[0].name, "roko");
         assert_eq!(
@@ -2820,8 +2549,12 @@ scheduled_cron = "not a cron expression"
         assert!(format!("{err:#}").contains("invalid dream schedule cron expression"));
     }
 
+    /// gap-666ab3, bug-d5051e: `[executor]` and the v1 `[tools]` and
+    /// `[prompt]` keys were removed. An old file that has them still parses:
+    /// they are dropped with a warning, and the run-time prompt settings keep
+    /// their defaults.
     #[test]
-    fn parses_executor_section_from_toml() {
+    fn old_executor_section_still_parses() {
         let toml = r#"
 [agent]
 command = "cat"
@@ -2831,28 +2564,19 @@ prefer_mcp = false
 global_denied = ["bash"]
 mcp_timeout_secs = 15
 
+[prompt]
+token_budget = 20000
+role = "You are a senior Rust engineer."
+
 [executor]
 max_concurrent_plans = 8
 max_concurrent_tasks = 12
-max_auto_fix_iterations = 9
-max_merge_attempts = 4
-task_timeout_secs = 42
-budget_usd = 1.5
-auto_replan = false
 use_worktrees = true
 "#;
         let cfg = Config::parse_toml(toml).unwrap();
-        assert_eq!(cfg.executor.max_concurrent_plans, 8);
-        assert_eq!(cfg.executor.max_concurrent_tasks, 12);
-        assert_eq!(cfg.executor.max_auto_fix_iterations, 9);
-        assert_eq!(cfg.executor.max_merge_attempts, 4);
-        assert_eq!(cfg.executor.task_timeout_secs, 42);
-        assert_eq!(cfg.executor.budget_usd, Some(1.5));
-        assert!(!cfg.executor.auto_replan);
-        assert!(cfg.executor.use_worktrees);
-        assert!(!cfg.tools.prefer_mcp);
-        assert_eq!(cfg.tools.global_denied, vec!["bash".to_string()]);
-        assert_eq!(cfg.tools.mcp_timeout_secs, 15);
+        assert_eq!(cfg.agent.command, "cat");
+        assert_eq!(cfg.prompt.token_budget, 10_000);
+        assert_eq!(cfg.prompt.role, "implementer");
         assert_eq!(cfg.runner.plan_timeout_secs, DEFAULT_PLAN_TIMEOUT_SECS);
     }
 
@@ -2919,14 +2643,12 @@ repo = "roko"
 [agent]
 command = "${PATH}"
 args = ["--token=${PATH}"]
-
-[prompt]
-role = "prefix-${PATH}-suffix"
+model = "prefix-${PATH}-suffix"
 "#;
         let cfg = Config::parse_toml(toml).unwrap();
         assert_eq!(cfg.agent.command, path);
         assert_eq!(cfg.agent.args, vec![format!("--token={path}")]);
-        assert_eq!(cfg.prompt.role, format!("prefix-{path}-suffix"));
+        assert_eq!(cfg.agent.model, Some(format!("prefix-{path}-suffix")));
     }
 
     #[test]
@@ -3070,9 +2792,6 @@ contxt_window = 8192
             parsed.dreams.min_episodes_for_dream,
             cfg.dreams.min_episodes_for_dream
         );
-        assert_eq!(parsed.tools.prefer_mcp, cfg.tools.prefer_mcp);
-        assert_eq!(parsed.tools.global_denied, cfg.tools.global_denied);
-        assert_eq!(parsed.tools.mcp_timeout_secs, cfg.tools.mcp_timeout_secs);
         assert_eq!(parsed.providers, cfg.providers);
         assert_eq!(parsed.models, cfg.models);
         assert_eq!(parsed.repos.len(), cfg.repos.len());
@@ -3197,6 +2916,67 @@ contxt_window = 8192
             doc["authoring"]["planner_model"].as_str().unwrap(),
             "claude-opus-4-6"
         );
+    }
+
+    /// bug-9434c4: the opt-in learning flags are not in the hand-written key
+    /// list, so `config set` types them from the schema tree.
+    #[test]
+    fn config_set_accepts_learning_opt_in_keys() {
+        assert_eq!(
+            parse_value_for_key("learning.t0_reflexes", "true").unwrap(),
+            toml::Value::Boolean(true)
+        );
+        assert_eq!(
+            parse_value_for_key("learning.dreams.trigger_on_acp_episodes", "true").unwrap(),
+            toml::Value::Boolean(true)
+        );
+
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        for (key, value) in [
+            ("learning.t0_reflexes", "true"),
+            ("learning.dreams.trigger_on_plan_complete", "false"),
+            ("learning.dreams.trigger_on_acp_episodes", "true"),
+            ("learning.dreams.acp_episode_threshold", "4"),
+            ("learning.dreams.max_concurrent", "2"),
+        ] {
+            set_toml_dotted_key(&mut doc, key, value).unwrap();
+        }
+        let unknown = roko_core::config::loader::validate_known_config_paths(&doc);
+        assert!(unknown.is_empty(), "unknown keys: {unknown:?}");
+        let config: RokoConfig = doc.try_into().expect("the edited config loads");
+        assert!(config.learning.t0_reflexes);
+        let dreams = &config.learning.dreams;
+        assert!(!dreams.trigger_on_plan_complete);
+        assert!(dreams.trigger_on_acp_episodes);
+        assert_eq!(dreams.acp_episode_threshold, 4);
+        assert_eq!(dreams.max_concurrent, 2);
+    }
+
+    /// bug-d5051e: `config set` refuses a v1 key the schema dropped, says why,
+    /// and writes nothing; the keys that replaced two of them are settable.
+    #[test]
+    fn config_set_rejects_v1_keys() {
+        for key in [
+            "tools.prefer_mcp",
+            "tools.global_denied",
+            "tools.mcp_timeout_secs",
+            "prompt.token_budget",
+            "prompt.role",
+            "prompt.files",
+            "executor.use_worktrees",
+        ] {
+            let mut doc = toml::Value::Table(toml::map::Map::new());
+            let err = set_toml_dotted_key(&mut doc, key, "1").unwrap_err();
+            assert!(err.to_string().contains("was removed"), "{key}: {err}");
+            assert_eq!(doc, toml::Value::Table(toml::map::Map::new()), "{key}");
+        }
+
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        set_toml_dotted_key(&mut doc, "tools.deny", "bash").unwrap();
+        set_toml_dotted_key(&mut doc, "budget.prompt_token_budget", "4000").unwrap();
+        assert_eq!(doc["tools"]["deny"].as_array().map(Vec::len), Some(1));
+        let budget = doc["budget"]["prompt_token_budget"].as_integer();
+        assert_eq!(budget, Some(4000));
     }
 
     #[test]

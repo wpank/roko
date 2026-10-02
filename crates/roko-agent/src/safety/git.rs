@@ -19,13 +19,21 @@
 //!   `git push <remote> :<protected>`, and
 //!   `git push <remote> --delete <protected>` are rejected when
 //!   [`GitPolicy::block_branch_delete_protected`] is `true`.
+//! - **Work discarded or branches moved** — `git stash` (except `stash list`
+//!   and `stash show`), `git clean` (except dry runs), `git checkout`,
+//!   `git switch`, `git restore` and any `git push` are rejected when
+//!   [`GitPolicy::block_discarding_commands`] is `true`, as the Claude CLI
+//!   hook (`claude_cli_guard.py`) rejects them.
 //!
 //! # Shell variations handled
 //!
-//! - Chained commands (`&&`, `;`, `|`, `&`) — each segment is checked
-//!   independently.
+//! - Chained commands (`&&`, `||`, `;`, `|`, `&`, newlines) — each segment is
+//!   checked independently.
 //! - Leading prefixes on a segment (`sudo git …`, `cd /repo && git …`,
 //!   `env VAR=x git …`) are stripped before the git subcommand is extracted.
+//! - git's global options (`git -C <dir> …`, `git -c <key=value> …`,
+//!   `--git-dir=…`, `--no-pager`) are skipped, so the subcommand after them
+//!   is the one checked.
 //!
 //! # Example
 //!
@@ -35,11 +43,13 @@
 //! // Default policy
 //! assert!(check_git_command("git status").is_ok());
 //! assert!(check_git_command("git push --force origin main").is_err());
+//! assert!(check_git_command("git -C repo stash").is_err());
 //! assert!(check_git_command("ls -la").is_ok());
 //!
-//! // Custom: allow force on a release branch
+//! // Custom: lift the blanket denials and allow force pushes to a release branch
 //! let policy = GitPolicy {
 //!     allow_force_push_on: vec!["release/2.0".to_string()],
+//!     block_discarding_commands: false,
 //!     ..GitPolicy::default()
 //! };
 //! assert!(check_git_command_with_policy(
@@ -86,6 +96,18 @@ pub struct GitPolicy {
     ///
     /// …is rejected.
     pub block_branch_delete_protected: bool,
+
+    /// If `true` (the default), the commands that discard uncommitted work or
+    /// move branches are rejected on every branch, with the Claude CLI hook's
+    /// exceptions:
+    /// - `git stash`, except `stash list` and `stash show`;
+    /// - `git clean`, except dry runs (`-n`, `--dry-run`);
+    /// - `git checkout`, `git switch` and `git restore`, in every form;
+    /// - any `git push`: roko delivers by fast-forward, agents never push.
+    ///
+    /// A force push or a protected-branch delete is still reported under its
+    /// own rule above; with this switch off, those rules alone decide a push.
+    pub block_discarding_commands: bool,
 }
 
 impl Default for GitPolicy {
@@ -96,9 +118,23 @@ impl Default for GitPolicy {
             block_force_push: true,
             block_hard_reset_on_protected: true,
             block_branch_delete_protected: true,
+            block_discarding_commands: true,
         }
     }
 }
+
+/// git's global options that take the next word as their value
+/// (`git -C <dir> stash`). The subcommand comes after them.
+const GIT_VALUE_OPTIONS: &[&str] = &[
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--super-prefix",
+    "--config-env",
+    "--attr-source",
+];
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
@@ -142,7 +178,8 @@ pub fn check_git_command(command: &str) -> Result<(), ToolError> {
 
 // ─── Internal helpers ──────────────────────────────────────────────────────
 
-/// Split `command` on shell separators: `&&`, `||`, `;`, `|`, `&`.
+/// Split `command` on shell separators: `&&`, `||`, `;`, `|`, `&` and
+/// newlines.
 ///
 /// Order matters: `&&` must be matched before `&`, and `||` before `|`,
 /// so that the two-char operators don't get split as two single-char ones.
@@ -167,7 +204,7 @@ fn split_shell_segments(command: &str) -> Vec<&str> {
             }
         }
         // Single-character separators.
-        if bytes[i] == b';' || bytes[i] == b'|' || bytes[i] == b'&' {
+        if matches!(bytes[i], b';' | b'|' | b'&' | b'\n') {
             segments.push(&command[start..i]);
             start = i + 1;
         }
@@ -251,18 +288,32 @@ fn check_segment(segment: &str, policy: &GitPolicy) -> Result<(), ToolError> {
         return Ok(());
     }
 
-    // tokens[1] = subcommand
-    let subcommand = match tokens.get(1) {
-        Some(s) => *s,
-        None => return Ok(()), // bare `git` with no subcommand — pass through
+    // The subcommand is the first word after git's global options
+    // (`git -C <dir> -c <key=value> --no-pager stash`).
+    let mut index = 1;
+    while index < tokens.len() && tokens[index].starts_with('-') {
+        index += if GIT_VALUE_OPTIONS.contains(&tokens[index]) {
+            2
+        } else {
+            1
+        };
+    }
+    let Some(subcommand) = tokens.get(index).copied() else {
+        return Ok(()); // bare `git` with no subcommand — pass through
     };
 
-    let rest = &tokens[2..]; // everything after the subcommand
+    let rest = &tokens[index + 1..]; // everything after the subcommand
 
     match subcommand {
-        "push" => check_push(segment, rest, policy),
+        "push" => {
+            check_push(segment, rest, policy)?;
+            check_discarding(segment, subcommand, rest, policy)
+        }
         "reset" => check_reset(segment, rest, policy),
         "branch" => check_branch(segment, rest, policy),
+        "stash" | "clean" | "checkout" | "switch" | "restore" => {
+            check_discarding(segment, subcommand, rest, policy)
+        }
         _ => Ok(()),
     }
 }
@@ -425,7 +476,47 @@ fn check_branch(segment: &str, args: &[&str], policy: &GitPolicy) -> Result<(), 
     Ok(())
 }
 
+/// Check a command that discards uncommitted work or moves branches
+/// (`stash`, `clean`, `checkout`, `switch`, `restore`, `push`), with the
+/// Claude CLI hook's exceptions: `stash list`, `stash show` and `clean` dry
+/// runs.
+fn check_discarding(
+    segment: &str,
+    subcommand: &str,
+    args: &[&str],
+    policy: &GitPolicy,
+) -> Result<(), ToolError> {
+    if !policy.block_discarding_commands {
+        return Ok(());
+    }
+    let reason = match subcommand {
+        "stash" if matches!(args.first().copied(), Some("list" | "show")) => return Ok(()),
+        "stash" => "git stash can lose uncommitted work (stash list and stash show are allowed)",
+        "clean" if is_dry_run(args) => return Ok(()),
+        "clean" => "git clean deletes untracked files (dry runs with -n are allowed)",
+        "checkout" => "git checkout switches branches or discards changes",
+        "switch" => "git switch moves the checkout to another branch",
+        "restore" => "git restore discards uncommitted changes",
+        "push" => "agents must not push: roko delivers the work itself",
+        _ => return Ok(()),
+    };
+    Err(blocked("block_discarding_commands", segment, reason))
+}
+
 // ─── Utilities ─────────────────────────────────────────────────────────────
+
+/// True if `git clean` arguments ask for a dry run: `--dry-run`, or `n` in a
+/// short-option cluster (`-n`, `-nd`) before any `--`.
+fn is_dry_run(args: &[&str]) -> bool {
+    args.iter()
+        .take_while(|arg| **arg != "--")
+        .any(|arg| *arg == "--dry-run" || is_short_cluster_with(arg, 'n'))
+}
+
+/// True if `arg` is a short-option cluster (`-fdx`) that holds `letter`.
+fn is_short_cluster_with(arg: &str, letter: char) -> bool {
+    arg.len() > 1 && arg.starts_with('-') && !arg.starts_with("--") && arg.contains(letter)
+}
 
 /// True if `branch` is in `policy.protected_branches`.
 fn is_protected(branch: &str, policy: &GitPolicy) -> bool {
@@ -484,6 +575,15 @@ mod tests {
         assert!(res.is_ok(), "expected `{cmd}` to be allowed, got {res:?}");
     }
 
+    /// The default policy without the blanket push denial, so the force-push
+    /// and branch-delete rules decide a push.
+    fn pushes_permitted() -> GitPolicy {
+        GitPolicy {
+            block_discarding_commands: false,
+            ..GitPolicy::default()
+        }
+    }
+
     // ── Test 1: force push to main blocked ───────────────────────────────────
 
     #[test]
@@ -502,7 +602,10 @@ mod tests {
 
     #[test]
     fn force_push_to_feature_branch_allowed() {
-        assert_allowed("git push --force origin feature/my-change");
+        assert_allowed_with_policy(
+            "git push --force origin feature/my-change",
+            &pushes_permitted(),
+        );
     }
 
     // ── Test 4: --force-with-lease to main blocked ──────────────────────────
@@ -525,7 +628,7 @@ mod tests {
     fn force_push_to_main_allowed_when_in_allow_list() {
         let policy = GitPolicy {
             allow_force_push_on: vec!["main".to_string()],
-            ..GitPolicy::default()
+            ..pushes_permitted()
         };
         assert_allowed_with_policy("git push --force origin main", &policy);
     }
@@ -544,7 +647,7 @@ mod tests {
     fn force_push_to_main_allowed_when_flag_disabled() {
         let policy = GitPolicy {
             block_force_push: false,
-            ..GitPolicy::default()
+            ..pushes_permitted()
         };
         assert_allowed_with_policy("git push --force origin main", &policy);
     }
@@ -654,6 +757,10 @@ mod tests {
             p.block_branch_delete_protected,
             "block_branch_delete_protected must default to true"
         );
+        assert!(
+            p.block_discarding_commands,
+            "block_discarding_commands must default to true"
+        );
     }
 
     // ── Test 21: custom protected branches list ───────────────────────────────
@@ -662,7 +769,7 @@ mod tests {
     fn custom_protected_branches_list() {
         let policy = GitPolicy {
             protected_branches: vec!["develop".to_string(), "staging".to_string()],
-            ..GitPolicy::default()
+            ..pushes_permitted()
         };
         // develop is now protected
         assert_blocked_with_policy("git push --force origin develop", &policy);
@@ -681,7 +788,7 @@ mod tests {
 
     #[test]
     fn push_to_feature_no_force_allowed() {
-        assert_allowed("git push origin feature/new-ui");
+        assert_allowed_with_policy("git push origin feature/new-ui", &pushes_permitted());
     }
 
     #[test]
@@ -698,7 +805,7 @@ mod tests {
 
     #[test]
     fn push_colon_delete_feature_allowed() {
-        assert_allowed("git push origin :feature/cleanup");
+        assert_allowed_with_policy("git push origin :feature/cleanup", &pushes_permitted());
     }
 
     #[test]
@@ -728,5 +835,71 @@ mod tests {
     fn pipe_chain_each_segment_checked() {
         // git reset --hard after a pipe — still caught.
         assert_blocked("git log | git reset --hard main");
+    }
+
+    // ── Work discarded or branches moved (the Claude CLI hook's rules) ──────
+
+    #[test]
+    fn default_git_policy_denies_stash_clean_checkout_restore() {
+        for cmd in [
+            "git stash",
+            "git stash push -m x",
+            "git clean -fdx",
+            "git checkout -- .",
+            "git restore .",
+            "git switch main",
+            "git -C . stash",
+            "cd sub && git clean -fd",
+            "git -c core.pager=cat --no-pager clean -f",
+            "git --git-dir=.git --work-tree . checkout -b topic",
+            "git status\ngit stash",
+        ] {
+            assert_blocked(cmd);
+        }
+        for cmd in [
+            "git status",
+            "git diff",
+            "git stash list",
+            "git stash show -p",
+            "git clean -n",
+            "git clean --dry-run -d",
+            "git commit -m x",
+            "git log",
+            "git -C sub status",
+        ] {
+            assert_allowed(cmd);
+        }
+
+        let Err(ToolError::CommandNotAllowed(message)) = check_git_command("git -C . stash") else {
+            panic!("`git -C . stash` must be denied");
+        };
+        assert!(
+            message.contains("block_discarding_commands"),
+            "the denial must name its rule; got: {message}"
+        );
+    }
+
+    #[test]
+    fn default_git_policy_denies_any_push() {
+        for cmd in [
+            "git push",
+            "git push origin feature/new-ui",
+            "git -C sub push origin HEAD",
+        ] {
+            assert_blocked(cmd);
+        }
+    }
+
+    #[test]
+    fn discarding_commands_allowed_when_switch_off() {
+        let policy = pushes_permitted();
+        for cmd in [
+            "git stash",
+            "git clean -fdx",
+            "git checkout -- .",
+            "git push origin topic",
+        ] {
+            assert_allowed_with_policy(cmd, &policy);
+        }
     }
 }

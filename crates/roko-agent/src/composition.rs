@@ -341,6 +341,7 @@ impl CompositeAgent {
                     usage,
                     usage_obs: Some(usage.into()),
                     success: false,
+                    ttft_ms: None,
                 };
             }
         }
@@ -351,6 +352,7 @@ impl CompositeAgent {
             usage,
             usage_obs: Some(usage.into()),
             success,
+            ttft_ms: None,
         }
     }
 
@@ -388,6 +390,7 @@ impl CompositeAgent {
             usage,
             usage_obs: Some(usage.into()),
             success,
+            ttft_ms: None,
         }
     }
 
@@ -447,6 +450,7 @@ impl CompositeAgent {
             usage,
             usage_obs: Some(usage.into()),
             success: fanout.success && aggregate.success,
+            ttft_ms: None,
         }
     }
 }

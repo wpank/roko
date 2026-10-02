@@ -1,0 +1,38 @@
+{
+  "schema": "showcase-bundle/1",
+  "bundle_id": "fx-poison-simulated",
+  "kind": "fixture",
+  "simulated": true,
+  "title": "Poisoned fixture: simulated data",
+  "created_at": "2026-09-29T00:04:00Z",
+  "featured": false,
+  "experiment_ids": ["FIXTURE"],
+  "run_ids": [
+    "run-fx-poison-simulated-01",
+    "run-fx-poison-simulated-02",
+    "run-fx-poison-simulated-03"
+  ],
+  "harness_commit": "0000000fixture",
+  "dirty": false,
+  "analysis_commit": "0000000fixture",
+  "config_hashes": ["b3:fixture"],
+  "price_snapshot_id": "prices-2026-09-28",
+  "models": ["cerebras/gpt-oss-120b", "claude-opus-5-5", "claude-sonnet-5"],
+  "views": ["overview", "p1-head-to-head", "m4-audits"],
+  "cost_usd": 0.0,
+  "redaction": {
+    "transcripts": "excluded",
+    "prompts": "sha256",
+    "hidden_tests": "sha256",
+    "diffs": "included"
+  },
+  "files": [
+    {
+      "path": "data/metrics.jsonl",
+      "schema": "vb.metric_record/1",
+      "sha256": "2287607a263ac3954a327c072b5e8b4365efa300dcb424b88e9226e4d3126c0d",
+      "rows": 43
+    }
+  ],
+  "reproduce": ["fixture: hand-written test data for the showcase specs, not a measurement"]
+}

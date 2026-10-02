@@ -554,6 +554,38 @@ pub struct ExecutedModel {
     /// Agent turns taken: the Claude CLI's `num_turns`, or the model calls
     /// of roko's tool loop. `None` when the agent did not report a count.
     pub turns: Option<u32>,
+    /// The sampling parameters roko sent with each request, by their
+    /// request-body names (`temperature`, `top_p`, `seed`). Empty, and left
+    /// out of the record, when the provider's defaults applied (gap-13bbbd).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub sampling: BTreeMap<String, serde_json::Value>,
+    /// The tool policy the attempt's contract asked for and what its provider
+    /// enforced, for a provider that runs its own tools; left out otherwise
+    /// (gap-baab0a).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_policy: Option<ToolPolicyRecord>,
+}
+
+/// The tool policy an attempt's contract asked for and what its provider
+/// enforced (`executed.tool_policy`, gap-baab0a).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolPolicyRecord {
+    /// Requested: the contract's allowlist; `None` when it has none.
+    pub allowed_tools: Option<Vec<String>>,
+    /// Requested: the contract's forbidden tools.
+    pub forbidden_tools: Vec<String>,
+    /// Effective: how the provider enforced the contract. `broker`: roko
+    /// stops the provider at the first operation the contract denies.
+    pub enforcement: String,
+    /// Effective: the provider's operations the broker denies, by the names
+    /// the provider reports them under.
+    pub denied_operations: Vec<String>,
+    /// Effective: the provider's web search and sandbox network were
+    /// switched off because the contract keeps the role off the network.
+    pub network_off: bool,
+    /// The operation the broker stopped the attempt at, if it did.
+    pub denial: Option<String>,
 }
 
 /// One model provider failover passed over before the one that ran
@@ -566,8 +598,9 @@ pub struct FailoverRefusal {
     /// The refused model's provider.
     pub provider: String,
     /// Why, as a class: `provider_exhausted` (out of usage), `billing`,
-    /// `circuit_open`, `disabled`, `no_credentials`, `not_configured` or
-    /// `not_dispatchable`.
+    /// `circuit_open`, `disabled`, `no_credentials`, `not_configured`,
+    /// `not_dispatchable` or `contract_unsupported` (the provider cannot
+    /// enforce the task's agent contract).
     pub class: String,
     /// The provider's own words, or why it could not be called.
     pub reason: String,

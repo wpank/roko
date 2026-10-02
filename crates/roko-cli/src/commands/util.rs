@@ -7,6 +7,55 @@ use roko_fs::RokoLayout;
 use roko_learn::efficiency::AgentEfficiencyEvent;
 use std::io::IsTerminal;
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum IndexCmd {
+    /// Build a code index for the workspace (or specified directory).
+    Build {
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Drop existing index data and rebuild from source files.
+    Rebuild {
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Search the code index.
+    Search {
+        /// Search query text (symbol name/pattern, never a file path).
+        query: String,
+        /// Restrict to a symbol kind (function, struct, enum, trait, const, type, module, impl).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Search strategy: keyword, structural, hybrid.
+        #[arg(long, default_value = "keyword")]
+        strategy: String,
+        /// Glob filter on file paths (independent of query text).
+        #[arg(long)]
+        file_pattern: Option<String>,
+        /// Maximum number of results (must be > 0).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Show index statistics.
+    Stats {
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
 /// Print a dim next-step hint to stderr, only when stdout is a TTY.
 pub(crate) fn print_next_step_hint(msg: &str) {
     if std::io::stdout().is_terminal() {
@@ -985,8 +1034,13 @@ pub(crate) async fn cmd_status(
 
     // Adaptive threshold summary.
     let thresholds_path = learn_dir.join("gate-thresholds.json");
-    let thresholds =
+    let mut thresholds =
         roko_gate::adaptive_threshold::AdaptiveThresholds::load_or_new(&thresholds_path);
+    // `retries=` and `skip=` follow `[gates]`, as the budgets of plan runs do.
+    let gates = roko_core::config::loader::load_config_unified(&workdir)
+        .map(|config| config.gates)
+        .unwrap_or_default();
+    thresholds.apply_gates_config(&gates);
     let rung_count: usize = thresholds.all_rungs().count();
     if rung_count > 0 {
         println!();
@@ -1281,12 +1335,16 @@ pub(crate) async fn cmd_doctor(
     subject: Option<DoctorSubject>,
     workdir: Option<PathBuf>,
     serve_url: Option<String>,
+    fix: bool,
 ) -> Result<i32> {
+    if fix && !matches!(subject, Some(DoctorSubject::Disk)) {
+        anyhow::bail!("--fix applies only to `roko doctor disk`");
+    }
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
-    // `doctor clean` removes orphaned files (exclusive); all other doctor
-    // variants are read-only and use a shared lock so they can coexist with
-    // an active plan runner.
-    let _lock = if matches!(subject, Some(DoctorSubject::Clean)) {
+    // `doctor clean` removes orphaned files and `doctor disk --fix` leftover
+    // attempt checkouts (exclusive); all other doctor variants are read-only
+    // and use a shared lock so they can coexist with an active plan runner.
+    let _lock = if matches!(subject, Some(DoctorSubject::Clean)) || fix {
         roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?
     } else {
         roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?
@@ -1314,10 +1372,25 @@ pub(crate) async fn cmd_doctor(
         return Ok(0);
     }
     if matches!(subject, Some(DoctorSubject::Disk)) {
+        // `--fix` holds the runner lock too, so no plan run is live while it
+        // removes checkouts, and none can start (gap-f67a72).
+        let leftovers = if fix {
+            let _runner = roko_cli::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
+            Some(roko_cli::doctor::fix_leftover_checkouts(&workdir).await)
+        } else {
+            None
+        };
         let report = roko_cli::doctor::run_disk_doctor(&workdir, cli.config.as_deref()).await;
         if cli.json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            let mut json = serde_json::to_value(&report)?;
+            if let Some(leftovers) = &leftovers {
+                json["leftover_checkouts"] = serde_json::to_value(leftovers)?;
+            }
+            println!("{}", serde_json::to_string_pretty(&json)?);
         } else {
+            if let Some(leftovers) = &leftovers {
+                print!("{}", roko_cli::doctor::render_leftover_checkouts(leftovers));
+            }
             print!("{}", report.render_human());
         }
         return Ok(report.exit_code());
@@ -1482,6 +1555,14 @@ pub(crate) async fn cmd_replay(
     }
 }
 
+/// What `roko inject` tells the operator when no plan run answers.
+const INJECT_UNAVAILABLE_HINT: &str =
+    "No plan run in this workspace is listening; start one with `roko plan run`.";
+
+/// What `roko inject` tells the operator when a plan run refuses.
+const INJECT_REFUSED_HINT: &str =
+    "Name a running plan, or its checkpoint run, from `roko plan status`.";
+
 pub(crate) async fn cmd_inject(
     cli: &Cli,
     session: String,
@@ -1489,87 +1570,67 @@ pub(crate) async fn cmd_inject(
     payload: String,
     workdir: Option<PathBuf>,
 ) -> Result<i32> {
-    use roko_cli::runner::types::{ControlAction, ControlCommand};
-
     let inject_kind = InjectKind::parse(kind_str).map_err(|e| anyhow!("{e}"))?;
     let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-    let request = InjectRequest::new(
-        session.clone(),
-        inject_kind.clone(),
-        payload.clone(),
-        wd.clone(),
-    );
+    let request = InjectRequest::new(session.clone(), inject_kind.clone(), payload, wd);
 
     // Validation errors (empty session, empty payload for directive/context) remain
-    // more specific than the transport-unavailable error below.
+    // more specific than the delivery errors below.
     request.validate().map_err(|e| anyhow!("{e}"))?;
 
-    // #361: Wire inject through the file-based ControlCommand transport.
-    // Map InjectKind to ControlAction: abort maps to cancel, directive/context
-    // map to resume (as a trigger to re-read context). The control file is
-    // picked up by the Graph engine's control-file poll loop.
-    let control_action = match inject_kind {
-        InjectKind::Abort => ControlAction::Cancel,
-        InjectKind::Directive | InjectKind::Context => {
-            // For directive and context injections, write the payload to
-            // the inject signal file and send a resume control action so
-            // the running session picks up the new context.
-            let inject_dir = wd.join(".roko").join("state");
-            std::fs::create_dir_all(&inject_dir)?;
-            let inject_file = inject_dir.join("inject.json");
-            let inject_payload = serde_json::json!({
+    // The plan run that runs the plan, or the checkpoint run, `session`
+    // names must acknowledge the request: nothing else counts as delivered,
+    // and nothing is written here (#325, gap-f118b3).
+    let wire = request.to_wire();
+    let reply = roko_cli::inject::deliver(&request.workdir, &wire).await;
+    let (code, message) = match reply {
+        Some(reply) if reply.outcome == roko_cli::inject::InjectOutcome::Accepted => {
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "code": "inject_accepted",
+                        "message": reply.message,
+                        "kind": inject_kind.as_str(),
+                        "session": session,
+                        "request_id": wire.request_id,
+                    })
+                );
+            } else {
+                println!("Injected {inject_kind} -> {session}: {}", reply.message);
+            }
+            return Ok(EXIT_SUCCESS);
+        }
+        Some(reply) if reply.outcome == roko_cli::inject::InjectOutcome::UnknownSession => {
+            ("inject_unknown_session", reply.message)
+        }
+        Some(reply) => ("inject_rejected", reply.message),
+        None => (
+            "inject_transport_unavailable",
+            "no plan run is listening".to_string(),
+        ),
+    };
+    let hint = if code == "inject_transport_unavailable" {
+        INJECT_UNAVAILABLE_HINT
+    } else {
+        INJECT_REFUSED_HINT
+    };
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "code": code,
+                "message": message,
+                "hint": hint,
                 "kind": inject_kind.as_str(),
                 "session": session,
-                "payload": payload,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            });
-            std::fs::write(&inject_file, serde_json::to_string_pretty(&inject_payload)?)?;
-            // Resume to wake the executor and consume the injected signal.
-            ControlAction::Resume
-        }
-    };
-
-    let state_dir = wd.join(".roko").join("state");
-    let control_cmd = ControlCommand {
-        command: control_action.clone(),
-        plan_id: None,
-        task_id: None,
-    };
-
-    match control_cmd.write(&state_dir) {
-        Ok(()) => {
-            if cli.json {
-                println!(
-                    r#"{{"code":"inject_delivered","kind":"{}","session":"{}","action":"{}"}}"#,
-                    inject_kind,
-                    session,
-                    match control_action {
-                        ControlAction::Cancel => "cancel",
-                        ControlAction::Resume => "resume",
-                        ControlAction::Pause => "pause",
-                        ControlAction::Retry => "retry",
-                    },
-                );
-            } else {
-                println!(
-                    "Injected {} -> session {} (control action: {:?})",
-                    inject_kind, session, control_action,
-                );
-            }
-            Ok(EXIT_SUCCESS)
-        }
-        Err(e) => {
-            if cli.json {
-                println!(
-                    r#"{{"code":"inject_write_failed","message":"{}","kind":"{}","session":"{}"}}"#,
-                    e, inject_kind, session,
-                );
-            } else {
-                tracing::error!(inject_kind = %inject_kind, %session, error = %e, "failed to write control command for inject");
-            }
-            Ok(EXIT_FAILURE)
-        }
+            })
+        );
+    } else {
+        eprintln!("Error: inject {inject_kind} -> session {session} was not delivered: {message}");
+        eprintln!("Hint: {hint}");
     }
+    Ok(EXIT_FAILURE)
 }
 
 pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
@@ -2422,6 +2483,9 @@ pub(crate) fn build_capture_episode(
     episode.output_signal_hash = ContentHash::of(output.as_bytes()).to_hex();
     episode.duration_secs = wall_time_ms as f64 / 1000.0;
     episode.usage.wall_ms = wall_time_ms;
+    // A capture carries no tokens or cost, so its cost is a 0 placeholder and
+    // no $0 cost record is derived from it (bug-ac5432).
+    episode.mark_cost_unknown();
     episode.success = success;
     episode.turns = 1;
     if !success {
@@ -2521,15 +2585,11 @@ pub(crate) async fn persist_capture_episode(
         LearningRuntime::open_for_project_with_models(workdir, model_slugs).await
     }
     .map_err(|e| anyhow!("open learning runtime: {e}"))?;
-    let distillation_workdir = workdir.to_path_buf();
-    let distillation_caller = roko_cli::learning_helpers::distillation_model_caller(workdir);
-    runtime.set_episode_completion_hook(move |episode| {
-        roko_neuro::spawn_episode_distillation(
-            distillation_workdir.clone(),
-            episode,
-            Some(std::sync::Arc::clone(&distillation_caller)),
-        );
-    });
+    roko_cli::learning_helpers::install_capture_distillation(
+        &mut runtime,
+        workdir,
+        roko_cli::learning_helpers::distillation_model_caller(workdir),
+    );
 
     let mut completed = CompletedRunInput::from_episode(episode);
     completed.provider = Some(provider);

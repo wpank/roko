@@ -115,7 +115,7 @@ For each plan the command touched, `graph/NN-<plan>/` holds:
   `roko.gate.verdict`, body format and body size). Signal bodies hold agent output and are never
   copied. A resume of the same run is sliced from the pre-launch offset. A fresh run truncates the
   log under a new run ID, so it is read from the start;
-- `diagnose.json`: the read-only `roko diagnose <plan>` answer when the command was a
+- `diagnose.json`: the read-only `roko diagnose <plan> --json` answer when the command was a
   `roko ... plan run` (its `failed_task` is also summarised in the index).
 
 `graph/ledgers/` holds the rows that the learning ledgers (`.roko/learn/efficiency.jsonl`,

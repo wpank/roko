@@ -14,7 +14,7 @@ model        7  Verify               PARTIAL     --> fail: 8, pass: 9
                     |
                     v
 INTEGRATE    9  Integrate            WIRED
-            10  Review               MISSING
+            10  Review               PARTIAL
                     |
                     v
 LEARN       11  Learn                PARTIAL     --> steps 1 to 4, next plan

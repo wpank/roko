@@ -269,6 +269,14 @@ pub fn plan_dirs_by_id(workdir: &Path) -> std::collections::BTreeMap<String, Pla
     }
 }
 
+/// Whether a task's `tasks.toml` status counts it as complete: `done`,
+/// `completed`, `passed` or `skipped`. The plan listing and the plan API both
+/// count completed tasks with it.
+#[must_use]
+pub fn task_status_is_complete(status: &str) -> bool {
+    matches!(status, "done" | "completed" | "passed" | "skipped")
+}
+
 /// Build a display summary from a discovered plan entry.
 #[must_use]
 pub fn summarize_plan_info(plan_info: &PlanInfo) -> PlanSummary {
@@ -301,12 +309,7 @@ pub fn summarize_plan_info(plan_info: &PlanInfo) -> PlanSummary {
                     let done = tasks_file
                         .tasks
                         .iter()
-                        .filter(|t| {
-                            matches!(
-                                t.status.as_str(),
-                                "done" | "completed" | "passed" | "skipped"
-                            )
-                        })
+                        .filter(|t| task_status_is_complete(&t.status))
                         .count();
                     let failed = tasks_file
                         .tasks
@@ -450,6 +453,11 @@ pub fn overlay_graph_checkpoint_status(workdir: &Path, summaries: &mut [PlanSumm
                 if summary.status == "ready" || summary.status == "pending" {
                     summary.status = "running".to_string();
                 }
+            }
+            // The run stopped before every task finished: an interrupted run
+            // can resume; an operator cancelled this one (bug-0fe64a).
+            "interrupted" | "cancelled" => {
+                summary.status = format!("{status_str}{age_suffix}");
             }
             _ => {}
         }
@@ -945,6 +953,42 @@ mod tests {
 
         assert_eq!(summary.status_label(), "superseded");
         assert!(summary.to_string().contains("superseded by new-plan"));
+    }
+
+    /// bug-0fe64a: `plan list` shows an interrupted or cancelled Graph run
+    /// instead of the stale tasks.toml status.
+    #[test]
+    fn overlay_graph_checkpoint_status_shows_interrupted_and_cancelled_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (plan_id, status) in [("stopped", "interrupted"), ("dropped", "cancelled")] {
+            let dir = tmp.path().join(".roko/state/graph").join(plan_id);
+            std::fs::create_dir_all(&dir).unwrap();
+            let checkpoint = format!(r#"{{"status":"{status}"}}"#);
+            std::fs::write(dir.join("checkpoint.json"), checkpoint).unwrap();
+        }
+        let ready_plan = |id: &str| PlanSummary {
+            id: id.into(),
+            title: id.into(),
+            task_count: 2,
+            tasks_done: 0,
+            tasks_failed: 0,
+            completed: false,
+            status: "ready".into(),
+            superseded_by: None,
+            old_format: false,
+            last_error: None,
+            group: None,
+        };
+        let mut summaries = vec![ready_plan("stopped"), ready_plan("dropped")];
+
+        overlay_graph_checkpoint_status(tmp.path(), &mut summaries);
+
+        let statuses: Vec<&str> = summaries
+            .iter()
+            .map(|summary| summary.status.as_str())
+            .collect();
+        assert_eq!(statuses, ["interrupted", "cancelled"]);
+        assert!(summaries.iter().all(|summary| !summary.completed));
     }
 
     #[test]

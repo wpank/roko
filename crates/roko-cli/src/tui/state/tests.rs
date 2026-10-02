@@ -1376,6 +1376,8 @@ fn update_from_dashboard_snapshot_maps_streaming_fields() {
             outcome: None,
             blocked_by: None,
             blocked_reason: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         },
     );
     snap.tasks.insert(
@@ -1388,6 +1390,8 @@ fn update_from_dashboard_snapshot_maps_streaming_fields() {
             outcome: Some("success".into()),
             blocked_by: None,
             blocked_reason: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         },
     );
     snap.agents.insert(
@@ -1578,6 +1582,8 @@ fn update_from_dashboard_snapshot_preserves_navigation_state_by_id() {
             outcome: None,
             blocked_by: None,
             blocked_reason: None,
+            started_at_ms: None,
+            finished_at_ms: None,
         },
     );
     snap.agents.insert(
@@ -2630,6 +2636,165 @@ fn settle_screened_transcript_noop_when_no_unscreened() {
     assert_eq!(history.len("a"), 2);
 }
 
+/// gap-836ae9: a tool stream published through the StateHub, the way a Graph
+/// run publishes it, gives the TUI the same records whether it watched the
+/// stream live or replays it later: from the hub's retained events, as on a
+/// reconnect, or from a snapshot's output tail, as when it attaches mid-run.
+/// The records show each step with its content.
+#[test]
+fn live_and_replayed_tool_streams_are_identical() {
+    use crate::runner::tui_bridge::TuiBridge;
+    use crate::state_hub::StateHub;
+    use crate::tui::widgets::stream_output::{
+        RenderOptions, display_text, render_output_records_styled,
+    };
+    use roko_core::DashboardEvent;
+
+    const AGENT: &str = "p1/t1";
+    let hub = StateHub::default_capacity();
+    let bridge = TuiBridge::new(hub.sender());
+    let mut live = hub.subscribe_events();
+
+    // A trusted turn: a live step and unscreened output while it runs, then
+    // the screened transcript.
+    bridge.agent_spawned(AGENT, "p1", "t1", 0, "impl", "sonnet", "claude_cli");
+    bridge.tool_step(AGENT, "p1", "t1", 0, "call-1", "Bash", "cat src/main.rs");
+    let unscreened = |kind: &str, payload: serde_json::Value| {
+        bridge.publish_unscreened_stream_record(AGENT, "p1", "t1", 0, kind, payload);
+    };
+    unscreened("text", serde_json::json!({ "text": "Reading the file" }));
+    unscreened(
+        "tool_result",
+        serde_json::json!({ "tool_id": "call-1", "output": "fn main() {}" }),
+    );
+    bridge.agent_text_delta(AGENT, "p1", "t1", 0, "Reading the file");
+    bridge.tool_call(AGENT, "p1", "t1", 0, "call-1", "Bash");
+    bridge.tool_output(AGENT, "p1", "t1", 0, "call-1", "fn main() {}");
+    bridge.agent_reasoning_delta(AGENT, "p1", "t1", 0, "It is empty");
+    bridge.agent_text_delta(AGENT, "p1", "t1", 0, "Done.");
+    bridge.agent_completed(AGENT, "p1", "t1", 0);
+
+    let mut live_events = Vec::new();
+    while let Ok(envelope) = live.try_recv() {
+        live_events.push((envelope.seq, envelope.payload));
+    }
+    let replayed_events: Vec<_> = hub
+        .subscribe_events_from(0)
+        .replay
+        .into_iter()
+        .map(|envelope| (envelope.seq, envelope.payload))
+        .collect();
+    assert_eq!(live_events, replayed_events, "hub replay matches live");
+
+    // The TUI's records: from events, as `drain_state_events` makes them,
+    // and from a snapshot, as `update_from_dashboard_snapshot` backfills them.
+    let records_from = |events: &[(u64, DashboardEvent)]| {
+        let mut state = TuiState::default();
+        for (_, event) in events {
+            match event {
+                DashboardEvent::AgentOutput {
+                    agent_id, content, ..
+                } => state.ingest_agent_output(agent_id, content),
+                _ => {}
+            }
+        }
+        Vec::from(state.agent_output_history.records_for(AGENT).clone())
+    };
+    let live_records = records_from(&live_events);
+    let replayed_records = records_from(&replayed_events);
+    let mut attached = TuiState::default();
+    attached.update_from_dashboard_snapshot(&hub.snapshot().borrow().clone());
+    let backfilled_records = Vec::from(attached.agent_output_history.records_for(AGENT).clone());
+
+    // Records compare without their timestamps.
+    let untimed = |records: &[AgentOutputRecord]| {
+        records
+            .iter()
+            .map(|record| AgentOutputRecord {
+                timestamp_ms: 0,
+                ..record.clone()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(untimed(&live_records), untimed(&replayed_records));
+    assert_eq!(untimed(&live_records), untimed(&backfilled_records));
+
+    let kinds: Vec<_> = live_records.iter().map(|record| record.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            OutputRecordKind::ToolCall,
+            OutputRecordKind::Text,
+            OutputRecordKind::ToolCall,
+            OutputRecordKind::ToolResult,
+            OutputRecordKind::Reasoning,
+            OutputRecordKind::Text,
+        ]
+    );
+    let texts: Vec<_> = live_records
+        .iter()
+        .map(|record| display_text(&record.text))
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "Bash cat src/main.rs",
+            "Reading the file",
+            "Bash",
+            "fn main() {}",
+            "It is empty",
+            "Done.",
+        ]
+    );
+
+    // Rendered, both read alike: the live step keeps its target, and the
+    // unscreened draft and tool result are gone, settled by their screened
+    // copies (bug-cc61a3, bug-9affca).
+    let render = |records: &[AgentOutputRecord]| {
+        render_output_records_styled(records, &Theme::dark(), &RenderOptions::default())
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect::<Vec<String>>()
+    };
+    let lines = render(&live_records);
+    assert_eq!(lines, render(&backfilled_records));
+    assert!(
+        lines.contains(&"\u{25b8} Bash cat src/main.rs".to_string()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.starts_with("[unscreened]")),
+        "{lines:?}"
+    );
+}
+
+/// gap-aabeff: a tool call from an agent's sidecar stream becomes a typed
+/// record and a Live Stream line naming the call, as a StateHub tool start
+/// does; the call's JSON, arguments included, never reaches the pane.
+#[test]
+fn sidecar_tool_call_line_names_the_call_without_its_json() {
+    use crate::tui::ws_client::StreamChunk;
+    use serde_json::json;
+
+    let mut state = TuiState::default();
+    let call = json!({ "id": "c1", "name": "Bash", "arguments": { "command": "ls" } });
+    state.ingest_stream_chunk("a", StreamChunk::ToolCall(call));
+    let sidecar_line = state.agent_streams["a"].chunks.back().cloned();
+    assert_eq!(sidecar_line.as_deref(), Some("[tool ⏵ Bash c1]"));
+    let record = &state.agent_output_history.records_for("a")[0];
+    assert_eq!(record.kind, OutputRecordKind::ToolCall);
+    assert_eq!(record.tool_id.as_deref(), Some("c1"));
+    assert_eq!(record.tool_name.as_deref(), Some("Bash"));
+
+    // A tool start published through the StateHub reads the same.
+    let line = "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"payload\":{\"tool_id\":\"c1\",\"tool\":\"Bash\"}}";
+    state.ingest_agent_output("b", line);
+    assert_eq!(
+        state.agent_streams["b"].chunks.back().cloned(),
+        sidecar_line
+    );
+}
+
 /// gap-f59fe9: a task blocked by a failed one, which never started, is
 /// listed in its plan's rows as blocked and names the task that blocked it.
 /// It is not counted as done.
@@ -2691,4 +2856,63 @@ fn update_from_dashboard_snapshot_lists_blocked_tasks() {
         .expect("T4 has a row");
     assert_eq!(row.status, TaskStatus::Blocked);
     assert_eq!(row.depends_on, ["T1"]);
+}
+
+#[test]
+fn agent_output_history_takes_later_ring_lines() {
+    use roko_core::DashboardEvent;
+
+    let lines = |range: std::ops::Range<usize>| -> Vec<String> {
+        range.map(|n| format!("line-{n}")).collect()
+    };
+    let append = |snap: &mut roko_core::DashboardSnapshot, range| {
+        snap.apply(&DashboardEvent::TaskOutputAppended {
+            task_id: "task-1".into(),
+            lines: lines(range),
+        });
+    };
+    let texts = |state: &TuiState| -> Vec<String> {
+        state
+            .agent_output_history
+            .records_for("agent-1")
+            .iter()
+            .map(|record| record.text.clone())
+            .collect()
+    };
+    let mut snap = roko_core::DashboardSnapshot::default();
+    snap.apply(&DashboardEvent::AgentSpawned {
+        agent_id: "agent-1".into(),
+        plan_id: "plan-1".into(),
+        task_id: "task-1".into(),
+        attempt: 1,
+        role: "implementer".into(),
+        model: "test-model".into(),
+        provider: String::new(),
+    });
+    let mut state = TuiState::default();
+
+    // The first ring is taken in whole.
+    append(&mut snap, 0..3);
+    state.update_from_dashboard_snapshot(&snap);
+    assert_eq!(texts(&state), lines(0..3));
+
+    // An unchanged ring adds nothing; the lines a later ring adds follow once.
+    state.update_from_dashboard_snapshot(&snap);
+    append(&mut snap, 3..5);
+    state.update_from_dashboard_snapshot(&snap);
+    assert_eq!(texts(&state), lines(0..5));
+
+    // Once AgentOutput events feed the agent, rings only repeat them.
+    state.push_agent_output_record(
+        "agent-1",
+        OutputRecordKind::Text,
+        "from an event".into(),
+        None,
+        None,
+    );
+    append(&mut snap, 5..6);
+    state.update_from_dashboard_snapshot(&snap);
+    let after = texts(&state);
+    assert_eq!(after.len(), 6, "{after:?}");
+    assert_eq!(after.last().map(String::as_str), Some("from an event"));
 }

@@ -1,0 +1,7 @@
+# Registered routes that the OpenAPI document (openapi.rs) does not describe yet: one
+# `METHOD /path` per line, path parameters written `{}`, paths as served under /api (gap-c50b85).
+# Routes the server mounts outside /api (such as /ready and the /ws sockets) are not in it.
+#
+# The test `openapi_documents_every_registered_route` fails when a registered route is neither
+# documented nor listed here, and when a line here is documented or no longer registered, so this
+# list only shrinks. Document a route in openapi.rs, then delete its line.

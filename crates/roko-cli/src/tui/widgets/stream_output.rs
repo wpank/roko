@@ -14,6 +14,7 @@
 //!   with an expanded set for unfolded tool IDs
 //! - **Search highlighting**: matching text is split into highlighted spans
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use ratatui::Frame;
@@ -79,6 +80,10 @@ pub enum StreamRecord {
         /// Whether the tool reported an error. Parsed from optional `"is_error"`
         /// boolean in the JSON payload; defaults to heuristic detection.
         is_error: bool,
+        /// Whether this record is a live preview.
+        live: bool,
+        /// Whether the safety screener has validated this record.
+        screened: bool,
     },
     /// A line that does not carry the stream protocol prefix.
     Plain { content: String },
@@ -93,6 +98,11 @@ pub enum StreamRecord {
 /// Lines that begin with `\x1e` (the ASCII record separator) followed by
 /// `roko.stream.v1 ` are treated as semantic records whose JSON payload
 /// determines the variant. All other lines become [`StreamRecord::Plain`].
+///
+/// `TuiBridge` publishes a record's fields under `payload` (`text`, `tool`,
+/// `tool_id`, `target`, `output`) and its `live` and `screened` flags beside
+/// `kind`; older records carry every field at the top level, with `content`
+/// for text and `tool_name` for the tool. Both shapes parse alike.
 #[must_use]
 pub fn parse_stream_line(line: &str) -> StreamRecord {
     // Fast path: reject lines that don't start with the record separator.
@@ -125,81 +135,97 @@ pub fn parse_stream_line(line: &str) -> StreamRecord {
     };
 
     let kind = value.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    let live = record_bool(&value, "live").unwrap_or(false);
+    // `screened` is absent on pre-protocol records; default to true.
+    let screened = record_bool(&value, "screened").unwrap_or(true);
 
     match kind {
         "text" => StreamRecord::Text {
-            content: value
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_owned(),
-            live: value.get("live").and_then(|v| v.as_bool()).unwrap_or(false),
-            // `screened` is absent on pre-protocol records; default to true.
-            screened: value
-                .get("screened")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
+            content: record_str(&value, &["text", "content"]).to_owned(),
+            live,
+            screened,
         },
         "reasoning" => StreamRecord::Reasoning {
-            content: value
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_owned(),
-            live: value.get("live").and_then(|v| v.as_bool()).unwrap_or(false),
-            screened: value
-                .get("screened")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
+            content: record_str(&value, &["text", "content"]).to_owned(),
+            live,
+            screened,
         },
-        "tool_start" => StreamRecord::ToolStart {
-            tool_name: value
-                .get("tool_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_owned(),
-            tool_id: value
-                .get("tool_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_owned(),
-            live: value.get("live").and_then(|v| v.as_bool()).unwrap_or(false),
-            screened: value
-                .get("screened")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-            target: value
-                .get("target")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_owned()),
-        },
+        "tool_start" => {
+            let target = record_str(&value, &["target"]);
+            StreamRecord::ToolStart {
+                tool_name: record_str(&value, &["tool", "tool_name"]).to_owned(),
+                tool_id: record_str(&value, &["tool_id"]).to_owned(),
+                live,
+                screened,
+                target: (!target.is_empty()).then(|| target.to_owned()),
+            }
+        }
         "tool_result" => {
-            let output = value
-                .get("output")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_owned();
+            let output = record_str(&value, &["output"]).to_owned();
             // Explicit `is_error` field takes priority; fall back to heuristic
             // detection from the output text.
-            let is_error = value
-                .get("is_error")
-                .and_then(|v| v.as_bool())
-                .unwrap_or_else(|| detect_error_output(&output));
+            let is_error =
+                record_bool(&value, "is_error").unwrap_or_else(|| detect_error_output(&output));
             StreamRecord::ToolResult {
-                tool_id: value
-                    .get("tool_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_owned(),
+                tool_id: record_str(&value, &["tool_id"]).to_owned(),
                 output,
                 is_error,
+                live,
+                screened,
             }
         }
         // Unknown kind -- treat as plain text so nothing is silently dropped.
         _ => StreamRecord::Plain {
             content: line.to_owned(),
         },
+    }
+}
+
+/// The first of the string fields `names` that a stream record carries,
+/// looked up in its `payload` and then on the record itself (see
+/// [`parse_stream_line`]); empty when it has none.
+fn record_str<'a>(record: &'a serde_json::Value, names: &[&str]) -> &'a str {
+    let payload = record.get("payload");
+    names
+        .iter()
+        .find_map(|name| {
+            payload
+                .and_then(|payload| payload.get(name))
+                .or_else(|| record.get(name))
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("")
+}
+
+/// The boolean field `name` of a stream record, from its `payload` or the
+/// record itself.
+fn record_bool(record: &serde_json::Value, name: &str) -> Option<bool> {
+    record
+        .get("payload")
+        .and_then(|payload| payload.get(name))
+        .or_else(|| record.get(name))
+        .and_then(serde_json::Value::as_bool)
+}
+
+/// What a reader sees of one output line: a stream record decoded to its
+/// text (a tool start to its name and target, a tool result to its output),
+/// and any other line as it is. Searches match this, never a record's JSON.
+#[must_use]
+pub fn display_text(line: &str) -> Cow<'_, str> {
+    if !line.starts_with(RECORD_SEP) {
+        return Cow::Borrowed(line);
+    }
+    match parse_stream_line(line) {
+        StreamRecord::Text { content, .. }
+        | StreamRecord::Reasoning { content, .. }
+        | StreamRecord::Plain { content } => Cow::Owned(content),
+        StreamRecord::ToolStart {
+            tool_name, target, ..
+        } => Cow::Owned(match target {
+            Some(target) => format!("{tool_name} {target}"),
+            None => tool_name,
+        }),
+        StreamRecord::ToolResult { output, .. } => Cow::Owned(output),
     }
 }
 
@@ -301,6 +327,7 @@ pub fn render_output_lines_styled<'a>(
                 tool_id,
                 output,
                 is_error,
+                ..
             } => {
                 render_tool_result(&mut styled, &tool_id, &output, is_error, opts, theme);
             }
@@ -549,17 +576,13 @@ pub fn render_output_records_styled<'a>(
                 // Re-parse the raw record text to check for live step + target.
                 // `record.text` holds the original encoded line when ingested from
                 // a stream; for records created from structured events it may just
-                // be human-readable text, in which case parsing returns Plain and
-                // the live/target path is skipped safely.
-                let live_step = if record.text.starts_with('\u{001e}') {
-                    match parse_stream_line(&record.text) {
-                        StreamRecord::ToolStart {
-                            live: true, target, ..
-                        } => Some(target),
-                        _ => None,
-                    }
-                } else {
-                    None
+                // be human-readable text, in which case the live/target path is
+                // skipped safely.
+                let live_step = match encoded_record(&record.text) {
+                    Some(StreamRecord::ToolStart {
+                        live: true, target, ..
+                    }) => Some(target),
+                    _ => None,
                 };
 
                 let name = record
@@ -585,32 +608,37 @@ pub fn render_output_records_styled<'a>(
             OutputRecordKind::ToolResult => {
                 // Use the tool_id from the record if available for fold state.
                 let tool_id = record.tool_id.as_deref().unwrap_or("").to_owned();
-                // Treat non-empty error text starting with error keywords as errors.
-                let is_error = detect_error_output(&record.text);
-                render_tool_result(&mut styled, &tool_id, &record.text, is_error, opts, theme);
+                let (output, is_error) = match encoded_record(&record.text) {
+                    Some(StreamRecord::ToolResult {
+                        output, is_error, ..
+                    }) => (Cow::Owned(output), is_error),
+                    // Treat non-empty error text starting with error keywords as errors.
+                    _ => (
+                        Cow::Borrowed(record.text.as_str()),
+                        detect_error_output(&record.text),
+                    ),
+                };
+                render_tool_result(&mut styled, &tool_id, &output, is_error, opts, theme);
             }
             OutputRecordKind::Reasoning => {
-                // Check for unscreened live reasoning by re-parsing raw text.
-                let unscreened = if record.text.starts_with('\u{001e}') {
-                    matches!(
-                        parse_stream_line(&record.text),
-                        StreamRecord::Reasoning {
-                            live: true,
-                            screened: false,
-                            ..
-                        }
-                    )
-                } else {
-                    false
+                // A record from a stream keeps its encoded line: show the
+                // reasoning it carries, marked when it is unscreened live text.
+                let (content, unscreened) = match encoded_record(&record.text) {
+                    Some(StreamRecord::Reasoning {
+                        content,
+                        live,
+                        screened,
+                    }) => (Cow::Owned(content), live && !screened),
+                    _ => (Cow::Borrowed(record.text.as_str()), false),
                 };
 
                 // ◐ reasoning text  (TEXT_DIM, italic)
-                let text = if record.text.is_empty() {
+                let text = if content.is_empty() {
                     "\u{25d0}".to_owned()
                 } else if unscreened {
-                    format!("\u{25d0} [unscreened] {}", record.text)
+                    format!("\u{25d0} [unscreened] {content}")
                 } else {
-                    format!("\u{25d0} {}", record.text)
+                    format!("\u{25d0} {content}")
                 };
                 let base_style = if unscreened {
                     Style::default()
@@ -654,34 +682,41 @@ pub fn render_output_records_styled<'a>(
                 }
             }
             OutputRecordKind::Text => {
-                // Check for unscreened live text by re-parsing raw text.
-                let unscreened = if record.text.starts_with('\u{001e}') {
-                    matches!(
-                        parse_stream_line(&record.text),
-                        StreamRecord::Text {
-                            live: true,
-                            screened: false,
-                            ..
-                        }
-                    )
-                } else {
-                    false
+                // A record from a stream keeps its encoded line: show the
+                // text it carries, marked when it is unscreened live text.
+                let (content, unscreened) = match encoded_record(&record.text) {
+                    Some(StreamRecord::Text {
+                        content,
+                        live,
+                        screened,
+                    }) => (Cow::Owned(content), live && !screened),
+                    _ => (Cow::Borrowed(record.text.as_str()), false),
                 };
 
                 if unscreened {
-                    let text = format!("[unscreened] {}", record.text);
+                    let text = format!("[unscreened] {content}");
                     let base_style = Style::default()
                         .fg(Theme::TEXT_GHOST)
                         .add_modifier(Modifier::DIM);
                     styled.push(highlight_line(&text, base_style, opts));
                 } else {
-                    styled.push(highlight_line(&record.text, theme.text(), opts));
+                    styled.push(highlight_line(&content, theme.text(), opts));
                 }
             }
         }
     }
 
     styled
+}
+
+/// The stream record an output record was ingested from, while its text is
+/// still the encoded line (`AgentOutputHistory::ingest_line` keeps it).
+fn encoded_record(text: &str) -> Option<StreamRecord> {
+    if text.starts_with(RECORD_SEP) {
+        Some(parse_stream_line(text))
+    } else {
+        None
+    }
 }
 
 /// Block kind enum for separator logic in the records render path.
@@ -940,6 +975,8 @@ mod tests {
                 tool_id: "t1".to_owned(),
                 output: "line1\nline2".to_owned(),
                 is_error: false,
+                live: false,
+                screened: true,
             }
         );
     }
@@ -954,6 +991,8 @@ mod tests {
                 tool_id: "t1".to_owned(),
                 output: "some output".to_owned(),
                 is_error: true,
+                live: false,
+                screened: true,
             }
         );
     }

@@ -10,11 +10,12 @@
 //! `.roko/learn/gate-thresholds.json`, which Graph verify runs keep current: a
 //! rung that usually passes suggests few retries, one that often fails more.
 //! Suggestions stay within `[gates] adaptive_min_retries..=adaptive_max_retries`,
-//! and a rung with under five observations suggests their midpoint. The task
-//! gets its likeliest-to-fail rung's suggestion. A task with no such step
-//! keeps the default budget. While the model ladder routes tasks, one that no
-//! `model_hint` or `preferred_model` pins gets at least enough retries to
-//! climb it (gap-460230).
+//! and a rung with under five observations suggests their midpoint. Durable
+//! knowledge that names a rung as failing counts it as likelier to fail while
+//! it has under ten observations (P1-09). The task gets its likeliest-to-fail
+//! rung's suggestion. A task with no such step keeps the default budget. While
+//! the model ladder routes tasks, one that no `model_hint` or `preferred_model`
+//! pins gets at least enough retries to climb it (gap-460230).
 //! `plan run --max-retries` overrides all of this.
 
 use std::collections::BTreeSet;
@@ -24,7 +25,9 @@ use roko_core::config::GatesConfig;
 use roko_core::defaults::DEFAULT_GATE_RETRY_MIN_OBSERVATIONS;
 use roko_gate::AdaptiveThresholds;
 use roko_gate::rung_for_gate_name;
+use roko_neuro::KnowledgeStore;
 
+use crate::knowledge_helpers::apply_neuro_gate_hints;
 use crate::task_parser::TaskDef;
 
 /// Where a task's retry budget came from.
@@ -95,6 +98,19 @@ impl TaskRetryBudgets {
             authored,
             ladder_min_retries: 0,
         }
+    }
+
+    /// Bias the thresholds by what durable knowledge says about gate rungs
+    /// (P1-09, [`apply_neuro_gate_hints`]): a rung that `knowledge` names as
+    /// failing, with under ten observations, counts as likelier to fail, so
+    /// its tasks get more retries. Only these budgets see the bias. The
+    /// thresholds file is not written, so it never compounds across runs.
+    #[must_use]
+    pub(crate) fn with_neuro_gate_hints(mut self, knowledge: &KnowledgeStore) -> Self {
+        if let Some(thresholds) = &mut self.thresholds {
+            apply_neuro_gate_hints(knowledge, thresholds);
+        }
+        self
     }
 
     /// Give every task that does not author `max_retries` at least
@@ -248,6 +264,7 @@ fn authored_max_retries(tasks_toml: &str) -> BTreeSet<String> {
 
 #[cfg(test)]
 mod tests {
+    use roko_neuro::{KnowledgeEntry, KnowledgeKind};
     use tempfile::tempdir;
 
     use super::*;
@@ -384,6 +401,8 @@ command = "true"
             fail_msg: None,
             timeout_ms: 1_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }];
 
         // The default floor is a task's default max_retries (3).
@@ -418,6 +437,66 @@ command = "true"
         };
         let cold = TaskRetryBudgets::load(Some(&missing), &gates, &tasks_toml);
         assert_eq!(cold.for_task(&task("TEST")).max_retries, 4);
+    }
+
+    /// P1-09: durable knowledge that names a rung as failing raises the
+    /// budget of a rung with few observations, and the thresholds file stays
+    /// as the verify runs left it.
+    #[test]
+    fn knowledge_of_a_failing_rung_raises_a_young_rungs_budget() {
+        let dir = tempdir().expect("tempdir");
+        let tasks_toml = dir.path().join("tasks.toml");
+        std::fs::write(&tasks_toml, TASKS_TOML).expect("write plan");
+        // Six passes: enough to set a budget, under the ten knowledge can bias.
+        let path = dir.path().join("gate-thresholds.json");
+        let mut thresholds = GateThresholds::default();
+        for _ in 0..6 {
+            thresholds.observe(0, true);
+        }
+        thresholds.save(&path).expect("save thresholds");
+        let saved = std::fs::read_to_string(&path).expect("read thresholds");
+        let mut only_compile = task("TEST");
+        only_compile.verify = vec![VerifyStep {
+            phase: "compile".to_string(),
+            command: "true".to_string(),
+            fail_msg: None,
+            timeout_ms: 1_000,
+            scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
+        }];
+        let knowledge = KnowledgeStore::for_workdir(dir.path());
+        let budget = || {
+            TaskRetryBudgets::load(Some(&path), &GatesConfig::default(), &tasks_toml)
+                .with_neuro_gate_hints(&knowledge)
+                .for_task(&only_compile)
+        };
+
+        // No knowledge yet: a rung that always passed gets the floor.
+        assert_eq!(budget().max_retries, 3);
+
+        knowledge
+            .add(KnowledgeEntry {
+                id: "compile-failures".into(),
+                kind: KnowledgeKind::AntiKnowledge,
+                content: "gate failure: compile errors keep failing rung 0".into(),
+                confidence: 0.9,
+                ..KnowledgeEntry::default()
+            })
+            .expect("persist gate knowledge");
+        let hinted = budget();
+        assert_eq!(hinted.max_retries, 4, "{hinted:?}");
+        let RetryBudgetSource::Adaptive {
+            rung, observations, ..
+        } = hinted.source
+        else {
+            panic!("expected an adaptive budget, got {hinted:?}");
+        };
+        assert_eq!((rung, observations), (0, 6));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("reread thresholds"),
+            saved
+        );
     }
 
     /// gap-460230: while the ladder is on, a task that does not author

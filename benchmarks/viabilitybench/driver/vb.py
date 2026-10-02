@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""`vb`, the ViabilityBench driver (S08 §5.7). This item builds `run`, `estimate` and `materialize`.
+"""`vb`, the ViabilityBench driver (S08 §5.7): `run`, `estimate`, `materialize`, `campaign`, `ledger` and `report`.
 
     vb run --experiment PILOT-A --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3 \
            --allow-network --max-cost-usd 10 [--line BL0] [--limit N] [--proxy] [--disturbance SPEC.toml] \
            [--transcripts] [--keep-workdirs]
     vb estimate --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3
     vb materialize --stream pilot --instance F1-l1-0001 --out DIR
+    vb campaign --manifest experiments/pilot_a.toml --dry-run        # an experiment's blocks (campaign.py)
 
 `vb run` runs every (task, seed) of a stream on one arm and one model, in a fresh workdir under `$VB_WORK` (default
 `~/vb-work/<run_id>/`), outside the repository. For each one it: materializes the task (`materialize`); runs the
@@ -93,6 +94,7 @@ from types import ModuleType
 
 import agent_env
 import archive
+import campaign
 import caps
 import census
 import disturb
@@ -194,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     args.own_process = argv is None  # a script, not a call: `vb run` may start itself again (`agent_env.exec_scrubbed`)
     try:
         return args.handler(args)
-    except (DriverError, caps.CapError, ledger.PriceError) as err:
+    except (DriverError, caps.CapError, ledger.PriceError, campaign.CampaignError) as err:
         print(f"vb: {err}", file=sys.stderr)
         return 2
 
@@ -292,6 +294,11 @@ def parse_seeds(text: str) -> list[int]:
 def cmd_estimate(args: argparse.Namespace) -> int:
     print(json.dumps(make_plan(args).summary(), indent=2))
     return 0
+
+
+def cmd_campaign(args: argparse.Namespace) -> int:
+    """`vb campaign` (campaign.py), which gets this module rather than importing a second copy of it."""
+    return campaign.cmd_campaign(sys.modules[__name__], args)
 
 
 def cmd_materialize(args: argparse.Namespace) -> int:
@@ -432,7 +439,7 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         provider=run.chat, snapshot=plan.snapshot, caps=limits, ledger=run.book, billed=plan.arm["arm"]["billed"],
         instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text, agent_env=env,
         visible_verify=tuple(task.manifest["visible_verify"]), files_in_scope=tuple(task.manifest["files_in_scope"]),
-        verify_wrapper=wrapper, model_swap=swap)
+        verify_wrapper=wrapper, model_swap=swap, deny=_agent_deny(run))
     if run.proxy:  # the proxy's rows for this task carry its key, which is how the Roko arm finds them
         held = getattr(run.runner, "PROXY_CAPS", ())  # the caps a runner's harness cannot hold itself
         run.proxy.configure(task=ctx.key, profile=disturb.profile(run.disturbances, position),
@@ -496,6 +503,12 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
           + ("" if meter_usd is None else f" meter=${meter_usd:.4f}") + (f" flakes={len(flakes)}" if flakes else ""),
           file=sys.stderr)
     return True
+
+
+def _agent_deny(run: Run) -> tuple[Path, ...]:
+    """What every agent process is denied (`TaskContext.deny`, `common.sandbox`): the secret file, every file the
+    tripwire holds (the key file too), and the run's private task directories, every earlier task's included."""
+    return tuple(dict.fromkeys([run.secret_file, *(wire.path for wire in secret.tripwires()), run.run_dir / "private"]))
 
 
 def _verify_wrapper(run: Run, key: str, manifest: dict, env: dict[str, str], position: int) -> Path | None:
@@ -755,6 +768,10 @@ def _parser() -> argparse.ArgumentParser:
     mat.add_argument("--private", help="where the manifest and pristine bundle go (default: OUT.private)")
     mat.set_defaults(handler=cmd_materialize)
     commands.add_parser("report", help="metrics.json and bundle checks (analysis/report.py; see vb report --help)")
+    run_campaign = commands.add_parser("campaign", help="validate, estimate and run an experiment manifest",
+                                       allow_abbrev=False)
+    campaign.add_arguments(run_campaign)
+    run_campaign.set_defaults(handler=cmd_campaign)
     return parser
 
 

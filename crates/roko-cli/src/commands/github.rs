@@ -31,25 +31,7 @@ pub(crate) async fn cmd_github(cli: &Cli, command: GithubCmd) -> Result<i32> {
             let config = load_github_config(&workdir, cli.config.as_deref())?;
             let token_state = token_state_from_env();
             let report = if token_state == TokenState::Present {
-                match GitHubClient::from_env() {
-                    Ok(client) => {
-                        let worker_config = config.clone();
-                        tokio::task::spawn_blocking(move || {
-                            collect_status(&worker_config, token_state, &client)
-                        })
-                        .await
-                        .unwrap_or_else(|error| {
-                            GitHubStatusReport::without_remote(
-                                &config,
-                                token_state,
-                                format!("GitHub status worker failed: {error}"),
-                            )
-                        })
-                    }
-                    Err(error) => {
-                        GitHubStatusReport::without_remote(&config, token_state, error.to_string())
-                    }
-                }
+                remote_status(&config, token_state, GitHubClient::from_env).await
             } else {
                 GitHubStatusReport::without_remote(
                     &config,
@@ -66,6 +48,33 @@ pub(crate) async fn cmd_github(cli: &Cli, command: GithubCmd) -> Result<i32> {
             Ok(EXIT_SUCCESS)
         }
     }
+}
+
+/// The status report from GitHub, through the client `connect` builds.
+/// reqwest's blocking client panics when it is built on an async runtime
+/// thread (debug builds), so a blocking worker both builds it and makes the
+/// calls.
+async fn remote_status<F>(
+    config: &GitHubConfig,
+    token: TokenState,
+    connect: F,
+) -> GitHubStatusReport
+where
+    F: FnOnce() -> roko_mcp_github::Result<GitHubClient> + Send + 'static,
+{
+    let worker_config = config.clone();
+    tokio::task::spawn_blocking(move || match connect() {
+        Ok(client) => collect_status(&worker_config, token, &client),
+        Err(error) => GitHubStatusReport::without_remote(&worker_config, token, error.to_string()),
+    })
+    .await
+    .unwrap_or_else(|error| {
+        GitHubStatusReport::without_remote(
+            config,
+            token,
+            format!("GitHub status worker failed: {error}"),
+        )
+    })
 }
 
 fn load_github_config(workdir: &Path, override_path: Option<&Path>) -> Result<GitHubConfig> {
@@ -533,6 +542,7 @@ const fn remote_label(state: RemoteState) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead as _, BufReader, Write as _};
     use std::sync::Mutex;
 
     use super::*;
@@ -628,6 +638,78 @@ mod tests {
                 "ci:octo/roko:abc",
                 "issues:octo/roko:roko/task-failure"
             ]
+        );
+    }
+
+    /// Answer `requests` HTTP requests on `listener`, each with the JSON body
+    /// `respond` gives for its request line, and return the request lines.
+    fn serve_github(
+        listener: std::net::TcpListener,
+        requests: usize,
+        respond: fn(&str) -> Value,
+    ) -> std::thread::JoinHandle<Vec<String>> {
+        std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for _ in 0..requests {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut request_line = String::new();
+                reader
+                    .read_line(&mut request_line)
+                    .expect("read request line");
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).expect("read header");
+                    if header.trim_end().is_empty() {
+                        break;
+                    }
+                }
+                let body = respond(&request_line).to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .expect("write response");
+                seen.push(request_line.trim_end().to_string());
+            }
+            seen
+        })
+    }
+
+    /// bug-a1e66c: with a token, the status command builds reqwest's blocking
+    /// client, and calls GitHub, on a blocking worker. Building that client on
+    /// an async runtime thread panics in debug builds.
+    #[tokio::test]
+    async fn github_status_on_runtime_builds_its_client_on_a_blocking_worker() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let api_base = format!("http://{}", listener.local_addr().expect("local address"));
+        let server = serve_github(listener, 3, |request_line| {
+            if request_line.starts_with("GET /user ") {
+                serde_json::json!({"login": "octocat"})
+            } else {
+                serde_json::json!([])
+            }
+        });
+
+        let report = remote_status(&config(), TokenState::Present, move || {
+            GitHubClient::new("fake-token").map(|client| client.with_api_base(api_base))
+        })
+        .await;
+
+        assert_eq!(report.auth.user.as_deref(), Some("octocat"), "{report:?}");
+        assert_eq!(report.plan_pull_requests.state, RemoteState::Ok);
+        assert_eq!(report.task_failure_issues.state, RemoteState::Ok);
+        let requests = server.join().expect("server thread");
+        assert!(requests[0].starts_with("GET /user "), "{requests:?}");
+        assert!(
+            requests[1].starts_with("GET /repos/octo/roko/pulls"),
+            "{requests:?}"
+        );
+        assert!(
+            requests[2].starts_with("GET /repos/octo/roko/issues"),
+            "{requests:?}"
         );
     }
 

@@ -348,7 +348,7 @@ and work down only when you need to.
 
 | Crate | One-liner |
 |-------|-----------|
-| **roko-serve** | HTTP control plane: ~376 routes + SSE + WebSocket on :6677 |
+| **roko-serve** | HTTP control plane: REST routes (counts in `tools/http_route_inventory.snapshot.json`) + SSE + WebSocket on :6677 |
 | **roko-acp** | Editor integration protocol (Cursor, etc.) |
 | **roko-agent-server** | Per-agent HTTP sidecar: 14 routes |
 | **roko-execution** | Shared RuntimeServices builder for CLI/serve/ACP |
@@ -655,8 +655,8 @@ roko plan status plans/
 roko diagnose <plan-id>
 ```
 
-The `diagnose` command produces structured JSON output explaining what failed, at which
-gate, with what error message.
+The `diagnose` command prints a report explaining what failed, at which verify step, with
+what error message, and how to resume. Add `--json` for the structured JSON report.
 
 ### "I want to resume after a crash"
 
@@ -717,13 +717,13 @@ The `roko.toml` file controls all behavior. Here is a minimal working configurat
 [providers.anthropic]
 kind = "anthropic_api"
 api_key_env = "ANTHROPIC_API_KEY"
-default_model = "claude-sonnet-4-20250514"
+default_model = "claude-sonnet-4-6"
 
 # Optional: model routing tiers
 [models.routing]
-tier0 = "claude-haiku-3"          # Fast, cheap tasks
-tier1 = "claude-sonnet-4-20250514"     # Default complexity
-tier2 = "claude-opus-4-20250514"         # Hard tasks
+tier0 = "claude-haiku-4-5"     # Fast, cheap tasks
+tier1 = "claude-sonnet-4-6"    # Default complexity
+tier2 = "claude-opus-4-6"      # Hard tasks
 
 # Optional: gate configuration
 [gates]

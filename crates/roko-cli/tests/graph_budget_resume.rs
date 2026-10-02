@@ -91,7 +91,7 @@ mcp_servers = []
 depends_on = []
 depends_on_plan = []
 acceptance = []
-verify = [{ phase = "structural", command = "true", fail_msg = "fixture verification failed" }]
+verify = [{ phase = "structural", command = "test -d .", fail_msg = "fixture verification failed" }]
 timeout_secs = 10
 max_retries = 0
 "#,

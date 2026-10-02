@@ -4,6 +4,248 @@ use crate::*;
 use anyhow::Context as _;
 use std::collections::HashSet;
 
+// -----------------------------------------------------------------------
+// Learn: learning state + inspection
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum LearnCmd {
+    /// Show all learning state (router, experiments, efficiency, episodes, reflexes).
+    All {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show cascade router state.
+    #[command(alias = "router")]
+    Route {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Manage prompt A/B experiments (list, create, conclude, report).
+    Experiments {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Subcommand: list | create | conclude | report. Defaults to list.
+        #[command(subcommand)]
+        cmd: Option<ExperimentsSubCmd>,
+    },
+    /// Show efficiency metrics.
+    Efficiency {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show at most N matching rows from the start (mutually exclusive with --tail).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000), conflicts_with = "tail")]
+        limit: Option<u32>,
+        /// Show the last N matching rows in chronological order (mutually exclusive with --limit).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        tail: Option<u32>,
+        /// Only include entries at or after this RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Filter by model slug (substring match).
+        #[arg(long)]
+        model: Option<String>,
+        /// Filter by plan ID (substring match).
+        #[arg(long)]
+        plan: Option<String>,
+        /// Filter by task ID (substring match).
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// Show episode summary.
+    Episodes {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show at most N matching rows from the start (mutually exclusive with --tail).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000), conflicts_with = "tail")]
+        limit: Option<u32>,
+        /// Show the last N matching rows in chronological order (mutually exclusive with --limit).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        tail: Option<u32>,
+        /// Only include entries at or after this RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Filter by model slug (substring match).
+        #[arg(long)]
+        model: Option<String>,
+        /// Filter by plan ID (substring match).
+        #[arg(long)]
+        plan: Option<String>,
+        /// Filter by task ID (substring match).
+        #[arg(long)]
+        task: Option<String>,
+        /// Filter by pass/fail status (pass or fail).
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Show T0 reflex rules (count, top five by hits, and recent demotions).
+    Reflexes {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show adaptive gate threshold state.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show durable knowledge entry counts.
+    #[command(alias = "knowledge")]
+    KnowledgeStats {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show learned playbook store contents (name, trigger pattern, success/failure counts).
+    Playbooks {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show per-section prompt pass-rate statistics (worst sections first).
+    Sections {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show recent post-gate reflection records.
+    Reflections {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Maximum number of recent reflections to display.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Read-only inspection of a learning subsystem (gates, routing, budget).
+    Inspect {
+        #[command(subcommand)]
+        subsystem: InspectSubsystem,
+    },
+    /// Show tool usage statistics from the tool audit log.
+    Tools {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Trace an end-to-end feedback loop: knowledge ingested -> injected -> gate pass -> confirmation.
+    FeedbackProof {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show per-role cost profiles (average cost, token budget, pass rate).
+    RoleCosts {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show graduation policy state (configured policies, counters, and evaluation preview).
+    Graduation {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Check a run's attempt records, or report routing outcomes from them (read-only).
+    Telemetry {
+        #[command(subcommand)]
+        cmd: commands::learn::TelemetryCmd,
+    },
+    /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
+    #[command(hide = true)]
+    Tune {
+        /// Subsystem to tune: gates, routing, budget.
+        #[arg(default_value = "gates")]
+        subsystem: String,
+        /// Display current values without modifying.
+        #[arg(long)]
+        dry_run: bool,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+// -----------------------------------------------------------------------
+// ExperimentsSubCmd — subcommands for `roko learn experiments`
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ExperimentsSubCmd {
+    /// List all experiments as a table (Name | Status | Variants | Observations | Best Variant | Win Rate).
+    List {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Show at most N experiments.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        limit: Option<u32>,
+    },
+    /// Create a new prompt experiment.
+    Create {
+        /// Unique experiment identifier.
+        #[arg(long)]
+        name: String,
+        /// Prompt section under test (e.g. "constraints").
+        #[arg(long)]
+        section: String,
+        /// Comma-separated variant ids (e.g. "control,concise-v2").
+        #[arg(long)]
+        variants: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Conclude an experiment by auto-picking the best-performing variant as winner.
+    Conclude {
+        /// Experiment identifier to conclude.
+        name: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Print a detailed statistical report for one experiment.
+    Report {
+        /// Experiment identifier to report on.
+        name: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+// -----------------------------------------------------------------------
+// InspectSubsystem — read-only learning inspection targets
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum InspectSubsystem {
+    /// Inspect adaptive gate threshold state.
+    Gates {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Inspect cascade routing state and model statistics.
+    Routing {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Inspect configured budget limits and spend history.
+    Budget {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
 /// Format a cost value for human display.
 /// Uses the heuristic: if cost is exactly 0.0 and both token counts are 0,
 /// treat the value as unknown.
@@ -971,6 +1213,19 @@ struct LearnJsonEpisodes {
     #[serde(skip_serializing_if = "Option::is_none")]
     last_seen: Option<String>,
     latest: Vec<LearnJsonEpisodeEntry>,
+    /// The seven compounding rates over the most recent episodes.
+    compounding: roko_learn::aggregate::AutocatalyticMetrics,
+    /// Hindsight corrections, already applied to the counts above.
+    hindsight: LearnJsonHindsight,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonHindsight {
+    /// Corrections recorded in `.roko/learn/episode-adjustments.jsonl`.
+    adjustments: usize,
+    /// Episodes of the log they relabeled.
+    applied: usize,
+    latest: Vec<roko_learn::hindsight::EpisodeAdjustment>,
 }
 
 #[derive(serde::Serialize)]
@@ -999,6 +1254,99 @@ struct LearnJsonKnowledge {
 
 /// Maximum number of recent entries to include in JSON output.
 const JSON_LATEST_LIMIT: usize = 10;
+
+/// Number of most recent episodes the compounding metrics cover.
+const COMPOUNDING_WINDOW: usize = 200;
+
+/// Keep `episode` in the window of the most recent `COMPOUNDING_WINDOW`
+/// episodes.
+fn push_compounding_window(
+    window: &mut std::collections::VecDeque<roko_learn::episode_logger::Episode>,
+    episode: roko_learn::episode_logger::Episode,
+) {
+    if window.len() == COMPOUNDING_WINDOW {
+        window.pop_front();
+    }
+    window.push_back(episode);
+}
+
+/// Human lines for the compounding rates in `roko learn episodes`.
+fn format_compounding_metrics(
+    metrics: &roko_learn::aggregate::AutocatalyticMetrics,
+) -> Vec<String> {
+    let window = metrics.episode_window;
+    let rates = [
+        ("playbook hit rate:", metrics.playbook_hit_rate),
+        ("knowledge reuse rate:", metrics.knowledge_reuse_rate),
+        ("cache hit rate:", metrics.cache_hit_rate),
+        ("routing accuracy:", metrics.routing_accuracy),
+        ("gate pass rate:", metrics.gate_pass_rate),
+        ("error dedup rate:", metrics.error_dedup_rate),
+    ];
+    let mut lines = vec![format!("  Compounding (last {window} episodes):")];
+    for (label, rate) in rates {
+        lines.push(format!("    {label:<22}{:.1}%", rate * 100.0));
+    }
+    let cost = metrics.cost_per_success;
+    lines.push(format!("    {:<22}${cost:.4}", "cost per success:"));
+    lines
+}
+
+/// An episode log's episodes with the workspace's hindsight corrections
+/// applied ([`roko_learn::hindsight::apply_adjustments`]).
+struct AdjustedEpisodes {
+    episodes: Vec<roko_learn::episode_logger::Episode>,
+    /// The corrections recorded for the workspace, in write order.
+    adjustments: Vec<roko_learn::hindsight::EpisodeAdjustment>,
+    /// How many episodes they changed.
+    applied: usize,
+}
+
+impl AdjustedEpisodes {
+    /// Parse the episode log `text` of the workspace at `workdir`, skipping
+    /// blank and malformed lines.
+    fn parse(workdir: &std::path::Path, text: &str) -> Self {
+        let mut episodes: Vec<roko_learn::episode_logger::Episode> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let path = roko_learn::hindsight::workspace_adjustments_path(workdir);
+        let adjustments = roko_learn::hindsight::read_adjustments(&path).unwrap_or_default();
+        let applied = roko_learn::hindsight::apply_adjustments(&mut episodes, &adjustments);
+        Self {
+            episodes,
+            adjustments,
+            applied,
+        }
+    }
+}
+
+/// Human lines for the hindsight corrections in `roko learn episodes`: none
+/// when there are none, else a count and the latest three.
+fn format_hindsight_lines(
+    adjustments: &[roko_learn::hindsight::EpisodeAdjustment],
+    applied: usize,
+) -> Vec<String> {
+    if adjustments.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "  Hindsight: {} correction(s), {applied} episode(s) relabeled",
+        adjustments.len()
+    )];
+    for adjustment in adjustments.iter().rev().take(3) {
+        lines.push(format!(
+            "    {} {:?} {}: {}",
+            adjustment.timestamp.to_rfc3339(),
+            adjustment.adjustment_kind,
+            adjustment.original_episode_id,
+            adjustment.reason
+        ));
+    }
+    lines
+}
 
 /// `roko learn [what] --json` — structured JSON output.
 #[allow(clippy::cast_precision_loss)]
@@ -1195,17 +1543,14 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
     let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut tail: Vec<LearnJsonEpisodeEntry> = Vec::new();
+    let mut window = std::collections::VecDeque::with_capacity(COMPOUNDING_WINDOW);
+    let AdjustedEpisodes {
+        episodes,
+        adjustments,
+        applied,
+    } = AdjustedEpisodes::parse(workdir, &text);
 
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(episode) = serde_json::from_str::<roko_learn::episode_logger::Episode>(trimmed)
-        else {
-            continue;
-        };
-
+    for episode in episodes {
         total += 1;
         if episode.success {
             passed += 1;
@@ -1229,6 +1574,7 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
         if tail.len() > JSON_LATEST_LIMIT {
             tail.remove(0);
         }
+        push_compounding_window(&mut window, episode);
     }
 
     LearnJsonEpisodes {
@@ -1238,6 +1584,12 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
         first_seen: first_seen.map(|ts| ts.to_rfc3339()),
         last_seen: last_seen.map(|ts| ts.to_rfc3339()),
         latest: tail,
+        compounding: roko_learn::aggregate::compute_compounding_metrics(&Vec::from(window)),
+        hindsight: LearnJsonHindsight {
+            adjustments: adjustments.len(),
+            applied,
+            latest: adjustments[adjustments.len().saturating_sub(JSON_LATEST_LIMIT)..].to_vec(),
+        },
     }
 }
 
@@ -1830,17 +2182,14 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
     let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut latest: Option<String> = None;
+    let mut window = std::collections::VecDeque::with_capacity(COMPOUNDING_WINDOW);
+    let AdjustedEpisodes {
+        episodes,
+        adjustments,
+        applied,
+    } = AdjustedEpisodes::parse(workdir, &text);
 
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(episode) = serde_json::from_str::<roko_learn::episode_logger::Episode>(trimmed)
-        else {
-            continue;
-        };
-
+    for episode in episodes {
         count += 1;
         first_seen = Some(match first_seen {
             Some(current) => current.min(episode.timestamp.clone()),
@@ -1863,6 +2212,7 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
                 episode.usage.output_tokens
             )
         ));
+        push_compounding_window(&mut window, episode);
     }
 
     if count == 0 {
@@ -1872,6 +2222,15 @@ pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
     }
     println!("  Range: {}", format_range(first_seen, last_seen));
     println!("  Latest: {}", latest.unwrap_or_else(|| "none".to_string()));
+    for line in format_hindsight_lines(&adjustments, applied) {
+        println!("{line}");
+    }
+    if count > 0 {
+        let metrics = roko_learn::aggregate::compute_compounding_metrics(&Vec::from(window));
+        for line in format_compounding_metrics(&metrics) {
+            println!("{line}");
+        }
+    }
 }
 
 pub(crate) fn print_learn_gate_thresholds(workdir: &std::path::Path) {
@@ -2917,6 +3276,89 @@ mod tests {
             learn_episodes_path(workdir),
             workdir.join(".roko").join("episodes.jsonl")
         );
+    }
+
+    #[tokio::test]
+    async fn learn_episodes_json_reports_compounding_metrics() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = learn_episodes_path(dir.path());
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        // The first four episodes fall out of the window. Within it, every
+        // fourth episode used a playbook and was given knowledge; the rest
+        // say `knowledge_used: false`, as Graph episodes do.
+        let mut lines = String::new();
+        for index in 0..COMPOUNDING_WINDOW + 4 {
+            let mut episode =
+                roko_learn::episode_logger::Episode::new("agent", format!("task-{index}"));
+            episode.success = true;
+            let used = index < 4 || index % 4 == 0;
+            episode
+                .extra
+                .insert("knowledge_used".into(), serde_json::Value::Bool(used));
+            if used {
+                episode
+                    .extra
+                    .insert("playbook_id".into(), serde_json::json!("pb-1"));
+            }
+            lines.push_str(&serde_json::to_string(&episode).unwrap());
+            lines.push('\n');
+        }
+        std::fs::write(&log, lines).unwrap();
+
+        let episodes = collect_episodes_json(dir.path()).await;
+        assert_eq!(episodes.total, COMPOUNDING_WINDOW + 4);
+        assert_eq!(episodes.compounding.episode_window, COMPOUNDING_WINDOW);
+        assert_eq!(episodes.compounding.playbook_hit_rate, 0.25);
+        assert_eq!(episodes.compounding.knowledge_reuse_rate, 0.25);
+
+        let json = serde_json::to_value(&episodes).unwrap();
+        assert_eq!(json["compounding"]["playbook_hit_rate"], 0.25);
+        assert!(json["compounding"]["cost_per_success"].is_number());
+        let human = format_compounding_metrics(&episodes.compounding);
+        assert_eq!(human[1], "    playbook hit rate:    25.0%");
+    }
+
+    /// gap-5be28d: a success that a later verify failure was blamed on
+    /// counts as a failure, and the correction is reported.
+    #[tokio::test]
+    async fn learn_episodes_json_applies_hindsight_adjustments() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = learn_episodes_path(dir.path());
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let mut blamed = roko_learn::episode_logger::Episode::new("agent", "T1");
+        blamed.success = true;
+        let mut kept = roko_learn::episode_logger::Episode::new("agent", "T3");
+        kept.success = true;
+        let lines = [&blamed, &kept]
+            .iter()
+            .map(|episode| serde_json::to_string(episode).unwrap() + "\n")
+            .collect::<String>();
+        std::fs::write(&log, lines).unwrap();
+        let regression = roko_learn::hindsight::EpisodeAdjustment {
+            original_episode_id: blamed.id.clone(),
+            adjustment_kind: roko_learn::hindsight::AdjustmentKind::Regression,
+            old_value: serde_json::json!(true),
+            new_value: serde_json::json!(false),
+            reason: "later gate failure in episode ep-2 was attributed to this task's files".into(),
+            timestamp: chrono::Utc::now(),
+        };
+        let path = roko_learn::hindsight::workspace_adjustments_path(dir.path());
+        roko_learn::hindsight::append_new_adjustments(&path, &[regression]).unwrap();
+
+        let episodes = collect_episodes_json(dir.path()).await;
+        assert_eq!(episodes.total, 2);
+        assert_eq!((episodes.passed, episodes.failed), (1, 1));
+        assert_eq!(episodes.hindsight.adjustments, 1);
+        assert_eq!(episodes.hindsight.applied, 1);
+        assert_eq!(episodes.hindsight.latest[0].original_episode_id, blamed.id);
+
+        let adjustments = roko_learn::hindsight::read_adjustments(&path).unwrap();
+        let human = format_hindsight_lines(&adjustments, 1);
+        assert_eq!(
+            human[0],
+            "  Hindsight: 1 correction(s), 1 episode(s) relabeled"
+        );
+        assert!(human[1].contains("Regression"), "{human:?}");
     }
 
     #[test]

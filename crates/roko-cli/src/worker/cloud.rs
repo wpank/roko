@@ -587,6 +587,7 @@ pub async fn run_code_implementer_cloud(
                 dangerously_skip_permissions: false,
                 log_file: None,
                 worktree_per_task: false,
+                worktree_per_task_explicit: false,
                 rich_topology: false,
                 promote: None,
                 no_tui: true,
@@ -597,6 +598,9 @@ pub async fn run_code_implementer_cloud(
                 only_plans: None,
                 live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
                 force_disk_check: false,
+                effort: None,
+                no_cascade: false,
+                metrics: None,
             })
             .await?;
         let success = exit_code == crate::exit_codes::EXIT_SUCCESS;

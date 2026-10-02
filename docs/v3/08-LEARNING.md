@@ -118,7 +118,7 @@ CompletedRunInput
     +-- 5. SkillLibrary::record_use()
     +-- 6. TaskMetric -> regression history
     +-- 7. ExperimentStore::record_outcome()
-    +-- 8. PatternMiner::ingest_episode()
+    +-- 8. (removed: PatternMiner::ingest_episode(), gap-4adfa7)
     +-- 9. CascadeRouter::update()
     +-- 10. CFactor::compute()
 ```
@@ -483,9 +483,10 @@ the orchestrator retries with the fallback without re-querying the router.
 > **Crate:** `roko-learn` -- **Module:** `bandits.rs`, `model_router.rs`
 > **Academic basis:** Auer, Cesa-Bianchi & Fischer 2002 (UCB1); Li et al. 2010 (LinUCB); Thompson 1933; Garivier & Kaufmann 2016 (Track-and-Stop)
 
-Roko provides three bandit implementations for every repeated decision in the
-system: model routing, prompt variant selection, tool format selection, and
-backend preference.
+Roko provides three bandit implementations for repeated decisions in the
+system: model routing, prompt variant selection and backend preference. A
+fourth, Track-and-Stop for tool-format selection, was removed unwired (see
+4.4).
 
 ### 4.1 UCB1: Upper Confidence Bound (Auer et al. 2002)
 
@@ -621,8 +622,14 @@ theta_a <- A_a^{-1} * b_a
 
 ### 4.4 Track-and-Stop: Best-Arm Identification (Garivier & Kaufmann 2016)
 
-Used for decisions where the optimal choice is fixed (e.g., tool format for a
-given model):
+> **Removed (2026-10-02, find-34a4b5).** `TrackAndStopBandit` and the rest of
+> the tool-format bandit stack (`FormatBandit`, `ProfileBandit`,
+> `EpsilonGreedyBandit`, roko-fs `BanditStore`) were deleted in `310f984b6`.
+> After Runner-v2 nothing selected a tool format with them or fed them an
+> outcome. The algorithm is kept below as design reference.
+
+Designed for decisions where the optimal choice is fixed (e.g., tool format for
+a given model):
 
 ```
 Phase 1: Round-robin
@@ -1450,7 +1457,7 @@ cargo test -p roko-learn
 | 01 | [depth/08-learning/01-episode-logger.md](depth/08-learning/01-episode-logger.md) | Episode schema, append pipeline, HDC fingerprinting, tiered storage, importance scoring, clustering |
 | 02 | [depth/08-learning/02-playbook-store.md](depth/08-learning/02-playbook-store.md) | PlaybookStore, PlaybookRules, trigger system, confidence dynamics, GRASP admission gate, SkillZip compression |
 | 03 | [depth/08-learning/03-cascade-router.md](depth/08-learning/03-cascade-router.md) | Three-stage cascade, stage transitions, provider health, Pareto pruning, lookahead routing, calibration |
-| 04 | [depth/08-learning/04-bandit-algorithms.md](depth/08-learning/04-bandit-algorithms.md) | UCB1 formula and regret bound, Thompson Beta posterior, LinUCB context matrix, Track-and-Stop GLR, BanditBank |
+| 04 | [depth/08-learning/04-bandit-algorithms.md](depth/08-learning/04-bandit-algorithms.md) | UCB1 formula and regret bound, Thompson Beta posterior, LinUCB context matrix, Track-and-Stop GLR (removed), BanditBank |
 | 05 | [depth/08-learning/05-hdc-clustering.md](depth/08-learning/05-hdc-clustering.md) | Incremental DBSCAN, codebook defragmentation, template suggestion, cluster evolution |
 | 06 | [depth/08-learning/06-hindsight-adjustments.md](depth/08-learning/06-hindsight-adjustments.md) | Sub-goal extraction, relabeling protocol, append-only guarantee, SiriuS connection |
 | 07 | [depth/08-learning/07-cfactor.md](depth/08-learning/07-cfactor.md) | Five process variables, learned weights, Goodhart defense, WisdomGate, anti-groupthink |

@@ -359,6 +359,9 @@ pub struct DashboardData {
     pub generation: u64,
     /// Effective spend configuration used by HTTP/runner/TUI projections.
     pub budget: roko_core::config::BudgetConfig,
+    /// Effective `[gates]` configuration. It bounds the retry budgets the gate
+    /// pages show, as it bounds those of plan runs.
+    gates: roko_core::config::GatesConfig,
     /// Cached executor state from the canonical durable Runner projection.
     executor_state: Value,
     /// Durable source supplying `executor_state`.
@@ -478,8 +481,8 @@ impl DashboardData {
         let cascade_router_path = learn_dir.join(CASCADE_ROUTER_FILE);
         let cfactor_path = learn_dir.join("c-factor.jsonl");
         let events_path = roko_dir.join("state").join("events.json");
-        let budget = roko_core::config::loader::load_config_unified(&root)
-            .map(|config| config.budget)
+        let (budget, gates) = roko_core::config::loader::load_config_unified(&root)
+            .map(|config| (config.budget, config.gates))
             .unwrap_or_default();
 
         let (runner_projection, runner_projection_status, runner_projection_error) =
@@ -584,7 +587,8 @@ impl DashboardData {
             Some(thresholds) => serde_json::from_value(thresholds.clone()).ok(),
             None if runner_projection_status == "invalid" => None,
             None => load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path),
-        };
+        }
+        .map(|thresholds| bounded_by_gates(thresholds, &gates));
         let gate_thresholds_stamp = file_stamp(&gate_thresholds_path);
         let gate_results_page = if runner_projection_status == "invalid" {
             GateResultsPageData::default()
@@ -644,6 +648,7 @@ impl DashboardData {
             root,
             generation,
             budget,
+            gates,
             executor_state: state,
             runner_projection_source,
             runner_projection_path,
@@ -752,7 +757,8 @@ impl DashboardData {
                     {
                         Some(thresholds) => serde_json::from_value(thresholds.clone()).ok(),
                         None => load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path),
-                    };
+                    }
+                    .map(|thresholds| bounded_by_gates(thresholds, &self.gates));
                 }
                 Err(error) => {
                     self.executor_state = Value::Null;
@@ -816,7 +822,8 @@ impl DashboardData {
             && self.runner_projection_status != "invalid"
         {
             self.gate_thresholds_stamp = stamp;
-            self.adaptive_thresholds = load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path);
+            self.adaptive_thresholds = load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path)
+                .map(|thresholds| bounded_by_gates(thresholds, &self.gates));
             self.rebuild_gate_results_page();
             generation_changed = true;
         }
@@ -3141,6 +3148,27 @@ struct GateAggregate {
     last_run: Option<GateSignalSummary>,
 }
 
+/// Thresholds as plan runs use them: the `[gates]` retry bounds and skip
+/// streak over the learned per-rung statistics, which is what
+/// `graph_task_dispatch::retry_budget::TaskRetryBudgets::load` applies. The
+/// persisted file carries no bounds, so without this the suggested retries
+/// follow the crate's built-in 1..=5 rather than the run's budgets.
+pub(crate) fn bounded_by_gates(
+    mut thresholds: AdaptiveThresholds,
+    gates: &roko_core::config::GatesConfig,
+) -> AdaptiveThresholds {
+    thresholds.apply_gates_config(gates);
+    thresholds
+}
+
+/// The effective `[gates]` section of the workspace at `root`; the defaults
+/// when its config does not load.
+pub(crate) fn workspace_gates_config(root: &Path) -> roko_core::config::GatesConfig {
+    roko_core::config::loader::load_config_unified(root)
+        .map(|config| config.gates)
+        .unwrap_or_default()
+}
+
 /// Build the adaptive-threshold table rows for the gate-results page.
 ///
 /// Shared by the disk-mode loader and the connected-mode push path, which
@@ -4047,6 +4075,54 @@ mod tests {
     }
 
     #[test]
+    fn displayed_retry_suggestions_follow_gates_config() {
+        // A rung that always passes.
+        let mut thresholds = AdaptiveThresholds::new();
+        for _ in 0..20 {
+            thresholds.observe(1, true);
+        }
+        let retries = |rows: &[GateThresholdRow]| {
+            rows.iter()
+                .find(|row| row.rung == 1)
+                .map(|row| row.current_threshold)
+        };
+        // The crate's built-in floor suggests 1 retry; a plan run gives a task
+        // without an authored `max_retries` the `[gates]` floor.
+        assert_eq!(retries(&gate_threshold_rows(&thresholds)), Some(1));
+        let gates = roko_core::config::GatesConfig {
+            adaptive_min_retries: 4,
+            ..roko_core::config::GatesConfig::default()
+        };
+        let bounded = bounded_by_gates(thresholds.clone(), &gates);
+        assert_eq!(retries(&gate_threshold_rows(&bounded)), Some(4));
+
+        // The disk loader reads `[gates]` from the workspace config.
+        let tmpdir = tempdir().expect("tempdir");
+        let learn_dir = tmpdir.path().join(LEARN_DIR);
+        write_json(&learn_dir.join(GATE_THRESHOLDS_FILE), &thresholds);
+        let memory_dir = tmpdir.path().join(MEMORY_DIR);
+        fs::create_dir_all(&memory_dir).expect("memory dir");
+        fs::write(memory_dir.join(EPISODES_FILE), "").expect("empty episodes");
+        fs::write(
+            tmpdir.path().join("roko.toml"),
+            "[gates]\nadaptive_min_retries = 4\n",
+        )
+        .expect("roko.toml");
+        let data = DashboardData::load_best_effort(tmpdir.path());
+        assert_eq!(retries(&data.gate_results_page.threshold_rows), Some(4));
+
+        // So does the connected view, which parses the pushed thresholds.
+        let mut state = crate::tui::state::TuiState::default();
+        state.workdir = tmpdir.path().to_path_buf();
+        let snapshot = roko_core::dashboard_snapshot::DashboardSnapshot {
+            gate_thresholds_json: serde_json::to_string(&thresholds).expect("thresholds json"),
+            ..roko_core::dashboard_snapshot::DashboardSnapshot::default()
+        };
+        state.update_from_dashboard_snapshot(&snapshot);
+        assert_eq!(retries(&state.gate_results_page.threshold_rows), Some(4));
+    }
+
+    #[test]
     fn experiments_page_renders_with_store() {
         let tmpdir = tempdir().expect("tempdir");
         let learn_dir = tmpdir.path().join(".roko/learn");
@@ -4180,7 +4256,8 @@ mod tests {
         assert!(rendered.contains("GateThresholds"));
         assert!(rendered.contains("Experiments"));
         assert!(rendered.contains("SkillLibrary"));
-        assert!(rendered.contains("PatternMiner"));
+        assert!(rendered.contains("MetaPatterns"));
+        assert!(!rendered.contains("PatternMiner"));
         assert!(rendered.contains("ProviderHealth"));
         assert!(rendered.contains("KnowledgeStore"));
         assert!(rendered.contains("24h Efficiency Trends"));

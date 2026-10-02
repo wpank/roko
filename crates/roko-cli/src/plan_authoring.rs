@@ -280,13 +280,28 @@ pub struct RevisionOutcome {
 ///
 /// The prompt begins with `Revise the plan below according to the feedback.`,
 /// embeds the current `tasks.toml` verbatim in a fenced `toml` block, and
-/// asks for a complete revised file in one fenced `toml` block.
-pub fn build_revision_prompt(plan_id: &str, current_toml: &str, feedback: &str) -> String {
+/// asks for a complete revised file in one fenced `toml` block. When the
+/// plan's last run failed, `last_failure` says how, so the agent can target
+/// it without the user pasting it into the feedback (gap-3bea93).
+pub fn build_revision_prompt(
+    plan_id: &str,
+    current_toml: &str,
+    feedback: &str,
+    last_failure: Option<&str>,
+) -> String {
+    let failure = match last_failure {
+        Some(failure) => format!(
+            "The plan's last run failed. Unless the feedback says otherwise, \
+             revise the plan so it does not fail this way again:\n{failure}\n\n"
+        ),
+        None => String::new(),
+    };
     format!(
         "Revise the plan below according to the feedback.\n\n\
          Current tasks.toml (plan `{plan_id}`):\n\n\
          ```toml\n{current_toml}\n```\n\n\
          Feedback:\n{feedback}\n\n\
+         {failure}\
          Instructions:\n\
          - Output the complete revised file as a single fenced ```toml block.\n\
          - Keep `[meta] plan = \"{plan_id}\"` exactly as shown.\n\
@@ -350,13 +365,51 @@ pub fn apply_revision_output(
     })
 }
 
+/// Most failed tasks a revision prompt lists from the plan's last run.
+const MAX_REVISION_FAILED_TASKS: usize = 5;
+
+/// Longest last-run failure summary a revision prompt carries, in characters.
+const MAX_REVISION_FAILURE_CHARS: usize = 2_000;
+
+/// How the plan's last run failed, for a revision prompt: each failed task with
+/// why it failed and its last error, from the report `roko diagnose` prints.
+/// `None` when the plan has no failed run on record.
+fn last_run_failure(workdir: &Path, plan_id: &str) -> Option<String> {
+    use crate::commands::diagnose::{TaskState, build_report};
+
+    let report = build_report(workdir, plan_id, false).ok()?;
+    if report.status != "failed" {
+        return None;
+    }
+    let lines: Vec<String> = report
+        .tasks
+        .iter()
+        .filter(|task| task.state == TaskState::Failed)
+        .take(MAX_REVISION_FAILED_TASKS)
+        .map(|task| {
+            let error = task
+                .last_error
+                .as_deref()
+                .map_or_else(String::new, |error| format!("; last error: {error}"));
+            format!("- task `{}`: {}{error}", task.task_id, task.reason)
+        })
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let summary = lines.join("\n");
+    Some(summary.chars().take(MAX_REVISION_FAILURE_CHARS).collect())
+}
+
 /// Run the planning agent to revise an existing plan and write the result.
 ///
 /// Reads the current `tasks.toml`, invokes the strategist agent on the planner
 /// model ([`resolve_planner_model`]) with the revision prompt, then calls
-/// [`apply_revision_output`].  On a validation rejection the agent is retried
-/// once with the diagnostics appended to the feedback before the final outcome
-/// is returned.
+/// [`apply_revision_output`]. The prompt carries how the plan's last run failed
+/// when it did ([`build_revision_prompt`]). On a validation rejection the agent
+/// is asked again, with the diagnostics appended to the feedback, up to
+/// `[serve] revision_max_retries` times (once by default) before the final
+/// outcome is returned.
 ///
 /// Every agent call's spend is recorded against the plan through
 /// [`AuthoringSpend::revision`], and published on `live` when given.
@@ -373,6 +426,7 @@ pub async fn revise_plan_source(
         .with_context(|| format!("read {}", tasks_path.display()))?;
 
     let resolved = crate::load_resolved_config(workdir)?;
+    let max_retries = resolved.config.serve.revision_max_retries;
     let planner_model = resolve_planner_model(workdir, None, "plan revision")?;
     let system_prompt = crate::plan_generate::build_generator_system_prompt(workdir);
     let spend = AuthoringSpend::revision(workdir, plan_id, live);
@@ -401,31 +455,42 @@ pub async fn revise_plan_source(
         }
     };
 
+    let last_failure = last_run_failure(workdir, plan_id);
+
     // First attempt.
-    let first_prompt = build_revision_prompt(plan_id, &current_toml, feedback);
+    let first_prompt =
+        build_revision_prompt(plan_id, &current_toml, feedback, last_failure.as_deref());
     let output = run_agent(first_prompt).await?;
 
-    let outcome = apply_revision_output(workdir, plan_id, tasks_path, &output, models)?;
-    if outcome.written {
-        return Ok(outcome);
+    let mut outcome = apply_revision_output(workdir, plan_id, tasks_path, &output, models)?;
+
+    // Ask again while the revision is rejected, each time with the last
+    // rejection's diagnostics appended to the feedback (gap-b3e513).
+    for _ in 0..max_retries {
+        if outcome.written {
+            break;
+        }
+        let diag_text: String = outcome
+            .report
+            .diagnostics
+            .iter()
+            .map(|d| format!("- [{}] {}", d.rule_id, d.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let retry_feedback = format!(
+            "{feedback}\n\nThe previous revision was rejected with the following diagnostics:\n{diag_text}\n\
+             Please fix these issues in the revised plan."
+        );
+        let retry_prompt = build_revision_prompt(
+            plan_id,
+            &current_toml,
+            &retry_feedback,
+            last_failure.as_deref(),
+        );
+        let output = run_agent(retry_prompt).await?;
+        outcome = apply_revision_output(workdir, plan_id, tasks_path, &output, models)?;
     }
-
-    // Retry once with diagnostics appended to the feedback.
-    let diag_text: String = outcome
-        .report
-        .diagnostics
-        .iter()
-        .map(|d| format!("- [{}] {}", d.rule_id, d.message))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let retry_feedback = format!(
-        "{feedback}\n\nThe previous revision was rejected with the following diagnostics:\n{diag_text}\n\
-         Please fix these issues in the revised plan."
-    );
-    let retry_prompt = build_revision_prompt(plan_id, &current_toml, &retry_feedback);
-    let output2 = run_agent(retry_prompt).await?;
-
-    apply_revision_output(workdir, plan_id, tasks_path, &output2, models)
+    Ok(outcome)
 }
 
 // ─── Spend accounting ─────────────────────────────────────────────────────────
@@ -439,8 +504,8 @@ pub const REVISION_SPEND_TASK_ID: &str = "revise";
 /// Role that plan generation and revision run their agents as.
 const AUTHORING_ROLE: &str = "strategist";
 
-/// Records the provider spend of one plan generation or revision, one agent
-/// call at a time.
+/// Records the provider spend of one plan generation or revision, or of a
+/// one-off agent operation outside any plan, one agent call at a time.
 ///
 /// A task dispatch records its spend three ways: a cost record in
 /// `.roko/learn/costs.jsonl`, an efficiency row in
@@ -451,10 +516,14 @@ const AUTHORING_ROLE: &str = "strategist";
 /// instead: the same three records, attributed to the plan under a pseudo task
 /// id ([`GENERATION_SPEND_TASK_ID`] or [`REVISION_SPEND_TASK_ID`]). Each call
 /// is recorded as it returns, so a retry or a failed operation is counted too.
+/// Research, `roko do` and PRD drafting record through
+/// [`AuthoringSpend::operation`]: the same records, with no plan id, under the
+/// operation's own task id and role.
 pub struct AuthoringSpend {
     learn_dir: PathBuf,
     plan_id: String,
-    task_id: &'static str,
+    task_id: String,
+    role: String,
     live: Option<TuiBridge>,
     calls: AtomicU32,
 }
@@ -463,20 +532,47 @@ impl AuthoringSpend {
     /// Spend of generating the plan `plan_id` in `workdir`.
     #[must_use]
     pub fn generation(workdir: &Path, plan_id: &str, live: Option<TuiBridge>) -> Self {
-        Self::new(workdir, plan_id, GENERATION_SPEND_TASK_ID, live)
+        Self::new(
+            workdir,
+            plan_id,
+            GENERATION_SPEND_TASK_ID,
+            AUTHORING_ROLE,
+            live,
+        )
     }
 
     /// Spend of revising the plan `plan_id` in `workdir`.
     #[must_use]
     pub fn revision(workdir: &Path, plan_id: &str, live: Option<TuiBridge>) -> Self {
-        Self::new(workdir, plan_id, REVISION_SPEND_TASK_ID, live)
+        Self::new(
+            workdir,
+            plan_id,
+            REVISION_SPEND_TASK_ID,
+            AUTHORING_ROLE,
+            live,
+        )
     }
 
-    fn new(workdir: &Path, plan_id: &str, task_id: &'static str, live: Option<TuiBridge>) -> Self {
+    /// Spend of a one-off agent operation in `workdir` outside any plan, such
+    /// as research, `roko do` or PRD drafting, recorded under `task_id` and
+    /// `role` (bug-86ff56).
+    #[must_use]
+    pub fn operation(workdir: &Path, task_id: &str, role: &str) -> Self {
+        Self::new(workdir, "", task_id, role, None)
+    }
+
+    fn new(
+        workdir: &Path,
+        plan_id: &str,
+        task_id: &str,
+        role: &str,
+        live: Option<TuiBridge>,
+    ) -> Self {
         Self {
             learn_dir: roko_fs::RokoLayout::for_project(workdir).learn_dir(),
             plan_id: plan_id.to_string(),
-            task_id,
+            task_id: task_id.to_string(),
+            role: role.to_string(),
             live,
             calls: AtomicU32::new(0),
         }
@@ -494,14 +590,20 @@ impl AuthoringSpend {
         let cache_write_tokens = u64::from(usage.cache_create_tokens);
         let succeeded = call.exit_code == 0;
         let timestamp = chrono::Utc::now().to_rfc3339();
+        // The plan and its pseudo task, or an operation's task alone.
+        let scope = if self.plan_id.is_empty() {
+            self.task_id.clone()
+        } else {
+            format!("{}/{}", self.plan_id, self.task_id)
+        };
 
         let cost_record = CostRecord {
             timestamp: timestamp.clone(),
             model: call.model.clone(),
             provider: call.provider.clone(),
-            role: AUTHORING_ROLE.to_string(),
+            role: self.role.clone(),
             plan_id: self.plan_id.clone(),
-            task_id: self.task_id.to_string(),
+            task_id: self.task_id.clone(),
             complexity_band: "standard".to_string(),
             input_tokens,
             output_tokens,
@@ -516,13 +618,13 @@ impl AuthoringSpend {
         self.append("costs.jsonl", &cost_record).await;
 
         let efficiency_event = AgentEfficiencyEvent {
-            agent_id: format!("{}/{}", self.plan_id, self.task_id),
-            role: AUTHORING_ROLE.to_string(),
+            agent_id: scope.clone(),
+            role: self.role.clone(),
             backend: call.provider.clone(),
             model: call.model.clone(),
             plan_id: self.plan_id.clone(),
-            task_id: self.task_id.to_string(),
-            attempt_id: format!("{}/{}/a{attempt}", self.plan_id, self.task_id),
+            task_id: self.task_id.clone(),
+            attempt_id: format!("{scope}/a{attempt}"),
             input_tokens,
             output_tokens,
             reasoning_tokens: u64::from(usage.reasoning_tokens),
@@ -556,13 +658,13 @@ impl AuthoringSpend {
         if let Some(live) = &self.live {
             live.token_usage(
                 &self.plan_id,
-                self.task_id,
+                &self.task_id,
                 input_tokens,
                 output_tokens,
                 cache_read_tokens,
                 cache_write_tokens,
             );
-            live.efficiency_event(&self.plan_id, self.task_id, "cost_usd", cost_usd);
+            live.efficiency_event(&self.plan_id, &self.task_id, "cost_usd", cost_usd);
         }
     }
 
@@ -588,7 +690,7 @@ impl AuthoringSpend {
             tracing::warn!(
                 path = %path.display(),
                 plan_id = %self.plan_id,
-                task_id = self.task_id,
+                task_id = %self.task_id,
                 %error,
                 "authoring spend write failed (best-effort)"
             );
@@ -791,6 +893,36 @@ command = "echo ok"
     }
 
     // ── apply_revision_output tests ───────────────────────────────────────
+
+    /// gap-3bea93: a revision prompt says how the plan's last run failed,
+    /// before the instructions, and says nothing about a run when it has no
+    /// failure to report.
+    #[test]
+    fn revision_prompt_carries_the_last_run_failure() {
+        let current = minimal_valid_toml("my-plan");
+        let failure = "- task `T1`: its verify step failed; last error: test parse ... FAILED";
+
+        let prompt = build_revision_prompt("my-plan", &current, "split T1", Some(failure));
+        let section = prompt.find("last run failed").expect("failure section");
+        assert!(prompt.contains(failure), "{prompt}");
+        assert!(section > prompt.find("split T1").expect("feedback"));
+        assert!(section < prompt.find("Instructions:").expect("instructions"));
+
+        let plain = build_revision_prompt("my-plan", &current, "split T1", None);
+        assert!(!plain.contains("last run"), "{plain}");
+    }
+
+    /// A plan with no run on record has no failure to put in a revision
+    /// prompt.
+    #[test]
+    fn a_plan_that_never_ran_has_no_last_run_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plan_dir = tmp.path().join("plans").join("my-plan");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(plan_dir.join("tasks.toml"), minimal_valid_toml("my-plan")).unwrap();
+
+        assert_eq!(last_run_failure(tmp.path(), "my-plan"), None);
+    }
 
     fn wrap_toml(toml: &str) -> String {
         format!("Here is the revised plan:\n\n```toml\n{toml}\n```\n")

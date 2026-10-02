@@ -189,6 +189,7 @@ pub mod output_format;
 pub mod pipe;
 pub mod plan;
 pub mod plan_authoring;
+pub mod plan_brief;
 pub mod plan_generate;
 pub mod plan_generator;
 pub mod plan_policy;
@@ -206,12 +207,14 @@ pub mod run;
 pub mod run_inline;
 pub mod runner;
 pub mod runtime_feedback;
+pub mod safety_provenance;
 pub mod scaffold;
 pub mod scope_resolver;
 pub mod secrets;
 pub mod share;
 pub mod snapshot_migrate;
 pub mod snapshot_reconcile;
+pub mod spec_gate;
 pub mod spinner;
 pub mod status;
 pub mod subscriptions;
@@ -236,8 +239,7 @@ pub use roko_serve as serve;
 
 pub use config::{
     AgentConfig, Config, ConfigPaths, ConfigSources, DreamsConfig, ExecAgentConfig, GateConfig,
-    PromptConfig, PromptFile, RepoEntry, RepoRegistry, ResolvedConfig, Source, ToolsConfig,
-    load_resolved_config,
+    PromptConfig, RepoEntry, RepoRegistry, ResolvedConfig, Source, load_resolved_config,
 };
 
 pub use config_cmd::{EditTarget, WizardInputs, run_init_wizard};

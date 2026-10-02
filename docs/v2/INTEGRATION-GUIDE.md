@@ -1,6 +1,6 @@
 # Roko Integration Guide
 
-> **Implementation status (verified 2026-09-15):** IMPLEMENTED — the plan-execute-gate-persist loop works end-to-end. Graph is the sole execution engine (`PlanEngine::Graph`; `WorkflowEngine` retired by #276; its serializable contract types are in `roko-runtime::workflow_contract`; Runner-v2 retained as `--engine legacy`). `roko-serve` exposes ~376 canonical routes (~421 incl. aliases). `roko-gate` provides 19 gates in a 7-rung pipeline. All provider kinds, MCP passthrough, ACP, TUI, and GitHub integration are wired. See `.roko/GAPS.md` for remaining product residuals. The `WorkflowEngine` code diagram in Section 2 and the code example in Section 18 are preserved as historical reference; the production path is Graph-based.
+> **Implementation status (verified 2026-09-15):** IMPLEMENTED — the plan-execute-gate-persist loop works end-to-end. Graph is the sole execution engine (`PlanEngine::Graph`; `WorkflowEngine` retired by #276; its serializable contract types are in `roko-runtime::workflow_contract`; Runner-v2 retained as `--engine legacy`). `roko-serve` exposes the routes counted in `tools/http_route_inventory.snapshot.json`. `roko-gate` provides 19 gates in a 7-rung pipeline. All provider kinds, MCP passthrough, ACP, TUI, and GitHub integration are wired. See `.roko/GAPS.md` for remaining product residuals. The `WorkflowEngine` code diagram in Section 2 and the code example in Section 18 are preserved as historical reference; the production path is Graph-based.
 
 Roko is a self-developing agent toolkit: you describe work in plain English, and Roko generates
 an implementation plan, dispatches Claude agents to execute it, validates the result with a gate
@@ -547,18 +547,16 @@ force_tier = "focused"         # pin to a complexity tier
 <details>
 <summary>CaMeL dual-LLM isolation (SAFE-07)</summary>
 
-The `data_llm` section enables CaMeL-style dual-LLM isolation: untrusted content (e.g., web
-search results, user-provided data) is processed by a smaller isolated model before being
-passed to the main agent. This prevents prompt injection from untrusted sources.
+`[agent.data_llm]` configures a separate, tool-less model that reads untrusted tool output (MCP,
+plugin, web-search, retrieval and network tool results) for every agent roko builds for an API
+provider and for ACP's tool loops, so the main model sees only the extracted summary and facts, or
+a notice that they were withheld. It cannot cover CLI providers, which run their own tool loops.
 
 ```toml
 [agent.data_llm]
-model = "claude-haiku-3-5"   # smaller model for untrusted content isolation
-max_tokens = 4096
-temperature = 0.0
-strip_tool_calls = true      # Data LLM cannot produce tool calls
-sanitize_input = true        # strip known injection patterns before sending
-# output_schema = { ... }    # optional JSON Schema for Data LLM output validation
+model = "claude-haiku-4-5"   # a model roko calls over an API
+timeout_ms = 30000
+max_input_bytes = 32768
 ```
 
 </details>
@@ -676,19 +674,15 @@ default, Roko runs `cargo build` (rung 0), `cargo clippy` (rung 1), `cargo test`
 a `git diff` sanity check (rung 3). If any gate fails, the orchestrator retries up to
 `max_iterations` times before giving up. Gates are what prevent agents from shipping broken code.
 
-For non-Rust projects, you can replace the default gates with custom shell commands via
-`[gates.domain_gates]`.
+For non-Rust projects, declare your own gate commands as `[[gates.rungs]]` (see Section 11),
+and give each plan task its own `verify` commands. (`[gates.domain_gates]` was removed: no gate
+ran its commands.)
 
 ```toml
 [gates]
 clippy_enabled = true    # run clippy/lint gate, default: true
 skip_tests = false       # skip test gate entirely, default: false
 max_iterations = 3       # max gate retry iterations before giving up, default: 3
-
-# Per-domain gate overrides (keys are domain labels):
-[gates.domain_gates]
-research = ["shell:true"]    # research tasks skip compile/test
-docs = ["shell:true"]        # docs tasks skip compile/test
 ```
 
 See [Section 11: Gate Pipeline Configuration](#11-gate-pipeline-configuration) for the full
@@ -770,9 +764,7 @@ knowledge_error_patterns = true    # error signature pattern matching, default: 
 learning_min_occurrences = 2       # min occurrences before promoting rules, default: 2
 file_intel_max_entries = 15        # max file-intel entries per task, default: 15
 warning_max_entries = 5            # max warning entries per task, default: 5
-replan_on_gate_failure = true      # trigger plan revision on repeated gate failure
-replan_max_per_plan = 2            # max gate-failure replans per plan, default: 2
-replan_gate_attempts = 3           # consecutive failures before replan, default: 3
+replan_on_gate_failure = true      # LLM reflection on each failed verify (no plan revision)
 use_lookahead_router = false       # enable lookahead cost-saving tier downgrades
 lookahead_threshold = 0.7          # success probability floor for downgrade, default: 0.7
 ```
@@ -1869,13 +1861,16 @@ Custom gates wrap any shell command. This is how you adapt the gate pipeline for
 projects or add security checks:
 
 ```toml
-[gates.domain_gates]
-# Domain "security" runs cargo audit instead of clippy:
-security = ["shell:cargo audit --deny warnings"]
-
-# Domain "research" skips compile/test entirely:
-research = ["shell:true"]
+# Every plan task runs the required rungs after its own verify commands.
+[[gates.rungs]]
+name = "audit"
+command = "cargo audit --deny warnings"
+timeout_secs = 120
+required = true
 ```
+
+`[gates.domain_gates]` was removed (gap-7a3527): no gate ran its commands. Give the plan tasks
+of a domain their own `verify` commands instead.
 
 In `WorkflowRunConfig` (programmatic API):
 
@@ -1916,19 +1911,17 @@ gate_pass_rate_floor = 0.65   # never skip rungs unless pass rate exceeds this
 
 ### Gate failure replanning
 
-When gate failures exhaust the autofix budget and the iteration limit,
-`learning.replan_on_gate_failure` triggers a plan revision — the system generates a new
-implementation plan with the gate failure context injected as additional requirements:
+Graph runs never revise a plan on gate failure: a failed task is retried up to its
+`max_retries`. With `learning.replan_on_gate_failure = true` and a cheap model available, each
+failed verify also gets an LLM reflection, saved to `.roko/learn/post-gate-reflections.json`.
 
 ```toml
 [learning]
 replan_on_gate_failure = true
-replan_max_per_plan = 2      # max plan revisions per plan
-replan_gate_attempts = 3     # consecutive failures before revision triggers
 ```
 
-The replan emits `RokoEvent::PlanRevision` on the global event bus, which triggers a new
-planning agent pass.
+`learning.replan_max_per_plan` and `learning.replan_gate_attempts` were removed (gap-7a3527):
+with no plan revision, they limited nothing.
 
 ---
 
@@ -2311,9 +2304,9 @@ When gates fail the orchestrator tries three recovery strategies in order:
 1. **Autofix** — spawn a fast model (`conductor.auto_fix_model`) with the gate failure output
    injected as context. Attempts up to `conductor.max_auto_fix_attempts` times.
 
-2. **Replan** — when autofix budget is exhausted and `learning.replan_on_gate_failure = true`,
-   a new planning agent pass runs with the gate failure context. Happens at most
-   `learning.replan_max_per_plan` times per plan.
+2. **Retry** — Graph runs do not replan: the task is retried up to its `max_retries`, and with
+   `learning.replan_on_gate_failure = true` each failed verify gets an LLM reflection (see
+   *Gate failure replanning*).
 
 3. **Halt** — if replan budget is also exhausted, the task is marked failed and the plan is
    halted. Inspect with `roko plan show <plan-id>`.

@@ -23,9 +23,9 @@ On top of the schemas it checks the honesty rules they cannot express (S08 §4.1
 The schemas enforce the rest: `simulated` is always false, and every MetricRecord lists at least one run id.
 
 Usage: validate.py KIND FILE...
-  KIND is task, feature, run-record, metric-record, price-snapshot or ledger. A .json file holds one document, a
-  .jsonl file one per line, and a .toml file a price snapshot. Exit status 0 means every document is valid, 1 that at
-  least one is not, 2 a usage error.
+  KIND is task, feature, run-record, metric-record, price-snapshot, ledger or experiment. A .json file holds one
+  document, a .jsonl file one per line, and a .toml file a price snapshot or an experiment manifest. Exit status 0
+  means every document is valid, 1 that at least one is not, 2 a usage error.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_DIR = Path(__file__).resolve().parent
-KINDS = ("task", "feature", "run-record", "metric-record", "price-snapshot", "ledger")
+KINDS = ("task", "feature", "run-record", "metric-record", "price-snapshot", "ledger", "experiment")
 
 KEYWORDS = frozenset({"type", "required", "enum", "const", "properties", "items", "minItems", "additionalProperties"})
 ANNOTATIONS = frozenset({"$schema", "$id", "$comment", "title", "description"})

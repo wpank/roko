@@ -9,6 +9,11 @@
 //! pricing, so the TUI and the learning layer stop re-implementing substring
 //! matchers. Pricing rows come from [`BUILTIN_PRICING`].
 
+use std::collections::HashSet;
+use std::sync::OnceLock;
+
+use parking_lot::Mutex;
+
 use crate::agent::{ModelTier, ProviderKind};
 
 /// A single entry in the built-in model registry.
@@ -223,12 +228,8 @@ pub fn builtin_model(slug: &str) -> Option<&'static BuiltinModel> {
 
 /// Pricing for a well-known model, in USD per million tokens.
 ///
-/// Rates are seeded from the cost tables already present in the workspace
-/// (`roko-learn/src/cost_table.rs`, `roko-agent/src/task_runner.rs`,
-/// `roko-agent/src/provider/codex_cli/stream.rs`) and from
-/// `examples/roko-perplexity.toml` for Sonar. Cache-write rows marked
-/// "derived" follow the `CostTable::from_config` convention
-/// (`input * 1.25`) where no explicit rate exists in-repo.
+/// The rows are in [`BUILTIN_PRICING`], which names the price page behind
+/// each rate and the date it was checked.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelPricing {
     /// Cost in USD per million input tokens.
@@ -245,18 +246,27 @@ pub struct ModelPricing {
 
 /// Pricing rows for well-known models, keyed by canonical slug.
 ///
-/// Lookup uses the same exact-then-longest-prefix rule as
-/// `CostTable::lookup`, so date- or variant-suffixed slugs
+/// Each provider block names the price page its rates come from and the date
+/// they were checked against it (bug-3de629). Rates are the standard tier for
+/// prompts under 200K tokens. A cache read is a cached input token; a cache
+/// write is billed as input where the provider publishes no write price. Rows
+/// no current price page lists keep the rates they had and are named in
+/// [`UNVERIFIED_PRICING`].
+///
+/// Lookup matches a slug exactly or as a snapshot of a key
+/// ([`is_snapshot_of`]), as `CostTable::lookup` does, so dated slugs
 /// (`claude-sonnet-4-6-20250514`) resolve to their base model's rates.
 pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
-    // Anthropic — rates match cost_table.rs / task_runner.rs.
+    // Anthropic: https://platform.claude.com/docs/en/about-claude/pricing,
+    // checked 2026-10-01. Cache reads are 0.1x input and 5-minute cache
+    // writes 1.25x input.
     (
         "claude-opus-4-6",
         ModelPricing {
-            input_per_m: 15.00,
-            output_per_m: 75.00,
-            cache_read_per_m: 3.75,
-            cache_write_per_m: 18.75,
+            input_per_m: 5.00,
+            output_per_m: 25.00,
+            cache_read_per_m: 0.50,
+            cache_write_per_m: 6.25,
             tokenizer_ratio: 1.0,
         },
     ),
@@ -273,21 +283,22 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
     (
         "claude-haiku-4-5",
         ModelPricing {
-            input_per_m: 0.80,
-            output_per_m: 4.00,
-            cache_read_per_m: 0.08,
-            cache_write_per_m: 1.00,
+            input_per_m: 1.00,
+            output_per_m: 5.00,
+            cache_read_per_m: 0.10,
+            cache_write_per_m: 1.25,
             tokenizer_ratio: 1.0,
         },
     ),
-    // Z.AI GLM — rates match cost_table.rs / task_runner.rs.
+    // Z.AI GLM: https://docs.z.ai/guides/overview/pricing, checked
+    // 2026-10-01. No cache-write price (cache storage is free for now).
     (
         "glm-5.1",
         ModelPricing {
             input_per_m: 1.40,
             output_per_m: 4.40,
             cache_read_per_m: 0.26,
-            cache_write_per_m: 1.75,
+            cache_write_per_m: 1.40,
             tokenizer_ratio: 1.05,
         },
     ),
@@ -296,12 +307,14 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
         ModelPricing {
             input_per_m: 1.00,
             output_per_m: 3.20,
-            cache_read_per_m: 0.50,
-            cache_write_per_m: 1.25,
+            cache_read_per_m: 0.20,
+            cache_write_per_m: 1.00,
             tokenizer_ratio: 1.05,
         },
     ),
-    // Moonshot Kimi — rates match cost_table.rs / task_runner.rs.
+    // Moonshot Kimi: unverified. https://platform.kimi.ai/docs/pricing/chat
+    // no longer lists kimi-k2.5 (checked 2026-10-01), so these are the rates
+    // this table had before that check.
     (
         "kimi-k2.5",
         ModelPricing {
@@ -312,26 +325,46 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
             tokenizer_ratio: 0.98,
         },
     ),
-    // OpenAI — rates from the OpenAI pricing page; gpt-5.2/5.4 rates match
-    // cost_table.rs; gpt-5.5 aligns with the gpt-5 rate in
-    // roko-compose/src/enrichment/estimate.rs.
+    // OpenAI: https://developers.openai.com/api/docs/pricing, standard tier,
+    // short context, checked 2026-10-01. Only gpt-5.6-sol has a cache-write
+    // price.
     (
         "gpt-4o",
         ModelPricing {
             input_per_m: 2.50,
             output_per_m: 10.00,
             cache_read_per_m: 1.25,
-            cache_write_per_m: 3.13,
+            cache_write_per_m: 2.50,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    (
+        "gpt-4o-mini",
+        ModelPricing {
+            input_per_m: 0.15,
+            output_per_m: 0.60,
+            cache_read_per_m: 0.075,
+            cache_write_per_m: 0.15,
             tokenizer_ratio: 1.0,
         },
     ),
     (
         "o3",
         ModelPricing {
-            input_per_m: 10.00,
-            output_per_m: 40.00,
-            cache_read_per_m: 2.50,
-            cache_write_per_m: 12.50,
+            input_per_m: 2.00,
+            output_per_m: 8.00,
+            cache_read_per_m: 0.50,
+            cache_write_per_m: 2.00,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    (
+        "o3-mini",
+        ModelPricing {
+            input_per_m: 1.10,
+            output_per_m: 4.40,
+            cache_read_per_m: 0.55,
+            cache_write_per_m: 1.10,
             tokenizer_ratio: 1.0,
         },
     ),
@@ -341,17 +374,17 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
             input_per_m: 1.10,
             output_per_m: 4.40,
             cache_read_per_m: 0.275,
-            cache_write_per_m: 1.375,
+            cache_write_per_m: 1.10,
             tokenizer_ratio: 1.0,
         },
     ),
     (
         "gpt-5.2",
         ModelPricing {
-            input_per_m: 2.00,
-            output_per_m: 8.00,
-            cache_read_per_m: 0.50,
-            cache_write_per_m: 2.50,
+            input_per_m: 1.75,
+            output_per_m: 14.00,
+            cache_read_per_m: 0.175,
+            cache_write_per_m: 1.75,
             tokenizer_ratio: 1.0,
         },
     ),
@@ -359,45 +392,44 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
         "gpt-5.4",
         ModelPricing {
             input_per_m: 2.50,
-            output_per_m: 10.00,
-            cache_read_per_m: 0.63,
-            cache_write_per_m: 3.13,
+            output_per_m: 15.00,
+            cache_read_per_m: 0.25,
+            cache_write_per_m: 2.50,
             tokenizer_ratio: 1.0,
         },
     ),
     (
         "gpt-5.4-mini",
         ModelPricing {
-            input_per_m: 0.40,
-            output_per_m: 1.60,
-            cache_read_per_m: 0.10,
-            cache_write_per_m: 0.50,
+            input_per_m: 0.75,
+            output_per_m: 4.50,
+            cache_read_per_m: 0.075,
+            cache_write_per_m: 0.75,
             tokenizer_ratio: 1.0,
         },
     ),
     (
         "gpt-5.5",
         ModelPricing {
-            input_per_m: 2.50,
-            output_per_m: 10.00,
-            cache_read_per_m: 0.63,
-            cache_write_per_m: 3.13,
+            input_per_m: 5.00,
+            output_per_m: 30.00,
+            cache_read_per_m: 0.50,
+            cache_write_per_m: 5.00,
             tokenizer_ratio: 1.0,
         },
     ),
-    // Codex — gpt-5.6-sol rates from codex_cli/stream.rs ($2/$0.50 cached/$8);
-    // cache-write derived (input * 1.25). codex-mini mirrors the only codex
-    // rates available in-repo until provider-specific rows exist.
     (
         "gpt-5.6-sol",
         ModelPricing {
-            input_per_m: 2.00,
-            output_per_m: 8.00,
-            cache_read_per_m: 0.50,
-            cache_write_per_m: 2.50,
+            input_per_m: 4.00,
+            output_per_m: 20.00,
+            cache_read_per_m: 0.40,
+            cache_write_per_m: 5.00,
             tokenizer_ratio: 1.0,
         },
     ),
+    // Codex: unverified. The OpenAI price page lists no codex-mini (checked
+    // 2026-10-01), so these are the rates this table had before that check.
     (
         "codex-mini",
         ModelPricing {
@@ -408,16 +440,19 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
             tokenizer_ratio: 1.0,
         },
     ),
-    // Perplexity — token rates from examples/roko-perplexity.toml (Sonar also
-    // bills per request; that fee lives on `ModelProfile::cost_per_request`).
-    // Cache rows derived; Sonar does not support prompt caching.
+    // Perplexity: https://docs.perplexity.ai/docs/getting-started/pricing,
+    // checked 2026-10-02. The Sonar models also bill per request; that fee
+    // lives on `ModelProfile::cost_per_request`. None publishes a cache
+    // price, so a cache read or write costs the input price. The $0.0625/M
+    // cached rate on Perplexity's site belongs to the Agent API's
+    // `perplexity/sonar`, another model ($0.25/$2.50) (bug-9d77f1).
     (
         "sonar",
         ModelPricing {
             input_per_m: 1.00,
             output_per_m: 1.00,
-            cache_read_per_m: 0.50,
-            cache_write_per_m: 1.25,
+            cache_read_per_m: 1.00,
+            cache_write_per_m: 1.00,
             tokenizer_ratio: 1.0,
         },
     ),
@@ -426,20 +461,36 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
         ModelPricing {
             input_per_m: 3.00,
             output_per_m: 15.00,
-            cache_read_per_m: 1.50,
-            cache_write_per_m: 3.75,
+            cache_read_per_m: 3.00,
+            cache_write_per_m: 3.00,
             tokenizer_ratio: 1.0,
         },
     ),
-    // Google Gemini — rates from the Google AI pricing page (pay-as-you-go,
-    // ≤200 K token prompts).  Cache-write derived (input * 1.25).
+    (
+        "sonar-reasoning-pro",
+        ModelPricing {
+            input_per_m: 2.00,
+            output_per_m: 8.00,
+            cache_read_per_m: 2.00,
+            cache_write_per_m: 2.00,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    // Sonar Deep Research has no row. Besides $2/M input and $8/M output it
+    // bills citation tokens ($2/M), reasoning tokens ($3/M) and search queries
+    // ($5 per 1K) (https://docs.perplexity.ai/docs/getting-started/pricing,
+    // checked 2026-10-02), which `ModelPricing` cannot express. Its cost is
+    // unknown rather than understated (bug-c0602b).
+    // Google Gemini: https://ai.google.dev/gemini-api/docs/pricing, paid
+    // tier, checked 2026-10-01. A cache read is the context-caching price;
+    // cache storage is billed per hour, which a token rate cannot express.
     (
         "gemini-2.5-pro",
         ModelPricing {
             input_per_m: 1.25,
             output_per_m: 10.00,
-            cache_read_per_m: 0.31,
-            cache_write_per_m: 1.56,
+            cache_read_per_m: 0.125,
+            cache_write_per_m: 1.25,
             tokenizer_ratio: 1.0,
         },
     ),
@@ -448,17 +499,47 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
         ModelPricing {
             input_per_m: 0.30,
             output_per_m: 2.50,
-            cache_read_per_m: 0.075,
-            cache_write_per_m: 0.375,
+            cache_read_per_m: 0.03,
+            cache_write_per_m: 0.30,
+            tokenizer_ratio: 1.0,
+        },
+    ),
+    (
+        "gemini-2.5-flash-lite",
+        ModelPricing {
+            input_per_m: 0.10,
+            output_per_m: 0.40,
+            cache_read_per_m: 0.01,
+            cache_write_per_m: 0.10,
             tokenizer_ratio: 1.0,
         },
     ),
 ];
 
+/// [`BUILTIN_PRICING`] rows that no current price page confirms (checked
+/// 2026-10-01). They keep the rates the table had before that check rather
+/// than guessed ones.
+pub const UNVERIFIED_PRICING: &[&str] = &["kimi-k2.5", "codex-mini"];
+
+/// A cache read's price as a multiple of the input price, for a model that
+/// names no cache-read price of its own: Anthropic's rate, which gpt-5.x and
+/// Gemini 2.5 share. Every cost path uses it (bug-0c0747).
+pub const DEFAULT_CACHE_READ_MULTIPLIER: f64 = 0.1;
+
+/// A cache write's price as a multiple of the input price, for a model that
+/// names no cache-write price of its own: Anthropic's 5-minute write.
+pub const DEFAULT_CACHE_WRITE_MULTIPLIER: f64 = 1.25;
+
+/// Price of one Perplexity Search API request (`POST /search`), which runs
+/// no model and reports no usage: a flat $5 per 1,000 requests, the rate
+/// `roko_agent::perplexity::search` documents. Not yet checked against
+/// <https://docs.perplexity.ai/getting-started/pricing>.
+pub const PERPLEXITY_SEARCH_REQUEST_USD: f64 = 0.005;
+
 /// Look up pricing for a model slug.
 ///
-/// Tries an exact match first, then any table key that is a prefix of the
-/// slug separated by `-` or `.` (longest prefix wins). Matching is
+/// Tries an exact match first, then a table key the slug is a snapshot of
+/// ([`is_snapshot_of`]; the longest such key wins). Matching is
 /// case-insensitive. Returns `None` for unknown slugs.
 #[must_use]
 pub fn builtin_pricing(slug: &str) -> Option<ModelPricing> {
@@ -468,13 +549,65 @@ pub fn builtin_pricing(slug: &str) -> Option<ModelPricing> {
     }
     BUILTIN_PRICING
         .iter()
-        .filter(|(key, _)| {
-            lower.len() > key.len()
-                && lower.starts_with(key)
-                && matches!(lower.as_bytes().get(key.len()), Some(b'-' | b'.'))
-        })
+        .filter(|(key, _)| is_snapshot_of(&lower, key))
         .max_by_key(|(key, _)| key.len())
         .map(|(_, pricing)| *pricing)
+}
+
+/// Whether `slug` names the model `key` names: `key` itself, or `key` with a
+/// snapshot suffix, a date or zero-padded version (`-20250514`,
+/// `-2024-08-06`, `-001`), `-latest` or `-preview`. Any other suffix names
+/// another model (`o3-mini`, `gemini-2.5-flash-lite`, `sonar-reasoning-pro`,
+/// `glm-5.2`), which is not priced at `key`'s rates (bug-1f81ab).
+#[must_use]
+pub fn is_snapshot_of(slug: &str, key: &str) -> bool {
+    let Some(suffix) = slug.strip_prefix(key) else {
+        return false;
+    };
+    if suffix.is_empty() {
+        return true;
+    }
+    let Some(suffix) = suffix.strip_prefix(['-', '.']) else {
+        return false;
+    };
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    let mut parts = suffix.split(['-', '.']);
+    let snapshot = parts.next().is_some_and(|first| {
+        matches!(first, "latest" | "preview") || (first.len() >= 3 && digits(first))
+    });
+    snapshot && parts.all(digits)
+}
+
+/// Log, once per slug, that `model_slug` has no price, so its usage is
+/// recorded with an unknown cost rather than priced at another model's
+/// rates (gap-ad0d39). Every cost table logs through it, so a model is
+/// reported once.
+pub fn warn_unpriced_model(model_slug: &str) {
+    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let first = WARNED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .insert(model_slug.to_string());
+    if first {
+        tracing::warn!(
+            model = model_slug,
+            "no price for this model: its usage is recorded with an unknown cost; set \
+             cost_input_per_m and cost_output_per_m on its [models.*] entry"
+        );
+    }
+}
+
+/// The cheapest built-in model of `kind` by input price: the model a probe
+/// that only needs the provider to answer, such as a credit check, requests.
+/// `None` when no priced built-in model has that kind.
+#[must_use]
+pub fn cheapest_builtin_model(kind: ProviderKind) -> Option<&'static BuiltinModel> {
+    BUILTIN_MODELS
+        .iter()
+        .filter(|model| model.provider_kind == kind)
+        .filter_map(|model| Some((model, builtin_pricing(model.slug)?.input_per_m)))
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(model, _)| model)
 }
 
 /// Resolved metadata for a model slug: the single source of truth shared by
@@ -494,7 +627,7 @@ pub struct ModelMeta {
     pub context_window: Option<u64>,
     /// Maximum output tokens, when the slug is in [`BUILTIN_MODELS`].
     pub max_output: Option<u64>,
-    /// Pricing from [`BUILTIN_PRICING`] (exact or longest-prefix match).
+    /// Pricing from [`BUILTIN_PRICING`] (exact or snapshot match).
     pub pricing: Option<ModelPricing>,
     /// Canonical registry slug when resolved via [`BUILTIN_MODELS`] or
     /// [`ALIASES`]; `None` for unregistered slugs.
@@ -560,7 +693,7 @@ fn tier_for_slug(slug: &str) -> ModelTier {
 ///
 /// Resolution order: registry exact/alias ([`builtin_model`]) supplies the
 /// canonical slug and context sizes; [`builtin_pricing`] supplies pricing
-/// (exact then longest-prefix, so dated variants resolve), retried against
+/// (exact then snapshot match, so dated variants resolve), retried against
 /// the canonical slug when the input was an alias; family and tier come from
 /// substring heuristics that also cover unregistered slugs. Matching is
 /// case-insensitive.
@@ -583,6 +716,14 @@ pub fn model_meta(slug: &str) -> ModelMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cheapest_builtin_anthropic_model_is_haiku() {
+        let model = cheapest_builtin_model(ProviderKind::AnthropicApi).expect("anthropic");
+        assert_eq!(model.slug, "claude-haiku-4-5");
+        // No built-in model is served by a CLI provider.
+        assert!(cheapest_builtin_model(ProviderKind::ClaudeCli).is_none());
+    }
 
     #[test]
     fn exact_slug_lookup() {
@@ -674,7 +815,7 @@ mod tests {
 
         // Longest prefix wins: gpt-5.4-mini must not resolve to gpt-5.4 rates.
         let mini = builtin_pricing("gpt-5.4-mini").expect("mini pricing");
-        assert!((mini.input_per_m - 0.40).abs() < 1e-12);
+        assert!((mini.input_per_m - 0.75).abs() < 1e-12);
         let base = builtin_pricing("gpt-5.4").expect("base pricing");
         assert!((base.input_per_m - 2.50).abs() < 1e-12);
 
@@ -689,10 +830,74 @@ mod tests {
         assert!(builtin_pricing("my-fine-tuned-model").is_none());
     }
 
+    /// bug-1f81ab: a dated, versioned, `-latest` or `-preview` snapshot of a
+    /// model takes its rates.
+    #[test]
+    fn builtin_pricing_prefix_takes_a_snapshot_suffix() {
+        for (snapshot, model) in [
+            ("claude-sonnet-4-6-20250514", "claude-sonnet-4-6"),
+            ("gpt-4o-2024-08-06", "gpt-4o"),
+            ("gemini-2.5-flash-001", "gemini-2.5-flash"),
+            ("gemini-2.5-pro-preview-06-05", "gemini-2.5-pro"),
+            ("codex-mini-latest", "codex-mini"),
+            ("gpt-5.6-sol-2026", "gpt-5.6-sol"),
+        ] {
+            assert!(builtin_pricing(snapshot).is_some(), "{snapshot}");
+            assert_eq!(
+                builtin_pricing(snapshot),
+                builtin_pricing(model),
+                "{snapshot}"
+            );
+        }
+    }
+
+    /// bug-1f81ab: a suffix that names another model does not take the
+    /// shorter slug's rates. A sibling with its own row gets that row, and
+    /// one without stays unpriced.
+    #[test]
+    fn builtin_pricing_prefix_refuses_another_models_suffix() {
+        let input = |slug: &str| builtin_pricing(slug).map(|pricing| pricing.input_per_m);
+        assert_eq!(input("o3-mini"), Some(1.10));
+        assert_eq!(input("gpt-4o-mini"), Some(0.15));
+        assert_eq!(input("gemini-2.5-flash-lite"), Some(0.10));
+        assert_eq!(input("sonar-reasoning-pro"), Some(2.00));
+        for other in [
+            "o3-pro",
+            "gpt-5.4-nano",
+            "gemini-2.5-flash-image",
+            "sonar-reasoning",
+            "sonar-deep-research",
+            "glm-5.2",
+        ] {
+            assert_eq!(builtin_pricing(other), None, "{other}");
+        }
+    }
+
+    /// bug-c0602b: Sonar Deep Research bills charges a price row cannot
+    /// express, so it stays unpriced: its cost is unknown, not Sonar's $1/$1.
+    #[test]
+    fn sonar_deep_research_price() {
+        assert_eq!(builtin_pricing("sonar-deep-research"), None);
+        assert_eq!(model_meta("sonar-deep-research").pricing, None);
+        assert!(builtin_pricing("sonar").is_some());
+    }
+
+    /// bug-9d77f1: Perplexity publishes no cache price for the Sonar API
+    /// models, so a cached token costs the input price. ($0.0625/M belongs to
+    /// the Agent API's `perplexity/sonar`, another model.)
+    #[test]
+    fn sonar_has_no_cache_price() {
+        for slug in ["sonar", "sonar-pro", "sonar-reasoning-pro"] {
+            let pricing = builtin_pricing(slug).expect("a Sonar row");
+            assert_eq!(pricing.cache_read_per_m, pricing.input_per_m, "{slug}");
+            assert_eq!(pricing.cache_write_per_m, pricing.input_per_m, "{slug}");
+        }
+    }
+
     #[test]
     fn builtin_pricing_case_insensitive() {
         let pricing = builtin_pricing("CLAUDE-HAIKU-4-5").expect("uppercase slug");
-        assert!((pricing.input_per_m - 0.80).abs() < 1e-12);
+        assert!((pricing.input_per_m - 1.00).abs() < 1e-12);
     }
 
     #[test]
@@ -703,8 +908,8 @@ mod tests {
         assert_eq!(meta.context_window, Some(200_000));
         assert_eq!(meta.canonical_slug, Some("claude-opus-4-6"));
         let pricing = meta.pricing.expect("opus pricing");
-        assert!((pricing.input_per_m - 15.00).abs() < 1e-12);
-        assert!((pricing.output_per_m - 75.00).abs() < 1e-12);
+        assert!((pricing.input_per_m - 5.00).abs() < 1e-12);
+        assert!((pricing.output_per_m - 25.00).abs() < 1e-12);
     }
 
     #[test]
@@ -735,7 +940,7 @@ mod tests {
         assert_eq!(meta.tier, ModelTier::Premium);
         assert_eq!(meta.canonical_slug, None);
         let pricing = meta.pricing.expect("gpt-5.6-sol pricing");
-        assert!((pricing.input_per_m - 2.00).abs() < 1e-12);
+        assert!((pricing.input_per_m - 4.00).abs() < 1e-12);
 
         // gpt-*-codex slugs classify as codex family.
         assert_eq!(model_meta("gpt-5-codex").family, "codex");

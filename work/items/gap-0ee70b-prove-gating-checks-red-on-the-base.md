@@ -1,0 +1,52 @@
++++
+id = "gap-0ee70b"
+kind = "gap"
+title = "Prove gating checks red on the base by default, except cargo checks (D14, Will 2026-10-02)"
+status = "open"
+triage = "verified"
+severity = "p2"
+goal = "golden-path"
+size = "M"
+subsystem = ["roko-cli/plan"]
+created = 2026-10-02
+updated = 2026-10-02
+last_verified = 2026-10-02
+source = "backlog wave 1, PK17 report; Will's decision 2026-10-02"
+anchors = ["crates/roko-core/src/config/spec_quality.rs", "crates/roko-cli/src/spec_gate.rs", "crates/roko-cli/src/commands/plan.rs"]
+lane = "rust-cold"
+links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn red_on_base_runs_shell_checks_and_skips_cargo' crates/roko-cli/ && cargo test -p roko-cli red_on_base_runs_shell_checks_and_skips_cargo"
++++
+
+## Problem
+
+Decision D14 says every gating check is proven red on the base before dispatch. PK17 (backlog 3201–3213, merged in e53136640) added the spec gate with `[spec_quality] red_on_base`, defaulting to `false` (`crates/roko-core/src/config/spec_quality.rs`), and `roko plan validate` passes an empty red-on-base map (`commands/plan.rs`), so no check is ever run on the base and a vacuous (green-on-base) check reaches a paid agent.
+
+## Why it matters
+
+Planner-written checks are the gate cheap models are judged by (tldr design rule 3). Will decided on 2026-10-02: red-on-base on by default, except cargo checks, which are proven red at the batch gate instead.
+
+## Where
+
+`crates/roko-core/src/config/spec_quality.rs::SpecQualityConfig` (`red_on_base`), `crates/roko-cli/src/spec_gate.rs` (`RedOnBase`, `lint_files_with`), `crates/roko-cli/src/commands/plan.rs` (the empty map at validation).
+
+## Current state
+
+The map type and HF3 handling exist; nothing fills the map.
+
+## Plan
+
+1. Make `red_on_base` default to on, with a mode that skips checks whose command runs cargo (`cargo ` at a command boundary), recorded as `skipped: cargo`.
+2. At `plan validate` and before `plan run`, run each remaining verify command on the plan's base tree (a scratch checkout or the base worktree), with the gate environment and a short timeout, and fill the map: a check that passes on the base is HF3.
+3. Tests: `red_on_base_runs_shell_checks_and_skips_cargo` (a fixture plan with one vacuous shell check, one real shell check and one cargo check).
+4. Amend D14's record (backlog 3201) to say cargo checks are proven at the gate.
+
+## Done when
+
+The verify passes; a fixture with a vacuous shell check is refused before dispatch.
+
+## Notes
+
+Decided by Will, 2026-10-02 (coordinator question round). Backlog context: tmp/backlog/2026-10-02-complete-and-wire (3201, 3211).

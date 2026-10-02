@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use roko_learn::cost_table::{CostTable, ModelPricing};
+use roko_learn::cost_table::CostTable;
 use serde::{Deserialize, Serialize};
 
 use crate::TokenUsage;
@@ -98,15 +98,15 @@ impl CostTracker {
         }
     }
 
-    /// Compute one request's cost using canonical model pricing.
+    /// Compute one request's cost using canonical model pricing. A model the
+    /// table does not price gets an all-zero result: its cost is unknown, not
+    /// another model's rates, and it is logged once, as roko-learn's
+    /// `CostTable::calculate` does (bug-39d15f).
     #[must_use]
     pub fn compute_cost(&self, usage: &TokenUsage, model: &str, is_batch: bool) -> CostResult {
-        let fallback;
-        let pricing = if let Some(pricing) = self.cost_table.lookup(model) {
-            pricing
-        } else {
-            fallback = sonnet_fallback();
-            &fallback
+        let Some(pricing) = self.cost_table.lookup(model) else {
+            roko_learn::cost_table::warn_unpriced_model(model);
+            return CostResult::default();
         };
         let fresh_tokens = usage
             .input_tokens
@@ -116,7 +116,9 @@ impl CostTracker {
             fresh_input: fresh_tokens as f64 * pricing.input_per_m / PER_MILLION,
             cached_input: usage.cache_read_input_tokens as f64 * pricing.cache_read_per_m
                 / PER_MILLION,
-            cache_write: usage.cache_creation_input_tokens as f64 * pricing.input_per_m * 1.25
+            // The table's cache-write rate: a provider with no write premium
+            // bills a write as input, not at Anthropic's 1.25x (bug-0c0747).
+            cache_write: usage.cache_creation_input_tokens as f64 * pricing.cache_write_per_m
                 / PER_MILLION,
             regular_output: regular_output_tokens as f64 * pricing.output_per_m / PER_MILLION,
             // The canonical ModelPricing has no separate reasoning rate today;
@@ -198,19 +200,11 @@ fn get(store: &RwLock<HashMap<String, CostAggregate>>, key: &str) -> CostAggrega
         .unwrap_or_default()
 }
 
-fn sonnet_fallback() -> ModelPricing {
-    ModelPricing {
-        input_per_m: 3.0,
-        output_per_m: 15.0,
-        cache_read_per_m: 0.30,
-        cache_write_per_m: 3.75,
-        tokenizer_ratio: 1.0,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    use roko_learn::cost_table::ModelPricing;
 
     use super::*;
 
@@ -252,6 +246,29 @@ mod tests {
         assert!((result.savings - (result.naive_cost - result.actual_cost)).abs() < 1e-12);
     }
 
+    /// bug-0c0747: a cache write costs the table's cache-write rate.
+    #[test]
+    fn cost_track_prices_cache_writes_at_the_tables_rate() {
+        let tracker = CostTracker::new(CostTable {
+            models: HashMap::from([(
+                "no-write-premium".into(),
+                ModelPricing {
+                    input_per_m: 2.0,
+                    output_per_m: 8.0,
+                    cache_read_per_m: 0.2,
+                    cache_write_per_m: 2.0,
+                    tokenizer_ratio: 1.0,
+                },
+            )]),
+        });
+        let usage = TokenUsage {
+            cache_creation_input_tokens: 1_000_000,
+            ..TokenUsage::default()
+        };
+        let result = tracker.compute_cost(&usage, "no-write-premium", false);
+        assert!((result.breakdown.cache_write - 2.0).abs() < 1e-12);
+    }
+
     #[test]
     fn cost_track_batch_discount_and_attribution() {
         let tracker = tracker();
@@ -269,8 +286,10 @@ mod tests {
         assert_eq!(tracker.session_total("session").requests, 1);
     }
 
+    /// bug-39d15f: a model the table does not price has an unknown cost, not
+    /// Sonnet's rates.
     #[test]
-    fn cost_track_unknown_model_uses_sonnet_fallback() {
+    fn cost_track_leaves_an_unknown_model_unpriced() {
         let tracker = CostTracker::new(CostTable {
             models: HashMap::new(),
         });
@@ -282,6 +301,6 @@ mod tests {
             "unknown",
             false,
         );
-        assert!((result.actual_cost - 3.0).abs() < 1e-12);
+        assert_eq!(result, CostResult::default());
     }
 }

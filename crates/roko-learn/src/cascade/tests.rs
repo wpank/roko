@@ -822,6 +822,7 @@ fn version_change_detection_transfers_weighted_stats_on_load() {
         stage_transitions: vec![],
         linucb_state: None,
         pareto_frontier: Vec::new(),
+        category_stats: HashMap::new(),
     };
     std::fs::write(&path, serde_json::to_string_pretty(&snapshot).unwrap()).unwrap();
 
@@ -845,6 +846,7 @@ fn version_change_detection_remaps_role_table_upgrade() {
         stage_transitions: vec![],
         linucb_state: None,
         pareto_frontier: Vec::new(),
+        category_stats: HashMap::new(),
     };
     std::fs::write(&path, serde_json::to_string_pretty(&snapshot).unwrap()).unwrap();
 
@@ -1447,8 +1449,9 @@ fn perplexity_observations_include_citations_latency_and_total_cost() {
     assert_eq!(sonar.total_search_latency_ms, 1_200);
     assert!((sonar.avg_search_latency_ms - 1_200.0).abs() < 1e-9);
     assert_eq!(sonar.perplexity_requests, 1);
-    assert!((sonar.total_cost_usd - 0.0245).abs() < 1e-9);
-    assert!((sonar.avg_cost_usd - 0.0245).abs() < 1e-9);
+    // $0.0105 of tokens plus the low-tier $0.006 request fee (bug-e2b31a).
+    assert!((sonar.total_cost_usd - 0.0165).abs() < 1e-9);
+    assert!((sonar.avg_cost_usd - 0.0165).abs() < 1e-9);
 }
 
 #[test]
@@ -1719,6 +1722,49 @@ fn feedback_with_unknown_model_is_noop() {
 
 // ── P2-LRN-5: task_category awareness in stages 2-3 ─────────────────────────
 
+/// gap-b95d94: a hindsight relabel moves one credited success to a failure
+/// in the category and confidence stats; the trials stay.
+#[test]
+fn retract_success_moves_a_credited_success_to_a_failure() {
+    let cascade = CascadeRouter::new(test_slugs());
+    let mut ctx = default_ctx();
+    ctx.task_category = TaskCategory::Docs;
+    cascade.record_observation(&ctx, "claude-sonnet-4-5", 0.9, true);
+    let sonnet_docs = ("claude-sonnet-4-5".to_string(), "docs".to_string());
+    assert_eq!(
+        cascade.category_stats_snapshot().get(&sonnet_docs),
+        Some(&(1, 1))
+    );
+
+    cascade.retract_success("claude-sonnet-4-5", TaskCategory::Docs);
+
+    assert_eq!(
+        cascade.category_stats_snapshot().get(&sonnet_docs),
+        Some(&(1, 0))
+    );
+    let confidence = cascade.confidence_snapshot();
+    assert_eq!(confidence.get("claude-sonnet-4-5"), Some(&(1, 0)));
+}
+
+/// bug-583e50: a retraction of a success that an earlier run saved
+/// survives the save, though it leaves fewer successes than were loaded.
+#[test]
+fn a_saved_success_retracted_by_a_later_run_stays_retracted() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let earlier = CascadeRouter::new(test_slugs());
+    earlier.record_observation(&default_ctx(), "claude-sonnet-4-5", 0.9, true);
+    earlier.save(&path).unwrap();
+
+    let later = CascadeRouter::load_or_new(&path, test_slugs());
+    later.retract_success("claude-sonnet-4-5", default_ctx().task_category);
+    later.save(&path).unwrap();
+
+    let reloaded = CascadeRouter::load_or_new(&path, test_slugs());
+    let confidence = reloaded.confidence_snapshot();
+    assert_eq!(confidence.get("claude-sonnet-4-5"), Some(&(1, 0)));
+}
+
 /// record_observation must populate category_stats so Stage 2
 /// confidence_scores can apply the per-category pass-rate delta.
 #[test]
@@ -1981,4 +2027,70 @@ fn save_replaces_an_unreadable_snapshot() {
         std::fs::read_to_string(dir.path().join("cascade-router.json.corrupted")).unwrap(),
         "{ not json"
     );
+}
+
+#[test]
+fn category_stats_survive_a_save() {
+    // bug-a6a3cd: the per-category counts behind Stage 2's pass-rate delta
+    // are saved and loaded, and routers that share the snapshot keep each
+    // other's counts.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let first = CascadeRouter::load_or_new(&path, test_slugs());
+    let second = CascadeRouter::load_or_new(&path, test_slugs());
+    for success in [true, true, false] {
+        first.record_category_outcome("claude-sonnet-4-5", TaskCategory::Research, success);
+    }
+    second.record_category_outcome("claude-sonnet-4-5", TaskCategory::Research, true);
+    second.record_category_outcome("claude-haiku-4-5", TaskCategory::Docs, false);
+    first.save(&path).unwrap();
+    second.save(&path).unwrap();
+    // Saving again adds nothing: the first save already wrote it all.
+    first.save(&path).unwrap();
+
+    let loaded = CascadeRouter::load_or_new(&path, test_slugs());
+    let stats = loaded.category_stats_snapshot();
+    let counts = |slug: &str, category: TaskCategory| {
+        stats
+            .get(&(slug.to_string(), category.label().to_string()))
+            .copied()
+    };
+    assert_eq!(
+        counts("claude-sonnet-4-5", TaskCategory::Research),
+        Some((4, 3))
+    );
+    assert_eq!(counts("claude-haiku-4-5", TaskCategory::Docs), Some((1, 0)));
+    assert_eq!(stats.len(), 2, "{stats:?}");
+}
+
+#[test]
+fn category_stats_merge_keeps_retractions() {
+    // bug-a6a3cd: a save adds the trials a router gained since its base and
+    // subtracts the successes a relabel retracted, keeping what other
+    // writers saved meanwhile.
+    let counts = |trials, successes| {
+        HashMap::from([(
+            "claude-sonnet-4-5".to_string(),
+            HashMap::from([(
+                TaskCategory::Research,
+                CategoryModelStats { trials, successes },
+            )]),
+        )])
+    };
+    let base = CascadeSnapshot {
+        category_stats: counts(4, 3),
+        ..CascadeSnapshot::default()
+    };
+    // One more trial, a failure, and one success retracted.
+    let current = CascadeSnapshot {
+        category_stats: counts(5, 2),
+        ..CascadeSnapshot::default()
+    };
+    let mut latest = CascadeSnapshot {
+        category_stats: counts(6, 5),
+        ..CascadeSnapshot::default()
+    };
+    merge_learning(&mut latest, &current, &base);
+    let merged = &latest.category_stats["claude-sonnet-4-5"][&TaskCategory::Research];
+    assert_eq!((merged.trials, merged.successes), (7, 4));
 }

@@ -735,17 +735,21 @@ record the selected config key and cascade stage.
         "text": "Add error handling to the login function"
       },
       {
-        "type": "resource",
-        "resource": {
-          "type": "file",
-          "uri": "file:///path/to/project/src/auth/login.rs"
-        }
+        "type": "resource_link",
+        "uri": "file:///path/to/project/src/auth/login.rs",
+        "name": "login.rs"
       }
     ],
     "includeContext": false
   }
 }
 ```
+
+Roko reads a `resource_link` to a `file://` path inside the workspace and adds the
+file to the model's context (capped at 32 KB). An embedded `resource` block,
+`{"type": "resource", "resource": {"uri": ..., "text": ..., "mimeType": ...}}`, is
+used as sent; a `blob` resource is accepted but not added. Roko's older form,
+`{"type": "resource", "resource": {"type": "file", "uri": ...}}`, still works.
 
 **Response (arrives after all notifications):**
 
@@ -775,12 +779,16 @@ pub struct SessionPromptParams {
 pub enum ContentBlock {
     Text { text: String },
     Resource { resource: ResourceRef },
+    ResourceLink { uri: String, name: String, mime_type: Option<String> },
+    Image { data: String, mime_type: String },
     Diff { path: String, diff: String },
 }
 
-// Tag: "type" (snake_case)
+// Spec forms {uri, text} and {uri, blob}; roko's {"type": "file", uri}.
 pub enum ResourceRef {
     File { uri: String },
+    Text { uri: String, text: String, mime_type: Option<String> },
+    Blob { uri: String, blob: String, mime_type: Option<String> },
 }
 
 pub struct SessionPromptResult {
@@ -807,7 +815,17 @@ The editor must answer with one of the advertised options:
 - `allow_once` runs this call only.
 - `allow_always` runs it, stores the action in `.roko/trust/permissions.json`, and
   suppresses later outbound prompts for that action in the workspace.
-- `reject_once` denies the call.
+- `reject_once` and `reject_always` deny the call.
+
+The response uses the ACP spec shape, with the discriminator in an `outcome` field:
+
+```json
+{"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+{"outcome": {"outcome": "cancelled"}}
+```
+
+A cancelled dialog denies the call. Roko still accepts its older shape, which carried
+the discriminator in a `type` field (`{"outcome": {"type": "selected", "optionId": ...}}`).
 
 Roko fails closed. A rejected or malformed response, client disconnect, matching
 `session/cancel`, transport failure, timeout, or dropped internal reply denies the
@@ -1102,15 +1120,21 @@ SessionUpdate::ToolCall {
     title: String,
     kind: ToolCallKind,
     status: ToolCallStatus,
-    content: Vec<ContentBlock>,
+    content: Vec<ContentBlock>,               // sent as spec ToolCallContent items
+    locations: Option<Vec<ToolCallLocation>>, // [{"path": "/abs/file", "line": 12}]
 }
 
+// Serialized as the spec's ToolKind values.
 pub enum ToolCallKind {
-    Edit,
-    Create,
-    Delete,
-    Terminal,
-    Other,
+    Edit,      // "edit", also used for new files
+    Delete,    // "delete"
+    Terminal,  // "execute"
+    Read,      // "read"
+    Search,    // "search"
+    Fetch,     // "fetch"
+    Think,     // "think"
+    Move,      // "move"
+    Other,     // "other"
 }
 
 pub enum ToolCallStatus {
@@ -1128,8 +1152,10 @@ pub enum ToolCallStatus {
 #### `tool_call_update`
 
 The previously announced tool action has finished (or changed state). Find the
-matching card by `toolCallId` and update it. The `content` field may contain a
-diff block showing exactly what changed.
+matching card by `toolCallId` and update it. Each `content` item is a spec
+`ToolCallContent`: text output is wrapped as `{"type": "content", ...}`, and a
+change with the new file text is a `diff` item. A change that only has a unified
+diff is sent as a fenced `diff` text block.
 
 ```json
 {
@@ -1138,9 +1164,14 @@ diff block showing exactly what changed.
   "status": "completed",
   "content": [
     {
+      "type": "content",
+      "content": {"type": "text", "text": "Updated the login handler"}
+    },
+    {
       "type": "diff",
-      "path": "src/auth/login.rs",
-      "diff": "@@ -10,6 +10,10 @@\n..."
+      "path": "/path/to/project/src/auth/login.rs",
+      "oldText": "...",
+      "newText": "..."
     }
   ]
 }
@@ -1302,23 +1333,30 @@ pub struct CostInfo {
 
 #### `session_info_update`
 
-The session's display name has changed.
+The session's title has changed.
 
 ```json
 {
   "sessionUpdate": "session_info_update",
-  "sessionId": "sess_abc123",
-  "sessionName": "New session name"
+  "title": "New session name"
 }
 ```
+
+Roko also uses this update to carry its own data under `_meta.roko`, because spec
+clients drop session updates they do not know:
+
+- `_meta.roko.mcpStatus`: the per-server MCP startup results (`name`, `status`,
+  `toolCount`, and `message` on failure).
+- `_meta.roko.budget`: after a paid turn in a session with a cost ceiling,
+  `costBudgetUsd`, `accumulatedCostUsd` and `budgetRemainingUsd`.
 
 <details>
 <summary>Type definition</summary>
 
 ```rust
 SessionUpdate::SessionInfoUpdate {
-    session_id: String,
-    session_name: Option<String>,
+    title: Option<String>,
+    _meta: Option<serde_json::Value>,
 }
 ```
 
@@ -1356,7 +1394,7 @@ IDs for compatibility, but they are not currently advertised as editor options.
 pub struct ConfigOption {
     pub id: String,
     pub name: String,
-    pub option_type: ConfigOptionType,   // select | toggle
+    pub option_type: ConfigOptionType,   // select | boolean (spec names; roko sends selects)
     pub category: String,
     pub current_value: serde_json::Value,
     pub description: Option<String>,
@@ -1893,7 +1931,7 @@ slug = "claude-sonnet-4-6"
 
 [models.haiku]
 provider = "anthropic"
-slug = "claude-haiku-3-5"
+slug = "claude-haiku-4-5"
 ```
 
 Model keys in `[models.*]` become the selectable values for the `model` config
@@ -2193,10 +2231,13 @@ default (workflow engine) path is the canonical one.
 
 ## 13. Known Limitations
 
-- **Single transport only.** The ACP server is single-threaded on the stdio
-  channel. Concurrent sessions are supported in memory, but concurrent
-  *transports* (e.g. multiple TCP clients) are not. The `SessionManager` is
-  not wrapped in `Arc<RwLock<_>>`.
+- **Single transport only.** The ACP server serves one stdio channel.
+  Concurrent *transports* (e.g. multiple TCP clients) are not supported. On that
+  channel, one request loop reads stdin: each `session/prompt` runs as its own
+  task while the loop answers other requests and routes the client's responses
+  and `session/cancel` to it. A request for a session whose prompt is running
+  waits for that prompt. A write the client does not read within 60 seconds
+  ends the server, as a closed pipe would.
 
 - **No audio input.** `promptCapabilities.audio = false` and audio blocks are rejected.
   Image input is advertised and accepted only for a vision-capable selected/default model.

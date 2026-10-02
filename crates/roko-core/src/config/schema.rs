@@ -32,6 +32,7 @@ pub use super::provider::*;
 pub use super::retrieval::*;
 pub use super::routing::*;
 pub use super::serve::*;
+pub use super::spec_quality::*;
 pub use super::subscriptions::*;
 pub use super::tools::*;
 pub use super::tui_cfg::*;
@@ -104,6 +105,9 @@ pub struct RokoConfig {
     /// Plan authoring: the model that generates and revises plans.
     #[serde(default)]
     pub authoring: AuthoringConfig,
+    /// The spec-quality gate `plan run` applies before it dispatches a plan.
+    #[serde(default)]
+    pub spec_quality: SpecQualityConfig,
     #[serde(default)]
     pub providers: IndexMap<String, ProviderConfig>,
     #[serde(default)]
@@ -122,8 +126,14 @@ pub struct RokoConfig {
     pub pipeline: PipelineConfig,
     #[serde(default)]
     pub budget: BudgetConfig,
+    /// The dated price snapshot behind API-equivalent costs.
+    #[serde(default)]
+    pub pricing: crate::pricing_snapshot::PricingConfig,
     #[serde(default)]
     pub conductor: ConductorConfig,
+    /// M1, the ultrastable controller: its mode and constants (S06 §5).
+    #[serde(default)]
+    pub homeostasis: super::homeostasis::HomeostasisConfig,
     #[serde(default, skip_serializing_if = "WatcherConfig::is_empty")]
     pub watcher: WatcherConfig,
     #[serde(default)]
@@ -432,6 +442,7 @@ impl Default for RokoConfig {
             prd: PrdConfig::default(),
             agent: AgentConfig::default(),
             authoring: AuthoringConfig::default(),
+            spec_quality: SpecQualityConfig::default(),
             providers: IndexMap::new(),
             models: IndexMap::new(),
             profiles: HashMap::new(),
@@ -440,7 +451,9 @@ impl Default for RokoConfig {
             routing: RoutingConfig::default(),
             pipeline: PipelineConfig::default(),
             budget: BudgetConfig::default(),
+            pricing: crate::pricing_snapshot::PricingConfig::default(),
             conductor: ConductorConfig::default(),
+            homeostasis: super::homeostasis::HomeostasisConfig::default(),
             watcher: WatcherConfig::default(),
             learning: LearningConfig::default(),
             tui: TuiConfig::default(),
@@ -553,8 +566,29 @@ fn synthesize_standard_providers_with_env(
 
 impl RokoConfig {
     /// Parse from a TOML string.
+    ///
+    /// A key the schema no longer has is an error, except one that roko
+    /// removed ([`super::loader::drop_removed_config_keys`]): that is dropped
+    /// with a warning, as loading drops it, so an old file still parses.
     pub fn from_toml(s: &str) -> Result<Self, toml::de::Error> {
-        let config: Self = toml::from_str(s)?;
+        let config: Self = match toml::from_str(s) {
+            Ok(config) => config,
+            Err(err) => {
+                let mut value: toml::Value = toml::from_str(s)?;
+                let removed = super::loader::drop_removed_config_keys(&mut value);
+                if removed.is_empty() {
+                    return Err(err);
+                }
+                for diagnostic in &removed {
+                    tracing::warn!(
+                        config_key = %diagnostic.key,
+                        "config warning: {}",
+                        diagnostic.message
+                    );
+                }
+                value.try_into()?
+            }
+        };
         // Only warn when the TOML text explicitly sets config_version to a value
         // below CURRENT_CONFIG_VERSION. Skip if:
         //   - The field is absent (serde default kicks in; not a real v1 config)
@@ -1359,6 +1393,7 @@ impl RokoConfig {
             "max_auto_fix_attempts = {}",
             c.conductor.max_auto_fix_attempts
         );
+        let _ = writeln!(out, "supervise = {}", c.conductor.supervise);
         let _ = writeln!(
             out,
             "silence_timeout_secs = {}",
@@ -1403,16 +1438,6 @@ impl RokoConfig {
             out,
             "replan_on_gate_failure = {}",
             c.learning.replan_on_gate_failure
-        );
-        let _ = writeln!(
-            out,
-            "replan_max_per_plan = {}",
-            c.learning.replan_max_per_plan
-        );
-        let _ = writeln!(
-            out,
-            "replan_gate_attempts = {}",
-            c.learning.replan_gate_attempts
         );
         let _ = writeln!(
             out,
@@ -1470,14 +1495,11 @@ impl RokoConfig {
         let _ = writeln!(out, "[serve.deploy]");
         let _ = writeln!(out, "provider = \"{}\"", c.serve.deploy.provider);
         let _ = writeln!(out, "environment = {:?}", c.serve.deploy.environment);
-        let _ = writeln!(out, "\n[[serve.deploy.webhooks]]");
-        let _ = writeln!(out, "provider = \"github\"");
-        let _ = writeln!(out, "owner = \"nunchi\"");
-        let _ = writeln!(out, "repo = \"roko\"");
-        let _ = writeln!(out, "\n[[serve.deploy.webhooks]]");
-        let _ = writeln!(out, "provider = \"github\"");
-        let _ = writeln!(out, "owner = \"nunchi\"");
-        let _ = writeln!(out, "repo = \"collaboration\"");
+        // Commented: a live table would register a webhook on that repository.
+        let _ = writeln!(out, "\n# [[serve.deploy.webhooks]]");
+        let _ = writeln!(out, "# provider = \"github\"");
+        let _ = writeln!(out, "# owner = \"<your-github-owner>\"");
+        let _ = writeln!(out, "# repo = \"<your-repo>\"");
     }
     fn write_example_scheduler(out: &mut String, _c: &Self) {
         let _ = writeln!(out, "\n# -- Cron scheduler --");
@@ -1678,6 +1700,17 @@ pub(crate) fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning>
         });
     }
 
+    // So may the data LLM (gap-b0d514).
+    if let Some(data_llm) = &config.agent.data_llm
+        && !explicit_model_keys.contains(data_llm.model.trim())
+        && super::model_registry::builtin_model(data_llm.model.trim()).is_none()
+    {
+        warnings.push(ValidationWarning::UnknownModel {
+            field: "agent.data_llm.model".to_string(),
+            model: data_llm.model.trim().to_string(),
+        });
+    }
+
     // Routing tier model slugs.
     for (field, slug) in [
         (
@@ -1767,6 +1800,12 @@ pub struct ConductorConfig {
     /// supervision. These are consumed by `Conductor::from_config`.
     #[serde(default)]
     pub watchers: WatcherThresholds,
+    /// Whether the conductor's watchers supervise a Graph plan run's running
+    /// attempts (default `true`): they may restart an attempt or stop the
+    /// run. The stall watchdog (`silence_timeout_secs`, `task_stall_secs`)
+    /// runs either way.
+    #[serde(default = "default_supervise")]
+    pub supervise: bool,
 
     // ── Live supervision thresholds ─────────────────────────────────────
     //
@@ -1856,6 +1895,9 @@ const fn default_context_window_opus_tokens() -> u64 {
 const fn default_context_pressure_lookback() -> usize {
     3
 }
+const fn default_supervise() -> bool {
+    true
+}
 
 impl Default for ConductorConfig {
     fn default() -> Self {
@@ -1868,6 +1910,7 @@ impl Default for ConductorConfig {
             max_auto_fix_attempts: default_max_auto_fix(),
             auto_fix_model: default_auto_fix_model(),
             watchers: WatcherThresholds::default(),
+            supervise: default_supervise(),
             silence_timeout_secs: default_silence_timeout_secs(),
             compile_fail_threshold: default_compile_fail_threshold(),
             task_stall_secs: default_task_stall_secs(),
@@ -2525,9 +2568,6 @@ pub struct CoreRunnerConfig {
     /// Defaults to 4. A value of 1 preserves sequential execution.
     #[serde(default = "CoreRunnerConfig::default_max_concurrent_tasks")]
     pub max_concurrent_tasks: Option<usize>,
-    /// Maximum number of plans executing concurrently.
-    #[serde(default)]
-    pub max_concurrent_plans: Option<usize>,
     /// Wall-clock timeout for the entire plan execution, in seconds.
     /// Defaults to 3600 (1 hour).
     #[serde(default = "CoreRunnerConfig::default_plan_timeout_secs")]
@@ -2575,6 +2615,16 @@ pub struct CoreRunnerConfig {
     /// are removed, and the branches stay for inspection and history.
     #[serde(default)]
     pub delete_attempt_branches: bool,
+    /// Whether `roko plan run` runs each task in its own git worktree, as
+    /// `--worktree-per-task` asks. Defaults to `true`: finished plans are
+    /// delivered into the run's batch branch, `roko/batch/<run-id>`, and the
+    /// operator's checkout is never changed. A workdir that is not the top
+    /// level of a git checkout with a commit runs its tasks in the shared
+    /// working tree instead. `--worktree-per-task` and
+    /// `--no-worktree-per-task` override it per run; a server's runs follow
+    /// the server's value (gap-4ec59f).
+    #[serde(default = "CoreRunnerConfig::default_worktree_per_task")]
+    pub worktree_per_task: bool,
 }
 
 impl CoreRunnerConfig {
@@ -2609,13 +2659,17 @@ impl CoreRunnerConfig {
     pub const fn default_prompt_log_retention() -> usize {
         100
     }
+
+    /// Default task isolation: each task in its own git worktree.
+    pub const fn default_worktree_per_task() -> bool {
+        true
+    }
 }
 
 impl Default for CoreRunnerConfig {
     fn default() -> Self {
         Self {
             max_concurrent_tasks: None,
-            max_concurrent_plans: None,
             plan_timeout_secs: Self::default_plan_timeout_secs(),
             dangerously_skip_permissions: Self::default_dangerously_skip_permissions(),
             sandbox_level: RunnerSandboxLevel::default(),
@@ -2625,6 +2679,7 @@ impl Default for CoreRunnerConfig {
             log_prompts: false,
             prompt_log_retention: Self::default_prompt_log_retention(),
             delete_attempt_branches: false,
+            worktree_per_task: Self::default_worktree_per_task(),
         }
     }
 }
@@ -2978,6 +3033,21 @@ pheromone_decay_rate = 0.5
         let cfg = RokoConfig::from_toml(&example).expect("parse");
         assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
     }
+
+    /// 1210: the conductor supervises plan runs unless `[conductor]
+    /// supervise = false` turns it off.
+    #[test]
+    fn conductor_supervise_defaults_on_and_parses_off() {
+        assert!(ConductorConfig::default().supervise);
+        assert!(RokoConfig::example_toml().contains("supervise = true"));
+        let cfg = RokoConfig::from_toml("[conductor]\nsupervise = false\n").expect("parse");
+        assert!(!cfg.conductor.supervise);
+        assert_eq!(
+            cfg.conductor.task_stall_secs,
+            ConductorConfig::default().task_stall_secs,
+            "the stall watchdog keeps its thresholds"
+        );
+    }
     #[test]
     fn kimi_config_parse() {
         let example = include_str!("../../../../examples/roko-kimi.toml");
@@ -3209,6 +3279,38 @@ max_output = 16384
                 w,
                 ValidationWarning::UnknownModel { field, .. }
                     if field == "authoring.planner_model"
+            )),
+            "builtin slug should not produce a warning, got: {warnings:?}"
+        );
+    }
+
+    /// gap-b0d514: `[agent.data_llm]` must name a model roko can resolve:
+    /// a `[models.*]` entry or a builtin slug.
+    #[test]
+    fn validate_references_warns_on_unknown_data_llm_model() {
+        let mut cfg = RokoConfig::default();
+        cfg.models.clear();
+        cfg.agent.data_llm = Some(super::super::agent::DataLlmConfig {
+            model: "nonexistent-data-model".to_string(),
+            ..Default::default()
+        });
+        let warnings = validate_references(&cfg);
+        assert!(
+            warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, model }
+                    if field == "agent.data_llm.model" && model == "nonexistent-data-model"
+            )),
+            "expected warning for unknown data_llm model, got: {warnings:?}"
+        );
+
+        // The default, a builtin slug, needs no `[models.*]` entry.
+        cfg.agent.data_llm = Some(super::super::agent::DataLlmConfig::default());
+        let warnings = validate_references(&cfg);
+        assert!(
+            !warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, .. } if field == "agent.data_llm.model"
             )),
             "builtin slug should not produce a warning, got: {warnings:?}"
         );

@@ -135,7 +135,9 @@ fn write_shared_transcript(
     Ok(token)
 }
 
-fn truncate(text: &str, max_chars: usize) -> &str {
+/// The first `max_chars` characters of `text`. It cuts at a char boundary,
+/// so text with multi-byte characters cannot make it panic.
+pub(crate) fn truncate(text: &str, max_chars: usize) -> &str {
     text.char_indices()
         .nth(max_chars)
         .map_or(text, |(idx, _)| &text[..idx])
@@ -545,7 +547,8 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
         .state_hub
         .unwrap_or_else(crate::state_hub::shared_state_hub);
 
-    // SIGINT/SIGTERM stop the run gracefully for as long as the guard lives.
+    // SIGINT, SIGTERM and SIGHUP stop the run gracefully for as long as the
+    // guard lives.
     let interrupt = PlanRunInterruptHandle::default();
     let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
     let started = std::time::Instant::now();
@@ -568,6 +571,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: false,
+            worktree_per_task_explicit: false,
             rich_topology: false,
             promote: None,
             no_tui: true,
@@ -578,6 +582,9 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: run.overrides.effort.clone(),
+            no_cascade: run.overrides.cascade_enabled == Some(false),
+            metrics: None,
         },
         Some(run_id.clone()),
     )
@@ -660,6 +667,8 @@ fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -
             .as_secs()
             .saturating_mul(1_000),
         scope: Vec::new(),
+        covers: Vec::new(),
+        expect: None,
     }]
 }
 
@@ -724,6 +733,7 @@ fn prompt_tasks_file(
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: Default::default(),
         }],
     }
@@ -1254,6 +1264,8 @@ sibling_settle_secs = 0
             fail_msg: None,
             timeout_ms: 5_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }];
         prompt_tasks_file(
             "run-1",

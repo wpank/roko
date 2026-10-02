@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="708" viewBox="0 0 880 708" role="img" aria-labelledby="title desc" data-pin="41228d7b2">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="708" viewBox="0 0 880 708" role="img" aria-labelledby="title desc" data-pin="a43288b5f">
   <title id="title">Figure 1: architecture and control stack</title>
   <desc id="desc">The execution path from tasks.toml to recorded results, and the six-layer control stack that reads the records and acts on the path, with each mechanism marked by its status tag.</desc>
   <defs>
@@ -103,19 +103,19 @@
       <text x="20" y="16" font-size="13.5">guarded commit</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RG6 · MISSING</text>
     </g>
   <text x="28" y="384" font-size="13"><tspan font-weight="bold">5</tspan><tspan x="46">Slow regulators</tspan></text>
-    <g class="wired" data-row="RC3" data-tag="WIRED" transform="translate(194,360)"><title>RC3 Provider-health circuit breaker: WIRED</title>
+    <g class="partial" data-row="RC3" data-tag="PARTIAL" transform="translate(194,360)"><title>RC3 Provider-health circuit breaker: PARTIAL</title>
       <rect class="body" x="0.5" y="0.5" width="120" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">provider health</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RC3 · WIRED</text>
+      <text x="20" y="16" font-size="13.5">provider health</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RC3 · PARTIAL</text>
     </g>
-    <g class="wired" data-row="RC5" data-tag="WIRED" transform="translate(322,360)"><title>RC5 Budgets: WIRED</title>
-      <rect class="body" x="0.5" y="0.5" width="102" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">plan budget</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RC5 · WIRED</text>
+    <g class="partial" data-row="RC5" data-tag="PARTIAL" transform="translate(322,360)"><title>RC5 Budgets: PARTIAL</title>
+      <rect class="body" x="0.5" y="0.5" width="112" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
+      <text x="20" y="16" font-size="13.5">plan budget</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">RC5 · PARTIAL</text>
     </g>
-    <g class="wired" data-row="QA7" data-tag="WIRED" transform="translate(432,360)"><title>QA7 Adaptive gate thresholds: WIRED</title>
+    <g class="partial" data-row="QA7" data-tag="PARTIAL" transform="translate(442,360)"><title>QA7 Adaptive gate thresholds: PARTIAL</title>
       <rect class="body" x="0.5" y="0.5" width="110" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">retry budgets</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">QA7 · WIRED</text>
+      <text x="20" y="16" font-size="13.5">retry budgets</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">QA7 · PARTIAL</text>
     </g>
-    <g class="wired" data-row="LM2" data-tag="WIRED" transform="translate(550,360)"><title>LM2 Playbooks: WIRED</title>
+    <g class="wired" data-row="LM2" data-tag="WIRED" transform="translate(560,360)"><title>LM2 Playbooks: WIRED</title>
       <rect class="body" x="0.5" y="0.5" width="102" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
       <text x="20" y="16" font-size="13.5">playbooks</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">LM2 · WIRED</text>
     </g>
@@ -127,9 +127,9 @@
       <rect class="body" x="0.5" y="0.5" width="150" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
       <text x="20" y="16" font-size="13.5">prompt experiments</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">LM5 · PARTIAL</text>
     </g>
-    <g class="broken" data-row="LM3" data-tag="BROKEN" transform="translate(472,406)"><title>LM3 Knowledge store: BROKEN</title>
+    <g class="partial" data-row="LM3" data-tag="PARTIAL" transform="translate(472,406)"><title>LM3 Knowledge store: PARTIAL</title>
       <rect class="body" x="0.5" y="0.5" width="112" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="20" y="16" font-size="13.5">knowledge</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">LM3 · BROKEN</text>
+      <text x="20" y="16" font-size="13.5">knowledge</text><text class="note" x="20" y="30" font-size="11" letter-spacing="0.3">LM3 · PARTIAL</text>
     </g>
     <g class="partial" data-row="LM4" data-tag="PARTIAL" transform="translate(592,406)"><title>LM4 Error patterns and post-gate lessons: PARTIAL</title>
       <rect class="body" x="0.5" y="0.5" width="128" height="37" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V37.5 H5.5 A5,5 0 0 1 0.5,32.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
@@ -200,5 +200,5 @@
   <text class="note" x="28" y="694" font-size="12">Not on the path</text>
   <g class="built-unwired"><rect class="key" x="194.5" y="682.5" width="22" height="14" rx="2"/><text x="224" y="694" font-size="12">BUILT-UNWIRED</text></g>
   <g class="missing"><rect class="key" x="341.828" y="682.5" width="22" height="14" rx="2"/><text x="371.328" y="694" font-size="12">MISSING</text></g>
-  <text class="note" x="852" y="672" font-size="11" text-anchor="end">Status tags at 41228d7b2; each chip names its appendix row.</text>
+  <text class="note" x="852" y="672" font-size="11" text-anchor="end">Status tags at a43288b5f; each chip names its appendix row.</text>
 </svg>

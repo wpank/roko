@@ -1,10 +1,24 @@
 //! `roko inject` subcommand — sends signals to a running session.
 //!
-//! Signal injection allows external tools (CI, IDEs, monitoring) to push
-//! directives into an active roko session. Injected signals are appended
-//! to the substrate and can influence the agent's next compose cycle.
+//! Signal injection lets external tools (CI, IDEs, monitoring) push
+//! directives into a running `roko plan run` (gap-f118b3). Each run listens
+//! on an owner-only socket of its own ([`transport`]); `roko inject
+//! <session>` asks each in turn, and the run that runs the plan, or the
+//! checkpoint run, the session names answers. The command succeeds only on
+//! that run's acknowledgement. A directive or context then reaches the next
+//! task of that plan to start, once; an abort cancels that plan, and only
+//! it. With no run listening, nothing is delivered and nothing is written.
 
 use std::path::PathBuf;
+
+mod transport;
+
+#[cfg(unix)]
+pub use transport::start_inject_server;
+pub use transport::{
+    INJECT_ANSWER_TIMEOUT, InjectLink, InjectOutcome, InjectServer, InjectTarget, InjectWireReply,
+    InjectWireRequest, deliver, inject_socket_dir, listen_for_inject,
+};
 
 /// The kind of signal to inject.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,13 +91,16 @@ impl InjectRequest {
         }
     }
 
-    /// Compute the expected daemon socket path for this request.
+    /// The request as `roko inject` sends it to a plan run, under an id of
+    /// its own.
     #[must_use]
-    pub fn socket_path(&self) -> PathBuf {
-        self.workdir
-            .join(".roko")
-            .join("run")
-            .join(format!("roko-{}.sock", self.session_id))
+    pub fn to_wire(&self) -> InjectWireRequest {
+        InjectWireRequest {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            session: self.session_id.clone(),
+            kind: self.kind.as_str().to_string(),
+            payload: self.payload.clone(),
+        }
     }
 
     /// Validate the request before sending.
@@ -158,17 +175,18 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_computed_correctly() {
+    fn each_wire_request_has_an_id_of_its_own() {
         let req = InjectRequest::new(
             "sess-1".into(),
-            InjectKind::Directive,
-            "do something".into(),
+            InjectKind::Context,
+            "the API is frozen".into(),
             PathBuf::from("/project"),
         );
-        assert_eq!(
-            req.socket_path(),
-            PathBuf::from("/project/.roko/run/roko-sess-1.sock")
-        );
+        let (first, second) = (req.to_wire(), req.to_wire());
+        assert_ne!(first.request_id, second.request_id);
+        assert_eq!(first.session, "sess-1");
+        assert_eq!(first.kind, "context");
+        assert_eq!(first.payload, "the API is frozen");
     }
 
     #[test]

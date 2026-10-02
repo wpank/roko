@@ -410,10 +410,10 @@ while preserving full output in `detail`.
 
 ## 14. Production Gate Service
 
-The `ProductionGateService` and `DefaultGateService` provide the trait
-interface used by both the Runner-v2 event loop and the Graph engine's
-`GatePipelineCell` (#250). They compose the concrete gates with the
-pipeline builder and dispatch through the production service boundary.
+The `ProductionGateService` provides the trait interface
+(`ProductionGateRunner`) that the Runner-v2 event loop used and that the Graph
+engine's `GatePipelineCell` (#250) calls. It composes the concrete gates with
+the pipeline builder and dispatches through the production service boundary.
 
 ---
 

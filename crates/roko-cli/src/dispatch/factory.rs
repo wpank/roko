@@ -73,9 +73,8 @@ pub struct SharedAgentFactory {
     /// Per-call trace and metrics sinks shared across all dispatches
     /// (find-f489db).
     observability: Option<roko_fs::FsObservabilitySinks>,
-    /// Runtime-scoped format selection bandit. Shared across all dispatches
-    /// so tool-format selection learns from cumulative feedback within a run.
-    pub format_bandit: Arc<dyn roko_core::tool::bandit::FormatBandit>,
+    /// The safety provenance sinks of the runs in flight (gap-ff95f5).
+    provenance: Option<crate::safety_provenance::ProvenanceSinks>,
     /// Shared in-memory error pattern store. When an agent's gate fails, the
     /// observation is written here immediately so that subsequent agent
     /// dispatches within the same plan run can include the pattern in their
@@ -102,7 +101,6 @@ impl std::fmt::Debug for SharedAgentFactory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedAgentFactory")
             .field("config", &"...")
-            .field("format_bandit", &self.format_bandit.name())
             .finish()
     }
 }
@@ -252,7 +250,7 @@ impl SharedAgentFactory {
             health_registry,
             tool_audit: None,
             observability: None,
-            format_bandit: Arc::new(roko_core::tool::bandit::ProfileBandit::with_static_profiles()),
+            provenance: None,
             // Start with an empty in-memory store. Callers should replace it
             // via `with_error_pattern_store` or `with_error_patterns_from_disk`.
             error_pattern_store: Arc::new(std::sync::RwLock::new(ErrorPatternStore::empty())),
@@ -304,6 +302,18 @@ impl SharedAgentFactory {
         self
     }
 
+    /// Record each dispatch's tool calls with the safety provenance sink
+    /// `sinks` holds for its run (gap-ff95f5). A run registers its sink there
+    /// before its tasks run.
+    #[must_use]
+    pub fn with_provenance_sinks(
+        mut self,
+        sinks: crate::safety_provenance::ProvenanceSinks,
+    ) -> Self {
+        self.provenance = Some(sinks);
+        self
+    }
+
     /// Replace the error pattern store with a pre-loaded shared instance.
     #[must_use]
     pub fn with_error_pattern_store(
@@ -327,6 +337,15 @@ impl SharedAgentFactory {
             "factory: loaded error patterns from disk"
         );
         self.error_pattern_store = Arc::new(std::sync::RwLock::new(store));
+        self
+    }
+
+    /// Weigh what the durable knowledge store of the workspace at `workdir`
+    /// says about each model into the cascade router's pick (reg-ff6e1a).
+    #[must_use]
+    pub fn with_knowledge_routing(mut self, workdir: &Path) -> Self {
+        let store = roko_neuro::KnowledgeStore::for_workdir(workdir);
+        self.dispatcher = self.dispatcher.with_knowledge_store(store);
         self
     }
 
@@ -431,6 +450,9 @@ impl SharedAgentFactory {
         if let Some(ladder) = self.dispatcher.routing_ladder() {
             dispatcher = dispatcher.with_routing_ladder(ladder.clone());
         }
+        if let Some(store) = self.dispatcher.knowledge_store() {
+            dispatcher = dispatcher.with_knowledge_store(store.clone());
+        }
         self.dispatcher = dispatcher;
     }
 
@@ -516,6 +538,9 @@ impl SharedAgentFactory {
         if let Some(sinks) = &self.observability {
             dispatcher = dispatcher.with_observability_sinks(sinks.clone());
         }
+        if let Some(sinks) = &self.provenance {
+            dispatcher = dispatcher.with_provenance_sinks(sinks.clone());
+        }
 
         dispatcher
             .run_agent_result_bridge_with_tools_and_cli_mcp(
@@ -556,6 +581,7 @@ impl SharedAgentFactory {
         let health_registry = Arc::clone(&self.health_registry);
         let tool_audit = self.tool_audit.clone();
         let observability = self.observability.clone();
+        let provenance = self.provenance.clone();
 
         tokio::spawn(async move {
             let mut dispatcher = AgentDispatcherV2::with_shared(config, semaphores)
@@ -569,6 +595,9 @@ impl SharedAgentFactory {
             }
             if let Some(sinks) = observability {
                 dispatcher = dispatcher.with_observability_sinks(sinks);
+            }
+            if let Some(sinks) = provenance {
+                dispatcher = dispatcher.with_provenance_sinks(sinks);
             }
             match dispatcher
                 .run_agent_result_bridge_with_tools_and_cli_mcp(
@@ -632,6 +661,7 @@ impl SharedAgentFactory {
         let health_registry = Arc::clone(&self.health_registry);
         let tool_audit = self.tool_audit.clone();
         let observability = self.observability.clone();
+        let provenance = self.provenance.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
 
         let mut handle = tokio::spawn(async move {
@@ -646,6 +676,9 @@ impl SharedAgentFactory {
             }
             if let Some(sinks) = observability {
                 dispatcher = dispatcher.with_observability_sinks(sinks);
+            }
+            if let Some(sinks) = provenance {
+                dispatcher = dispatcher.with_provenance_sinks(sinks);
             }
             if started_tx.send(()).is_err() {
                 return;
@@ -696,10 +729,5 @@ impl SharedAgentFactory {
     /// Pre-discovered MCP tools, if available.
     pub fn mcp_tools(&self) -> Option<&Arc<Vec<ToolDef>>> {
         self.mcp_runtime.as_ref().map(|runtime| runtime.tools())
-    }
-
-    /// Shared format-selection bandit for adaptive tool format decisions.
-    pub fn format_bandit(&self) -> &Arc<dyn roko_core::tool::bandit::FormatBandit> {
-        &self.format_bandit
     }
 }

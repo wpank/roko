@@ -267,6 +267,9 @@ pub struct ModelRouter {
     /// `[routing.ladder]` bound to this workspace. When present, it picks
     /// the model of every task without an override or hint.
     ladder: Option<RoutingLadder>,
+    /// The workspace's durable knowledge store. When present, what it says
+    /// about each model weighs into the cascade router's pick (reg-ff6e1a).
+    knowledge: Option<roko_neuro::KnowledgeStore>,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -285,6 +288,7 @@ impl std::fmt::Debug for ModelRouter {
             .field("disabled_providers", &self.disabled_providers.len())
             .field("models_without_tools", &self.models_without_tools.len())
             .field("ladder", &self.ladder)
+            .field("knowledge", &self.knowledge.is_some())
             .finish()
     }
 }
@@ -303,6 +307,7 @@ impl ModelRouter {
             disabled_providers: HashSet::new(),
             models_without_tools: HashSet::new(),
             ladder: None,
+            knowledge: None,
         }
     }
 
@@ -325,6 +330,22 @@ impl ModelRouter {
     #[must_use]
     pub fn cascade_arc(&self) -> Option<Arc<CascadeRouter>> {
         self.cascade.clone()
+    }
+
+    /// Weigh what the durable knowledge `store` says about each model into
+    /// the cascade router's pick (reg-ff6e1a): a model the knowledge vouches
+    /// for can replace one it warns about. Overrides, hints and the ladder
+    /// are unaffected.
+    #[must_use]
+    pub fn with_knowledge_store(mut self, store: roko_neuro::KnowledgeStore) -> Self {
+        self.knowledge = Some(store);
+        self
+    }
+
+    /// The knowledge store the cascade pick weighs, if any.
+    #[must_use]
+    pub fn knowledge_store(&self) -> Option<&roko_neuro::KnowledgeStore> {
+        self.knowledge.as_ref()
     }
 
     /// Override the default-fallback slug.
@@ -599,7 +620,7 @@ impl ModelRouter {
         // Merge budget pressure into routing bias when applicable.
         let effective_bias = Self::effective_bias(inputs);
 
-        if let Some(health) = &self.health {
+        let route = if let Some(health) = &self.health {
             // Health-aware path: filters Open providers, demotes HalfOpen
             // and optionally high-latency providers.
             let latency_ref = self.latency_registry.as_deref();
@@ -619,7 +640,62 @@ impl ModelRouter {
             }
         } else {
             router.route(ctx)
+        };
+        self.weigh_knowledge(router, ctx, route)
+    }
+
+    /// `route`, re-ranked with what the knowledge store says about the models
+    /// it may land on (reg-ff6e1a); `route` itself without a store.
+    fn weigh_knowledge(
+        &self,
+        router: &CascadeRouter,
+        ctx: &RoutingContext,
+        route: CascadeModel,
+    ) -> CascadeModel {
+        let Some(store) = &self.knowledge else {
+            return route;
+        };
+        let candidates = self.knowledge_candidates(router, ctx);
+        let advice = crate::knowledge_helpers::build_knowledge_routing_advice(
+            store,
+            &candidates,
+            ctx.role,
+            ctx.task_category.label(),
+        );
+        router.apply_knowledge_among(ctx, route, &candidates, Some(&advice))
+    }
+
+    /// The cascade router's models a knowledge-weighed pick may land on:
+    /// those the guards in [`Self::route`] accept.
+    fn knowledge_candidates(&self, router: &CascadeRouter, ctx: &RoutingContext) -> Vec<String> {
+        let needs_tools = needs_tool_use(ctx.task_category);
+        router
+            .model_slugs()
+            .iter()
+            .filter(|slug| self.guards_accept(slug, needs_tools))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether the guards in [`Self::route`] accept `slug`: a configured
+    /// model on an enabled and available provider, able to use tools when
+    /// the task needs them.
+    fn guards_accept(&self, slug: &str, needs_tools: bool) -> bool {
+        if !self.configured_models.is_empty() && !self.configured_models.contains(slug) {
+            return false;
         }
+        if needs_tools && self.models_without_tools.contains(slug) {
+            return false;
+        }
+        let Some(provider) = self.model_providers.get(slug) else {
+            return true;
+        };
+        if let Some(health) = &self.health
+            && !health.is_available(provider)
+        {
+            return false;
+        }
+        !self.disabled_providers.contains(provider)
     }
 
     /// Merge `budget_pressure` into the existing `routing_bias` when the
@@ -877,6 +953,7 @@ mod tests {
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: Default::default(),
         }
     }
@@ -900,6 +977,7 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             cached_cfactor_context: String::new(),
+            concurrent_plans: Vec::new(),
         }
     }
 
@@ -993,6 +1071,63 @@ mod tests {
         let choice = router.route(&inputs).unwrap();
         assert_eq!(choice.model.slug, "fallback-model");
         assert_eq!(choice.source, ModelChoiceSource::Default);
+    }
+
+    /// reg-ff6e1a: with the workspace's knowledge store attached, what it
+    /// says about each model moves the cascade router's pick. An empty store
+    /// leaves the pick alone; once the store warns about the pick and vouches
+    /// for the other model, the other model wins.
+    #[test]
+    fn knowledge_routing_moves_the_cascade_pick() {
+        use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeStore};
+
+        let models = vec!["model-alpha".to_string(), "model-beta".to_string()];
+        let cascade = Arc::new(CascadeRouter::new(models.clone()));
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+        let baseline = ModelRouter::new(Some(Arc::clone(&cascade)))
+            .route(&inputs)
+            .unwrap()
+            .model
+            .slug;
+        let other = models
+            .iter()
+            .find(|slug| **slug != baseline)
+            .expect("a second model")
+            .clone();
+
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let store = KnowledgeStore::for_workdir(workdir.path());
+        let router = ModelRouter::new(Some(cascade)).with_knowledge_store(store.clone());
+        assert_eq!(router.route(&inputs).unwrap().model.slug, baseline);
+
+        let warning =
+            format!("implementer implementation routing model {baseline} repeatedly fails");
+        store
+            .add(KnowledgeEntry {
+                id: "warns".into(),
+                kind: KnowledgeKind::AntiKnowledge,
+                content: warning,
+                confidence: 0.8,
+                source_model: Some(baseline.clone()),
+                ..KnowledgeEntry::default()
+            })
+            .expect("persist the warning");
+        let endorsement =
+            format!("implementer implementation routing model {other} succeeds reliably");
+        store
+            .add(KnowledgeEntry {
+                id: "vouches".into(),
+                kind: KnowledgeKind::Heuristic,
+                content: endorsement,
+                confidence: 0.9,
+                source_model: Some(other.clone()),
+                ..KnowledgeEntry::default()
+            })
+            .expect("persist the endorsement");
+        let choice = router.route(&inputs).unwrap();
+        assert_eq!(choice.model.slug, other);
+        assert_eq!(choice.source, ModelChoiceSource::Router);
     }
 
     #[test]

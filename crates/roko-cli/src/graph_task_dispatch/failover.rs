@@ -1,6 +1,11 @@
 //! Provider failover: a planned model whose provider cannot take the task hands
 //! it to the next usable candidate within the same attempt.
 
+use roko_learn::provider_failover::{
+    FailoverCandidate as DispatchCandidate, format_local_ms, missing_credentials_reason,
+    provider_brings_own_tools,
+};
+
 use super::helper_calls::SideCall;
 use super::*;
 
@@ -14,15 +19,6 @@ const PROVIDER_EXHAUSTED_CATEGORY: &str = "provider_exhausted";
 
 /// `role` of the cost and efficiency rows of a call failover refused.
 const FAILOVER_REFUSED_ROLE: &str = "failover_refused";
-
-/// A model to dispatch: the key sent to the bridge and the config resolving it.
-#[derive(Clone)]
-struct DispatchCandidate {
-    model_key: String,
-    /// A clone of the run config with a `[models.*]` entry that serves a
-    /// hinted slug on another configured provider; `None` uses the run config.
-    config: Option<Arc<RokoConfig>>,
-}
 
 /// Why the provider behind a model cannot take this dispatch.
 #[derive(Debug, Clone)]
@@ -90,50 +86,6 @@ impl FailoverChain {
     }
 }
 
-/// Provider kinds that serve the same model family over another transport.
-fn same_family_kinds(
-    kind: roko_core::agent::ProviderKind,
-) -> &'static [roko_core::agent::ProviderKind] {
-    use roko_core::agent::ProviderKind;
-    match kind {
-        ProviderKind::ClaudeCli | ProviderKind::AnthropicApi => {
-            &[ProviderKind::ClaudeCli, ProviderKind::AnthropicApi]
-        }
-        ProviderKind::GeminiCli | ProviderKind::GeminiApi => {
-            &[ProviderKind::GeminiCli, ProviderKind::GeminiApi]
-        }
-        _ => &[],
-    }
-}
-
-/// CLI and ACP harnesses bring their own tools, so a profile's
-/// `supports_tools` only matters for providers driven by roko's tool loop.
-fn provider_brings_own_tools(provider: &roko_core::config::schema::ProviderConfig) -> bool {
-    matches!(
-        provider.transport(),
-        roko_core::config::ProviderTransport::Cli { .. }
-            | roko_core::config::ProviderTransport::Acp { .. }
-    )
-}
-
-fn missing_credentials_reason(
-    provider: &roko_core::config::schema::ProviderConfig,
-    provider_id: &str,
-) -> String {
-    provider.api_key_env.as_deref().map_or_else(
-        || format!("provider `{provider_id}` is not installed or has no credentials"),
-        |env| format!("{env} is not set"),
-    )
-}
-
-fn format_local_ms(ms: i64) -> String {
-    use chrono::TimeZone as _;
-    chrono::Local.timestamp_millis_opt(ms).single().map_or_else(
-        || ms.to_string(),
-        |at| at.format("%Y-%m-%d %H:%M %:z").to_string(),
-    )
-}
-
 impl GraphTaskDispatcher {
     /// Run the provider bridge, treating the planned model as a preference.
     ///
@@ -169,7 +121,7 @@ impl GraphTaskDispatcher {
         };
         let mut refusals: Vec<ProviderRefusal> = Vec::new();
         loop {
-            if !pinned && let Some(refusal) = self.blocked_provider(&candidate) {
+            if !pinned && let Some(refusal) = self.blocked_provider(&candidate, &request) {
                 let definitive = refusal.definitive;
                 refusals.push(refusal);
                 match self.failover_model(spec, task_id, &refusals) {
@@ -239,10 +191,7 @@ impl GraphTaskDispatcher {
             // The caller settles only the result it receives; account the
             // refused call here.
             let refused_cost_usd = f64::from(dispatch.result.usage.cost_usd);
-            self.task_spend.record(
-                &format!("{}/{task_id}", spec.plan_id),
-                &dispatch.result.usage,
-            );
+            self.record_task_spend(&spec.plan_id, task_id, &dispatch.result.usage);
             self.budget_ledger
                 .settle(&spec.plan_id, 0, refused_cost_usd)?;
             let refused_calls = refusals.iter().filter(|refusal| refusal.called).count();
@@ -296,9 +245,14 @@ impl GraphTaskDispatcher {
     }
 
     /// The refusal for `candidate` when its provider must not be called now:
-    /// missing, not dispatchable, without credentials, statically disabled,
-    /// or its circuit is open in the health registry.
-    fn blocked_provider(&self, candidate: &DispatchCandidate) -> Option<ProviderRefusal> {
+    /// missing, not dispatchable, unable to enforce `request`'s agent
+    /// contract, without credentials, statically disabled, or its circuit is
+    /// open in the health registry.
+    fn blocked_provider(
+        &self,
+        candidate: &DispatchCandidate,
+        request: &AgentDispatchRequest,
+    ) -> Option<ProviderRefusal> {
         use crate::dispatch_v2::ProviderRuntime;
         use roko_learn::provider_health::ErrorClass;
 
@@ -335,6 +289,14 @@ impl GraphTaskDispatcher {
                     "provider `{provider_id}` is not dispatchable: {}",
                     unsupported.detail
                 ),
+                None,
+                true,
+            ));
+        }
+        if let Err(error) = crate::dispatch_v2::validate_contract_support(request, &target) {
+            return Some(refusal(
+                "contract_unsupported",
+                error.to_string(),
                 None,
                 true,
             ));
@@ -387,69 +349,24 @@ impl GraphTaskDispatcher {
     /// Candidates after `refusals`, in order: the first refused model's slug
     /// on another configured provider of its family (claude_cli can run any
     /// Claude slug), `[routing] fallback_models`, `agent.fallback_model`, and
-    /// `agent.default_model`.
+    /// `agent.default_model`. The order is the shared failover policy's
+    /// (`roko_learn::provider_failover`), which serve and ACP apply too.
     fn failover_candidates(&self, refusals: &[ProviderRefusal]) -> Vec<DispatchCandidate> {
-        let mut candidates: Vec<DispatchCandidate> = Vec::new();
-        let push_run_model = |candidates: &mut Vec<DispatchCandidate>, model_key: &str| {
-            if !model_key.trim().is_empty()
-                && !candidates
-                    .iter()
-                    .any(|candidate| candidate.model_key == model_key)
-            {
-                candidates.push(DispatchCandidate {
-                    model_key: model_key.to_string(),
-                    config: None,
-                });
-            }
-        };
-        if let Some(first) = refusals.first() {
-            for (key, profile) in self.config.effective_models() {
-                if profile.slug == first.model_slug && key != first.model_key {
-                    push_run_model(&mut candidates, &key);
-                }
-            }
-            let family = same_family_kinds(first.provider_kind);
-            let base_profile = self
-                .resolve_candidate(&DispatchCandidate {
-                    model_key: first.model_key.clone(),
-                    config: None,
-                })
-                .model_profile
-                .unwrap_or_else(|| roko_core::config::schema::ModelProfile {
-                    slug: first.model_slug.clone(),
-                    supports_tools: true,
-                    ..Default::default()
-                });
-            for (provider_id, provider) in self.config.effective_providers() {
-                if !family.contains(&provider.kind) || provider_id == first.provider_id {
-                    continue;
-                }
-                let model_key = format!("{}@{provider_id}", first.model_slug);
-                let mut config = (*self.config).clone();
-                config.models.insert(
-                    model_key.clone(),
-                    roko_core::config::schema::ModelProfile {
-                        provider: provider_id,
-                        ..base_profile.clone()
-                    },
-                );
-                candidates.push(DispatchCandidate {
-                    model_key,
-                    config: Some(Arc::new(config)),
-                });
-            }
-        }
-        for model_key in self
-            .config
-            .routing
-            .fallback_models
-            .iter()
-            .chain(self.config.agent.fallback_model.iter())
-            .chain(std::iter::once(&self.config.agent.default_model))
-        {
-            push_run_model(&mut candidates, model_key);
-        }
-        candidates
+        let first = refusals
+            .first()
+            .map(|first| roko_learn::provider_failover::RefusedModel {
+                model_key: first.model_key.clone(),
+                model_slug: first.model_slug.clone(),
+                provider_id: first.provider_id.clone(),
+                provider_kind: first.provider_kind,
+                profile: self
+                    .resolve_candidate(&DispatchCandidate {
+                        model_key: first.model_key.clone(),
+                        config: None,
+                    })
+                    .model_profile,
+            });
+        roko_learn::provider_failover::failover_candidates(&self.config, first.as_ref())
     }
 
     /// The first usable model in [`Self::failover_candidates`], with the
@@ -1114,6 +1031,224 @@ exit 1
             1,
             "max_retries = 2 must not re-run an exhausted provider"
         );
+    }
+
+    /// gap-baab0a: Codex cannot honour a task's tool allowlist, so failover
+    /// passes it over before any call, runs the task on a provider that can,
+    /// and records why.
+    #[tokio::test]
+    async fn codex_with_a_tool_allowlist_fails_over_before_any_call() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().join("work");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        let codex_calls = temp.path().join("codex-calls.log");
+        let codex = temp.path().join("fake-codex.sh");
+        write_executable(
+            &codex,
+            &format!(
+                "#!/bin/sh\ncat >/dev/null\necho called >> '{}'\nexit 1\n",
+                codex_calls.display()
+            ),
+        );
+        let claude = temp.path().join("fake-claude.sh");
+        write_executable(
+            &claude,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"ran"}}'
+printf '%s\n' '{"type":"result","session_id":"s","total_cost_usd":0,"usage":{"input_tokens":1,"output_tokens":1}}'
+"#,
+        );
+        let provider = |kind, command: Option<&Path>, key_env: Option<&str>| ProviderConfig {
+            kind,
+            base_url: None,
+            api_key_env: key_env.map(str::to_string),
+            command: command.map(|path| path.display().to_string()),
+            args: None,
+            timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+        };
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "claude-sonnet-4-6".to_string();
+        config.agent.bare_mode = false;
+        let claude_cli = provider(ProviderKind::ClaudeCli, Some(&claude), None);
+        config
+            .providers
+            .insert("claude_cli".to_string(), claude_cli);
+        let codex_cli = provider(ProviderKind::CodexCli, Some(&codex), None);
+        config.providers.insert("codex_cli".to_string(), codex_cli);
+        for (key, provider_id, slug) in [
+            ("claude-sonnet-4-6", "claude_cli", "claude-sonnet-4-6"),
+            ("codex-model", "codex_cli", "gpt-5-codex"),
+        ] {
+            let profile = ModelProfile {
+                provider: provider_id.to_string(),
+                slug: slug.to_string(),
+                ..ModelProfile::default()
+            };
+            config.models.insert(key.to_string(), profile);
+        }
+        // Keys in the environment must not synthesize other usable providers.
+        for (id, kind) in [
+            ("anthropic", ProviderKind::AnthropicApi),
+            ("openai", ProviderKind::OpenAiCompat),
+            ("gemini", ProviderKind::GeminiApi),
+            ("perplexity", ProviderKind::PerplexityApi),
+        ] {
+            let keyless = provider(kind, None, Some("ROKO_TEST_FAILOVER_KEY_NEVER_SET"));
+            config.providers.insert(id.to_string(), keyless);
+        }
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = GraphTaskDispatcher::new(factory, Arc::clone(&config), workdir.clone())
+            .with_feedback(recording_feedback(&workdir));
+        let task = TaskDef {
+            id: "T09".to_string(),
+            title: "Read with an allowlist".to_string(),
+            model_hint: Some("codex-model".to_string()),
+            allowed_tools: Some(vec!["read_file".to_string(), "grep".to_string()]),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let run = "graph-contract-failover-run";
+        dispatcher
+            .dispatch(
+                &make_spec(&task),
+                Vec::new(),
+                &CellContext::new().with_run_id(run.to_string()),
+            )
+            .await
+            .expect("claude_cli runs the task");
+        drop(dispatcher);
+
+        assert!(!codex_calls.exists(), "codex was called");
+        let verdicts = jsonl_rows_where(
+            &workdir.join(".roko/runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let executed = &verdicts[0]["executed"];
+        assert_eq!(executed["provider"], "claude_cli");
+        assert_eq!(
+            executed["failover_chain"],
+            serde_json::json!(["codex-model"])
+        );
+        let reason = executed["failover_reason"]
+            .as_str()
+            .expect("failover reason");
+        assert!(
+            reason.contains("cannot enforce the resolved agent contract"),
+            "{reason}"
+        );
+    }
+
+    /// gap-baab0a: an implementer may not search the web, so the broker stops
+    /// a Codex run at its first `web_search`, and the attempt's verdict
+    /// records the policy the contract asked for, what the broker enforced,
+    /// and the denial.
+    #[tokio::test]
+    async fn a_denied_codex_operation_is_recorded_with_the_tool_policy() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().join("work");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        let codex = temp.path().join("fake-codex.sh");
+        write_executable(
+            &codex,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"item.started","item":{"id":"item_0","type":"web_search","query":"rust"}}'
+exec sleep 5
+"#,
+        );
+        let provider = |kind, command: Option<&Path>, key_env: Option<&str>| ProviderConfig {
+            kind,
+            base_url: None,
+            api_key_env: key_env.map(str::to_string),
+            command: command.map(|path| path.display().to_string()),
+            args: None,
+            timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+        };
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "codex-model".to_string();
+        let codex_cli = provider(ProviderKind::CodexCli, Some(&codex), None);
+        config.providers.insert("codex_cli".to_string(), codex_cli);
+        let profile = ModelProfile {
+            provider: "codex_cli".to_string(),
+            slug: "gpt-5-codex".to_string(),
+            ..ModelProfile::default()
+        };
+        config.models.insert("codex-model".to_string(), profile);
+        // Keys in the environment must not synthesize other usable providers.
+        for (id, kind) in [
+            ("anthropic", ProviderKind::AnthropicApi),
+            ("openai", ProviderKind::OpenAiCompat),
+            ("gemini", ProviderKind::GeminiApi),
+            ("perplexity", ProviderKind::PerplexityApi),
+        ] {
+            let keyless = provider(kind, None, Some("ROKO_TEST_FAILOVER_KEY_NEVER_SET"));
+            config.providers.insert(id.to_string(), keyless);
+        }
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = GraphTaskDispatcher::new(factory, Arc::clone(&config), workdir.clone())
+            .with_feedback(recording_feedback(&workdir));
+        let task = TaskDef {
+            id: "T10".to_string(),
+            title: "Implement without the web".to_string(),
+            model_hint: Some("codex-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let run = "graph-codex-denial-run";
+        let dispatched = dispatcher
+            .dispatch(
+                &make_spec(&task),
+                Vec::new(),
+                &CellContext::new().with_run_id(run.to_string()),
+            )
+            .await;
+        assert!(dispatched.is_err(), "the denied run fails the task");
+        drop(dispatcher);
+
+        let verdicts = jsonl_rows_where(
+            &workdir.join(".roko/runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let policy = &verdicts[0]["executed"]["tool_policy"];
+        assert_eq!(policy["enforcement"], "broker", "{policy}");
+        let forbidden = policy["forbidden_tools"]
+            .as_array()
+            .expect("forbidden tools");
+        assert!(
+            forbidden.contains(&serde_json::json!("web_search")),
+            "{policy}"
+        );
+        assert_eq!(
+            policy["denied_operations"],
+            serde_json::json!(["web_search"])
+        );
+        assert_eq!(policy["network_off"], true);
+        assert_eq!(policy["denial"], "web_search denied by policy: rust");
     }
 
     /// `roko init` workspaces configure only `claude_cli` and the default

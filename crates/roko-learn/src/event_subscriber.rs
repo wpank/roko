@@ -343,7 +343,7 @@ pub async fn run_learning_subscriber(
                         tool_name,
                         duration_ms,
                         result_tokens,
-                        succeeded: success,
+                        succeeded: Some(success),
                         advanced_task: success,
                         was_redundant: false,
                         error_category: (!success).then_some("tool_execution_failed".to_string()),

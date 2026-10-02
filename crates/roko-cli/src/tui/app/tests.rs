@@ -66,6 +66,85 @@ fn tui_command_pause_toggle_sends_execution_commands() {
     );
 }
 
+/// The command the TUI sends for the selected plan `plan-7` when the
+/// operator confirms `action`, and what the confirmation asked.
+fn confirmed_plan_command(
+    action: ConfirmAction,
+) -> (String, crate::execution_control::ExecutionCommand) {
+    let dir = tempdir().unwrap();
+    let (sender, mut cmd_rx, _ack_tx, ack_rx) =
+        crate::execution_control::ExecutionCommandSender::channel("test-run");
+    let ack_receiver = crate::execution_control::CommandAckReceiver::new(ack_rx);
+    let mut app = App::new(dir.path()).with_execution_command_sender(sender, ack_receiver);
+    app.tui_state.plans = vec![super::super::state::PlanEntry {
+        id: "plan-7".to_string(),
+        ..Default::default()
+    }];
+
+    app.dispatch_action(TuiAction::RequestConfirm(action));
+    let asked = app.tui_state.pending_confirm.clone().unwrap().to_string();
+    app.dispatch_action(TuiAction::ConfirmYes);
+    (asked, cmd_rx.try_recv().unwrap())
+}
+
+/// gap-c002bb: `R` resets the selected plan, which a Graph run runs again
+/// from scratch once it has failed.
+#[test]
+fn reset_plan_key_confirms_and_sends_a_reset() {
+    let (asked, sent) = confirmed_plan_command(ConfirmAction::ResetSelectedPlan(String::new()));
+
+    assert_eq!(asked, "Reset plan plan-7?");
+    assert_eq!(
+        sent.kind,
+        crate::execution_control::ExecutionCommandKind::Reset
+    );
+    assert_eq!(sent.plan_id.as_deref(), Some("plan-7"));
+}
+
+/// gap-c002bb: cancel has a key of its own, `C`, which sends a cancel for
+/// the selected plan.
+#[test]
+fn cancel_plan_key_confirms_and_sends_a_cancel() {
+    let (asked, sent) = confirmed_plan_command(ConfirmAction::CancelPlan(String::new()));
+
+    assert_eq!(asked, "Cancel plan plan-7?");
+    assert_eq!(
+        sent.kind,
+        crate::execution_control::ExecutionCommandKind::Cancel
+    );
+    assert_eq!(sent.plan_id.as_deref(), Some("plan-7"));
+}
+
+/// bug-6c3491: no transport reaches a live run yet, so the inject key says
+/// so and writes nothing, instead of reporting "Injected" for a directive
+/// nothing reads.
+#[test]
+fn inject_key_fails_closed_and_writes_nothing() {
+    let dir = tempdir().unwrap();
+    let mut app = App::new(dir.path());
+
+    app.dispatch_action(TuiAction::StartInject);
+    assert_eq!(app.tui_state.input_mode, InputMode::Normal);
+    assert!(
+        app.notifications
+            .iter()
+            .any(|n| n.message.contains("not available"))
+    );
+
+    // Text typed into inject mode some other way is not sent either.
+    app.tui_state.input_mode = InputMode::Inject;
+    app.tui_state.message_input = "ship it".to_string();
+    app.dispatch_action(TuiAction::SubmitInject);
+    assert_eq!(app.tui_state.input_mode, InputMode::Normal);
+    assert!(app.tui_state.message_input.is_empty());
+    assert!(!dir.path().join(".roko/signals.jsonl").exists());
+    assert!(
+        app.notifications
+            .iter()
+            .all(|n| !n.message.starts_with("Injected"))
+    );
+}
+
 #[test]
 fn tui_standalone_pause_toggle_shows_notification() {
     let dir = tempdir().unwrap();
@@ -906,8 +985,9 @@ fn modal_scroll_actions_update_modal_snapshot_only() {
     ));
     assert_eq!(app.tui_state.plan_scroll_offset, 9);
 
-    app.tui_state.active_modal = Some(ModalState::AgentPool {
-        agents: Vec::new(),
+    app.tui_state.active_modal = Some(ModalState::BatchReview {
+        batch_name: "b".to_string(),
+        results: Vec::new(),
         scroll_offset: 4,
     });
 
@@ -915,7 +995,7 @@ fn modal_scroll_actions_update_modal_snapshot_only() {
 
     assert!(matches!(
         app.tui_state.active_modal,
-        Some(ModalState::AgentPool {
+        Some(ModalState::BatchReview {
             scroll_offset: 3,
             ..
         })
@@ -1701,4 +1781,212 @@ fn tui_event_loop_current_tick_duration_matches_policy() {
         std::time::Duration::from_millis(250),
         "dormant app should use 250ms tick"
     );
+}
+
+#[test]
+fn full_refresh_keeps_the_plan_set() {
+    let dir = tempdir().unwrap();
+    // A workspace plan outside the run's plan set: the disk loader lists it.
+    let unrelated = dir.path().join("plans").join("03-unrelated");
+    std::fs::create_dir_all(&unrelated).unwrap();
+    std::fs::write(
+        unrelated.join("tasks.toml"),
+        "[[task]]\nid = \"T1\"\ntitle = \"Task\"\n",
+    )
+    .unwrap();
+    let mut app = App::new(dir.path());
+    let hub = app._state_hub.clone().expect("hub");
+    publish_plan_set(&hub, &["01-first", "02-second"]);
+    app.drain_snapshot_channel();
+    let plan_ids = |app: &App| -> Vec<String> {
+        app.tui_state
+            .plans
+            .iter()
+            .map(|plan| plan.id.clone())
+            .collect()
+    };
+    assert_eq!(plan_ids(&app), ["01-first", "02-second"]);
+
+    // An explicit full refresh reloads `DashboardData` from disk, which lists
+    // every workspace plan; the hub's plan set must still be what is shown.
+    app.refresh_snapshot();
+    assert_eq!(plan_ids(&app), ["01-first", "02-second"]);
+}
+
+/// gap-633184: a consumer far behind a long, fast stream loses no event
+/// without counting it, a replay longer than one tick is not cut short, and
+/// every task's terminal status still reaches the TUI, through the snapshot.
+#[test]
+fn control_events_survive_long_stream_backpressure() {
+    use super::channels::take_state_events;
+    use crate::runner::tui_bridge::TuiBridge;
+    use crate::state_hub::{SharedStateHub, StateHub, StateHubSubscription};
+    use crate::tui::state::TaskStatus;
+
+    const TICK: usize = 256;
+    let tasks = ["t1", "t2", "t3"];
+    // A Graph run's stream: per task, hundreds of tool calls, results and
+    // text deltas between its start, gate result and completion.
+    let publish_run = |hub: &SharedStateHub| {
+        let bridge = TuiBridge::new(hub.sender());
+        let start = hub.cursor_snapshot().next_seq;
+        bridge.plan_started("p1", tasks.len());
+        for task_id in tasks {
+            let agent_id = format!("p1/{task_id}");
+            bridge.task_started("p1", task_id, task_id, "implement");
+            for step in 0..200 {
+                let tool_id = format!("{task_id}-{step}");
+                bridge.tool_call(&agent_id, "p1", task_id, 1, &tool_id, "Bash");
+                bridge.tool_output(&agent_id, "p1", task_id, 1, &tool_id, "ok");
+                bridge.agent_text_delta(&agent_id, "p1", task_id, 1, "working");
+            }
+            bridge.gate_result("p1", task_id, "verify[0]", true);
+            bridge.task_completed("p1", task_id, "passed");
+        }
+        bridge.plan_completed("p1", true);
+        hub.cursor_snapshot().next_seq - start
+    };
+    // Everything a subscription yields, a tick at a time, and the number of
+    // events it reported dropped.
+    let drain = |subscription: &mut StateHubSubscription| {
+        let (mut events, mut dropped) = (Vec::new(), 0);
+        loop {
+            let (taken, missed) = take_state_events(subscription, TICK);
+            dropped += missed;
+            if taken.is_empty() && missed == 0 {
+                return (events, dropped);
+            }
+            events.extend(taken);
+        }
+    };
+
+    // A replay longer than one tick arrives whole, over several ticks.
+    let hub = SharedStateHub::new(StateHub::new(4096));
+    let published = publish_run(&hub);
+    let (events, dropped) = drain(&mut hub.subscribe_events_from(0));
+    assert!(published > TICK as u64);
+    assert_eq!((events.len() as u64, dropped), (published, 0));
+
+    // A live consumer that falls far behind an 8-event ring loses events,
+    // but counts every one of them.
+    let hub = SharedStateHub::new(StateHub::new(8));
+    let dir = tempdir().expect("tempdir");
+    let mut app = App::new_connected(dir.path(), &hub);
+    let mut subscription = hub.subscribe_events_from(hub.cursor_snapshot().next_seq);
+    let published = publish_run(&hub);
+    let (events, dropped) = drain(&mut subscription);
+    assert!(dropped > 0, "the stream outran the ring");
+    assert_eq!(events.len() as u64 + dropped, published);
+
+    // The TUI reports that count, and shows every task finished: plan, task
+    // and gate state come from the snapshot, not from the dropped events.
+    app.drain_snapshot_channel();
+    app.drain_state_events();
+    let marker = format!("[stream lagged: {dropped} StateHub events; snapshot resynced]");
+    let system = &app.tui_state.agent_streams["system"];
+    assert!(system.chunks.contains(&marker), "{:?}", system.chunks);
+    let plan = app
+        .tui_state
+        .plans
+        .iter()
+        .find(|plan| plan.id == "p1")
+        .expect("p1 is listed");
+    for task_id in tasks {
+        let task = plan
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .expect("the task is listed");
+        assert_eq!(task.status, TaskStatus::Done, "{task_id}");
+    }
+}
+
+/// bug-cc61a3: an attempt's screened transcript replaces the text it streamed
+/// unscreened and keeps its live tool step. Unscreened text that trails the
+/// screened copy is dropped, until the agent's next attempt starts.
+#[test]
+fn screened_transcript_replaces_unscreened_text() {
+    use crate::runner::tui_bridge::TuiBridge;
+    use crate::tui::widgets::stream_output::display_text;
+
+    let dir = tempdir().expect("tempdir");
+    let hub = crate::state_hub::shared_state_hub();
+    let mut app = App::new_connected(dir.path(), &hub);
+    let bridge = TuiBridge::new(hub.sender());
+    let unscreened = |text: &str| {
+        let payload = serde_json::json!({ "text": text });
+        bridge.publish_unscreened_stream_record("a", "p", "t", 0, "text", payload);
+    };
+    let texts = |app: &App| {
+        app.tui_state
+            .agent_output_history
+            .records_for("a")
+            .iter()
+            .map(|record| display_text(&record.text).into_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // An attempt streams a live tool step and two drafts.
+    bridge.agent_spawned("a", "p", "t", 1, "impl", "sonnet", "claude_cli");
+    bridge.tool_step("a", "p", "t", 0, "c1", "Bash", "ls");
+    unscreened("draft one");
+    unscreened("draft two");
+    app.drain_state_events();
+    assert_eq!(texts(&app), ["Bash ls", "draft one", "draft two"]);
+
+    // Its screened transcript arrives, and a late draft trails it.
+    bridge.agent_text_delta("a", "p", "t", 0, "final answer");
+    unscreened("late draft");
+    app.drain_state_events();
+    assert_eq!(texts(&app), ["Bash ls", "final answer"]);
+
+    // The next attempt's drafts show until its own transcript settles them.
+    bridge.agent_spawned("a", "p", "t", 2, "impl", "sonnet", "claude_cli");
+    unscreened("retry draft");
+    app.drain_state_events();
+    assert_eq!(texts(&app), ["Bash ls", "final answer", "retry draft"]);
+}
+
+/// bug-9affca: an attempt's screened transcript also replaces the tool call
+/// and result it streamed unscreened, with their raw arguments and output, and
+/// keeps the live tool step that names the call. A raw result that trails the
+/// screened copy is dropped.
+#[test]
+fn screened_tool_steps_replace_unscreened() {
+    use crate::runner::tui_bridge::TuiBridge;
+    use crate::tui::widgets::stream_output::display_text;
+    use serde_json::json;
+
+    let dir = tempdir().expect("tempdir");
+    let hub = crate::state_hub::shared_state_hub();
+    let mut app = App::new_connected(dir.path(), &hub);
+    let bridge = TuiBridge::new(hub.sender());
+    let unscreened = |kind: &str, payload: serde_json::Value| {
+        bridge.publish_unscreened_stream_record("a", "p", "t", 0, kind, payload);
+    };
+    let texts = |app: &App| {
+        app.tui_state
+            .agent_output_history
+            .records_for("a")
+            .iter()
+            .map(|record| display_text(&record.text).into_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // The attempt streams a live step, then the call with its raw arguments
+    // and the raw output.
+    bridge.agent_spawned("a", "p", "t", 1, "impl", "sonnet", "claude_cli");
+    bridge.tool_step("a", "p", "t", 0, "c1", "Bash", "ls");
+    let call = json!({ "tool_id": "c1", "tool": "Bash", "args": "{\"command\":\"ls\"}" });
+    unscreened("tool_start", call);
+    unscreened("tool_result", json!({ "tool_id": "c1", "output": "raw" }));
+    app.drain_state_events();
+    assert_eq!(texts(&app), ["Bash ls", "Bash", "raw"]);
+
+    // Its screened transcript arrives, and a late raw result trails it.
+    bridge.tool_call("a", "p", "t", 0, "c1", "Bash");
+    bridge.tool_output("a", "p", "t", 0, "c1", "screened");
+    unscreened("tool_result", json!({ "tool_id": "c1", "output": "late" }));
+    app.drain_state_events();
+    assert_eq!(texts(&app), ["Bash ls", "Bash", "screened"]);
 }

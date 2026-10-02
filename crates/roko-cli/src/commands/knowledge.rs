@@ -5,9 +5,346 @@ use anyhow::ensure;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum KnowledgeCmd {
+    /// Query the durable knowledge store for a topic.
+    Query {
+        /// Topic to search for.
+        topic: Vec<String>,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Maximum number of results to return (1-1000, default: 10).
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u16).range(1..=1000))]
+        limit: u16,
+        /// Print each match in full instead of its first two lines.
+        #[arg(long)]
+        verbose: bool,
+    },
+    /// Show aggregate statistics for the durable knowledge store.
+    Stats {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Run garbage collection on the durable knowledge store.
+    Gc {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Minimum confidence threshold for GC (0.0-1.0, default: 0.05).
+        #[arg(long, value_parser = parse_decay_factor)]
+        threshold: Option<f64>,
+        /// Preview what would be collected without actually removing entries.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Export a canonical, integrity-protected knowledge bundle.
+    Export {
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Versioned JSONL bundle to write.
+        output: PathBuf,
+        /// Replace an existing output file.
+        #[arg(long)]
+        force: bool,
+        /// Export only the top N secret-safe entries by confidence.
+        #[arg(long)]
+        top_n: Option<usize>,
+        /// Minimum confidence threshold (0.0-1.0).
+        #[arg(long, value_parser = parse_decay_factor)]
+        min_confidence: Option<f64>,
+        /// Filter by knowledge types (comma-separated; e.g. "insight,heuristic").
+        #[arg(long)]
+        types: Option<String>,
+        /// Exclude entries with any of these tags (comma-separated).
+        #[arg(long)]
+        exclude_tags: Option<String>,
+    },
+    /// Import a canonical, integrity-protected knowledge bundle.
+    Import {
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Versioned JSONL bundle to import.
+        input: PathBuf,
+        /// Confidence multiplier applied to imported entries.
+        #[arg(long, default_value_t = 0.8, value_parser = parse_decay_factor)]
+        decay_factor: f64,
+        /// Explicitly migrate a trusted legacy raw/version-1 JSONL backup.
+        #[arg(long)]
+        legacy_raw: bool,
+        /// Filter by knowledge types (comma-separated; e.g. "insight,heuristic").
+        #[arg(long)]
+        types: Option<String>,
+        /// Only import entries with confidence >= this threshold (0.0-1.0).
+        #[arg(long, value_parser = parse_decay_factor)]
+        min_confidence: Option<f64>,
+    },
+    /// Backup the knowledge store to a directory with optional genomic bottleneck.
+    Backup {
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Directory to write the backup files into.
+        destination: PathBuf,
+        /// Replace a populated destination directory after staging succeeds.
+        #[arg(long)]
+        force: bool,
+        /// Genomic bottleneck: export only the top N entries by confidence.
+        #[arg(long)]
+        top_n: Option<usize>,
+    },
+    /// Restore the knowledge store from a backup with confidence decay.
+    Restore {
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Directory created by `roko knowledge backup`.
+        source: PathBuf,
+        /// Permit merging into existing knowledge and replacing confirmations.
+        #[arg(long)]
+        force: bool,
+        /// Filter by knowledge types (comma-separated).
+        #[arg(long)]
+        types: Option<String>,
+        /// Only restore entries with confidence >= this threshold (0.0 to 1.0).
+        #[arg(long)]
+        min_confidence: Option<f64>,
+        /// Generation hop count for confidence decay (default: 1).
+        #[arg(long, default_value_t = 1)]
+        generation: u32,
+        /// Per-generation confidence multiplier.
+        #[arg(long, default_value_t = 0.8, value_parser = parse_decay_factor)]
+        decay_factor: f64,
+        /// Explicitly migrate a trusted legacy raw/version-1 JSONL backup.
+        #[arg(long)]
+        legacy_raw: bool,
+    },
+    /// Sync knowledge with a peer agent via the Mesh protocol.
+    Sync {
+        /// Peer agent identifier to sync with.
+        peer: String,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Direction: send, receive, or both (default: both).
+        #[arg(long, value_enum, default_value = "both")]
+        direction: KnowledgeSyncDirection,
+        /// Maximum signals to send in this sync cycle.
+        #[arg(long, default_value_t = 100)]
+        max_send: usize,
+    },
+    /// Dream consolidation, reports, and journal.
+    Dream {
+        #[command(subcommand)]
+        cmd: KnowledgeDreamCmd,
+    },
+    /// Custody audit chain (list, show, verify).
+    Custody {
+        #[command(subcommand)]
+        cmd: KnowledgeCustodyCmd,
+    },
+    /// Move old signals to cold storage (compressed monthly archives).
+    ///
+    /// This archives signal data from the hot JSONL substrate,
+    /// NOT neuro knowledge-store entries. Use `roko knowledge gc` to manage
+    /// the knowledge store.
+    #[command(alias = "archive")]
+    SignalArchive {
+        /// Only archive signals older than this duration (e.g. "30d", "7d").
+        #[arg(long, default_value = "30d")]
+        older_than: String,
+        /// Maximum number of signals to archive per batch.
+        #[arg(long, default_value_t = 500)]
+        batch_size: usize,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Print what would be archived without doing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Backfill HDC vectors for existing knowledge entries that lack them.
+    ///
+    /// Reads the knowledge store, computes HDC vectors for any entry whose
+    /// hdc_vector field is absent or has the wrong byte length, and atomically
+    /// rewrites the store. Entries that already have a valid vector are unchanged.
+    /// Requires the roko-neuro hdc feature to be enabled in this binary.
+    BackfillHdc {
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum KnowledgeDreamCmd {
+    /// Run a dream consolidation cycle immediately.
+    Run {
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Preview what would be consolidated without executing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show the latest dream report without running a new cycle.
+    Report {
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show when the next dream should fire.
+    Schedule {
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Display recent dream journal entries.
+    Journal {
+        /// Number of recent entries to display (default: 10).
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Display recent dream archive entries.
+    Archive {
+        /// Number of recent entries to display (default: 10).
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum KnowledgeCustodyCmd {
+    /// List recent custody records.
+    List {
+        /// Maximum number of records to display.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show full details of a custody record by index.
+    Show {
+        /// Record index (0-based).
+        index: usize,
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Verify integrity of the custody chain.
+    Verify {
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+/// Direction for knowledge mesh sync operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum KnowledgeSyncDirection {
+    /// Send local knowledge to the peer.
+    #[value(name = "send")]
+    Send,
+    /// Receive knowledge from the peer.
+    #[value(name = "receive")]
+    Receive,
+    /// Send and receive (bidirectional sync).
+    #[value(name = "both")]
+    Both,
+}
+
+// Internal enum used by cmd_neuro — mirrors the old top-level NeuroCmd.
+// KnowledgeCmd dispatches to this.
+#[derive(Debug)]
+pub(crate) enum NeuroCmd {
+    Query {
+        topic: Vec<String>,
+        workdir: Option<PathBuf>,
+        limit: u16,
+        verbose: bool,
+    },
+    Stats {
+        workdir: Option<PathBuf>,
+    },
+    Gc {
+        workdir: Option<PathBuf>,
+        threshold: Option<f64>,
+        dry_run: bool,
+    },
+    Export {
+        workdir: Option<PathBuf>,
+        output: PathBuf,
+        force: bool,
+        top_n: Option<usize>,
+        min_confidence: Option<f64>,
+        types: Option<String>,
+        exclude_tags: Option<String>,
+    },
+    Import {
+        workdir: Option<PathBuf>,
+        input: PathBuf,
+        decay_factor: f64,
+        legacy_raw: bool,
+        types: Option<String>,
+        min_confidence: Option<f64>,
+    },
+    Backup {
+        workdir: Option<PathBuf>,
+        destination: PathBuf,
+        force: bool,
+        top_n: Option<usize>,
+    },
+    Restore {
+        workdir: Option<PathBuf>,
+        source: PathBuf,
+        force: bool,
+        types: Option<String>,
+        min_confidence: Option<f64>,
+        generation: u32,
+        decay_factor: f64,
+        legacy_raw: bool,
+    },
+    Sync {
+        peer: String,
+        workdir: Option<PathBuf>,
+        direction: KnowledgeSyncDirection,
+        max_send: usize,
+    },
+}
+
+// Internal enum used by cmd_dream — mirrors the old top-level DreamCmd.
+#[derive(Debug)]
+pub(crate) enum DreamCmdLegacy {
+    Run {
+        workdir: Option<PathBuf>,
+        dry_run: bool,
+    },
+    Report {
+        workdir: Option<PathBuf>,
+    },
+    Schedule {
+        workdir: Option<PathBuf>,
+    },
+}
+
 pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i32> {
     match cmd {
-        KnowledgeCmd::Query { topic, workdir, .. } => {
+        KnowledgeCmd::Query {
+            topic,
+            workdir,
+            limit,
+            verbose,
+        } => {
             // Read-only search: shared lock so query can coexist with an
             // active plan runner.
             let wd = workdir.clone().unwrap_or_else(|| resolve_workdir(cli));
@@ -17,7 +354,8 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
                 NeuroCmd::Query {
                     topic,
                     workdir: Some(wd),
-                    limit: 10,
+                    limit,
+                    verbose,
                 },
             )
             .await
@@ -380,9 +718,46 @@ pub(crate) async fn cmd_archive(
     Ok(EXIT_SUCCESS)
 }
 
+/// Lines of a match that `roko knowledge query` prints without `--verbose`.
+const QUERY_PREVIEW_LINES: usize = 2;
+/// Characters kept of each previewed line.
+const QUERY_PREVIEW_LINE_CHARS: usize = 160;
+
+/// A knowledge entry's text as `roko knowledge query` prints it: in full with
+/// `--verbose`, otherwise its first two non-empty lines, each truncated to 160
+/// characters, then how many lines were left out. Continuation lines are
+/// indented under the entry's header line.
+fn query_entry_text(content: &str, verbose: bool) -> String {
+    if verbose {
+        return content.trim().to_string();
+    }
+    let lines: Vec<&str> = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let mut preview: Vec<String> = lines
+        .iter()
+        .take(QUERY_PREVIEW_LINES)
+        .map(|line| roko_cli::tui::display_utils::truncate(line, QUERY_PREVIEW_LINE_CHARS))
+        .collect();
+    let hidden = lines.len().saturating_sub(QUERY_PREVIEW_LINES);
+    if hidden > 0 {
+        preview.push(format!(
+            "… {hidden} more line(s); --verbose prints the entry in full"
+        ));
+    }
+    preview.join("\n   ")
+}
+
 pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
     match cmd {
-        NeuroCmd::Query { topic, workdir, .. } => {
+        NeuroCmd::Query {
+            topic,
+            workdir,
+            limit,
+            verbose,
+        } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let topic = topic.join(" ");
             let topic = topic.trim().to_string();
@@ -391,7 +766,8 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             }
 
             let store = KnowledgeStore::for_workdir(&wd);
-            let entries = store.query(&topic, 10).with_context(|| {
+            let limit = usize::from(limit);
+            let entries = store.query(&topic, limit).with_context(|| {
                 format!(
                     "query knowledge store at {} for topic '{topic}'",
                     store.path().display()
@@ -424,7 +800,7 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
                     idx + 1,
                     format!("{:?}", entry.kind).to_lowercase(),
                     entry.confidence.clamp(0.0, 1.0),
-                    entry.content.trim()
+                    query_entry_text(&entry.content, verbose)
                 );
                 if !entry.tags.is_empty() {
                     println!("   tags: {}", entry.tags.join(", "));
@@ -1712,5 +2088,24 @@ mod tests {
 
         // Store has exactly one entry.
         assert_eq!(store_b.read_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn knowledge_query_previews_two_lines_unless_verbose() {
+        let goal = "x".repeat(300);
+        let content = format!("# Playbook\n\nGoal: {goal}\n1. step one\n2. step two\n");
+
+        let preview = super::query_entry_text(&content, false);
+        let lines: Vec<&str> = preview.lines().collect();
+        assert_eq!(lines.len(), 3, "{preview}");
+        assert_eq!(lines[0], "# Playbook");
+        let goal_line = lines[1].trim_start();
+        assert!(goal_line.starts_with("Goal: x"), "{preview}");
+        assert_eq!(goal_line.chars().count(), 160);
+        assert!(goal_line.ends_with('…'));
+        assert!(lines[2].contains("2 more line(s)"), "{preview}");
+
+        assert_eq!(super::query_entry_text(&content, true), content.trim());
+        assert_eq!(super::query_entry_text("one line\n", false), "one line");
     }
 }

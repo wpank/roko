@@ -212,6 +212,8 @@ pub mod plugin;
 pub mod policy_manifest;
 pub mod polyglot;
 pub mod prediction;
+/// Dated price snapshots (`config/prices/`) and API-equivalent costs priced from them.
+pub mod pricing_snapshot;
 pub mod project;
 pub mod provenance;
 pub mod provider_catalog;
@@ -456,15 +458,14 @@ pub use todo_dag::{
     TodoChanges, TodoDag, TodoDagError, TodoDelta, TodoItem, TodoSnapshot, TodoSource, TodoStatus,
 };
 pub use tool::{
-    ArmEntry, Artifact, AuditSink, BanditKey, CancelSource, CancelToken, EpsilonGreedyBandit,
-    FailureTrace, FormatBandit, KeywordOverlapScorer, MemoryPointer, MetricsKey, MetricsSink,
-    ProfileBandit, RewardConfig, ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef,
-    ToolError, ToolExecutionEnvelope, ToolExecutionRecord, ToolFormat, ToolFormatProfile,
-    ToolHandler, ToolLifecycleStatus, ToolMetrics, ToolOutcome, ToolPermission, ToolRegistry,
-    ToolRelevanceScorer, ToolResult, ToolResultContent, ToolSchema, ToolSource, ToolTrace,
-    ToolTraceEvent, TraceBuilder, TraceFinishGuard, TraceId, TraceSink, TraceStep, TranscriptEvent,
-    TranscriptEventMeta, TranscriptRecord, VecToolRegistry, classify_tool_error, compute_reward,
-    galileo_tsq, profile_for_model,
+    Artifact, AuditSink, CancelSource, CancelToken, FailureTrace, KeywordOverlapScorer,
+    MemoryPointer, MetricsKey, MetricsSink, RewardConfig, ToolCall, ToolCategory, ToolConcurrency,
+    ToolContext, ToolDef, ToolError, ToolExecutionEnvelope, ToolExecutionRecord, ToolFormat,
+    ToolFormatProfile, ToolHandler, ToolLifecycleStatus, ToolMetrics, ToolOutcome, ToolPermission,
+    ToolRegistry, ToolRelevanceScorer, ToolResult, ToolResultContent, ToolSchema, ToolSource,
+    ToolTrace, ToolTraceEvent, TraceBuilder, TraceFinishGuard, TraceId, TraceSink, TraceStep,
+    TranscriptEvent, TranscriptEventMeta, TranscriptRecord, VecToolRegistry, classify_tool_error,
+    compute_reward, galileo_tsq, profile_for_model,
 };
 pub use traits::{
     Bus, ColdStore, Compose, Connect, Observe, React, Route, Store, Substrate, Trigger, Verify,

@@ -2,6 +2,123 @@
 
 use crate::*;
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum DaemonCmd {
+    Start {
+        #[arg(long)]
+        foreground: bool,
+        #[arg(long, default_value_t = roko_cli::DEFAULT_SERVE_PORT)]
+        port: u16,
+    },
+    Stop,
+    Status,
+    Logs {
+        #[arg(long, short = 'f')]
+        follow: bool,
+        #[arg(long, short = 'n', default_value = "50")]
+        lines: usize,
+    },
+    Reload,
+    // SIGHUP equivalent — re-scan subscriptions/templates without restart
+    Restart {
+        #[arg(long, default_value_t = roko_cli::DEFAULT_SERVE_PORT)]
+        port: u16,
+    },
+    Install,
+    // macOS launchd plist generation
+    Uninstall, // remove launchd plist
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DeployCmd {
+    /// Deploy the current workspace to Railway via the public GraphQL API.
+    ///
+    /// Creates a Railway project with roko-serve as the control plane.
+    /// Use --with-mirage to also deploy the chain relay, and --workers to
+    /// deploy agent workers from the template registry.
+    Railway {
+        /// Working directory / repository root (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Also deploy the mirage chain relay service.
+        #[arg(long)]
+        with_mirage: bool,
+        /// Deploy worker services for these template names (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        workers: Vec<String>,
+        /// Skip the security posture check (WARNING: server will be public without auth).
+        #[arg(long)]
+        unsafe_public: bool,
+        /// Show the deploy plan without performing any mutations.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Generate `fly.toml` and deploy the current workspace with Fly.io.
+    ///
+    /// Note: --with-mirage and --workers are not supported on Fly.io.
+    Fly {
+        /// Working directory / repository root (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Skip the security posture check (WARNING: server will be public without auth).
+        #[arg(long)]
+        unsafe_public: bool,
+        /// Show the deploy plan without performing any mutations.
+        #[arg(long)]
+        dry_run: bool,
+        /// Fly.io app name (default: roko-agent).
+        #[arg(long, default_value = "roko-agent")]
+        app: String,
+        /// Fly.io primary region (default: iad).
+        #[arg(long, default_value = "iad")]
+        region: String,
+        /// Path to the Dockerfile for the Fly build (default: Dockerfile).
+        #[arg(long, default_value = "Dockerfile")]
+        dockerfile: String,
+        /// Healthcheck endpoint path (default: /health).
+        #[arg(long, default_value = "/health")]
+        health_path: String,
+        /// Volume source name (default: roko_data).
+        #[arg(long, default_value = "roko_data")]
+        volume_source: String,
+        /// Volume mount destination path, also set as `ROKO_STATE_ROOT` so state
+        /// lives on the volume (default: /data/.roko).
+        #[arg(long, default_value = "/data/.roko")]
+        volume_destination: String,
+        /// Overwrite an existing fly.toml even if it differs from the generated one.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Build the local Docker image and tag it for the configured registry.
+    Docker {
+        /// Working directory / repository root (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Registry namespace to tag the image under.
+        #[arg(long)]
+        registry: Option<String>,
+        /// Push the tagged image to the registry after a successful build.
+        /// When omitted the image is built and tagged locally but NOT pushed.
+        #[arg(long)]
+        push: bool,
+        /// Skip the security posture check (WARNING: server will be public without auth).
+        #[arg(long)]
+        unsafe_public: bool,
+        /// Show the deploy plan without performing any mutations.
+        #[arg(long)]
+        dry_run: bool,
+        /// Path to the Dockerfile (default: Dockerfile).
+        #[arg(long, default_value = "Dockerfile")]
+        dockerfile: String,
+        /// Docker build target stage (e.g. runtime, distroless).
+        #[arg(long)]
+        target: Option<String>,
+        /// Docker image name (default: roko).
+        #[arg(long, default_value = "roko")]
+        image: String,
+    },
+}
+
 pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
     use agent_serve::{run_agent_create, run_agent_start, run_agent_stop};
 
@@ -822,6 +939,11 @@ method = "GET"
 [mounts]
 source = "{volume_source}"
 destination = "{volume_destination}"
+
+# The entrypoint links /workspace/.roko to this path, so state lands on the
+# mounted volume instead of the Machine's ephemeral disk.
+[env]
+ROKO_STATE_ROOT = "{volume_destination}"
 "#,
         app = config.app,
         region = config.region,
@@ -1097,8 +1219,57 @@ fn is_loopback_bind(bind: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::railway_worker_env;
+    use super::{FlyTomlConfig, railway_worker_env, write_fly_toml};
     use std::collections::HashMap;
+
+    /// 9307: the entrypoint keeps state in `ROKO_STATE_ROOT`, whose default
+    /// `/workspace/.roko` is on the Machine's ephemeral disk, so a Fly config
+    /// must point it at the mounted volume.
+    #[test]
+    fn fly_toml_points_state_root_at_the_volume() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = FlyTomlConfig {
+            app: "roko-test",
+            region: "iad",
+            dockerfile: "Dockerfile",
+            health_path: "/health",
+            volume_source: "roko_data",
+            volume_destination: "/mnt/roko-state",
+        };
+        let path = write_fly_toml(dir.path(), &config, false).expect("write fly.toml");
+        let text = std::fs::read_to_string(&path).expect("read fly.toml");
+        let generated: toml::Value = toml::from_str(&text).expect("parse fly.toml");
+        assert_eq!(
+            state_root_and_mount(&generated),
+            ("/mnt/roko-state", "/mnt/roko-state")
+        );
+
+        // The checked-in config must agree as well.
+        let root = include_str!("../../../../fly.toml");
+        let root: toml::Value = toml::from_str(root).expect("parse the root fly.toml");
+        let (state_root, destination) = state_root_and_mount(&root);
+        assert_eq!(state_root, destination, "root fly.toml");
+    }
+
+    /// `env.ROKO_STATE_ROOT` and the mount destination of a parsed `fly.toml`,
+    /// whose mount may be a `[mounts]` table or a `[[mounts]]` array.
+    fn state_root_and_mount(fly: &toml::Value) -> (&str, &str) {
+        let state_root = fly
+            .get("env")
+            .and_then(|env| env.get("ROKO_STATE_ROOT"))
+            .and_then(toml::Value::as_str)
+            .expect("[env] sets ROKO_STATE_ROOT");
+        let mounts = fly.get("mounts").expect("a [mounts] table");
+        let mount = mounts
+            .as_array()
+            .and_then(|array| array.first())
+            .unwrap_or(mounts);
+        let destination = mount
+            .get("destination")
+            .and_then(toml::Value::as_str)
+            .expect("the mount has a destination");
+        (state_root, destination)
+    }
 
     #[test]
     fn railway_worker_env_reuses_control_plane_callback_token_and_sets_callback_id() {

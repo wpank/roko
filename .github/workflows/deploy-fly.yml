@@ -76,6 +76,10 @@ jobs:
           [mounts]
           source = "roko_data"
           destination = "/data/.roko"
+
+          # The entrypoint links /workspace/.roko here, so state survives deploys.
+          [env]
+          ROKO_STATE_ROOT = "/data/.roko"
           TOML
 
       - name: Deploy to Fly.io

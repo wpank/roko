@@ -132,6 +132,19 @@ impl Default for AttemptBook {
     }
 }
 
+/// The provider agent id of one attempt: its attempt key
+/// (`{run}:{plan}:{task}:{attempt}`). The provider immune boundary keys its
+/// isolation controls by this id, so a control covers this attempt and no
+/// other, in this run or a later one (decision 1107). An attempt key the
+/// boundary would refuse falls back to `{plan}/{task}#{attempt}`.
+pub(super) fn attempt_agent_id(key: &AttemptKey, plan_id: &str, task_or_cell: &str) -> String {
+    let attempt_key = key.attempt_key();
+    if roko_agent::immune_boundary::validate_provider_agent_id(&attempt_key).is_ok() {
+        return attempt_key;
+    }
+    format!("{plan_id}/{task_or_cell}#{}", key.attempt)
+}
+
 impl AttemptBook {
     /// The run an attempt dispatched with `ctx` belongs to: the Graph
     /// checkpoint's run the engine names, else this dispatcher's own.
@@ -221,6 +234,7 @@ impl AttemptBook {
             helpers: None,
             ladder: None,
             reflex_rule: None,
+            live_tool_calls: LiveToolCalls::default(),
             run,
         }
     }
@@ -243,6 +257,8 @@ pub(super) struct AttemptContext {
     ladder: Option<(AttemptLadder, bool)>,
     /// The T0 reflex rule that served the attempt in place of the provider.
     reflex_rule: Option<uuid::Uuid>,
+    /// The tool calls the attempt's live output shows (bug-264c41).
+    live_tool_calls: LiveToolCalls,
     run: Arc<RunAttempts>,
 }
 
@@ -287,6 +303,12 @@ impl AttemptContext {
         self.reflex_rule = Some(rule_id);
     }
 
+    /// The record the attempt's live-output tap fills with the tool calls
+    /// the provider streams (bug-264c41).
+    pub(super) fn live_tool_calls(&self) -> LiveToolCalls {
+        self.live_tool_calls.clone()
+    }
+
     /// Settle the attempt: build its verdict record, queue it for the run's
     /// `attempts.jsonl`, and return it with the inputs the feedback sinks
     /// read. `model_requested` is the model dispatch asked for, empty when
@@ -311,7 +333,9 @@ impl AttemptContext {
         verdict.gate_verdict = gate_verdict;
         verdict.failure_class = failure_class(outcome, failure_reason.as_deref(), rung);
         verdict.timing = self.timing;
-        // Neither path sees the first token's time yet (S01 P0-5).
+        // The verdict records no first-token time yet (S01 P0-5). The call's
+        // time to first token, relative to its own start, is on the
+        // efficiency row (gap-7a8474).
         verdict.timing.ttft_source = Some("unavailable".to_string());
         verdict.timing.settled_at = Some(now_ms());
         verdict.executed = executed_model(model_requested, dispatch, self.failover);
@@ -331,6 +355,7 @@ impl AttemptContext {
             verdict: Arc::new(verdict),
             failure_reason,
             reflex_rule: self.reflex_rule,
+            live_tool_calls: self.live_tool_calls,
         }
     }
 }
@@ -351,7 +376,8 @@ pub(super) struct Settlement {
 impl Settlement {
     /// The verify steps' verdict on a successful provider call. An attempt
     /// the pre-verify screen rejected is a verify failure too: the agent's,
-    /// with the screen's check as its rung.
+    /// with the screen's check as its rung. A verify its stopping plan run
+    /// cut short is a cancellation, which teaches nothing (bug-82cbef).
     pub(super) fn verified(verification: &Result<TaskGateVerdict>) -> Self {
         match verification {
             Ok(verdict) => {
@@ -364,6 +390,16 @@ impl Settlement {
                     rung: None,
                 }
             }
+            Err(RokoError::Cancelled(reason)) => Self {
+                outcome: AttemptOutcome::Cancelled,
+                gate_verdict: None,
+                first_token_seen: true,
+                failure_reason: Some(super::turn_policy::attempt_failure_reason(
+                    "cancelled",
+                    reason,
+                )),
+                rung: None,
+            },
             Err(error) => Self {
                 outcome: AttemptOutcome::GateFailed,
                 gate_verdict: None,
@@ -449,6 +485,9 @@ pub(super) struct SettledAttempt {
     /// The T0 reflex rule that served the attempt, which its learning label
     /// credits or demotes ([`GraphTaskDispatcher::credit_reflex_rule`]).
     pub(super) reflex_rule: Option<uuid::Uuid>,
+    /// The tool calls the attempt's live output showed, which its efficiency
+    /// row lists (bug-264c41).
+    pub(super) live_tool_calls: LiveToolCalls,
 }
 
 impl SettledAttempt {
@@ -623,8 +662,26 @@ fn executed_model(
         executed.models_reported = served.all_reported;
         executed.model_mismatch = served.mismatch;
         executed.turns = reported_turns(dispatch);
+        executed.sampling = request_sampling(&dispatch.target);
+        executed.tool_policy = dispatch.tool_policy.clone();
     }
     executed
+}
+
+/// The sampling parameters the attempt's requests carried, from the
+/// provider and model that ran (gap-13bbbd); empty when the provider's
+/// defaults applied, or the target named no provider config or profile.
+fn request_sampling(
+    target: &crate::dispatch_v2::ProviderDispatchSpec,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    target
+        .provider_config
+        .as_ref()
+        .zip(target.model_profile.as_ref())
+        .map(|(provider, model)| {
+            roko_agent::provider::openai_compat::request_sampling(provider, model)
+        })
+        .unwrap_or_default()
 }
 
 /// The agent turns `dispatch` reported: the Claude CLI's `num_turns`, or
@@ -878,6 +935,38 @@ printf '%s\n' '{"type":"result","session_id":"sess-v4","model":"claude-sonnet-4-
                 );
             }
         }
+    }
+
+    /// gap-2e69b2: an efficiency row's attempt id is the attempt's durable
+    /// key, so the same task's first attempt in two runs has two ids.
+    #[tokio::test]
+    async fn attempt_id_is_unique_across_runs() {
+        let temp = tempdir().expect("tempdir");
+        let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
+        let feedback = GraphFeedbackContext {
+            efficiency_path: Some(efficiency_path.clone()),
+            runs_dir: Some(temp.path().join(".roko/runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let spec = make_spec(&task);
+        for run in ["run-a", "run-b"] {
+            let ctx = CellContext::new().with_run_id(run.to_string());
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect("the attempt completes");
+        }
+
+        let rows = jsonl_rows_where(&efficiency_path, 2, |row| {
+            row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+        })
+        .await;
+        let mut ids = field(&rows, "attempt_id");
+        ids.sort_unstable();
+        let key = |run: &str| format!("{run}:{}:{}:1", spec.plan_id, task.id);
+        assert_eq!(ids, [key("run-a"), key("run-b")]);
     }
 
     /// Provider whose first call hangs until the attempt is killed; later

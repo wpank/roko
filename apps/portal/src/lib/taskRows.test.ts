@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildTaskRows, focusTaskId } from './taskRows';
+import { blockedLabel, buildTaskRows, focusTaskId } from './taskRows';
 import type { TaskRowModel } from './taskRows';
 import { GLYPHS } from './glyphs';
-import { initialRunState, taskKey } from './runState';
+import { applyEvent, fromSnapshot, initialRunState, taskKey } from './runState';
 import type { RunState, TaskRun, PlanRun } from './runState';
-import type { WirePlanTask } from '@/api/contracts';
+import type { WireDashboardEvent, WirePlanTask } from '@/api/contracts';
+import { TASK_OUTCOME_BLOCKED } from '@/api/contracts';
 
 // ── Test helpers ───────────────────────────────────────────────────────────────
 
@@ -144,6 +145,56 @@ describe('buildTaskRows – status sources', () => {
     const { rows } = buildTaskRows(tasks, run, PLAN_ID, NOW_MS);
     // No live task and plan is running → pending, not skipped
     expect(rows[0]!.status).toBe('pending');
+  });
+
+  it('shows a task its run interrupted as failed, with its own label (bug-11556f)', () => {
+    const tasks = [makeWireTask({ id: 'T01' }), makeWireTask({ id: 'T02', depends_on: ['T01'] })];
+    const events: WireDashboardEvent[] = [
+      { type: 'plan_started', plan_id: PLAN_ID, tasks_total: 2 },
+      { type: 'task_started', plan_id: PLAN_ID, task_id: 'T01', phase: 'implement' },
+      { type: 'run_completed', outcome: 'failed', duration_ms: 500 },
+    ];
+    const live = events.reduce((run, event) => applyEvent(run, event, NOW_MS), initialRunState());
+    // A reload reads the outcome the server's snapshot gave the task.
+    const reloaded = fromSnapshot(
+      {
+        plans: {
+          [PLAN_ID]: {
+            plan_id: PLAN_ID,
+            phase: 'failed',
+            active: false,
+            tasks_total: 2,
+            tasks_done: 0,
+            tasks_failed: 1,
+          },
+        },
+        tasks: {
+          [taskKey(PLAN_ID, 'T01')]: {
+            task_id: 'T01',
+            plan_id: PLAN_ID,
+            phase: 'interrupted',
+            outcome: 'interrupted',
+          },
+        },
+        agents: {},
+        gates: [],
+        errors: [],
+        stats: { cost_usd_total: 0, total_input_tokens: 0, total_output_tokens: 0 },
+      },
+      NOW_MS,
+    );
+
+    for (const run of [live, reloaded]) {
+      const { rows } = buildTaskRows(tasks, run, PLAN_ID, NOW_MS);
+      const t01 = rows.find((r) => r.id === 'T01')!;
+      expect(t01.status).toBe('interrupted');
+      expect(t01.state).toBe('interrupted');
+      expect(GLYPHS[t01.state].label).toBe('interrupted');
+      expect(GLYPHS[t01.state].token).toBe(GLYPHS.failed.token);
+      // It did not finish, so its dependant still waits on it.
+      expect(rows.find((r) => r.id === 'T02')!.waitingOn).toEqual(['T01']);
+      expect(run.plans[PLAN_ID]).toMatchObject({ phase: 'failed', tasksDone: 0, tasksFailed: 1 });
+    }
   });
 });
 
@@ -365,6 +416,18 @@ describe('focusTaskId', () => {
     expect(focusTaskId(rows, null)).toBeNull();
   });
 
+  it('returns an interrupted row as it would a failed one', () => {
+    const tasks = [makeWireTask({ id: 'T01' }), makeWireTask({ id: 'T02' })];
+    const run = makeRunState({
+      tasks: {
+        [taskKey(PLAN_ID, 'T01')]: makeLiveTask('T01', { status: 'passed' }),
+        [taskKey(PLAN_ID, 'T02')]: makeLiveTask('T02', { status: 'interrupted' }),
+      },
+    });
+    const { rows } = buildTaskRows(tasks, run, PLAN_ID, NOW_MS);
+    expect(focusTaskId(rows, null)).toBe('T02');
+  });
+
   it('prefers failed over active when both exist (design §11)', () => {
     const tasks = [
       makeWireTask({ id: 'T01' }),
@@ -380,5 +443,41 @@ describe('focusTaskId', () => {
     expect(focusTaskId(rows, null)).toBe('T02');
     // A selection still wins.
     expect(focusTaskId(rows, 'T01')).toBe('T01');
+  });
+});
+
+// ── blocked tasks ──────────────────────────────────────────────────────────────
+
+describe('buildTaskRows – blocked tasks (gap-2118f0)', () => {
+  it('says which task blocked a blocked task, and why', () => {
+    const tasks = [makeWireTask({ id: 'T01' }), makeWireTask({ id: 'T02', depends_on: ['T01'] })];
+    const run = makeRunState({
+      tasks: {
+        [taskKey(PLAN_ID, 'T01')]: makeLiveTask('T01', { status: 'failed', phase: 'failed' }),
+        [taskKey(PLAN_ID, 'T02')]: makeLiveTask('T02', {
+          status: 'skipped',
+          phase: TASK_OUTCOME_BLOCKED,
+          blockedBy: 'T01',
+          blockedReason: 'T01 failed',
+        }),
+      },
+    });
+    const { rows } = buildTaskRows(tasks, run, PLAN_ID, NOW_MS);
+    expect(rows.find((r) => r.id === 'T02')!.blocked).toBe('blocked by T01: T01 failed');
+    expect(rows.find((r) => r.id === 'T01')!.blocked).toBeNull();
+  });
+
+  it('leaves an ordinary skipped task without a blocked label', () => {
+    const tasks = [makeWireTask({ id: 'T01' })];
+    const run = makeRunState({
+      tasks: { [taskKey(PLAN_ID, 'T01')]: makeLiveTask('T01', { status: 'skipped', phase: 'skipped' }) },
+    });
+    expect(buildTaskRows(tasks, run, PLAN_ID, NOW_MS).rows[0]!.blocked).toBeNull();
+  });
+
+  it('labels a blocker without a reason, a reason without a blocker, and neither', () => {
+    expect(blockedLabel('T01', null)).toBe('blocked by T01');
+    expect(blockedLabel(null, 'the plan was cancelled')).toBe('blocked: the plan was cancelled');
+    expect(blockedLabel(undefined, '  ')).toBe('blocked');
   });
 });

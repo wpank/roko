@@ -397,10 +397,13 @@ roko doctor [disk|network|clean] [--workdir <path>] [--serve-url <url>]
 
 ### `roko diagnose`
 
-Diagnose why a plan failed. Outputs structured JSON.
+Diagnose why a plan failed. Prints a readable report: the plan's status, each task that did not complete with
+why (its last error, the verify step it failed and that step's command, its attempts with their cost), and the
+next steps, including the command that resumes the run. The global `--json` flag prints the full report as
+structured JSON instead.
 
 ```
-roko diagnose <plan-id> [--verbose] [--workdir <path>]
+roko diagnose <plan-id> [--verbose] [--workdir <path>] [--json]
 ```
 
 The report is built from the plan's Graph checkpoint under `.roko/state/graph/<plan-id>/`
@@ -414,7 +417,8 @@ read only for a plan without a Graph checkpoint.
 | Arg/Flag | Description |
 |---|---|
 | `<plan-id>` | Plan ID to diagnose. |
-| `--verbose` | Also list attempts, verify failures and episodes of tasks that completed. |
+| `--verbose` | Also list the tasks that completed, with their attempts, verify failures and episodes. |
+| `--json` | Print the report as structured JSON. |
 
 ---
 
@@ -710,9 +714,8 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
               [--fresh] [--force-resume] [--force]
               [--budget-override <usd>] [--no-budget]
               [--dangerously-skip-permissions]
-              [--log-file <path>] [--skip-preflight]
-              [--screenshots] [--screenshot-interval <secs>] [--screenshot-dir <path>]
-              [--batch-size <n>] [--worktree-per-task] [--rich-topology]
+              [--log-file <path>] [--worktree-per-task | --no-worktree-per-task]
+              [--rich-topology] [--promote <branch>]
 ```
 
 | Arg/Flag | Default | Description |
@@ -733,13 +736,10 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--no-budget` | false | Disable the per-plan cost ceiling. |
 | `--dangerously-skip-permissions` | false | Skip agent permission prompts. UNSAFE. |
 | `--log-file <path>` | -- | Write structured JSONL event log to this file. |
-| `--skip-preflight` | false | Skip preflight environment checks. |
-| `--screenshots` | false | Capture event-driven screenshots during execution. |
-| `--screenshot-interval <secs>` | 60 | Maximum seconds between periodic screenshot captures. |
-| `--screenshot-dir <path>` | auto | Directory for screenshot timeline. |
-| `--batch-size <n>` | -- | Pause for review after every N plan completions. |
-| `--worktree-per-task` | false | Run each task in an isolated git worktree. |
-| `--rich-topology` | false | Use the 11-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs `--worktree-per-task`. |
+| `--worktree-per-task` | config (`true`) | Run each task in an isolated git worktree, the default from `[runner] worktree_per_task`. Finished plans are delivered into the run's batch branch, `roko/batch/<run-id>`; your checkout is never changed, and the run ends with the command that takes the work (`git merge --ff-only roko/batch/<run-id>`). Without this flag, a workdir that is not the top level of a git checkout with a commit runs its tasks in the shared working tree. |
+| `--no-worktree-per-task` | false | Run every task in the shared working tree, whatever `[runner] worktree_per_task` says: tasks edit your checkout directly. |
+| `--rich-topology` | false | Use the 11-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs per-task worktrees (the default). |
+| `--promote <branch>` | -- | Once every plan is delivered, promote the batch into BRANCH and tag it `roko/run/<run-id>`. A BRANCH checked out anywhere is not moved: the promotion is parked at `refs/roko/delivered/run-<run-id>`. Needs per-task worktrees. |
 
 ```bash
 roko plan run plans/                            # Run all plans
@@ -751,6 +751,10 @@ roko plan run plans/ --resume-plan              # Resume from last checkpoint
 roko plan run plans/ --max-retries 3            # Override retry limit
 roko plan run plans/ --budget-override 50.0     # $50 cost ceiling
 ```
+
+The Graph engine does not implement `--skip-preflight`, `--screenshots`, `--screenshot-interval`, `--screenshot-dir`,
+`--batch-size`, or the global `--resume <session>` and `--effort`. They still parse, but `plan run` stops with an error
+that names what to use instead (`--resume-plan`, `[agent] default_effort`, `roko screenshot`).
 
 #### `roko plan generate`
 
@@ -792,7 +796,9 @@ roko plan index [--check] [--workdir <path>]
 
 #### `roko plan pause` / `resume` / `cancel`
 
-Control a running plan executor. Writes control signals to `.roko/state/control.json`.
+Control the plan run in this workspace. Each command reaches the run over the socket `roko inject` uses and prints
+the run's answer; it exits non-zero when no run is listening or the run refuses. Pause holds: no new plan, task or
+retry starts until resume, the attempts already running finish, and the plan's deadline keeps running.
 
 ```
 roko plan pause [--workdir <path>]
@@ -803,7 +809,7 @@ roko plan cancel [--plan-id <id>] [--workdir <path>]
 #### `roko plan review`
 
 Approve or reject a task that a running plan holds for review. A plan holds each verified task when its
-`tasks.toml` sets `[meta] approval = "per_task"`, which needs `--worktree-per-task` and the default topology. The
+`tasks.toml` sets `[meta] approval = "per_task"`, which needs per-task worktrees (the default) and the default topology. The
 held task's diff is in `.roko/state/review-holds/<plan>/<task>.json` and on `GET /api/plans/:id/tasks/:task_id/diff`.
 Approval merges the task into its plan branch. A rejection fails the attempt, and the note is the next attempt's
 feedback. `POST /api/plans/:id/tasks/:task_id/review` records the same decision.
@@ -814,7 +820,8 @@ roko plan review <plan-id> <task-id> (--approve | --reject) [--note <text>] [--w
 
 #### `roko plan retry`
 
-Retry failed tasks in a plan.
+Run a plan that failed or was cancelled in the running plan run again, from its checkpoint. Prints the run's answer;
+exits non-zero when no run is listening or the run refuses.
 
 ```
 roko plan retry [<task-id>] [--plan-id <id>] [--workdir <path>]
@@ -822,15 +829,17 @@ roko plan retry [<task-id>] [--plan-id <id>] [--workdir <path>]
 
 | Arg/Flag | Description |
 |---|---|
-| `<task-id>` | Specific task ID to retry. If omitted, retries all failed tasks. |
-| `--plan-id <id>` | Plan ID containing the task. If omitted, targets the active plan. |
+| `<task-id>` | Accepted, but a Graph run reruns the whole plan from its checkpoint, so its passed tasks stay done. |
+| `--plan-id <id>` | The plan to run again. |
 
 #### `roko plan status`
 
-Show lightweight runner status from `.roko/state/status.json`.
+Show lightweight runner status from `.roko/state/status.json`. With a plan directory, show that plan's tasks and
+status, why its whole-plan check failed if it did, and, for a plan delivered into its run's batch branch, the branch,
+the commit, and the command that takes the work into your checkout.
 
 ```
-roko plan status [--workdir <path>]
+roko plan status [<plan-dir>] [--workdir <path>]
 ```
 
 #### `roko plan queue`
@@ -865,12 +874,30 @@ roko backlog import <path> [--draft] [--execute] [--check] [--workdir <path>]
 #### `roko backlog list`
 
 ```
-roko backlog list [--workdir <path>]
+roko backlog list [<path>] [--workdir <path>]
 ```
+
+| Flag | Description |
+|---|---|
+| `<path>` | Backlog directory (default `tmp/backlog`). Its `archive/` is listed too. |
+
+Lists each spec with its id, its `**Status**:` line (the one `mark-done` writes) and whether `backlog import` has
+recorded it as a PRD idea.
 
 #### `roko backlog audit`
 
-Reconcile plan TOML status against durable runner state.
+Reconcile plan TOML status against the Graph runs on record. The audit walks every `tasks.toml` in the plans
+directory, plan sets included, compares it with the plan's checkpoint under `.roko/state/graph/`, and reports each
+mismatch with a stable code. It exits 1 when any finding is an error.
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `AUDIT_RUN_SUCCEEDED_TOML_READY` | error | A Graph run succeeded, or passed the task's gate, but `tasks.toml` still says `ready`. |
+| `AUDIT_PLAN_SKIPPED` | error | `tasks.toml` does not parse, or has no `plan` in `[meta]`. |
+| `AUDIT_CHECKPOINT_UNREADABLE` | error | The plan's checkpoint exists but cannot be read. |
+| `AUDIT_TASK_DONE_NOT_RECORDED` | warning | `tasks.toml` says `done`, but no Graph run records the task. |
+| `AUDIT_RUN_FAILED_TOML_READY` | info | The last run failed the task and `tasks.toml` still says `ready`. |
+| `AUDIT_ORPHAN_CHECKPOINT` | info | A checkpoint whose plan is not in the plans directory. |
 
 ```
 roko backlog audit [--workdir <path>] [--json] [--fix-safe]
@@ -1074,15 +1101,17 @@ custody (audit chain), and archival.
 
 ### `roko knowledge query`
 
-Query the durable knowledge store. Returns up to N matches ranked by confidence. Supports `--json`.
+Query the durable knowledge store. Returns up to N matches ranked by confidence. Each match shows its first
+two lines; `--verbose` shows it in full. Supports `--json`.
 
 ```
-roko knowledge query <topic...> [--workdir <path>] [--limit <n>]
+roko knowledge query <topic...> [--workdir <path>] [--limit <n>] [--verbose]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--limit <n>` | 10 | Maximum number of results (1-1000). |
+| `--verbose` | off | Print each match in full instead of its first two lines. |
 
 ### `roko knowledge stats`
 
@@ -1444,10 +1473,12 @@ roko config init [--yes] [--agent <cmd>] [--model <model>] [--budget <n>]
 
 #### `roko config show`
 
-Print the effective merged config with per-field source tags.
+Print the effective merged config with per-field source tags. `--effective` prints the fully-resolved config as
+TOML instead. Name a section to print only that part of the fully-resolved config, as TOML: a top-level table such
+as `agent` or `dreams`, or a dotted path such as `providers.anthropic`. Secrets are redacted either way.
 
 ```
-roko config show [--workdir <path>] [--effective]
+roko config show [<section>] [--workdir <path>] [--effective]
 ```
 
 #### `roko config path`
@@ -1665,7 +1696,7 @@ roko config preset model <name> [--workdir <path>] [--dry-run] [-y] [--global] [
 
 ### `roko serve`
 
-Start the HTTP API server on `:6677` (~376 canonical REST routes, ~421 total including aliases, plus SSE and WebSocket).
+Start the HTTP API server on `:6677` (REST routes, counted in `tools/http_route_inventory.snapshot.json`, plus SSE and WebSocket).
 
 ```
 roko serve [--bind <addr>] [--port <port>] [--workdir <path>]

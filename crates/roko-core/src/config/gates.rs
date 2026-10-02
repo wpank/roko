@@ -60,6 +60,10 @@ const fn default_sibling_settle_secs() -> u64 {
     600
 }
 
+const fn default_llm_judge_min_score() -> f32 {
+    0.8
+}
+
 /// Output-token cap of a Graph attempt whose role `[gates] max_output_tokens`
 /// does not list: about five times the largest attempt recorded so far.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 200_000;
@@ -157,8 +161,12 @@ pub struct GatesConfig {
     /// Write `EvalGenerator` test artifacts to `.roko/generated-tests/` before
     /// each standard-tier Graph task dispatch.
     ///
-    /// Defaults to `false`: `plan run` never executes these files. Only the
-    /// legacy Runner-v2 generated-test rung reads them.
+    /// Defaults to `false`. The files are for manual inspection: nothing in
+    /// `plan run` executes them. Only evaluations that pass
+    /// `EvalGenerator::generate_checked` (a `#[test]` that can fail) are
+    /// written, and the built-in template needs an assertion body that Graph
+    /// tasks do not author, so today none is: `plan run` and `roko config
+    /// doctor` report the key as inert.
     #[serde(default)]
     pub write_eval_artifacts: bool,
     /// Maximum time allowed for changed-target and Cargo metadata analysis.
@@ -192,6 +200,21 @@ pub struct GatesConfig {
     /// Default: `true`.
     #[serde(default = "default_true")]
     pub baseline_filter: bool,
+    /// Judge a Graph attempt once its verify steps all pass: the cheap helper
+    /// model scores the attempt's diff against its task through the
+    /// LLM-judge gate (gap-85f102). An attempt with no diff, or a run with no
+    /// helper model, is not judged. Default: `false`.
+    #[serde(default)]
+    pub llm_judge: bool,
+    /// Lowest judge score, in `[0, 1]`, that passes. Default: `0.8`.
+    #[serde(default = "default_llm_judge_min_score")]
+    pub llm_judge_min_score: f32,
+    /// Whether a judge score below `llm_judge_min_score`, or a judge that
+    /// cannot answer, fails the attempt like a failed verify step. Default:
+    /// `false`: the verdict is logged and recorded, and the attempt's verdict
+    /// stands.
+    #[serde(default)]
+    pub llm_judge_blocking: bool,
     /// Runaway-output guard for Graph task attempts: the most output tokens
     /// an attempt may report before it fails as a red flag, without running
     /// its verify steps. Keyed by task role, with `default` for roles not
@@ -221,10 +244,6 @@ pub struct GatesConfig {
     /// `roko_core::child_env`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_passthrough: Vec<String>,
-    /// Per-domain gate overrides. Keys are domain labels (e.g. "research", "docs"),
-    /// values are shell commands to run as gates (e.g. `["shell:true"]`).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub domain_gates: HashMap<String, Vec<String>>,
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.
     /// `roko run` and every `roko plan run` task run the required ones as
     /// verify steps ([`Self::required_rungs`]).
@@ -238,9 +257,11 @@ pub struct GatesConfig {
     /// EMA decay factor for pass-rate tracking.
     ///
     /// Controls how quickly the exponential moving average adapts to new
-    /// observations. Smaller values weight recent observations more heavily.
-    /// Range: (0.0, 1.0). Default: 0.1 (the tuned spec value from
-    /// docs/04-verification/06-adaptive-thresholds.md).
+    /// observations. Larger values weight recent observations more heavily.
+    /// Range: (0.0, 1.0); a value outside it counts as the default
+    /// ([`Self::effective_ema_alpha`]). Default: 0.1 (the tuned spec value
+    /// from docs/04-verification/06-adaptive-thresholds.md). Graph plan runs
+    /// update `.roko/learn/gate-thresholds.json` with it.
     #[serde(default = "default_ema_alpha")]
     pub ema_alpha: f64,
 
@@ -300,10 +321,12 @@ impl Default for GatesConfig {
             compile_concurrency: default_compile_concurrency(),
             sibling_settle_secs: default_sibling_settle_secs(),
             baseline_filter: default_true(),
+            llm_judge: false,
+            llm_judge_min_score: default_llm_judge_min_score(),
+            llm_judge_blocking: false,
             max_output_tokens: HashMap::new(),
             diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),
-            domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
             max_rung: None,
             ema_alpha: default_ema_alpha(),
@@ -317,6 +340,17 @@ impl Default for GatesConfig {
 }
 
 impl GatesConfig {
+    /// The smoothing factor of the gate pass-rate EMAs: `ema_alpha` when it
+    /// lies in (0, 1), the default otherwise.
+    #[must_use]
+    pub fn effective_ema_alpha(&self) -> f64 {
+        if self.ema_alpha > 0.0 && self.ema_alpha < 1.0 {
+            self.ema_alpha
+        } else {
+            default_ema_alpha()
+        }
+    }
+
     /// Output-token cap of an attempt of `role` (`max_output_tokens`), or
     /// `None` when the cap is off.
     #[must_use]

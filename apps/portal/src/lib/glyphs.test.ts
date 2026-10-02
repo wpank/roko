@@ -39,6 +39,7 @@ describe('glyphStateForTask', () => {
       ['passed',                 'done'],
       ['passed_with_preexisting_failures', 'preexisting'],
       ['failed',                 'failed'],
+      ['interrupted',            'interrupted'],
       ['accepted_with_failures', 'accepted'],
       ['already_satisfied',      'satisfied'],
       ['unverified',             'unchecked'],
@@ -71,6 +72,13 @@ describe('glyphStateForTask', () => {
 
   it('maps cancelled to skipped', () => {
     expect(glyphStateForTask('cancelled')).toBe('skipped');
+  });
+
+  it('shows an interrupted task as a failure, with its own glyph and label', () => {
+    const state = glyphStateForTask('interrupted');
+    expect(GLYPHS[state].token).toBe(GLYPHS.failed.token);
+    expect(GLYPHS[state].glyph).not.toBe(GLYPHS.failed.glyph);
+    expect(GLYPHS[state].label).toBe('interrupted');
   });
 });
 

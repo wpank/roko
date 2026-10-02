@@ -17,32 +17,46 @@
 //!
 //! - **v2**: original manifest with plan/graph/run identity, Activity log, and
 //!   cost ledger references.
-//! - **v3** (this release): adds a namespaced extension map and an idempotent
-//!   receipt ledger. A v2 manifest is migrated in-memory to v3 with empty
-//!   extensions/receipts and its existing cost ledger preserved; v3 is written
-//!   on the next atomic checkpoint. Versions other than 2 or 3 fail closed.
+//! - **v3**: adds a namespaced extension map and an idempotent receipt
+//!   ledger. A v2 manifest is migrated in-memory to v3 with empty
+//!   extensions/receipts and its existing cost ledger preserved.
+//! - **v4** (this release): the manifest is the checkpoint's commit point and
+//!   names a generation (gap-dc1d16; see [`GraphCheckpointManifest`]). A v2 or
+//!   v3 manifest resumes as generation 0, and v4 is written on the next
+//!   checkpoint write. Versions other than 2, 3 or 4 fail closed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use roko_fs::RokoLayout;
 use roko_graph::cells::task_executor::{TaskExecutionSpec, TaskGateVerdict};
 use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
-use roko_graph::replay::{RecordEntry, retain_recorded_activities};
-use roko_graph::{
-    ActivityRecorder, ActivityReplayer, AuthoredPlan, Graph, legacy_graph_execution_fingerprint,
-    plan_graph_fingerprint,
+use roko_graph::replay::{
+    LoggedRecord, RecordEntry, activity_records, complete_records_len, set_aside_activities_after,
 };
+use roko_graph::{
+    ActivityRecorder, ActivityReplayer, AuthoredPlan, EXT_SAFETY_PROVENANCE, Graph,
+    legacy_graph_execution_fingerprint, plan_graph_fingerprint,
+};
+use roko_learn::telemetry::report::RunRecords;
+use roko_learn::telemetry::{AttemptOpenRecord, AttemptOutcome};
 use serde::{Deserialize, Serialize};
 
 use crate::runner::plan_loader::Plan;
+use crate::safety_provenance::{GraphProvenanceSink, SafetyProvenanceSummary};
 use crate::task_accept;
-use crate::task_parser::TasksFile;
+use crate::task_parser::{TaskDef, TasksFile};
 
-/// Current host checkpoint schema version. V2 manifests are migrated in-memory
-/// to v3 with empty extensions and receipts; other versions fail closed.
-const CHECKPOINT_SCHEMA_VERSION: u32 = 3;
+/// Current host checkpoint schema version. V2 and v3 manifests resume as
+/// generation 0 (see [`GraphCheckpointManifest`]); other versions fail closed.
+const CHECKPOINT_SCHEMA_VERSION: u32 = 4;
+
+/// Schema version of a manifest from before generations, once a v2 manifest
+/// is migrated in memory.
+const PRE_GENERATION_SCHEMA_VERSION: u32 = 3;
 
 /// Minimum schema version we can migrate from. Anything below this fails closed.
 const MIN_SUPPORTED_SCHEMA_VERSION: u32 = 2;
@@ -68,6 +82,11 @@ pub const DELIVERY_EXTENSION: &str = roko_graph::delivery::DELIVERY_EXTENSION_KE
 /// Known extension namespace for the tasks the last run did not complete.
 pub const TASK_OUTCOME_EXTENSION: &str = "roko.task.outcome@1";
 
+/// Known extension namespace for what stopped the last run before its tasks
+/// settled (gap-fab2cc): `{"by": "SIGINT" | "SIGTERM" | "SIGHUP" |
+/// "deadline" | "conductor"}`. Absent when nothing stopped it.
+pub const STOP_EXTENSION: &str = "roko.run.stop@1";
+
 /// Known extension namespace for the plan's delivery into its run's batch
 /// branch (spec-f830c4).
 pub const BATCH_EXTENSION: &str = "roko.batch@1";
@@ -75,6 +94,14 @@ pub const BATCH_EXTENSION: &str = "roko.batch@1";
 /// Known extension namespace for the plan's whole-plan check (`[meta]
 /// verify`, gap-60233f) when it ran in the shared working tree.
 pub const PLAN_VERIFY_EXTENSION: &str = "roko.plan.verify@1";
+
+/// Namespace of [`EXT_SAFETY_PROVENANCE`] (gap-ff95f5). This build reads
+/// version 1 only, and fails closed on any other.
+const SAFETY_PROVENANCE_NAMESPACE: &str = "roko.safety-provenance";
+
+/// Known extension namespace for the tasks whose latest attempt a stop cut
+/// off, as the last resume found them (gap-36f3fb).
+pub const INTERRUPTED_ATTEMPT_EXTENSION: &str = "roko.attempt.interrupted@1";
 
 /// Lifecycle state persisted beside a Graph Activity recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,8 +118,9 @@ pub enum GraphCheckpointStatus {
     Failed,
     /// An operator cancelled the plan before every node finished.
     Cancelled,
-    /// A signal (SIGINT/SIGTERM) or a closed operator TUI stopped the run
-    /// before every node finished; recorded Activities remain resumable.
+    /// A stop request (a signal, a closed operator TUI, the FAST deadline or
+    /// the conductor) stopped the run before every node finished; recorded
+    /// Activities remain resumable. [`STOP_EXTENSION`] names the request.
     Interrupted,
 }
 
@@ -201,12 +229,13 @@ pub struct ReceiptLedgerEntry {
 /// Graph cell type that executes plan tasks.
 const TASK_EXECUTOR_CELL_TYPE: &str = "task-executor";
 
-/// A recorded Activity refused for replay on resume; its node re-runs.
+/// A recorded Activity refused for replay on resume; its node re-runs. The
+/// log keeps the record (gap-dc1d16).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvalidatedActivity {
-    /// Graph node whose record was removed.
+    /// Graph node whose record was refused.
     pub node_id: String,
-    /// Tick of the removed record.
+    /// Tick of the refused record.
     pub tick: u64,
     /// Why the record could not be trusted as a completed node.
     pub reason: String,
@@ -222,8 +251,8 @@ pub struct GateVerdictSummary {
     /// Verdict recorded for each task node, keyed by node id.
     #[serde(default)]
     pub verdicts: BTreeMap<String, TaskGateVerdict>,
-    /// Records removed by the last resume because they lacked a passing
-    /// verdict.
+    /// Records the last resume refused because they lacked a passing
+    /// verdict, and whose nodes had no other record to replay.
     #[serde(default)]
     pub invalidated_on_resume: Vec<InvalidatedActivity>,
 }
@@ -243,6 +272,34 @@ pub struct TaskOutcomeSummary {
     /// budget or a fail-fast stop, each with that reason.
     #[serde(default)]
     pub not_started: BTreeMap<String, String>,
+}
+
+/// Value stored under [`INTERRUPTED_ATTEMPT_EXTENSION`]: the tasks whose
+/// latest attempt a stop cut off, read on resume from the run's attempt log
+/// (`.roko/runs/<run_id>/attempts.jsonl`). Anything such an attempt wrote is
+/// still in the task's checkout, and no Activity records it; the task runs
+/// again on top of it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptedAttempts {
+    /// One entry per task, in task id order.
+    #[serde(default)]
+    pub attempts: Vec<InterruptedAttempt>,
+}
+
+/// A task's latest attempt, which a stop cut off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptedAttempt {
+    /// The task the attempt ran.
+    pub task_id: String,
+    /// The attempt's S01 key, `{chain_key}:{attempt}`.
+    pub attempt_key: String,
+    /// When the attempt started (Unix ms), when its open line says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    /// The run cancelled the attempt. Otherwise it never settled: the
+    /// process stopped while it ran.
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 /// Task nodes whose recorded outputs must carry a passing gate verdict before
@@ -287,51 +344,158 @@ fn replay_refusal(signals: &[roko_core::Signal], verify_required: bool) -> Optio
     }
 }
 
-/// Remove recorded Activities that must not be replayed: forced accepts and
-/// verify-bearing task outputs without a passing verdict (for example records
-/// written before verdicts existed, when a failed verify could be
-/// force-accepted). Their nodes re-execute instead of resuming as successes.
+/// Refuse, by line number, the recorded Activities that must not be
+/// replayed: forced accepts and verify-bearing task outputs without a passing
+/// verdict (for example records written before verdicts existed, when a
+/// failed verify could be force-accepted). Their nodes re-execute instead of
+/// resuming as successes. The log keeps every record, and a record whose line
+/// is in `refused`, which an earlier resume refused, stays refused
+/// (gap-dc1d16).
+///
+/// Returns every refused line, and the refused records whose node has no
+/// other record to replay: the ones this resume runs again.
 fn invalidate_unverified_activities(
-    path: &Path,
+    records: &[LoggedRecord],
     graph: &Graph,
-) -> Result<Vec<InvalidatedActivity>> {
+    refused: &BTreeSet<u64>,
+) -> (BTreeSet<u64>, Vec<InvalidatedActivity>) {
     let required = verdict_required_nodes(graph);
+    let mut refused = refused.clone();
     let mut invalidated = Vec::new();
-    retain_recorded_activities(path, |entry| {
-        match replay_refusal(&entry.signals, required.contains(&entry.node_id)) {
-            Some(reason) => {
-                invalidated.push(InvalidatedActivity {
-                    node_id: entry.node_id.clone(),
-                    tick: entry.tick,
-                    reason,
-                });
-                false
-            }
-            None => true,
-        }
-    })
-    .with_context(|| format!("screen Graph Activity checkpoint {}", path.display()))?;
-    for activity in &invalidated {
-        tracing::warn!(
-            node_id = %activity.node_id,
-            tick = activity.tick,
-            reason = %activity.reason,
-            "resume: recorded task output is not verified; the node will re-run"
-        );
+    for record in records {
+        let entry = &record.entry;
+        let reason = match replay_refusal(&entry.signals, required.contains(&entry.node_id)) {
+            Some(reason) => reason,
+            None if refused.contains(&record.line) => "an earlier resume refused it".to_string(),
+            None => continue,
+        };
+        refused.insert(record.line);
+        invalidated.push(InvalidatedActivity {
+            node_id: entry.node_id.clone(),
+            tick: entry.tick,
+            reason,
+        });
     }
-    Ok(invalidated)
+    // A refused record whose node ran again and left a record to replay is
+    // superseded: this resume does not run that node again.
+    let replayable: BTreeSet<(&str, u64)> = records
+        .iter()
+        .filter(|record| !refused.contains(&record.line))
+        .map(|record| (record.entry.node_id.as_str(), record.entry.tick))
+        .collect();
+    invalidated
+        .retain(|activity| !replayable.contains(&(activity.node_id.as_str(), activity.tick)));
+    (refused, invalidated)
 }
 
-/// Read the latest recorded gate verdict for each node from an Activity log.
-fn recorded_gate_verdicts(path: &Path) -> BTreeMap<String, TaskGateVerdict> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return BTreeMap::new();
+/// The records of the Activity log at `path` that count for run `run_id` of
+/// plan `plan_id`: those in the prefix `committed` names, less the ones a
+/// resume refused, read with the parser a resume replays with (gap-dc1d16).
+/// Without a committed generation, as before generations, the prefix is the
+/// log's complete records. A missing log has none.
+fn counted_records(
+    path: &Path,
+    plan_id: &str,
+    run_id: &str,
+    committed: Option<&CommittedGeneration>,
+) -> std::io::Result<Vec<RecordEntry>> {
+    let mut log = match std::fs::read(path) {
+        Ok(log) => log,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
     };
-    content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
+    let committed_len = committed.map_or_else(
+        || complete_records_len(&log),
+        |generation| generation.activity_bytes,
+    );
+    log.truncate(usize::try_from(committed_len).unwrap_or(usize::MAX));
+    let mut counted = Vec::new();
+    for record in activity_records(&log, plan_id, run_id) {
+        let record = record?;
+        if committed.is_none_or(|generation| !generation.refused_records.contains(&record.line)) {
+            counted.push(record.entry);
+        }
+    }
+    Ok(counted)
+}
+
+/// The latest gate verdict recorded for each node in `records`.
+fn recorded_gate_verdicts(records: &[RecordEntry]) -> BTreeMap<String, TaskGateVerdict> {
+    records
+        .iter()
         .filter_map(|entry| {
-            TaskGateVerdict::from_signals(&entry.signals).map(|verdict| (entry.node_id, verdict))
+            TaskGateVerdict::from_signals(&entry.signals)
+                .map(|verdict| (entry.node_id.clone(), verdict))
+        })
+        .collect()
+}
+
+/// The nodes whose output `records` hold.
+fn recorded_nodes(records: &[RecordEntry]) -> BTreeSet<String> {
+    records.iter().map(|entry| entry.node_id.clone()).collect()
+}
+
+/// The tasks of plan `plan_id` whose latest attempt in `run_dir`'s attempt
+/// log a stop cut off: it never settled, or the run cancelled it. A task in
+/// `recorded`, whose output the Activity log holds, is left out: its attempt
+/// finished, even if the process stopped before its verdict line was written.
+fn interrupted_attempts(
+    run_dir: &Path,
+    plan_id: &str,
+    recorded: &BTreeSet<String>,
+) -> Vec<InterruptedAttempt> {
+    let records = match RunRecords::load(run_dir) {
+        Ok(records) => records,
+        Err(error) => {
+            tracing::warn!(
+                run_dir = %run_dir.display(),
+                %error,
+                "resume: the run's attempt log is unreadable; interrupted attempts go unrecorded"
+            );
+            return Vec::new();
+        }
+    };
+    let outcomes: BTreeMap<&str, AttemptOutcome> = records
+        .verdicts
+        .iter()
+        .map(|verdict| {
+            (
+                verdict.record.identity.attempt_key.as_str(),
+                verdict.record.outcome,
+            )
+        })
+        .collect();
+    let mut latest: BTreeMap<&str, &AttemptOpenRecord> = BTreeMap::new();
+    for open in records.opens.iter().map(|open| &open.record) {
+        let identity = &open.identity;
+        if identity.plan_id != plan_id {
+            continue;
+        }
+        let newer = latest
+            .get(identity.task_id.as_str())
+            .is_none_or(|seen| seen.identity.attempt < identity.attempt);
+        if newer {
+            latest.insert(identity.task_id.as_str(), open);
+        }
+    }
+    latest
+        .into_values()
+        .filter(|open| {
+            let node = open.identity.node_id.as_deref();
+            !recorded.contains(node.unwrap_or(&open.identity.task_id))
+        })
+        .filter_map(|open| {
+            let cancelled = match outcomes.get(open.identity.attempt_key.as_str()) {
+                None => false,
+                Some(AttemptOutcome::Cancelled) => true,
+                Some(_) => return None,
+            };
+            Some(InterruptedAttempt {
+                task_id: open.identity.task_id.clone(),
+                attempt_key: open.identity.attempt_key.clone(),
+                started_at_ms: open.attempt_started_at,
+                cancelled,
+            })
         })
         .collect()
 }
@@ -543,11 +707,42 @@ fn record_pinned_hashes(task: &mut serde_json::Value, hashes: &[String]) -> Opti
 // Manifest
 // ---------------------------------------------------------------------------
 
+/// What one generation of a Graph checkpoint commits (gap-dc1d16).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommittedGeneration {
+    /// Length in bytes of the committed prefix of the Activity log.
+    pub activity_bytes: u64,
+    /// BLAKE3 of that prefix, in hex.
+    pub activity_blake3: String,
+    /// Actual provider spend, in millionths of one USD.
+    pub spent_micro_usd: u64,
+    /// Spend reserved for provider calls in flight, in millionths of one USD.
+    pub reserved_micro_usd: u64,
+    /// Line numbers, from 0, of the committed records a resume refused for
+    /// replay. The log keeps them, and every reader of it skips them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub refused_records: BTreeSet<u64>,
+}
+
 /// Versioned metadata that makes an Activity JSONL file safe to resume.
 ///
-/// Schema version 3 adds `extensions` and `receipts` on top of the original
-/// v2 fields. A v2 manifest on disk is migrated in-memory to v3 with empty
-/// extension/receipt maps and its cost ledger preserved.
+/// The manifest is the checkpoint's only commit point (gap-dc1d16). Each
+/// write names the next generation: under [`Self::committed`], the length and
+/// BLAKE3 of the Activity log's committed prefix and the cost at that moment.
+/// A durable change appends and syncs its Activity record, or writes the cost
+/// ledger, first, and writes the manifest last, so a crash between the two
+/// leaves the change uncommitted. A resume uses exactly the generation the
+/// manifest names: it sets aside the log's bytes past the committed prefix
+/// and a cost the ledger holds beyond the committed one, and fails closed
+/// when committed bytes changed. It never rewrites committed bytes: it
+/// refuses a record by its line number
+/// ([`CommittedGeneration::refused_records`]) instead.
+///
+/// Schema version 3 added `extensions` and `receipts` to the v2 fields, and
+/// version 4 the generation. A v2 manifest on disk is migrated in-memory to
+/// v3 with empty extension/receipt maps and its cost ledger preserved, and a
+/// v3 manifest resumes as generation 0: its log up to the last complete
+/// record, and the cost its ledger holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphCheckpointManifest {
     /// On-disk schema version.
@@ -567,6 +762,13 @@ pub struct GraphCheckpointManifest {
     pub status: GraphCheckpointStatus,
     /// Last manifest update as Unix milliseconds.
     pub updated_at_ms: u128,
+    /// The generation this manifest commits; 0 before generations (schema
+    /// v2 or v3).
+    #[serde(default)]
+    pub generation: u64,
+    /// What the generation commits; `None` only before generations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committed: Option<CommittedGeneration>,
     /// Namespaced extension map. Keys are `<namespace>@<schema_version>`.
     #[serde(default)]
     pub extensions: BTreeMap<String, CheckpointExtension>,
@@ -620,6 +822,8 @@ struct GraphCostLedgerState {
 pub struct GraphCostLedgerCheckpoint {
     path: PathBuf,
     identity: GraphCostLedgerState,
+    /// The checkpoint's commit point: each persist commits a generation.
+    commits: Option<Arc<CheckpointCommits>>,
 }
 
 impl GraphCostLedgerCheckpoint {
@@ -629,14 +833,22 @@ impl GraphCostLedgerCheckpoint {
         self.identity.spent_micro_usd
     }
 
-    /// Persist the latest actual spend atomically.
+    /// Persist the latest actual spend atomically, then commit it as the
+    /// checkpoint's next generation (gap-dc1d16).
     pub(crate) fn persist(&self, spent_micro_usd: u64, reserved_micro_usd: u64) -> Result<()> {
         let mut state = self.identity.clone();
         state.spent_micro_usd = spent_micro_usd;
         state.reserved_micro_usd = reserved_micro_usd;
-        write_cost_ledger_atomic(&self.path, &state)
+        write_cost_ledger_atomic(&self.path, &state)?;
+        match &self.commits {
+            Some(commits) => commits.commit_cost(spent_micro_usd, reserved_micro_usd),
+            None => Ok(()),
+        }
     }
 
+    /// Load the ledger at `path` for `manifest`'s checkpoint, with the cost a
+    /// resume takes: what the manifest's generation committed, or the
+    /// ledger's own before generations.
     fn load(
         path: PathBuf,
         manifest: &GraphCheckpointManifest,
@@ -644,14 +856,42 @@ impl GraphCostLedgerCheckpoint {
     ) -> Result<GraphCostLedgerCheckpoint> {
         let bytes = std::fs::read(&path)
             .with_context(|| format!("read Graph cost ledger {}", path.display()))?;
-        let state: GraphCostLedgerState = serde_json::from_slice(&bytes)
+        let mut state: GraphCostLedgerState = serde_json::from_slice(&bytes)
             .with_context(|| format!("parse Graph cost ledger {}", path.display()))?;
+        if let Some(committed) = &manifest.committed {
+            state.spent_micro_usd = committed.spent_micro_usd;
+            state.reserved_micro_usd = committed.reserved_micro_usd;
+        }
         validate_cost_ledger_state(&state, manifest, graph)
             .with_context(|| format!("validate Graph cost ledger {}", path.display()))?;
         Ok(Self {
             path,
             identity: state,
+            commits: None,
         })
+    }
+
+    /// Set aside a cost the ledger file holds beyond the committed one, which
+    /// was written after the last commit: the file is copied to
+    /// `<ledger>.uncommitted.<unix ms>` and rewritten with the committed
+    /// cost. Returns the copy, or `None` when the file holds the committed
+    /// cost.
+    fn set_aside_uncommitted(&self) -> Result<Option<PathBuf>> {
+        let bytes = std::fs::read(&self.path)
+            .with_context(|| format!("read Graph cost ledger {}", self.path.display()))?;
+        let stored: GraphCostLedgerState = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse Graph cost ledger {}", self.path.display()))?;
+        if stored == self.identity {
+            return Ok(None);
+        }
+        let mut aside = self.path.as_os_str().to_owned();
+        aside.push(format!(".uncommitted.{}", unix_ms()));
+        let aside = PathBuf::from(aside);
+        std::fs::File::create_new(&aside)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, &bytes))
+            .with_context(|| format!("set aside Graph cost ledger as {}", aside.display()))?;
+        write_cost_ledger_atomic(&self.path, &self.identity)?;
+        Ok(Some(aside))
     }
 
     /// Persist `graph_fingerprint` as the graph this ledger belongs to.
@@ -661,15 +901,156 @@ impl GraphCostLedgerCheckpoint {
     }
 }
 
+/// The commit point of one Graph checkpoint (gap-dc1d16), shared by the
+/// run's Activity recorder, its cost ledger and its own manifest writes.
+///
+/// Each commit writes the manifest last, naming the next generation: after
+/// the recorder appended and synced a record, after the cost ledger was
+/// written, or when the run changes the manifest itself.
+#[derive(Debug)]
+struct CheckpointCommits {
+    /// The manifest file.
+    path: PathBuf,
+    state: parking_lot::Mutex<CommitState>,
+}
+
+#[derive(Debug)]
+struct CommitState {
+    /// The manifest as last committed.
+    manifest: GraphCheckpointManifest,
+    /// What the next commit commits.
+    committed: CommittedGeneration,
+    /// BLAKE3 state of the Activity log's committed prefix.
+    activity_hash: blake3::Hasher,
+}
+
+/// The commit points of this process's open checkpoints, by manifest path,
+/// so that a forced exit marks a running checkpoint interrupted through its
+/// commit point, and a commit that lands later keeps that status (see
+/// [`mark_running_checkpoint_interrupted`]).
+static OPEN_COMMITS: std::sync::Mutex<BTreeMap<PathBuf, Weak<CheckpointCommits>>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn open_commits() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Weak<CheckpointCommits>>> {
+    OPEN_COMMITS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl CheckpointCommits {
+    /// Open the commit point of the checkpoint whose manifest is `path`, as
+    /// last committed in `manifest`, with `committed` and `activity_hash` for
+    /// the Activity log's committed prefix.
+    fn open(
+        path: PathBuf,
+        manifest: GraphCheckpointManifest,
+        committed: CommittedGeneration,
+        activity_hash: blake3::Hasher,
+    ) -> Arc<Self> {
+        let commits = Arc::new(Self {
+            path: path.clone(),
+            state: parking_lot::Mutex::new(CommitState {
+                manifest,
+                committed,
+                activity_hash,
+            }),
+        });
+        let mut open = open_commits();
+        open.retain(|_, weak| weak.strong_count() > 0);
+        open.insert(path, Arc::downgrade(&commits));
+        commits
+    }
+
+    /// What the last commit committed.
+    fn committed(&self) -> CommittedGeneration {
+        self.state.lock().committed.clone()
+    }
+
+    /// Commit `manifest`, the run's own copy, as the next generation, and
+    /// bring the copy's generation fields up to date.
+    fn commit_manifest(&self, manifest: &mut GraphCheckpointManifest) -> Result<()> {
+        let mut guard = self.state.lock();
+        let state = &mut *guard;
+        let generation = state.manifest.generation;
+        state.manifest.clone_from(manifest);
+        state.manifest.generation = generation;
+        let written = self.write(state);
+        manifest.clone_from(&state.manifest);
+        written
+    }
+
+    /// Commit a record the Activity recorder appended and synced.
+    fn commit_record(&self, record: &[u8]) -> Result<()> {
+        let mut guard = self.state.lock();
+        let state = &mut *guard;
+        state.activity_hash.update(record);
+        state.committed.activity_bytes += record.len() as u64;
+        state.committed.activity_blake3 = state.activity_hash.finalize().to_hex().to_string();
+        self.write(state)
+    }
+
+    /// Commit the cost the cost ledger now holds.
+    fn commit_cost(&self, spent_micro_usd: u64, reserved_micro_usd: u64) -> Result<()> {
+        let mut guard = self.state.lock();
+        let state = &mut *guard;
+        state.committed.spent_micro_usd = spent_micro_usd;
+        state.committed.reserved_micro_usd = reserved_micro_usd;
+        self.write(state)
+    }
+
+    /// Mark the checkpoint `interrupted` by the stop request `by` if it still
+    /// reads `running`, as the next generation. Returns whether it was
+    /// marked.
+    fn mark_interrupted(&self, by: &str) -> Result<bool> {
+        let mut guard = self.state.lock();
+        let state = &mut *guard;
+        if state.manifest.status != GraphCheckpointStatus::Running {
+            return Ok(false);
+        }
+        state.manifest.status = GraphCheckpointStatus::Interrupted;
+        set_stop_cause(&mut state.manifest, Some(by))?;
+        self.write(state)?;
+        Ok(true)
+    }
+
+    /// Write the manifest as the next generation.
+    fn write(&self, state: &mut CommitState) -> Result<()> {
+        let manifest = &mut state.manifest;
+        manifest.schema_version = CHECKPOINT_SCHEMA_VERSION;
+        manifest.generation += 1;
+        manifest.committed = Some(state.committed.clone());
+        manifest.updated_at_ms = unix_ms();
+        write_manifest_atomic(&self.path, manifest)
+    }
+}
+
+/// A recorder commit hook that commits each record at `commits`.
+fn commit_hook(
+    commits: &Arc<CheckpointCommits>,
+) -> impl Fn(&[u8]) -> std::io::Result<()> + Send + Sync + 'static {
+    let commits = Arc::clone(commits);
+    move |record: &[u8]| {
+        commits
+            .commit_record(record)
+            .map_err(|error| std::io::Error::other(format!("{error:#}")))
+    }
+}
+
 /// Recorder/replayer pair prepared for one Graph execution.
 pub struct PreparedGraphCheckpoint {
     paths: GraphCheckpointPaths,
     manifest: GraphCheckpointManifest,
+    /// The checkpoint's commit point, shared with the recorder and the cost
+    /// ledger (gap-dc1d16).
+    commits: Arc<CheckpointCommits>,
     recorder: Option<ActivityRecorder>,
     replayer: Option<ActivityReplayer>,
     replayed_entries: usize,
     cost_ledger: Option<GraphCostLedgerCheckpoint>,
     invalidated_on_resume: Vec<InvalidatedActivity>,
+    /// The run's safety provenance sink, whose summary every manifest write
+    /// stores (gap-ff95f5).
+    safety_provenance: Option<Arc<GraphProvenanceSink>>,
 }
 
 impl std::fmt::Debug for PreparedGraphCheckpoint {
@@ -735,8 +1116,33 @@ impl PreparedGraphCheckpoint {
         if let Err(error) = self.refresh_gate_verdicts() {
             tracing::warn!(%error, "gate verdict checkpoint summary refresh failed");
         }
-        self.manifest.updated_at_ms = unix_ms();
-        write_manifest_atomic(&self.paths.manifest, &self.manifest)
+        if let Err(error) = self.refresh_safety_provenance() {
+            tracing::warn!(%error, "safety provenance checkpoint summary refresh failed");
+        }
+        self.commit_manifest()
+    }
+
+    /// Commit the manifest as the checkpoint's next generation (gap-dc1d16).
+    fn commit_manifest(&mut self) -> Result<()> {
+        self.commits.commit_manifest(&mut self.manifest)
+    }
+
+    /// The Activity log's records that count, as of the last commit: the
+    /// committed ones, less those a resume refused.
+    fn counted_records(&self) -> Result<Vec<RecordEntry>> {
+        let committed = self.commits.committed();
+        counted_records(
+            &self.paths.activities,
+            &self.manifest.plan_id,
+            &self.manifest.run_id,
+            Some(&committed),
+        )
+        .with_context(|| {
+            format!(
+                "read Graph Activity checkpoint {}",
+                self.paths.activities.display()
+            )
+        })
     }
 
     /// Last persisted lifecycle state.
@@ -764,6 +1170,13 @@ impl PreparedGraphCheckpoint {
             host_extension(TASK_OUTCOME_EXTENSION, value)?,
         );
         Ok(())
+    }
+
+    /// Record what stopped this run (`by`, e.g. `deadline`) under
+    /// [`STOP_EXTENSION`], or that nothing did, replacing the previous run's
+    /// record (gap-fab2cc). The next terminal write persists it.
+    pub fn record_stop_cause(&mut self, by: Option<&str>) -> Result<()> {
+        set_stop_cause(&mut self.manifest, by)
     }
 
     /// Record how the plan was delivered into its run's batch branch
@@ -820,10 +1233,20 @@ impl PreparedGraphCheckpoint {
 
     /// The gate verdict of each task output recorded so far, replayed outputs
     /// included. The engine records a node's output before it reports the
-    /// node complete, so a completed task's verdict is already here.
+    /// node complete, so a completed task's verdict is already here. A record
+    /// a resume refused does not count.
     #[must_use]
     pub fn recorded_gate_verdicts(&self) -> BTreeMap<String, TaskGateVerdict> {
-        recorded_gate_verdicts(&self.paths.activities)
+        match self.counted_records() {
+            Ok(records) => recorded_gate_verdicts(&records),
+            Err(error) => {
+                tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "recorded gate verdicts unreadable"
+                );
+                BTreeMap::new()
+            }
+        }
     }
 
     /// Rebuild the gate-verdict extension from the durable Activity log.
@@ -831,8 +1254,9 @@ impl PreparedGraphCheckpoint {
     /// The host-owned summary is replaced wholesale, so this bypasses the
     /// write-once fingerprint guard of [`Self::register_extension`].
     fn refresh_gate_verdicts(&mut self) -> Result<()> {
+        let records = self.counted_records()?;
         let summary = GateVerdictSummary {
-            verdicts: recorded_gate_verdicts(&self.paths.activities),
+            verdicts: recorded_gate_verdicts(&records),
             invalidated_on_resume: self.invalidated_on_resume.clone(),
         };
         if summary == GateVerdictSummary::default() {
@@ -845,6 +1269,38 @@ impl PreparedGraphCheckpoint {
         self.manifest
             .extensions
             .insert(GATE_VERDICT_EXTENSION.to_string(), extension);
+        Ok(())
+    }
+
+    /// Record under [`INTERRUPTED_ATTEMPT_EXTENSION`] the tasks whose latest
+    /// attempt of this run a stop cut off, read from the run's attempt log in
+    /// `workdir`, replacing the previous resume's record (gap-36f3fb).
+    fn record_interrupted_attempts(&mut self, workdir: &Path) -> Result<()> {
+        let layout = RokoLayout::for_project(workdir);
+        let run_dir = layout.run_dir(&self.manifest.run_id);
+        let recorded = recorded_nodes(&self.counted_records()?);
+        let attempts = interrupted_attempts(&run_dir, &self.manifest.plan_id, &recorded);
+        if attempts.is_empty() {
+            self.manifest
+                .extensions
+                .remove(INTERRUPTED_ATTEMPT_EXTENSION);
+            return Ok(());
+        }
+        for attempt in &attempts {
+            tracing::warn!(
+                task_id = %attempt.task_id,
+                attempt_key = %attempt.attempt_key,
+                cancelled = attempt.cancelled,
+                "resume: the task's last attempt stopped before it settled; anything it wrote \
+                 is still in the task's checkout, and the task runs again on top of it"
+            );
+        }
+        let value = serde_json::to_value(InterruptedAttempts { attempts })
+            .context("serialize interrupted attempts")?;
+        self.manifest.extensions.insert(
+            INTERRUPTED_ATTEMPT_EXTENSION.to_string(),
+            host_extension(INTERRUPTED_ATTEMPT_EXTENSION, value)?,
+        );
         Ok(())
     }
 
@@ -1045,8 +1501,75 @@ impl PreparedGraphCheckpoint {
     /// Call this after registering extensions or transitioning receipts to
     /// make the change durable before the next external call.
     pub fn persist_manifest(&mut self) -> Result<()> {
-        self.manifest.updated_at_ms = unix_ms();
-        write_manifest_atomic(&self.paths.manifest, &self.manifest)
+        self.refresh_safety_provenance()?;
+        self.commit_manifest()
+    }
+
+    /// Keep the run's safety provenance (gap-ff95f5): every later manifest
+    /// write stores `sink`'s summary under [`EXT_SAFETY_PROVENANCE`].
+    pub fn attach_safety_provenance(&mut self, sink: Arc<GraphProvenanceSink>) {
+        self.safety_provenance = Some(sink);
+    }
+
+    /// The run's safety provenance as the checkpoint stored it under
+    /// [`EXT_SAFETY_PROVENANCE`]; `None` when it stored none, as for a fresh
+    /// run or a checkpoint from before gap-ff95f5.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on a version of the extension this build cannot read, or
+    /// a value it cannot decode.
+    pub fn stored_safety_provenance(&self) -> Result<Option<SafetyProvenanceSummary>> {
+        let unknown = self.manifest.extensions.iter().find(|(key, extension)| {
+            extension.namespace == SAFETY_PROVENANCE_NAMESPACE
+                && (key.as_str() != EXT_SAFETY_PROVENANCE || extension.schema_version != 1)
+        });
+        if let Some((key, _)) = unknown {
+            bail!("safety provenance: this build cannot read the checkpoint's `{key}`");
+        }
+        let Some(extension) = self.manifest.extensions.get(EXT_SAFETY_PROVENANCE) else {
+            return Ok(None);
+        };
+        serde_json::from_value(extension.value.clone())
+            .map(Some)
+            .context("safety provenance: decode the checkpoint's summary")
+    }
+
+    /// Open the run's safety provenance sink, attach it, and store its
+    /// summary (gap-ff95f5). A run whose checkpoint stored no provenance
+    /// starts fresh, whatever history the workspace's logs hold. A resumed
+    /// run's sink comes back from what the checkpoint stored, its own records
+    /// checked against the witness and custody logs, so call this before any
+    /// task runs; see [`GraphProvenanceSink::resume`].
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when the stored provenance or the run's records do not
+    /// check out.
+    pub fn open_safety_provenance(&mut self, workdir: &Path) -> Result<Arc<GraphProvenanceSink>> {
+        let sink = match self.stored_safety_provenance()? {
+            Some(stored) => GraphProvenanceSink::resume(workdir, &self.manifest.run_id, &stored)?,
+            None => GraphProvenanceSink::start(workdir)?,
+        };
+        let sink = Arc::new(sink);
+        self.attach_safety_provenance(Arc::clone(&sink));
+        self.persist_manifest()?;
+        Ok(sink)
+    }
+
+    /// Rebuild the [`EXT_SAFETY_PROVENANCE`] extension from the attached
+    /// sink, replacing what an earlier write stored. Without a sink the
+    /// extension stays as it is.
+    fn refresh_safety_provenance(&mut self) -> Result<()> {
+        let Some(sink) = &self.safety_provenance else {
+            return Ok(());
+        };
+        let value = serde_json::to_value(sink.summary()).context("serialize safety provenance")?;
+        self.manifest.extensions.insert(
+            EXT_SAFETY_PROVENANCE.to_string(),
+            host_extension(EXT_SAFETY_PROVENANCE, value)?,
+        );
+        Ok(())
     }
 }
 
@@ -1136,6 +1659,9 @@ pub fn prepare_graph_checkpoint_for_run(
                     }
                     Err(error) => return Err(error),
                 };
+                // Everything a resume takes from the checkpoint is read and
+                // checked before any of its files changes.
+                let selected = select_generation(&paths, &manifest, &cost_ledger.identity, graph)?;
                 if matched == FingerprintMatch::Legacy {
                     tracing::info!(
                         plan_id,
@@ -1154,7 +1680,7 @@ pub fn prepare_graph_checkpoint_for_run(
                         "resuming Graph checkpoint"
                     );
                 }
-                return resume_checkpoint(paths, manifest, cost_ledger, plan_id, graph);
+                return resume_checkpoint(workdir, paths, manifest, cost_ledger, selected);
             }
         }
     } else if !fresh && (paths.activities.exists() || paths.costs.exists()) {
@@ -1171,45 +1697,175 @@ pub fn prepare_graph_checkpoint_for_run(
     create_fresh_checkpoint(paths, plan_id, identity.current, run_id)
 }
 
-/// Reopen a validated checkpoint for another run of the same plan graph.
-fn resume_checkpoint(
-    paths: GraphCheckpointPaths,
-    mut manifest: GraphCheckpointManifest,
-    cost_ledger: GraphCostLedgerCheckpoint,
-    plan_id: &str,
+/// The generation a resume of a checkpoint selects, read without changing a
+/// file (gap-dc1d16; see [`select_generation`]).
+struct SelectedGeneration {
+    /// What the generation committed, with this resume's refusals. A
+    /// manifest from before generations is generation 0: its log up to the
+    /// last complete record, and the cost its ledger holds.
+    committed: CommittedGeneration,
+    /// The generation's records to replay.
+    replayer: ActivityReplayer,
+    /// Refused records whose nodes this resume runs again.
+    invalidated: Vec<InvalidatedActivity>,
+    /// BLAKE3 state of the committed prefix, which the run's commits extend.
+    activity_hash: blake3::Hasher,
+}
+
+/// Select the generation `manifest` names for a resume of `graph`, with
+/// `ledger` as [`GraphCostLedgerCheckpoint::load`] read it. Fails closed when
+/// the Activity log lost or changed committed bytes, or a committed line is
+/// not a record of the run.
+fn select_generation(
+    paths: &GraphCheckpointPaths,
+    manifest: &GraphCheckpointManifest,
+    ledger: &GraphCostLedgerState,
     graph: &Graph,
-) -> Result<PreparedGraphCheckpoint> {
-    // Never resume a task whose recorded output was not verified: drop those
-    // records so the nodes re-run.
-    let invalidated_on_resume = invalidate_unverified_activities(&paths.activities, graph)?;
-    let replayer = ActivityReplayer::load_scoped(&paths.activities, plan_id, &manifest.run_id)
+) -> Result<SelectedGeneration> {
+    let log = std::fs::read(&paths.activities).with_context(|| {
+        format!(
+            "read Graph Activity checkpoint {}",
+            paths.activities.display()
+        )
+    })?;
+    let mut committed = manifest
+        .committed
+        .clone()
+        .unwrap_or_else(|| CommittedGeneration {
+            activity_bytes: complete_records_len(&log),
+            spent_micro_usd: ledger.spent_micro_usd,
+            reserved_micro_usd: ledger.reserved_micro_usd,
+            ..CommittedGeneration::default()
+        });
+    let prefix = usize::try_from(committed.activity_bytes)
+        .ok()
+        .and_then(|len| log.get(..len))
         .with_context(|| {
             format!(
-                "load Graph Activity checkpoint {}",
+                "Graph Activity checkpoint {} holds {} bytes, fewer than the {} its generation {} committed",
+                paths.activities.display(),
+                log.len(),
+                committed.activity_bytes,
+                manifest.generation
+            )
+        })?;
+    let mut activity_hash = blake3::Hasher::new();
+    activity_hash.update(prefix);
+    let digest = activity_hash.finalize().to_hex().to_string();
+    if manifest.committed.is_some() && digest != committed.activity_blake3 {
+        bail!(
+            "the committed records of Graph Activity checkpoint {} changed after generation {} committed them; use --fresh to archive it",
+            paths.activities.display(),
+            manifest.generation
+        );
+    }
+    committed.activity_blake3 = digest;
+    let load = || {
+        format!(
+            "load Graph Activity checkpoint {}",
+            paths.activities.display()
+        )
+    };
+    let records = activity_records(prefix, &manifest.plan_id, &manifest.run_id)
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(load)?;
+    let (refused, invalidated) =
+        invalidate_unverified_activities(&records, graph, &committed.refused_records);
+    committed.refused_records = refused;
+    let replayer =
+        ActivityReplayer::from_records(records, &committed.refused_records).with_context(load)?;
+    Ok(SelectedGeneration {
+        committed,
+        replayer,
+        invalidated,
+        activity_hash,
+    })
+}
+
+/// Reopen a validated checkpoint for another run of the same plan graph, at
+/// the generation `selected` names (gap-dc1d16).
+fn resume_checkpoint(
+    workdir: &Path,
+    paths: GraphCheckpointPaths,
+    manifest: GraphCheckpointManifest,
+    mut cost_ledger: GraphCostLedgerCheckpoint,
+    selected: SelectedGeneration,
+) -> Result<PreparedGraphCheckpoint> {
+    let SelectedGeneration {
+        committed,
+        replayer,
+        invalidated,
+        activity_hash,
+    } = selected;
+    // Bytes past the committed prefix were never committed, such as a record
+    // a crash tore or one whose commit did not land: set them aside rather
+    // than fail on them or replay them, so the log ends in its last committed
+    // record and those nodes run again.
+    let uncommitted = set_aside_activities_after(&paths.activities, committed.activity_bytes)
+        .with_context(|| {
+            format!(
+                "set aside the uncommitted end of {}",
                 paths.activities.display()
             )
         })?;
-    let replayed_entries = replayer.entry_count();
-    let recorder =
-        ActivityRecorder::create(&manifest.run_id, &paths.activities).with_context(|| {
+    if let Some(aside) = uncommitted {
+        tracing::warn!(
+            activities = %paths.activities.display(),
+            set_aside = %aside.display(),
+            generation = manifest.generation,
+            "resume: the Activity log holds records the checkpoint never committed; \
+             set them aside, and their nodes run again"
+        );
+    }
+    // So was a cost the ledger holds beyond the committed one.
+    if let Some(aside) = cost_ledger.set_aside_uncommitted()? {
+        tracing::warn!(
+            costs = %paths.costs.display(),
+            set_aside = %aside.display(),
+            spent_micro_usd = committed.spent_micro_usd,
+            "resume: the cost ledger holds spend the checkpoint never committed; \
+             set it aside, and the run resumes from the committed spend"
+        );
+    }
+    for activity in &invalidated {
+        tracing::warn!(
+            node_id = %activity.node_id,
+            tick = activity.tick,
+            reason = %activity.reason,
+            "resume: recorded task output is not verified; the node will re-run"
+        );
+    }
+    let commits = CheckpointCommits::open(
+        paths.manifest.clone(),
+        manifest.clone(),
+        committed,
+        activity_hash,
+    );
+    cost_ledger.commits = Some(Arc::clone(&commits));
+    let recorder = ActivityRecorder::create(&manifest.run_id, &paths.activities)
+        .with_context(|| {
             format!(
                 "open Graph Activity checkpoint {}",
                 paths.activities.display()
             )
-        })?;
-    manifest.status = GraphCheckpointStatus::Running;
+        })?
+        .with_commit_hook(commit_hook(&commits));
+    let replayed_entries = replayer.entry_count();
     let mut prepared = PreparedGraphCheckpoint {
         paths,
         manifest,
+        commits,
         recorder: Some(recorder),
         replayer: Some(replayer),
         replayed_entries,
         cost_ledger: Some(cost_ledger),
-        invalidated_on_resume,
+        invalidated_on_resume: invalidated,
+        safety_provenance: None,
     };
+    prepared.manifest.status = GraphCheckpointStatus::Running;
     prepared.refresh_gate_verdicts()?;
-    prepared.manifest.updated_at_ms = unix_ms();
-    write_manifest_atomic(&prepared.paths.manifest, &prepared.manifest)?;
+    prepared.record_interrupted_attempts(workdir)?;
+    prepared.commit_manifest()?;
     Ok(prepared)
 }
 
@@ -1250,11 +1906,24 @@ fn create_fresh_checkpoint(
         cost_ledger,
         status: GraphCheckpointStatus::Running,
         updated_at_ms: unix_ms(),
+        generation: 0,
+        committed: None,
         extensions: BTreeMap::new(),
         receipts: BTreeMap::new(),
     };
+    let committed = CommittedGeneration {
+        activity_blake3: blake3::hash(b"").to_hex().to_string(),
+        ..CommittedGeneration::default()
+    };
+    let commits = CheckpointCommits::open(
+        paths.manifest.clone(),
+        manifest.clone(),
+        committed,
+        blake3::Hasher::new(),
+    );
     let recorder = ActivityRecorder::create_fresh(&run_id, &paths.activities)
-        .with_context(|| format!("create Graph Activity log {}", paths.activities.display()))?;
+        .with_context(|| format!("create Graph Activity log {}", paths.activities.display()))?
+        .with_commit_hook(commit_hook(&commits));
     let cost_ledger = GraphCostLedgerCheckpoint {
         path: paths.costs.clone(),
         identity: GraphCostLedgerState {
@@ -1265,18 +1934,22 @@ fn create_fresh_checkpoint(
             spent_micro_usd: 0,
             reserved_micro_usd: 0,
         },
+        commits: Some(Arc::clone(&commits)),
     };
-    cost_ledger.persist(0, 0)?;
-    write_manifest_atomic(&paths.manifest, &manifest)?;
-    Ok(PreparedGraphCheckpoint {
+    write_cost_ledger_atomic(&cost_ledger.path, &cost_ledger.identity)?;
+    let mut prepared = PreparedGraphCheckpoint {
         paths,
         manifest,
+        commits,
         recorder: Some(recorder),
         replayer: None,
         replayed_entries: 0,
         cost_ledger: Some(cost_ledger),
         invalidated_on_resume: Vec::new(),
-    })
+        safety_provenance: None,
+    };
+    prepared.commit_manifest()?;
+    Ok(prepared)
 }
 
 fn resolve_checkpoint_paths(
@@ -1336,6 +2009,10 @@ fn resolve_checkpoint_paths(
 }
 
 /// Read a checkpoint manifest, migrating a v2 manifest to v3 in memory.
+///
+/// A manifest from before generations commits none, whatever generation
+/// fields its file holds: a resume stamps it as generation 0 from the files.
+/// A v4 manifest that names no committed generation fails closed.
 fn read_manifest(path: &Path) -> Result<GraphCheckpointManifest> {
     let bytes =
         std::fs::read(path).with_context(|| format!("read Graph checkpoint {}", path.display()))?;
@@ -1345,6 +2022,17 @@ fn read_manifest(path: &Path) -> Result<GraphCheckpointManifest> {
     // version. The upgraded manifest is written on the next atomic commit.
     if manifest.schema_version == 2 {
         migrate_v2_to_v3(&mut manifest);
+    }
+    match manifest.schema_version {
+        PRE_GENERATION_SCHEMA_VERSION => {
+            manifest.generation = 0;
+            manifest.committed = None;
+        }
+        CHECKPOINT_SCHEMA_VERSION if manifest.committed.is_none() => bail!(
+            "Graph checkpoint {} has schema version {CHECKPOINT_SCHEMA_VERSION} but names no committed generation",
+            path.display()
+        ),
+        _ => {}
     }
     Ok(manifest)
 }
@@ -1357,7 +2045,7 @@ fn checkpoint_match(
     graph: &GraphIdentity,
     paths: &GraphCheckpointPaths,
 ) -> Result<FingerprintMatch, String> {
-    // Accept v2 (will migrate in-memory to v3) and v3.
+    // Accept v2 and v3, which resume as generation 0, and v4.
     if manifest.schema_version < MIN_SUPPORTED_SCHEMA_VERSION
         || manifest.schema_version > CHECKPOINT_SCHEMA_VERSION
     {
@@ -1392,7 +2080,7 @@ fn checkpoint_match(
 /// maps while preserving all existing fields including the cost ledger.
 fn migrate_v2_to_v3(manifest: &mut GraphCheckpointManifest) {
     debug_assert_eq!(manifest.schema_version, 2);
-    manifest.schema_version = CHECKPOINT_SCHEMA_VERSION;
+    manifest.schema_version = PRE_GENERATION_SCHEMA_VERSION;
     // extensions and receipts default to empty BTreeMap via serde(default),
     // so a v2 deserialized manifest already has them empty. We just bump the
     // version to signal the next atomic write should use v3 format.
@@ -1424,9 +2112,10 @@ fn validate_cost_ledger_state(
     if state.run_id != manifest.run_id {
         bail!("cost ledger run ID does not match the checkpoint manifest");
     }
+    // The cost a resume takes (see `GraphCostLedgerCheckpoint::load`).
     if state.reserved_micro_usd > 0 {
         bail!(
-            "cost ledger contains {} unresolved reserved micro-USD from an interrupted provider call",
+            "the checkpoint committed {} unresolved reserved micro-USD from an interrupted provider call",
             state.reserved_micro_usd
         );
     }
@@ -1495,6 +2184,37 @@ pub fn recorded_batch_branch(workdir: &Path, plan_id: &str) -> Option<String> {
     manifest["extensions"][BATCH_EXTENSION]["value"]["branch"]
         .as_str()
         .map(ToOwned::to_owned)
+}
+
+/// A plan's delivery into its run's batch branch, as its checkpoint recorded
+/// it (see [`recorded_batch_delivery`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedBatchDelivery {
+    /// The run's batch branch, `roko/batch/<run-id>`.
+    pub branch: String,
+    /// The batch commit that delivered the plan's work.
+    pub merge_commit: String,
+}
+
+/// Where plan `plan_id`'s work went: the batch branch and commit its
+/// checkpoint recorded under [`BATCH_EXTENSION`] when the plan was delivered
+/// (gap-4ec59f). `None` when it was not.
+#[must_use]
+pub fn recorded_batch_delivery(workdir: &Path, plan_id: &str) -> Option<RecordedBatchDelivery> {
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    let batch = &manifest["extensions"][BATCH_EXTENSION]["value"];
+    if batch["state"].as_str() != Some("delivered") {
+        return None;
+    }
+    Some(RecordedBatchDelivery {
+        branch: batch["branch"].as_str()?.to_string(),
+        merge_commit: batch["merge_commit"].as_str()?.to_string(),
+    })
 }
 
 /// Why plan `plan_id`'s whole-plan check failed, as its checkpoint recorded
@@ -1571,6 +2291,87 @@ pub fn canonical_task_outcomes(workdir: &Path, plan_id: &str) -> Option<TaskOutc
     .ok()
 }
 
+/// Every canonical checkpoint under `.roko/state/graph/`: the plan id its
+/// manifest records, with the manifest's path. Unreadable manifests are left
+/// out. `roko backlog audit` finds checkpoints whose plan is gone with this.
+#[must_use]
+pub fn canonical_checkpoint_plans(workdir: &Path) -> Vec<(String, PathBuf)> {
+    #[derive(Deserialize)]
+    struct PlanIdOnly {
+        plan_id: String,
+    }
+
+    let Ok(entries) = std::fs::read_dir(workdir.join(".roko/state/graph")) else {
+        return Vec::new();
+    };
+    let mut plans: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .map(|entry| entry.path().join("checkpoint.json"))
+        .filter_map(|manifest| {
+            let bytes = std::fs::read(&manifest).ok()?;
+            let plan = serde_json::from_slice::<PlanIdOnly>(&bytes).ok()?;
+            Some((plan.plan_id, manifest))
+        })
+        .collect();
+    plans.sort();
+    plans
+}
+
+/// The run one checkpoint manifest under `.roko/state/graph/` names, as
+/// [`recorded_checkpoint_runs`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedCheckpointRun {
+    /// The plan's directory under `.roko/state/graph/`.
+    pub plan_dir: String,
+    /// The run the manifest names.
+    pub run_id: String,
+    /// The status the manifest records.
+    pub status: GraphCheckpointStatus,
+    /// Whether this is the plan's current checkpoint rather than one a later
+    /// run archived when it replaced it.
+    pub current: bool,
+}
+
+/// The run of every checkpoint manifest under `.roko/state/graph/`: each
+/// plan's current one, and the ones archived when a later run replaced them.
+/// Unreadable manifests are left out. `roko doctor disk --fix` finds with
+/// this which plan an attempt checkout's run belonged to (gap-f67a72).
+#[must_use]
+pub fn recorded_checkpoint_runs(workdir: &Path) -> Vec<RecordedCheckpointRun> {
+    #[derive(Deserialize)]
+    struct RunOnly {
+        run_id: String,
+        status: GraphCheckpointStatus,
+    }
+
+    let mut runs = Vec::new();
+    let plans = std::fs::read_dir(workdir.join(".roko/state/graph"));
+    for plan in plans.into_iter().flatten().flatten() {
+        let plan_dir = plan.file_name().to_string_lossy().into_owned();
+        let manifests = std::fs::read_dir(plan.path());
+        for manifest in manifests.into_iter().flatten().flatten() {
+            let name = manifest.file_name().to_string_lossy().into_owned();
+            let current = name == "checkpoint.json";
+            if !current && !name.starts_with("checkpoint.json.bak.") {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(manifest.path()) else {
+                continue;
+            };
+            let Ok(recorded) = serde_json::from_slice::<RunOnly>(&bytes) else {
+                continue;
+            };
+            runs.push(RecordedCheckpointRun {
+                plan_dir: plan_dir.clone(),
+                run_id: recorded.run_id,
+                status: recorded.status,
+                current,
+            });
+        }
+    }
+    runs
+}
+
 // ---------------------------------------------------------------------------
 // Inspection
 // ---------------------------------------------------------------------------
@@ -1583,16 +2384,18 @@ pub struct CheckpointInspection {
     pub paths: GraphCheckpointPaths,
     /// The manifest; a v2 manifest is migrated in memory.
     pub manifest: GraphCheckpointManifest,
-    /// Actual provider spend in the cost ledger, in millionths of one USD.
-    /// `None` when the ledger is missing or unreadable.
+    /// Actual provider spend, in millionths of one USD, as the checkpoint
+    /// committed it (the cost ledger's own before generations). `None` when
+    /// a checkpoint from before generations has no readable ledger.
     pub spent_micro_usd: Option<u64>,
     /// Spend reserved for a provider call that never settled. Resume refuses
-    /// a ledger with an unresolved reservation.
+    /// a checkpoint that committed an unresolved reservation.
     pub reserved_micro_usd: Option<u64>,
     /// Task nodes whose output this run recorded in its Activity log, each
-    /// with the gate verdict of its latest record.
+    /// with the gate verdict of its latest record. A record a resume refused
+    /// does not count.
     pub recorded: BTreeMap<String, Option<TaskGateVerdict>>,
-    /// Records the last resume removed because they lacked a passing verdict.
+    /// Records the last resume refused because they lacked a passing verdict.
     pub invalidated_on_resume: Vec<InvalidatedActivity>,
     /// When the newest checkpoint this one replaced was archived, as Unix
     /// milliseconds: records older than this belong to earlier runs of the
@@ -1615,9 +2418,31 @@ pub fn inspect_canonical_checkpoint(
         return Ok(None);
     }
     let manifest = read_manifest(&paths.manifest)?;
-    let ledger = std::fs::read(&paths.costs)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<GraphCostLedgerState>(&bytes).ok());
+    // The cost a resume takes: what the generation committed, or the ledger's
+    // own before generations.
+    let cost = match &manifest.committed {
+        Some(committed) => Some((committed.spent_micro_usd, committed.reserved_micro_usd)),
+        None => std::fs::read(&paths.costs)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<GraphCostLedgerState>(&bytes).ok())
+            .map(|ledger| (ledger.spent_micro_usd, ledger.reserved_micro_usd)),
+    };
+    let recorded = match counted_records(
+        &paths.activities,
+        &manifest.plan_id,
+        &manifest.run_id,
+        manifest.committed.as_ref(),
+    ) {
+        Ok(records) => recorded_outputs(&records),
+        Err(error) => {
+            tracing::warn!(
+                activities = %paths.activities.display(),
+                %error,
+                "the Activity log does not read; no task output counts as recorded"
+            );
+            BTreeMap::new()
+        }
+    };
     let invalidated_on_resume = manifest
         .extensions
         .get(GATE_VERDICT_EXTENSION)
@@ -1627,29 +2452,23 @@ pub fn inspect_canonical_checkpoint(
         .map(|summary| summary.invalidated_on_resume)
         .unwrap_or_default();
     Ok(Some(CheckpointInspection {
-        recorded: recorded_outputs(&paths.activities, &manifest.run_id),
+        recorded,
         replaced_at_ms: latest_archive_ms(&paths),
-        spent_micro_usd: ledger.as_ref().map(|ledger| ledger.spent_micro_usd),
-        reserved_micro_usd: ledger.as_ref().map(|ledger| ledger.reserved_micro_usd),
+        spent_micro_usd: cost.map(|(spent, _)| spent),
+        reserved_micro_usd: cost.map(|(_, reserved)| reserved),
         invalidated_on_resume,
         manifest,
         paths,
     }))
 }
 
-/// Node ids recorded in an Activity log for `run_id`, each with the gate
-/// verdict of its latest record.
-fn recorded_outputs(path: &Path, run_id: &str) -> BTreeMap<String, Option<TaskGateVerdict>> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return BTreeMap::new();
-    };
-    content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
-        .filter(|entry| entry.run_id == run_id)
+/// Node ids `records` hold, each with the gate verdict of its latest record.
+fn recorded_outputs(records: &[RecordEntry]) -> BTreeMap<String, Option<TaskGateVerdict>> {
+    records
+        .iter()
         .map(|entry| {
             let verdict = TaskGateVerdict::from_signals(&entry.signals);
-            (entry.node_id, verdict)
+            (entry.node_id.clone(), verdict)
         })
         .collect()
 }
@@ -1675,13 +2494,69 @@ fn latest_archive_ms(paths: &GraphCheckpointPaths) -> Option<u128> {
         .max()
 }
 
+/// Mark the checkpoint whose manifest is `manifest` `interrupted` by the stop
+/// request `by` if it still reads `running`, as a plan run forced out before
+/// it could write its own terminal status does on its way out (bug-4641e3),
+/// so the checkpoint does not look alive afterwards. A checkpoint its run
+/// already finalized keeps its status. Returns whether it was marked.
+pub fn mark_running_checkpoint_interrupted(manifest: &Path, by: &str) -> Result<bool> {
+    // A checkpoint this process has open is marked through its commit point,
+    // so a commit that lands later keeps the status (gap-dc1d16).
+    let open = open_commits().get(manifest).and_then(Weak::upgrade);
+    if let Some(commits) = open {
+        return commits.mark_interrupted(by);
+    }
+    let mut recorded = read_manifest(manifest)?;
+    if recorded.status != GraphCheckpointStatus::Running {
+        return Ok(false);
+    }
+    recorded.status = GraphCheckpointStatus::Interrupted;
+    set_stop_cause(&mut recorded, Some(by))?;
+    recorded.updated_at_ms = unix_ms();
+    write_manifest_atomic(manifest, &recorded)?;
+    Ok(true)
+}
+
+/// Set `manifest`'s [`STOP_EXTENSION`] to `by`, or remove it.
+fn set_stop_cause(manifest: &mut GraphCheckpointManifest, by: Option<&str>) -> Result<()> {
+    match by {
+        Some(by) => {
+            let value = serde_json::json!({ "by": by });
+            manifest.extensions.insert(
+                STOP_EXTENSION.to_string(),
+                host_extension(STOP_EXTENSION, value)?,
+            );
+        }
+        None => {
+            manifest.extensions.remove(STOP_EXTENSION);
+        }
+    }
+    Ok(())
+}
+
+/// What stopped the last run recorded in `plan_id`'s canonical checkpoint
+/// under `.roko/state/graph/`, as [`STOP_EXTENSION`] holds it; `None` when
+/// nothing did or the checkpoint cannot be read.
+#[must_use]
+pub fn canonical_stop_cause(workdir: &Path, plan_id: &str) -> Option<String> {
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    manifest["extensions"][STOP_EXTENSION]["value"]["by"]
+        .as_str()
+        .map(ToOwned::to_owned)
+}
+
 /// Start `plan`'s canonical checkpoint the way a default `plan run` does.
 #[cfg(test)]
 pub(crate) fn start_plan_checkpoint(
     workdir: &Path,
     plan: &Plan,
 ) -> Result<PreparedGraphCheckpoint> {
-    let graph = convert_plan(plan, &ResumeOptions::default())?;
+    let graph = convert_plan(plan, &plan_task_infos(plan, |task| task.max_retries))?;
     prepare_graph_checkpoint(workdir, None, &plan.id, 1, &graph, false, false)
 }
 
@@ -1699,6 +2574,8 @@ pub struct ResumeOptions<'a> {
     /// `--force-resume`: archive an unusable checkpoint instead of stopping.
     pub force_resume: bool,
     /// `--max-tasks`: concurrency override; 0 keeps `[meta] max_parallel`.
+    /// It caps the run without changing its checkpoint identity
+    /// (gap-7147bb), so the preview converts the plan without it.
     pub max_tasks: usize,
     /// `--max-retries`: per-task retry override.
     pub max_retries: Option<u32>,
@@ -1832,7 +2709,10 @@ pub fn preview_plan_resume(
     if options.rich_topology {
         bail!("the checkpoint preview does not support --rich-topology");
     }
-    let graph = convert_plan(plan, options)?;
+    // A run's retry budgets come from its dispatcher's gate thresholds. They
+    // live in the node configs, which the plan fingerprint leaves out.
+    let tasks = plan_task_infos(plan, |t| options.max_retries.unwrap_or(t.max_retries));
+    let graph = convert_plan(plan, &tasks)?;
     let mut preview = preview_graph_checkpoint(
         workdir,
         options.resume_plan,
@@ -1855,11 +2735,15 @@ pub fn preview_plan_resume(
     Ok(preview)
 }
 
-/// Convert `plan` as `graph_execution::plan_runner::run_one_plan` does with
-/// the default topology, so the preview fingerprints the graph a run executes.
-fn convert_plan(plan: &Plan, options: &ResumeOptions<'_>) -> Result<Graph> {
-    let tasks: Vec<(String, PlanTaskInfo)> = plan
-        .tasks
+/// `plan`'s tasks as the Graph converters take them, each with the retry
+/// budget `max_retries` gives it. `run_one_plan` and the resume preview both
+/// build their graphs from this list, so the preview fingerprints the graph a
+/// run executes (gap-be7368).
+pub(crate) fn plan_task_infos(
+    plan: &Plan,
+    mut max_retries: impl FnMut(&TaskDef) -> u32,
+) -> Vec<(String, PlanTaskInfo)> {
+    plan.tasks
         .tasks
         .iter()
         .map(|task| {
@@ -1873,26 +2757,33 @@ fn convert_plan(plan: &Plan, options: &ResumeOptions<'_>) -> Result<Graph> {
                 depends_on: task.depends_on.clone(),
                 depends_on_plan: task.depends_on_plan.clone(),
                 timeout_secs: task.timeout_secs,
-                max_retries: options.max_retries.unwrap_or(task.max_retries),
+                max_retries: max_retries(task),
                 domain: task.domain.as_ref().map(|domain| format!("{domain:?}")),
                 sequence: task.sequence,
                 full_config_json: serde_json::to_value(task).unwrap_or_default(),
             };
             (task.id.clone(), info)
         })
-        .collect();
-    // An omitted `max_parallel` converts as 1, as `run_one_plan` does; the
-    // run widens the graph only after its identity is taken.
-    let max_parallel = if options.max_tasks > 0 {
-        u32::try_from(options.max_tasks).unwrap_or(u32::MAX)
-    } else {
-        plan.tasks.meta.max_parallel.unwrap_or(1)
-    };
+        .collect()
+}
+
+/// The concurrency `plan` converts at: its own `max_parallel`, and 1 when it
+/// omits it, as before that meant "as wide as the DAG allows" (gap-272448).
+/// The checkpoint identity hashes the converted concurrency, so a run applies
+/// `--max-tasks` and the DAG width only after taking it (gap-7147bb).
+pub(crate) fn converted_max_parallel(plan: &Plan) -> u32 {
+    plan.tasks.meta.max_parallel.unwrap_or(1)
+}
+
+/// Convert `plan`'s `tasks` ([`plan_task_infos`]) with the default topology,
+/// at [`converted_max_parallel`]: the graph `run_one_plan` runs, and the one
+/// the resume preview fingerprints.
+pub(crate) fn convert_plan(plan: &Plan, tasks: &[(String, PlanTaskInfo)]) -> Result<Graph> {
     plan_to_graph(
         &plan.id,
         &plan.dir.display().to_string(),
-        &tasks,
-        max_parallel,
+        tasks,
+        converted_max_parallel(plan),
     )
     .with_context(|| format!("convert plan '{}' to a Graph", plan.id))
 }
@@ -1966,25 +2857,19 @@ fn preview_graph_checkpoint(
             "the manifest references a missing Activity log or cost ledger",
         ));
     }
-    if let Err(error) = GraphCostLedgerCheckpoint::load(paths.costs.clone(), &manifest, &identity) {
-        return Ok(preview.unusable(force_resume, format!("{error:#}")));
-    }
-    let replayer = match ActivityReplayer::load_scoped(&paths.activities, plan_id, &manifest.run_id)
-    {
-        Ok(replayer) => replayer,
-        Err(error) => {
-            return Ok(preview.refused(format!(
-                "load Graph Activity checkpoint {}: {error}",
-                paths.activities.display()
-            )));
-        }
+    let ledger = match GraphCostLedgerCheckpoint::load(paths.costs.clone(), &manifest, &identity) {
+        Ok(ledger) => ledger,
+        Err(error) => return Ok(preview.unusable(force_resume, format!("{error:#}"))),
     };
-    let required = verdict_required_nodes(graph);
-    let (restored, to_run) = task_nodes.into_iter().partition(|node| {
-        replayer
-            .lookup(node, 0)
-            .is_some_and(|signals| replay_refusal(signals, required.contains(node)).is_none())
-    });
+    // A resume selects the generation the manifest names, so only its
+    // committed records count here, less the ones the resume refuses.
+    let selected = match select_generation(&paths, &manifest, &ledger.identity, graph) {
+        Ok(selected) => selected,
+        Err(error) => return Ok(preview.refused(format!("{error:#}"))),
+    };
+    let (restored, to_run) = task_nodes
+        .into_iter()
+        .partition(|node| selected.replayer.lookup(node, 0).is_some());
     preview.action = ResumeAction::Resume;
     preview.restored_tasks = restored;
     preview.tasks_to_run = to_run;
@@ -2217,7 +3102,8 @@ depends_on = ["T1"]
     }
 
     fn plan_graph(plan: &Plan, options: &ResumeOptions<'_>) -> Graph {
-        convert_plan(plan, options).expect("convert plan")
+        let tasks = plan_task_infos(plan, |t| options.max_retries.unwrap_or(t.max_retries));
+        convert_plan(plan, &tasks).expect("convert plan")
     }
 
     /// Start a run of plan `p`, record T1's output, and stop it as failed.
@@ -2533,6 +3419,60 @@ depends_on = ["T1"]
         assert!(error.to_string().contains("graph has changed"));
     }
 
+    /// gap-7147bb: `--max-tasks` caps a run's concurrency without changing
+    /// its checkpoint identity, so a run started with one value resumes with
+    /// another, or with none.
+    #[test]
+    fn resume_accepts_a_different_max_tasks() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let with = |max_tasks| ResumeOptions {
+            max_tasks,
+            ..ResumeOptions::default()
+        };
+        record_first_task(dir.path(), &plan_graph(&plan, &with(2)));
+
+        for max_tasks in [0, 5] {
+            let preview =
+                preview_plan_resume(dir.path(), &plan, 1, &with(max_tasks)).expect("preview");
+            assert_eq!(preview.fingerprint_match, Some(FingerprintMatch::New));
+            assert_eq!(
+                preview.action,
+                ResumeAction::Resume,
+                "--max-tasks {max_tasks}"
+            );
+            assert_eq!(preview.restored_tasks, ["T1"]);
+        }
+        let resumed = prepare_graph_checkpoint(
+            dir.path(),
+            None,
+            "p",
+            1,
+            &plan_graph(&plan, &with(5)),
+            false,
+            false,
+        )
+        .expect("resume with another --max-tasks");
+        assert_eq!(resumed.replayed_entries(), 1);
+    }
+
+    /// gap-be7368: a run and the resume preview convert a plan with one
+    /// mapping ([`plan_task_infos`], [`convert_plan`]). Only their retry
+    /// budgets differ, and those are not part of the plan's identity.
+    #[test]
+    fn retry_budgets_leave_the_preview_identity_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let identity = |budget: u32| {
+            let graph =
+                convert_plan(&plan, &plan_task_infos(&plan, |_| budget)).expect("convert plan");
+            GraphIdentity::of(dir.path(), &graph)
+                .expect("identity")
+                .current
+        };
+        assert_eq!(identity(0), identity(4));
+    }
+
     #[test]
     fn fresh_checkpoint_then_resume_roundtrips_run_identity() {
         let dir = tempdir().expect("tempdir");
@@ -2714,6 +3654,68 @@ depends_on = ["T1"]
             .expect("resume interrupted checkpoint");
         assert_eq!(resumed.run_id(), checkpoint.run_id());
         assert_eq!(resumed.status(), GraphCheckpointStatus::Running);
+    }
+
+    /// bug-4641e3: a forced exit marks a checkpoint that still reads
+    /// `running` as `interrupted`, and leaves one its run finalized alone.
+    #[test]
+    fn a_running_checkpoint_is_marked_interrupted_and_a_finished_one_kept() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        let manifest = checkpoint.paths().manifest.clone();
+        let by = "SIGHUP";
+
+        assert!(mark_running_checkpoint_interrupted(&manifest, by).expect("mark"));
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "p"),
+            Some(GraphCheckpointStatus::Interrupted)
+        );
+        assert_eq!(
+            canonical_stop_cause(dir.path(), "p").as_deref(),
+            Some("SIGHUP")
+        );
+        assert!(!mark_running_checkpoint_interrupted(&manifest, by).expect("mark again"));
+
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Failed)
+            .expect("finish");
+        assert!(!mark_running_checkpoint_interrupted(&manifest, by).expect("mark finished"));
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "p"),
+            Some(GraphCheckpointStatus::Failed)
+        );
+    }
+
+    /// gap-fab2cc: an interrupted run's checkpoint names the stop request
+    /// that ended it, and a later run that nothing stopped clears the record.
+    #[test]
+    fn checkpoint_records_the_stop_cause() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        checkpoint
+            .record_stop_cause(Some("deadline"))
+            .expect("record the stop");
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Interrupted)
+            .expect("finish");
+        assert_eq!(
+            canonical_stop_cause(dir.path(), "p").as_deref(),
+            Some("deadline")
+        );
+
+        checkpoint = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume the interrupted checkpoint");
+        checkpoint.record_stop_cause(None).expect("record no stop");
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Succeeded)
+            .expect("finish");
+        assert_eq!(canonical_stop_cause(dir.path(), "p"), None);
     }
 
     // ─── v3 extension and receipt tests ──────────────────────────────────
@@ -3063,6 +4065,677 @@ depends_on = ["T1"]
     }
 
     #[test]
+    fn resume_records_the_attempts_a_stop_cut_off() {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptVerdictRecord, TelemetryWriter,
+            TelemetryWriterConfig,
+        };
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        // task-1 recorded its output, but the process stopped before its
+        // verdict line was written.
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        fresh.finish(false).expect("finish");
+        let run_id = fresh.run_id().to_string();
+        let identity = |plan: &str, task: &str, attempt: u32| {
+            AttemptIdentity::new(&AttemptKey::new(run_id.as_str(), plan, task, attempt))
+        };
+        let open = |plan: &str, task: &str, attempt: u32| {
+            AttemptOpenRecord::new(identity(plan, task, attempt), 1_000 * i64::from(attempt))
+        };
+        let settle = |task: &str, attempt: u32, outcome: AttemptOutcome| {
+            AttemptVerdictRecord::settle(identity("p", task, attempt), outcome, true)
+        };
+        let run_dir = RokoLayout::for_project(dir.path()).run_dir(&run_id);
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        for (plan, task, attempt) in [
+            ("p", "task-1", 1),
+            ("p", "task-2", 1),
+            ("p", "task-2", 2),
+            ("p", "task-3", 1),
+            ("p", "task-4", 1),
+            ("q", "task-5", 1),
+        ] {
+            assert!(writer.submit(open(plan, task, attempt)));
+        }
+        assert!(writer.submit(settle("task-2", 1, AttemptOutcome::GateFailed)));
+        assert!(writer.submit(settle("task-3", 1, AttemptOutcome::Cancelled)));
+        assert!(writer.submit(settle("task-4", 1, AttemptOutcome::GateFailed)));
+        assert_eq!(writer.close().written, 9);
+
+        // task-2's second attempt never settled, and the run cancelled
+        // task-3's; task-4's attempt failed, and task-5 is another plan's.
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        let value = resumed
+            .extension(INTERRUPTED_ATTEMPT_EXTENSION)
+            .expect("the interrupted attempts are recorded")
+            .value
+            .clone();
+        let recorded: InterruptedAttempts = serde_json::from_value(value).expect("attempts");
+        let expected = |task: &str, attempt: u32, cancelled: bool| InterruptedAttempt {
+            task_id: task.to_string(),
+            attempt_key: identity("p", task, attempt).attempt_key,
+            started_at_ms: Some(1_000 * i64::from(attempt)),
+            cancelled,
+        };
+        assert_eq!(
+            recorded.attempts,
+            [expected("task-2", 2, false), expected("task-3", 1, true)]
+        );
+        let persisted = read_manifest(&resumed.paths().manifest).expect("manifest");
+        assert!(
+            persisted
+                .extensions
+                .contains_key(INTERRUPTED_ATTEMPT_EXTENSION)
+        );
+
+        // Once every task's latest attempt has settled, the next resume drops
+        // the record.
+        resumed.finish(false).expect("finish");
+        let writer = TelemetryWriter::spawn(run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(open("p", "task-3", 2)));
+        assert!(writer.submit(settle("task-2", 2, AttemptOutcome::GateFailed)));
+        assert!(writer.submit(settle("task-3", 2, AttemptOutcome::GateFailed)));
+        assert_eq!(writer.close().written, 3);
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("second resume");
+        assert!(resumed.extension(INTERRUPTED_ATTEMPT_EXTENSION).is_none());
+    }
+
+    #[test]
+    fn resume_sets_aside_a_torn_activity_record() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        fresh.finish(false).expect("finish");
+        let run_id = fresh.run_id().to_string();
+        let activities = fresh.paths().activities.clone();
+        let committed = std::fs::read(&activities).expect("committed log");
+        // The process died while it appended a record, in the middle of a
+        // multi-byte character.
+        let torn: &[u8] = b"{\"graph_id\":\"p\",\"node_id\":\"task-2\",\"text\":\"\xe2\x82";
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&activities)
+            .expect("open log");
+        std::io::Write::write_all(&mut log, torn).expect("tear the log");
+        drop(log);
+
+        // The preview changes no file, and expects what the resume does.
+        let preview = preview_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("preview");
+        assert_eq!(preview.action, ResumeAction::Resume);
+        assert_eq!(preview.restored_tasks, ["task-1"]);
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("a torn record does not block resume");
+        assert_eq!(resumed.replayed_entries(), 1);
+        assert_eq!(std::fs::read(&activities).expect("log"), committed);
+        let set_aside: Vec<Vec<u8>> = std::fs::read_dir(activities.parent().expect("dir"))
+            .expect("checkpoint dir")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|path| path.to_string_lossy().contains(".uncommitted."))
+            .map(|path| std::fs::read(path).expect("set-aside bytes"))
+            .collect();
+        assert_eq!(set_aside, [torn.to_vec()]);
+
+        // The resumed run appends after the last complete record.
+        resumed
+            .take_recorder()
+            .record("p", "task-2", 0, Vec::new())
+            .expect("record");
+        let replayer = ActivityReplayer::load_scoped(&activities, "p", &run_id).expect("log");
+        assert_eq!(replayer.entry_count(), 2);
+    }
+
+    /// Contents of the files a resume set aside from `path`
+    /// (`<name>.uncommitted.<unix ms>`), in byte order.
+    fn set_aside_from(path: &Path) -> Vec<Vec<u8>> {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("file name");
+        let prefix = format!("{name}.uncommitted.");
+        let mut found: Vec<Vec<u8>> = std::fs::read_dir(path.parent().expect("dir"))
+            .expect("checkpoint dir")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|candidate| {
+                candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+            })
+            .map(|candidate| std::fs::read(candidate).expect("set-aside bytes"))
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// gap-dc1d16: a resume uses exactly the generation the manifest names.
+    /// A record and spend that reached the files after the last commit, and
+    /// a torn record, are set aside, and the committed bytes of the log stay
+    /// as they were.
+    #[test]
+    fn resume_selects_single_immutable_generation() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        let run_id = fresh.run_id().to_string();
+        let paths = fresh.paths().clone();
+        // Node A's record and the spend so far are committed.
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record node A");
+        fresh
+            .take_cost_ledger()
+            .persist(125_000, 0)
+            .expect("persist the spend");
+        let committed = std::fs::read(&paths.activities).expect("committed log");
+        let generation = read_manifest(&paths.manifest).expect("manifest").generation;
+
+        // Node B's record and more spend reach the files, but the process
+        // dies before it commits them, while it appends another record.
+        ActivityRecorder::create(&run_id, &paths.activities)
+            .expect("recorder")
+            .record("p", "task-2", 0, Vec::new())
+            .expect("record node B");
+        let torn: &[u8] = b"{\"graph_id\":\"p\",\"node_id\":\"task-3\"";
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&paths.activities)
+            .expect("open log");
+        std::io::Write::write_all(&mut log, torn).expect("tear the log");
+        drop(log);
+        let written = std::fs::read(&paths.activities).expect("log");
+        let uncommitted = written[committed.len()..].to_vec();
+        let mut ledger: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&paths.costs).expect("read")).expect("parse");
+        ledger["spent_micro_usd"] = serde_json::json!(900_000);
+        std::fs::write(&paths.costs, ledger.to_string()).expect("write the ledger");
+        drop(fresh);
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume the committed generation");
+        assert_eq!(resumed.replayed_entries(), 1);
+        let replayer = resumed.take_replayer().expect("replayer");
+        assert!(replayer.lookup("task-1", 0).is_some());
+        assert!(replayer.lookup("task-2", 0).is_none());
+        assert_eq!(resumed.take_cost_ledger().spent_micro_usd(), 125_000);
+        assert_eq!(std::fs::read(&paths.activities).expect("log"), committed);
+        assert_eq!(set_aside_from(&paths.activities), [uncommitted]);
+        let ledgers = set_aside_from(&paths.costs);
+        assert_eq!(ledgers.len(), 1);
+        let aside: serde_json::Value = serde_json::from_slice(&ledgers[0]).expect("parse");
+        assert_eq!(aside["spent_micro_usd"], 900_000);
+        let manifest = read_manifest(&paths.manifest).expect("manifest");
+        assert!(manifest.generation > generation);
+        let stamp = manifest.committed.expect("the committed generation");
+        assert_eq!(stamp.activity_bytes, committed.len() as u64);
+        assert_eq!(
+            stamp.activity_blake3,
+            blake3::hash(&committed).to_hex().to_string()
+        );
+        assert_eq!(stamp.spent_micro_usd, 125_000);
+    }
+
+    /// gap-dc1d16: resuming the same checkpoint twice derives the same state,
+    /// and neither resume rewrites the log: the record a resume refuses stays
+    /// in it, and the second resume refuses it again.
+    #[test]
+    fn resuming_twice_derives_the_same_state() {
+        let dir = tempdir().expect("tempdir");
+        let graph = verify_graph("p");
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        let mut recorder = fresh.take_recorder();
+        // task-1's verify steps never passed; task-2 has none to pass.
+        recorder
+            .record("p", "task-1", 0, verdict_output("BLOCK: not applied", None))
+            .expect("record task-1");
+        recorder
+            .record(
+                "p",
+                "task-2",
+                0,
+                verdict_output("done", Some(TaskGateVerdict::Passed)),
+            )
+            .expect("record task-2");
+        drop(recorder);
+        fresh
+            .take_cost_ledger()
+            .persist(40_000, 0)
+            .expect("persist the spend");
+        fresh.finish(false).expect("finish");
+        let log = std::fs::read(&fresh.paths().activities).expect("log");
+
+        let derive = || {
+            let mut resumed =
+                prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                    .expect("resume");
+            let replayer = resumed.take_replayer().expect("replayer");
+            let restored = ["task-1", "task-2"].map(|node| replayer.lookup(node, 0).is_some());
+            assert_eq!(
+                std::fs::read(&resumed.paths().activities).expect("log"),
+                log
+            );
+            (
+                resumed.replayed_entries(),
+                restored,
+                resumed.invalidated_activities().to_vec(),
+                resumed.gate_verdicts(),
+                resumed.take_cost_ledger().spent_micro_usd(),
+            )
+        };
+        let first = derive();
+        assert_eq!(first.1, [false, true]);
+        assert_eq!(first.2.len(), 1);
+        assert_eq!(first.2[0].node_id, "task-1");
+        assert_eq!(first.4, 40_000);
+        assert_eq!(derive(), first);
+    }
+
+    /// gap-dc1d16: a checkpoint from before generations (schema v3) resumes
+    /// as generation 0, with its log's complete records and its ledger's
+    /// cost, and carries a generation from then on.
+    #[test]
+    fn a_v3_checkpoint_resumes_as_generation_zero() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        fresh
+            .take_cost_ledger()
+            .persist(70_000, 0)
+            .expect("persist the spend");
+        fresh.finish(false).expect("finish");
+        let paths = fresh.paths().clone();
+        let committed = std::fs::read(&paths.activities).expect("log");
+        // An older roko wrote the manifest, and died while it appended.
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&paths.manifest).expect("read")).expect("parse");
+        value["schema_version"] = serde_json::json!(3);
+        let fields = value.as_object_mut().expect("manifest object");
+        fields.remove("generation");
+        fields.remove("committed");
+        std::fs::write(&paths.manifest, value.to_string()).expect("write a v3 manifest");
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&paths.activities)
+            .expect("open log");
+        std::io::Write::write_all(&mut log, b"{\"graph_id\":").expect("tear the log");
+        drop(log);
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume a v3 checkpoint");
+        assert_eq!(resumed.replayed_entries(), 1);
+        assert_eq!(resumed.take_cost_ledger().spent_micro_usd(), 70_000);
+        assert_eq!(std::fs::read(&paths.activities).expect("log"), committed);
+        let manifest = read_manifest(&paths.manifest).expect("manifest");
+        assert_eq!(manifest.schema_version, CHECKPOINT_SCHEMA_VERSION);
+        assert_eq!(manifest.generation, 1);
+        let stamp = manifest.committed.expect("the committed generation");
+        assert_eq!(stamp.activity_bytes, committed.len() as u64);
+        assert_eq!(stamp.spent_micro_usd, 70_000);
+    }
+
+    /// gap-dc1d16: a resume fails closed, and changes no file, when bytes a
+    /// generation committed have changed.
+    #[test]
+    fn resume_fails_closed_when_committed_records_change() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        fresh
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        fresh.finish(false).expect("finish");
+        let paths = fresh.paths().clone();
+        let log = std::fs::read_to_string(&paths.activities).expect("log");
+        let edited = log.replace("task-1", "task-9");
+        std::fs::write(&paths.activities, &edited).expect("edit the log");
+        let manifest = std::fs::read(&paths.manifest).expect("manifest");
+
+        let error = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect_err("changed committed records must fail closed");
+        assert!(format!("{error:#}").contains("changed after generation"));
+        assert_eq!(
+            std::fs::read_to_string(&paths.activities).expect("log"),
+            edited
+        );
+        assert_eq!(std::fs::read(&paths.manifest).expect("manifest"), manifest);
+    }
+
+    /// gap-dc1d16: a forced exit marks an open checkpoint interrupted through
+    /// its commit point, so a record committed afterwards keeps the status.
+    #[test]
+    fn a_commit_after_a_forced_exit_mark_keeps_the_interrupted_status() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        let manifest = checkpoint.paths().manifest.clone();
+        assert!(mark_running_checkpoint_interrupted(&manifest, "SIGHUP").expect("mark"));
+        checkpoint
+            .take_recorder()
+            .record("p", "task-1", 0, Vec::new())
+            .expect("record");
+        assert_eq!(
+            canonical_checkpoint_status(dir.path(), "p"),
+            Some(GraphCheckpointStatus::Interrupted)
+        );
+        let committed = read_manifest(&manifest)
+            .expect("manifest")
+            .committed
+            .expect("the committed generation");
+        let log = std::fs::read(&checkpoint.paths().activities).expect("log");
+        assert_eq!(committed.activity_bytes, log.len() as u64);
+    }
+
+    #[test]
+    fn checkpoint_writes_store_the_safety_provenance_summary() {
+        use roko_agent::safety::{ProvenanceCall, ProvenanceIntent, SafetyProvenanceSink};
+        use roko_core::extension::CamelTaintLevel;
+
+        use crate::safety_provenance::SafetyProvenanceSummary;
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        let stored = |checkpoint: &PreparedGraphCheckpoint| -> Option<SafetyProvenanceSummary> {
+            let manifest = read_manifest(&checkpoint.paths().manifest).expect("manifest");
+            let extension = manifest.extensions.get(EXT_SAFETY_PROVENANCE)?;
+            Some(serde_json::from_value(extension.value.clone()).expect("summary"))
+        };
+        checkpoint.persist_manifest().expect("persist");
+        assert_eq!(
+            stored(&checkpoint),
+            None,
+            "without a sink there is no extension"
+        );
+
+        let sink = Arc::new(GraphProvenanceSink::open(dir.path()).expect("provenance sink"));
+        checkpoint.attach_safety_provenance(Arc::clone(&sink));
+        checkpoint.persist_manifest().expect("persist");
+        assert_eq!(stored(&checkpoint).expect("extension").records, 0);
+
+        // A terminal write stores the summary as it stands then.
+        let intent = ProvenanceIntent {
+            call: ProvenanceCall {
+                run_id: checkpoint.run_id().to_string(),
+                task_id: "task-1".to_string(),
+                attempt_id: "1".to_string(),
+                turn_id: "1".to_string(),
+                call_id: "call-1".to_string(),
+                tool: "read_file".to_string(),
+                args_digest: roko_core::ContentHash::keyed(&sink.digest_key(), b"arguments"),
+            },
+            taint: CamelTaintLevel::Untrusted,
+        };
+        sink.record_intent(&intent).expect("record the intent");
+        checkpoint.finish(false).expect("finish");
+        let summary = stored(&checkpoint).expect("extension");
+        assert_eq!(summary.records, 1);
+        assert_eq!(summary, sink.summary());
+    }
+
+    /// Record one tool call of run `run_id` with `sink`, its turn tainted at
+    /// `taint`: an intent, then its outcome. Returns the call's argument and
+    /// result digests.
+    fn record_tool_call(
+        sink: &GraphProvenanceSink,
+        run_id: &str,
+        taint: roko_core::extension::CamelTaintLevel,
+    ) -> (roko_core::ContentHash, roko_core::ContentHash) {
+        use roko_agent::safety::{
+            ProvenanceCall, ProvenanceIntent, ProvenanceOutcome, ProvenanceVerdict,
+            SafetyProvenanceSink,
+        };
+
+        let key = sink.digest_key();
+        let call = ProvenanceCall {
+            run_id: run_id.to_string(),
+            task_id: "task-1".to_string(),
+            attempt_id: "1".to_string(),
+            turn_id: "1".to_string(),
+            call_id: "call-1".to_string(),
+            tool: "fetch".to_string(),
+            args_digest: roko_core::ContentHash::keyed(&key, b"arguments"),
+        };
+        let intent = ProvenanceIntent {
+            call: call.clone(),
+            taint,
+        };
+        let ack = sink.record_intent(&intent).expect("record the intent");
+        let result = roko_core::ContentHash::keyed(&key, b"result");
+        let outcome = ProvenanceOutcome {
+            call: call.clone(),
+            intent: Some(ack.record_id),
+            verdict: ProvenanceVerdict::Succeeded,
+            reason: None,
+            result_digest: Some(result),
+            taint,
+        };
+        sink.record_outcome(&outcome).expect("record the outcome");
+        (call.args_digest, result)
+    }
+
+    /// Run plan `p` once in `dir`, recording one untrusted tool call, and
+    /// finish it failed so that it can resume.
+    fn run_with_provenance(dir: &Path, graph: &Graph) {
+        let mut checkpoint = prepare_graph_checkpoint(dir, None, "p", 1, graph, false, false)
+            .expect("fresh checkpoint");
+        let sink = checkpoint
+            .open_safety_provenance(dir)
+            .expect("open provenance");
+        let run_id = checkpoint.run_id().to_string();
+        let untrusted = roko_core::extension::CamelTaintLevel::Untrusted;
+        record_tool_call(&sink, &run_id, untrusted);
+        checkpoint.finish(false).expect("finish");
+    }
+
+    /// How resuming plan `p` in `dir` fails to restore its safety provenance.
+    fn restore_error(dir: &Path, graph: &Graph) -> String {
+        let mut resumed = prepare_graph_checkpoint(dir, None, "p", 1, graph, false, false)
+            .expect("resume checkpoint");
+        let error = resumed
+            .open_safety_provenance(dir)
+            .expect_err("the restore must fail closed");
+        format!("{error:#}")
+    }
+
+    #[test]
+    fn safety_provenance_restores_taint_after_restart() {
+        use roko_core::extension::CamelTaintLevel;
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut first = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        let sink = first
+            .open_safety_provenance(dir.path())
+            .expect("open provenance");
+        let run_id = first.run_id().to_string();
+        let (args, result) = record_tool_call(&sink, &run_id, CamelTaintLevel::Untrusted);
+        first.finish(false).expect("finish");
+        drop((first, sink));
+
+        // Another process resumes the run, and the lineage comes back first.
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        let restored = resumed
+            .open_safety_provenance(dir.path())
+            .expect("restore provenance");
+        let taint = restored.taint();
+        assert_eq!(taint.get_level(&args), Some(CamelTaintLevel::Untrusted));
+        assert_eq!(taint.get_level(&result), Some(CamelTaintLevel::Untrusted));
+        assert_eq!(taint.derived_from(&result), [args]);
+        assert_eq!(restored.summary().records, 2);
+        let stored = resumed
+            .stored_safety_provenance()
+            .expect("stored provenance")
+            .expect("a summary");
+        assert_eq!(stored, restored.summary());
+    }
+
+    #[test]
+    fn safety_provenance_restore_tracks_calls_after_the_last_save() {
+        use roko_core::extension::CamelTaintLevel;
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut first = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        let sink = first
+            .open_safety_provenance(dir.path())
+            .expect("open provenance");
+        let run_id = first.run_id().to_string();
+        // The process dies after the call, before another checkpoint write.
+        let (args, result) = record_tool_call(&sink, &run_id, CamelTaintLevel::External);
+        drop((first, sink));
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        let restored = resumed
+            .open_safety_provenance(dir.path())
+            .expect("restore provenance");
+        let taint = restored.taint();
+        assert_eq!(taint.get_level(&result), Some(CamelTaintLevel::External));
+        assert_eq!(taint.derived_from(&result), [args]);
+    }
+
+    #[test]
+    fn safety_provenance_restore_fails_closed_on_a_tampered_custody_log() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        run_with_provenance(dir.path(), &graph);
+        let log = RokoLayout::for_project(dir.path()).custody_log();
+        let text = std::fs::read_to_string(&log).expect("custody log");
+        let tampered = text.replacen("tool_outcome:fetch", "tool_outcome:fetch2", 1);
+        assert_ne!(tampered, text);
+        std::fs::write(&log, tampered).expect("tamper with the custody log");
+
+        let error = restore_error(dir.path(), &graph);
+        assert!(error.contains("custody chain"), "{error}");
+    }
+
+    #[test]
+    fn safety_provenance_restore_fails_closed_on_a_missing_witness_root() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        run_with_provenance(dir.path(), &graph);
+        let log = RokoLayout::for_project(dir.path()).witness_log();
+        std::fs::remove_file(&log).expect("remove the witness log");
+
+        let error = restore_error(dir.path(), &graph);
+        assert!(error.contains("witness"), "{error}");
+    }
+
+    #[test]
+    fn safety_provenance_restore_fails_closed_on_a_taint_downgrade() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        run_with_provenance(dir.path(), &graph);
+        let path = dir.path().join(".roko/state/graph/p/checkpoint.json");
+        let mut manifest = read_manifest(&path).expect("manifest");
+        let extension = manifest
+            .extensions
+            .get_mut(EXT_SAFETY_PROVENANCE)
+            .expect("the provenance extension");
+        // Everything the run proved tainted now reads as trusted.
+        extension.value["taint"] = roko_agent::safety::TaintTracker::new().to_json();
+        write_manifest_atomic(&path, &manifest).expect("write the manifest");
+
+        let error = restore_error(dir.path(), &graph);
+        assert!(error.contains("taint index"), "{error}");
+    }
+
+    #[test]
+    fn safety_provenance_restore_fails_closed_on_an_unknown_version() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        run_with_provenance(dir.path(), &graph);
+        let path = dir.path().join(".roko/state/graph/p/checkpoint.json");
+        let mut manifest = read_manifest(&path).expect("manifest");
+        manifest.extensions.insert(
+            "roko.safety-provenance@2".to_string(),
+            CheckpointExtension {
+                namespace: "roko.safety-provenance".into(),
+                schema_version: 2,
+                required: false,
+                fingerprint: "from-a-later-build".into(),
+                value: serde_json::json!({}),
+            },
+        );
+        write_manifest_atomic(&path, &manifest).expect("write the manifest");
+
+        let error = restore_error(dir.path(), &graph);
+        assert!(error.contains("cannot read"), "{error}");
+    }
+
+    #[test]
+    fn safety_provenance_starts_on_broken_history_and_checks_only_its_own_records() {
+        use roko_agent::safety::provenance::{Custody, CustodyLogger};
+
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        // Custody history no run can verify, as older builds and concurrent
+        // processes leave it: a garbage line, a record edited after it was
+        // sealed, and a record appended twice.
+        let log = RokoLayout::for_project(dir.path()).custody_log();
+        let logger = CustodyLogger::new(&log);
+        let old = |action: &str, when: i64| Custody::new(action, "older-build", when, Vec::new());
+        crate::custody::log_chained(&logger, old("old-a", 1)).expect("old record");
+        crate::custody::log_chained(&logger, old("old-b", 2)).expect("old record");
+        let text = std::fs::read_to_string(&log).expect("custody log");
+        let first = text.lines().next().expect("a first record").to_string();
+        let edited = text.replacen("old-b", "old-B", 1);
+        std::fs::write(&log, format!("not json at all\n{edited}{first}\n")).expect("break it");
+        assert!(crate::custody::cmd_custody_verify(dir.path()).is_err());
+
+        // A fresh run still records its calls, and its resume checks only them.
+        run_with_provenance(dir.path(), &graph);
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        let restored = resumed
+            .open_safety_provenance(dir.path())
+            .expect("restore provenance");
+        assert_eq!(restored.summary().records, 2);
+        drop((resumed, restored));
+
+        // Tampering with the run's own records still fails its resume closed.
+        let text = std::fs::read_to_string(&log).expect("custody log");
+        let tampered = text.replacen("tool_outcome:fetch", "tool_outcome:fetch2", 1);
+        std::fs::write(&log, tampered).expect("tamper with the run's records");
+        let error = restore_error(dir.path(), &graph);
+        assert!(error.contains("custody chain"), "{error}");
+    }
+
+    #[test]
     fn receipt_state_ordering() {
         assert!(ReceiptState::Prepared < ReceiptState::Committed);
         assert!(ReceiptState::Committed < ReceiptState::Settled);
@@ -3096,6 +4769,36 @@ depends_on = ["T1"]
         let json = serde_json::to_string(&entry).expect("serialize");
         let deser: ReceiptLedgerEntry = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(entry, deser);
+    }
+
+    /// gap-4ec59f: `roko plan status` finds where a delivered plan's work
+    /// went in its checkpoint, and nothing for a plan whose delivery failed.
+    #[test]
+    fn recorded_batch_delivery_reads_only_a_delivered_plan() {
+        let dir = tempdir().expect("tempdir");
+        for (plan, state) in [("p-delivered", "delivered"), ("p-conflict", "conflict")] {
+            let checkpoint = dir.path().join(".roko/state/graph").join(plan);
+            std::fs::create_dir_all(&checkpoint).expect("checkpoint dir");
+            let manifest = serde_json::json!({
+                "extensions": {BATCH_EXTENSION: {"value": {
+                    "branch": "roko/batch/run-1",
+                    "state": state,
+                    "merge_commit": "a".repeat(40),
+                }}}
+            });
+            std::fs::write(checkpoint.join("checkpoint.json"), manifest.to_string())
+                .expect("checkpoint");
+        }
+
+        assert_eq!(
+            recorded_batch_delivery(dir.path(), "p-delivered"),
+            Some(RecordedBatchDelivery {
+                branch: "roko/batch/run-1".to_string(),
+                merge_commit: "a".repeat(40),
+            })
+        );
+        assert_eq!(recorded_batch_delivery(dir.path(), "p-conflict"), None);
+        assert_eq!(recorded_batch_delivery(dir.path(), "p-missing"), None);
     }
 
     #[test]

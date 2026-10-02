@@ -1,6 +1,6 @@
 # Roko
 
-Roko is a Rust toolkit for building agents that build themselves. 36 workspace members, ~1M LOC, 10,300+ tests.
+Roko is a Rust toolkit for building agents that build themselves. 36 workspace members, ~1.2M LOC, 11,000+ tests.
 
 **Goal**: roko develops itself — it reads PRDs, generates implementation plans, executes tasks
 via Claude agents, validates with gates, and persists results. The core loop is wired. Your job
@@ -119,14 +119,14 @@ For an eligible small/local plan with a prebuilt `target/debug/roko`, prefer the
 ./dev.sh fast plans/<plan-directory>
 ```
 
-> FAST is only partly ported to the Graph engine. Check work item `gap-4a6dcb` before relying on
-> the guarantees below.
-
-Each FAST task must define exactly one authored `verify` command. FAST tells the provider to hand
-off after patching, keeps Cargo out of the provider session, skips critical-path warmup/cleanup,
-and captures a private evidence bundle. It is not appropriate for safety, auth, persistence,
-migration, payment, or other high-risk changes. FAST evidence does **not** replace the mandatory
-pre-commit checks in the Building section.
+Each FAST task must define exactly one authored `verify` command. On the Graph engine FAST bounds
+prompt context, stops the run at `ROKO_FAST_PLAN_DEADLINE_SECS` (exit 143, reported as
+`deadline`), caps each task attempt at `ROKO_FAST_MAX_AGENT_TURNS` turns (default 6) and 90 s,
+tells the agent to patch and hand off without running Cargo, builds simple cargo verify commands
+in the `dev-fast` profile, never runs `cargo fix` after a failed verify, and captures a private
+evidence bundle (`crates/roko-cli/src/graph_execution/fast_lane.rs`). It is not appropriate for
+safety, auth, persistence, migration, payment, or other high-risk changes. FAST evidence does
+**not** replace the mandatory pre-commit checks in the Building section.
 
 ## CLI commands reference
 

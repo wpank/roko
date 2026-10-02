@@ -105,7 +105,7 @@ mod unix {
     /// Write a length-prefixed JSON frame to `stream`.
     ///
     /// Format: 4-byte big-endian body length + UTF-8 JSON body.
-    async fn write_frame<T: Serialize>(stream: &mut UnixStream, msg: &T) -> Result<()> {
+    pub(crate) async fn write_frame<T: Serialize>(stream: &mut UnixStream, msg: &T) -> Result<()> {
         let body = serde_json::to_vec(msg).context("serialize IPC frame")?;
         let len = u32::try_from(body.len()).context("frame too large")?;
         stream
@@ -122,7 +122,10 @@ mod unix {
     /// Read one length-prefixed JSON frame from `stream`.
     ///
     /// A declared length above `max_len` fails before anything is allocated.
-    async fn read_frame<T: DeserializeOwned>(stream: &mut UnixStream, max_len: u32) -> Result<T> {
+    pub(crate) async fn read_frame<T: DeserializeOwned>(
+        stream: &mut UnixStream,
+        max_len: u32,
+    ) -> Result<T> {
         let mut len_buf = [0u8; 4];
         stream
             .read_exact(&mut len_buf)
@@ -157,7 +160,7 @@ mod unix {
     // ── Token ────────────────────────────────────────────────────────────────
 
     /// A fresh random token: two v4 UUIDs, as the serve launch token uses.
-    fn mint_hub_token() -> String {
+    pub(crate) fn mint_hub_token() -> String {
         format!(
             "{}{}",
             uuid::Uuid::new_v4().as_simple(),
@@ -169,7 +172,7 @@ mod unix {
     ///
     /// The file is created with mode `0600` under a temporary name and then
     /// renamed into place, so it is never wider than `0600`, even briefly.
-    fn write_hub_token(path: &Path, token: &str) -> Result<()> {
+    pub(crate) fn write_hub_token(path: &Path, token: &str) -> Result<()> {
         use std::io::Write as _;
         use std::os::unix::fs::OpenOptionsExt as _;
 
@@ -192,7 +195,7 @@ mod unix {
     }
 
     /// Compare two tokens without stopping at the first differing byte.
-    fn tokens_match(presented: &str, expected: &str) -> bool {
+    pub(crate) fn tokens_match(presented: &str, expected: &str) -> bool {
         let (presented, expected) = (presented.as_bytes(), expected.as_bytes());
         if presented.len() != expected.len() {
             return false;
@@ -468,6 +471,9 @@ mod unix {
 
 #[cfg(unix)]
 pub use unix::{hub_socket_path, hub_token_path, start_hub_ipc_server, try_connect_hub_ipc};
+// The frames and the token handshake of the `roko inject` socket (gap-f118b3).
+#[cfg(unix)]
+pub(crate) use unix::{mint_hub_token, read_frame, tokens_match, write_frame, write_hub_token};
 
 /// On non-Unix targets there is no socket support; the client always returns
 /// `None` (file-polling fallback) and the server is a no-op.

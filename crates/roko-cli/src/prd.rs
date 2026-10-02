@@ -29,7 +29,7 @@ use crate::agent_exec::{
 use crate::model_selection::resolve_planner_model;
 use crate::plan_authoring::AuthoringSpend;
 use crate::runner::tui_bridge::TuiBridge;
-use crate::task_parser::TasksFile;
+use crate::task_parser::{META_KEYS, TASK_KEYS, TasksFile, VERIFY_KEYS, suggest_field_correction};
 use crate::workspace_paths::{
     drafts_dir, ideas_path, plans_dir as workspace_plans_dir, prd_dir, published_dir,
 };
@@ -1058,6 +1058,7 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
             dangerously_skip_permissions: false,
             log_file: None,
             worktree_per_task: false,
+            worktree_per_task_explicit: false,
             rich_topology: false,
             promote: None,
             no_tui: true,
@@ -1068,6 +1069,9 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
             only_plans: None,
             live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
             force_disk_check: false,
+            effort: None,
+            no_cascade: false,
+            metrics: None,
         })
         .await?;
     if exit_code != crate::exit_codes::EXIT_SUCCESS {
@@ -1149,6 +1153,13 @@ pub async fn generate_plan_from_prd_with_failure_context(
             .await?;
     Ok(plans_root)
 }
+
+/// Characters of the model's output that a failed plan generation prints.
+const FAILURE_OUTPUT_CHARS: usize = 2000;
+/// Characters of the model's output that a non-retriable agent error quotes.
+const AGENT_ERROR_PREVIEW_CHARS: usize = 500;
+/// Characters of the model's last output that a retry prompt quotes.
+const RETRY_OUTPUT_CHARS: usize = 2000;
 
 /// Default model escalation chain: haiku -> sonnet -> opus.
 ///
@@ -1749,7 +1760,7 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             // Non-retriable errors (model not found, context overflow): fail
             // immediately because a retry will hit the same permanent error.
             if !crash_class.is_retriable() {
-                let preview = &output[..output.len().min(500)];
+                let preview = crate::run::truncate(&output, AGENT_ERROR_PREVIEW_CHARS);
                 return Err(anyhow!(
                     "plan generation agent failed (exit code {exit_code}, {crash_class:?}): \
                      {preview}\nHint: {}",
@@ -2030,8 +2041,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                     max_retries + 1,
                 );
                 let error = validated_toml.as_ref().unwrap_err();
-                let truncated_output = if last_output.len() > 2000 {
-                    format!("{}…(truncated)", &last_output[..2000])
+                let head = crate::run::truncate(&last_output, RETRY_OUTPUT_CHARS);
+                let truncated_output = if head.len() < last_output.len() {
+                    format!("{head}…(truncated)")
                 } else {
                     last_output.clone()
                 };
@@ -2205,8 +2217,8 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 None,
             )
             .await;
-            eprintln!("--- Raw model output (first 2000 chars) ---");
-            eprintln!("{}", &output[..output.len().min(2000)]);
+            eprintln!("--- Raw model output (first {FAILURE_OUTPUT_CHARS} chars) ---");
+            eprintln!("{}", crate::run::truncate(&output, FAILURE_OUTPUT_CHARS));
             eprintln!("--- End raw model output ---");
             return Err(anyhow!(
                 "Plan generation failed after retries: no valid tasks.toml was produced.\n\
@@ -2260,8 +2272,10 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             );
         }
 
+        // Validate the plan this call wrote, not the whole plans root: a broken
+        // plan beside it must not fail the generation (bug-2d06bf).
         match crate::plan_validate::validate_plans_dir_with_workdir(
-            &plans_root,
+            &plan_dir,
             None,
             Some(workdir_ref),
         ) {
@@ -2297,9 +2311,6 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
             post_ms,
             total_ms,
             "prd plan generate: phase timing"
-        );
-        eprintln!(
-            "  Timing: init={init_ms}ms context={context_ms}ms prompt={prompt_ms}ms agent={agent_ms}ms post={post_ms}ms total={total_ms}ms"
         );
 
         let outcome = GenerationOutcome {
@@ -2735,194 +2746,14 @@ fn update_prd_plans_generated(prd_path: &std::path::Path, plan_slug: &str) -> an
 
 // ---- post-generation plan TOML validation --------------------------------
 
-/// Known field names for the `[meta]` section.
-const KNOWN_META_FIELDS: &[&str] = &[
-    "plan",
-    "iteration",
-    "total",
-    "done",
-    "status",
-    "max_parallel",
-    "estimated_total_minutes",
-    "skip_enrichment",
-    "failure_policy",
-    "workspace_rungs",
-    "verify",
-    "approval",
-];
-
 /// Required field names for the `[meta]` section.
 const REQUIRED_META_FIELDS: &[&str] = &["plan", "total", "status"];
-
-/// Known field names for a `[[task]]` entry.
-const KNOWN_TASK_FIELDS: &[&str] = &[
-    "id",
-    "title",
-    "description",
-    "role",
-    "status",
-    "tier",
-    "frequency",
-    "model_hint",
-    "replan_strategy",
-    "max_loc",
-    "files",
-    "write_files",
-    "allowed_tools",
-    "denied_tools",
-    "mcp_servers",
-    "depends_on",
-    "depends_on_plan",
-    "split_into",
-    "context",
-    "verify",
-    "timeout_secs",
-    "max_retries",
-    "acceptance",
-    "acceptance_contract",
-    "accept",
-    "domain",
-    "gate_rung",
-    // `roko_core::TaskHints`
-    "category",
-    "complexity_band",
-    "reasoning_level",
-    "speed_priority",
-    "preferred_model",
-    "preferred_provider",
-    "escalate_on_retry",
-    "rung",
-    "quality_profile",
-    "test_invariants",
-    "context_weight",
-    "skills",
-    "example_pattern",
-    "context_files",
-    "plan_section",
-    "types_to_define",
-    "formulas",
-    "imports",
-    "research_before_edit",
-    "parallel_group",
-    "exclusive_files",
-    "tags",
-    "dependency_tags",
-    "fixture_keys",
-    "sidecar_requirements",
-    "integration_surfaces",
-];
 
 /// Required field names for each `[[task]]`.
 const REQUIRED_TASK_FIELDS: &[&str] = &["id", "title", "status", "role", "tier"];
 
-/// Known field names for each `[[task.verify]]` entry.
-const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms", "scope"];
-
 /// Required field names for each `[[task.verify]]` entry.
 const REQUIRED_VERIFY_FIELDS: &[&str] = &["phase", "command"];
-
-/// Common typos the LLM produces and their corrections.
-const FIELD_TYPO_CORRECTIONS: &[(&str, &str)] = &[
-    ("pha", "phase"),
-    ("phas", "phase"),
-    ("cmd", "command"),
-    ("comand", "command"),
-    ("commnad", "command"),
-    ("commmand", "command"),
-    ("descrption", "description"),
-    ("descripion", "description"),
-    ("desc", "description"),
-    ("stat", "status"),
-    ("staus", "status"),
-    ("tite", "title"),
-    ("titl", "title"),
-    ("modle_hint", "model_hint"),
-    ("model", "model_hint"),
-    ("modelhint", "model_hint"),
-    ("depnds_on", "depends_on"),
-    ("dependson", "depends_on"),
-    ("depend_on", "depends_on"),
-    ("filse", "files"),
-    ("fles", "files"),
-    ("verfy", "verify"),
-    ("verfiy", "verify"),
-    ("tiemout_secs", "timeout_secs"),
-    ("fail_message", "fail_msg"),
-    ("failure_msg", "fail_msg"),
-    ("timeout", "timeout_ms"),
-    // Singular/plural variants
-    ("denied_tool", "denied_tools"),
-    ("deni_tools", "denied_tools"),
-    ("allowed_tool", "allowed_tools"),
-    ("mcp_server", "mcp_servers"),
-    ("file", "files"),
-    ("write_file", "write_files"),
-    // Truncated field names
-    ("stus", "status"),
-    ("rol", "role"),
-    ("tie", "tier"),
-    ("tit", "title"),
-    ("max_lo", "max_loc"),
-    ("model_hin", "model_hint"),
-    ("depends_o", "depends_on"),
-    ("timeout_sec", "timeout_secs"),
-    ("max_retrie", "max_retries"),
-    // Common misspellings
-    ("discription", "description"),
-    ("dependancies", "depends_on"),
-    ("dependecies", "depends_on"),
-];
-
-/// Suggest a correction for a possibly-misspelled field.
-/// Returns an owned `String` to avoid lifetime issues with the caller.
-fn suggest_field_correction(field: &str, known: &[&str]) -> Option<String> {
-    // Check explicit typo table first.
-    for &(typo, correction) in FIELD_TYPO_CORRECTIONS {
-        if field == typo {
-            return Some(correction.to_string());
-        }
-    }
-    // Fallback: find the closest known field by edit distance (threshold <= 2).
-    let mut best: Option<(&str, usize)> = None;
-    for &known_field in known {
-        let dist = strsim_distance(field, known_field);
-        if dist > 0 && dist <= 2 {
-            if best.map_or(true, |(_, best_dist)| dist < best_dist) {
-                best = Some((known_field, dist));
-            }
-        }
-    }
-    best.map(|(s, _)| s.to_string())
-}
-
-/// Minimal Levenshtein distance (no allocations for short strings).
-fn strsim_distance(a: &str, b: &str) -> usize {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-    let m = a_bytes.len();
-    let n = b_bytes.len();
-    if m == 0 {
-        return n;
-    }
-    if n == 0 {
-        return m;
-    }
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr = vec![0usize; n + 1];
-    for i in 1..=m {
-        curr[0] = i;
-        for j in 1..=n {
-            let cost = if a_bytes[i - 1] == b_bytes[j - 1] {
-                0
-            } else {
-                1
-            };
-            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[n]
-}
 
 /// Validate and fix a generated plan TOML string.
 ///
@@ -2969,17 +2800,17 @@ fn validate_and_fix_generated_plan(
             // Flag unknown meta fields.
             let meta_keys: Vec<String> = meta.keys().cloned().collect();
             for key in &meta_keys {
-                if !KNOWN_META_FIELDS.contains(&key.as_str()) {
-                    if let Some(correction) = suggest_field_correction(key, KNOWN_META_FIELDS) {
+                if !META_KEYS.contains(&key.as_str()) {
+                    if let Some(correction) = suggest_field_correction(key, META_KEYS) {
                         if let Some(value) = meta.remove(key.as_str()) {
-                            eprintln!(
-                                "warning: [meta] field '{key}' is unknown; \
+                            tracing::warn!(
+                                "prd plan: [meta] field '{key}' is unknown; \
                                  corrected to '{correction}'"
                             );
                             meta.insert(correction, value);
                         }
                     } else {
-                        eprintln!("warning: [meta] has unknown field '{key}'");
+                        tracing::warn!("prd plan: [meta] has unknown field '{key}'");
                     }
                 }
             }
@@ -2998,13 +2829,13 @@ fn validate_and_fix_generated_plan(
                 if let Some(plan_str) = plan_val.as_str() {
                     if plan_str != slug {
                         if slug.starts_with(plan_str) {
-                            eprintln!(
-                                "warning: meta.plan '{plan_str}' appears truncated; \
+                            tracing::warn!(
+                                "prd plan: meta.plan '{plan_str}' appears truncated; \
                                  corrected to '{slug}'"
                             );
                         } else {
-                            eprintln!(
-                                "warning: meta.plan '{plan_str}' does not match \
+                            tracing::warn!(
+                                "prd plan: meta.plan '{plan_str}' does not match \
                                  expected slug '{slug}'; corrected"
                             );
                         }
@@ -3034,19 +2865,17 @@ fn validate_and_fix_generated_plan(
                     // Flag unknown task fields.
                     let task_keys: Vec<String> = task.keys().cloned().collect();
                     for key in &task_keys {
-                        if !KNOWN_TASK_FIELDS.contains(&key.as_str()) {
-                            if let Some(correction) =
-                                suggest_field_correction(key, KNOWN_TASK_FIELDS)
-                            {
+                        if !TASK_KEYS.contains(&key.as_str()) {
+                            if let Some(correction) = suggest_field_correction(key, TASK_KEYS) {
                                 if let Some(value) = task.remove(key.as_str()) {
-                                    eprintln!(
-                                        "warning: {task_id_label}: field '{key}' is unknown; \
+                                    tracing::warn!(
+                                        "prd plan: {task_id_label}: field '{key}' is unknown; \
                                          corrected to '{correction}'"
                                     );
                                     task.insert(correction, value);
                                 }
                             } else {
-                                eprintln!("warning: {task_id_label}: unknown field '{key}'");
+                                tracing::warn!("prd plan: {task_id_label}: unknown field '{key}'");
                             }
                         }
                     }
@@ -3077,8 +2906,8 @@ fn validate_and_fix_generated_plan(
                                 "skipped",
                             ];
                             if !VALID_STATUSES.contains(&s) {
-                                eprintln!(
-                                    "warning: {task_id_label}: status '{s}' is invalid; \
+                                tracing::warn!(
+                                    "prd plan: {task_id_label}: status '{s}' is invalid; \
                                      defaulting to 'ready'"
                                 );
                                 task.insert(
@@ -3092,17 +2921,10 @@ fn validate_and_fix_generated_plan(
                     // Validate role value.
                     if let Some(role_val) = task.get("role").cloned() {
                         if let Some(r) = role_val.as_str() {
-                            const VALID_ROLES: &[&str] = &[
-                                "implementer",
-                                "architect",
-                                "researcher",
-                                "strategist",
-                                "scribe",
-                                "quick-reviewer",
-                            ];
+                            const VALID_ROLES: &[&str] = crate::task_parser::PLAN_TASK_ROLES;
                             if !VALID_ROLES.contains(&r) {
-                                eprintln!(
-                                    "warning: {task_id_label}: role '{r}' is invalid; \
+                                tracing::warn!(
+                                    "prd plan: {task_id_label}: role '{r}' is invalid; \
                                      defaulting to 'implementer'"
                                 );
                                 task.insert(
@@ -3118,8 +2940,8 @@ fn validate_and_fix_generated_plan(
                     // role pick a model on this workspace's routing ladder.
                     if let Some(hint_val) = task.remove("model_hint") {
                         let hint = hint_val.as_str().unwrap_or("<unknown>");
-                        eprintln!(
-                            "info: {task_id_label}: removing model_hint '{hint}' \
+                        tracing::info!(
+                            "prd plan: {task_id_label}: removing model_hint '{hint}' \
                              (tier and role pick the model; a task that needs a \
                              stronger one names a `rung`)"
                         );
@@ -3128,8 +2950,8 @@ fn validate_and_fix_generated_plan(
                     // gap-dbf2a6: keep a `rung` hint that names one of the
                     // task's ladder rungs; drop any other.
                     if let Some(rung) = crate::plan_validate::drop_unknown_rung(task, ladder) {
-                        eprintln!(
-                            "warning: {task_id_label}: removing rung {rung}: no rung of the \
+                        tracing::warn!(
+                            "prd plan: {task_id_label}: removing rung {rung}: no rung of the \
                              routing ladder has that name"
                         );
                     }
@@ -3141,20 +2963,20 @@ fn validate_and_fix_generated_plan(
                                 if let Some(step) = step_val.as_table_mut() {
                                     let step_keys: Vec<String> = step.keys().cloned().collect();
                                     for key in &step_keys {
-                                        if !KNOWN_VERIFY_FIELDS.contains(&key.as_str()) {
+                                        if !VERIFY_KEYS.contains(&key.as_str()) {
                                             if let Some(correction) =
-                                                suggest_field_correction(key, KNOWN_VERIFY_FIELDS)
+                                                suggest_field_correction(key, VERIFY_KEYS)
                                             {
                                                 if let Some(value) = step.remove(key.as_str()) {
-                                                    eprintln!(
-                                                        "warning: {task_id_label} verify[{si}]: \
+                                                    tracing::warn!(
+                                                        "prd plan: {task_id_label} verify[{si}]: \
                                                          field '{key}' corrected to '{correction}'"
                                                     );
                                                     step.insert(correction, value);
                                                 }
                                             } else {
-                                                eprintln!(
-                                                    "warning: {task_id_label} verify[{si}]: \
+                                                tracing::warn!(
+                                                    "prd plan: {task_id_label} verify[{si}]: \
                                                      unknown field '{key}'"
                                                 );
                                             }
@@ -3214,8 +3036,8 @@ fn validate_and_fix_generated_plan(
                             )];
 
                             task.insert("verify".to_string(), toml::Value::Array(auto_verify));
-                            eprintln!(
-                                "info: {task_id_label}: auto-added one focused compile verify"
+                            tracing::info!(
+                                "prd plan: {task_id_label}: auto-added one focused compile verify"
                             );
                         }
                     }
@@ -3254,9 +3076,10 @@ fn validate_and_fix_generated_plan(
     ];
     for &(placeholder, replacement) in replacements {
         if serialized.contains(placeholder) {
-            eprintln!(
-                "plan validation: replaced placeholder '{}' with '{}'",
-                placeholder, replacement
+            tracing::info!(
+                "prd plan: replaced placeholder '{}' with '{}'",
+                placeholder,
+                replacement
             );
             serialized = serialized.replace(placeholder, replacement);
         }
@@ -3625,6 +3448,24 @@ pub fn validate_prd_grounding(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug-d3c72e: a failed plan generation prints the head of the model's
+    /// output. Cutting it at byte 2000 panicked when that byte fell inside a
+    /// multi-byte character; the cut now falls on a char boundary.
+    #[test]
+    fn prd_failure_output_cuts_at_a_char_boundary() {
+        let output = format!("{}é and more", "x".repeat(FAILURE_OUTPUT_CHARS - 1));
+        assert!(!output.is_char_boundary(FAILURE_OUTPUT_CHARS));
+
+        let printed = crate::run::truncate(&output, FAILURE_OUTPUT_CHARS);
+
+        assert_eq!(printed.chars().count(), FAILURE_OUTPUT_CHARS);
+        assert!(printed.ends_with('é'));
+        let preview = crate::run::truncate(&output, AGENT_ERROR_PREVIEW_CHARS);
+        assert_eq!(preview, "x".repeat(AGENT_ERROR_PREVIEW_CHARS));
+        assert_eq!(crate::run::truncate(&output, RETRY_OUTPUT_CHARS), printed);
+        assert_eq!(crate::run::truncate("short", FAILURE_OUTPUT_CHARS), "short");
+    }
 
     #[test]
     fn slugify_basic() {
@@ -4050,16 +3891,9 @@ mod tests {
         );
     }
 
-    /// bug-a5cd6b: `roko prd plan` writes the plan it was asked for and no
-    /// other. An old-format plan and a generated plan, which names no model,
-    /// keep their tasks.toml byte for byte, and the planner is called once.
+    /// Write the published PRD `widget` in `workdir`, and return its path.
     #[cfg(unix)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_prd_plan_does_not_regenerate_other_plans() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let temp = tempfile::tempdir().expect("tempdir");
-        let workdir = temp.path();
+    fn write_widget_prd(workdir: &Path) -> PathBuf {
         ensure_dirs(workdir).expect("PRD directories");
         let prd_path = published_dir(workdir).join("widget.md");
         std::fs::write(
@@ -4068,45 +3902,34 @@ mod tests {
              # Widget\n\nAdd a widget module.\n",
         )
         .expect("write PRD");
+        prd_path
+    }
 
-        // Two plans are already in plans/: one in the old format, and one as
-        // the generator writes it, without a model_hint. Each has a plan.md a
-        // regeneration could start from.
-        let plans = workdir.join("plans");
-        let old_toml = "[meta]\nplan = \"old\"\ntotal = 1\nstatus = \"ready\"\n\n\
-                        [[task]]\nid = \"T1\"\ntitle = \"An old task\"\nstatus = \"ready\"\n";
-        let hintless_toml = "[meta]\nplan = \"hintless\"\ntotal = 1\nstatus = \"ready\"\n\n\
-             [[task]]\nid = \"T1\"\ntitle = \"A generated task\"\nstatus = \"ready\"\n\
-             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/hintless.rs\"]\n\
-             depends_on = []\n\n[task.context]\nread_files = []\n\n\
-             [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/hintless.rs\"\n";
-        for (name, tasks) in [("old", old_toml), ("hintless", hintless_toml)] {
-            let dir = plans.join(name);
-            std::fs::create_dir_all(&dir).expect("plan directory");
-            std::fs::write(dir.join("tasks.toml"), tasks).expect("tasks.toml");
-            std::fs::write(
-                dir.join("plan.md"),
-                format!("---\nplan: {name}\n---\n# {name}\n"),
-            )
-            .expect("plan.md");
-        }
+    /// The plan the fake planner answers with in the tests below.
+    #[cfg(unix)]
+    const WIDGET_PLAN: &str = "\
+        [meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+        [[task]]\nid = \"T1\"\ntitle = \"Add the widget module\"\n\
+        description = \"Create src/widget.rs.\"\nstatus = \"ready\"\n\
+        role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/widget.rs\"]\n\
+        depends_on = []\n\n[task.context]\nread_files = []\n\n\
+        [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/widget.rs\"\n";
 
-        // The planner answers every call with the widget plan, and logs it.
-        let bin = tempfile::tempdir().expect("tempdir");
-        let widget_toml = "[meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
-             [[task]]\nid = \"T1\"\ntitle = \"Add the widget module\"\n\
-             description = \"Create src/widget.rs.\"\nstatus = \"ready\"\n\
-             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/widget.rs\"]\n\
-             depends_on = []\n\n[task.context]\nread_files = []\n\n\
-             [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/widget.rs\"\n";
-        let reply = bin.path().join("reply.jsonl");
+    /// Make `workdir`'s `planner` model a fake `claude_cli` script in `bin`
+    /// that answers every call with `plan_toml` and logs it, and return the
+    /// call log.
+    #[cfg(unix)]
+    fn write_fake_planner(workdir: &Path, bin: &Path, plan_toml: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let reply = bin.join("reply.jsonl");
         std::fs::write(
             &reply,
             format!(
                 "{}\n{}\n",
                 serde_json::json!({
                     "type": "content_block_delta",
-                    "delta": {"text": format!("```toml\n{widget_toml}```\n")},
+                    "delta": {"text": format!("```toml\n{plan_toml}```\n")},
                 }),
                 serde_json::json!({
                     "type": "result",
@@ -4121,9 +3944,9 @@ mod tests {
         .expect("planner reply");
         // Work after a call (episode distillation) runs on the default model,
         // a second fake that answers nothing, so the log counts planner calls.
-        let calls = bin.path().join("calls.log");
-        let planner = bin.path().join("planner.sh");
-        let background = bin.path().join("background.sh");
+        let calls = bin.join("calls.log");
+        let planner = bin.join("planner.sh");
+        let background = bin.join("background.sh");
         for (script, body) in [
             (
                 &planner,
@@ -4158,6 +3981,43 @@ mod tests {
             ),
         )
         .expect("roko.toml");
+        calls
+    }
+
+    /// bug-a5cd6b: `roko prd plan` writes the plan it was asked for and no
+    /// other. An old-format plan and a generated plan, which names no model,
+    /// keep their tasks.toml byte for byte, and the planner is called once.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_prd_plan_does_not_regenerate_other_plans() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let prd_path = write_widget_prd(workdir);
+
+        // Two plans are already in plans/: one in the old format, and one as
+        // the generator writes it, without a model_hint. Each has a plan.md a
+        // regeneration could start from.
+        let plans = workdir.join("plans");
+        let old_toml = "[meta]\nplan = \"old\"\ntotal = 1\nstatus = \"ready\"\n\n\
+                        [[task]]\nid = \"T1\"\ntitle = \"An old task\"\nstatus = \"ready\"\n";
+        let hintless_toml = "[meta]\nplan = \"hintless\"\ntotal = 1\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"T1\"\ntitle = \"A generated task\"\nstatus = \"ready\"\n\
+             role = \"implementer\"\ntier = \"focused\"\nfiles = [\"src/hintless.rs\"]\n\
+             depends_on = []\n\n[task.context]\nread_files = []\n\n\
+             [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/hintless.rs\"\n";
+        for (name, tasks) in [("old", old_toml), ("hintless", hintless_toml)] {
+            let dir = plans.join(name);
+            std::fs::create_dir_all(&dir).expect("plan directory");
+            std::fs::write(dir.join("tasks.toml"), tasks).expect("tasks.toml");
+            std::fs::write(
+                dir.join("plan.md"),
+                format!("---\nplan: {name}\n---\n# {name}\n"),
+            )
+            .expect("plan.md");
+        }
+
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
 
         generate_plan_from_prd_with_model("widget", &prd_path, false, Some("planner"))
             .await
@@ -4180,6 +4040,39 @@ mod tests {
         );
         // A plan that names no model is modern: only `old` counts as old.
         assert_eq!(old_format_plan_dirs(&plans), [plans.join("old")]);
+    }
+
+    /// bug-2d06bf: a broken plan beside the generated one does not fail the
+    /// generation: generate_plan validates only the plan it wrote.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generate_plan_validates_only_the_plan_it_wrote() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let prd_path = write_widget_prd(workdir);
+        let broken = workdir.join("plans").join("broken");
+        std::fs::create_dir_all(&broken).expect("plan directory");
+        std::fs::write(broken.join("tasks.toml"), "[meta\nplan = ").expect("tasks.toml");
+        let bin = tempfile::tempdir().expect("tempdir");
+        write_fake_planner(workdir, bin.path(), WIDGET_PLAN);
+
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(PlanSource::Prd(&prd_path), "widget", workdir)
+        };
+        let (_, outcome) = generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+
+        let report = outcome.validation_report.expect("validation report");
+        assert_eq!(report["totals"]["plans_checked"], 1, "{report}");
+        // The report lists only plans with findings: never the broken sibling.
+        let plans = report["plans"].as_array().expect("plans");
+        assert!(
+            plans.iter().all(|plan| plan["plan_id"] == "widget"),
+            "{report}"
+        );
+        assert!(!report.to_string().contains("PLAN_001"), "{report}");
     }
 
     #[test]
@@ -4858,32 +4751,6 @@ command = "cargo test -p <crate> -- <test_name>"
         );
         // Verify it's still valid TOML.
         let _parsed: toml::Value = toml::from_str(&result).unwrap();
-    }
-
-    #[test]
-    fn strsim_distance_basic() {
-        assert_eq!(strsim_distance("phase", "phase"), 0);
-        assert_eq!(strsim_distance("pha", "phase"), 2);
-        assert_eq!(strsim_distance("stat", "status"), 2);
-        assert_eq!(strsim_distance("", "abc"), 3);
-        assert_eq!(strsim_distance("abc", ""), 3);
-    }
-
-    #[test]
-    fn suggest_correction_finds_typos() {
-        assert_eq!(
-            suggest_field_correction("pha", KNOWN_VERIFY_FIELDS),
-            Some("phase".to_string())
-        );
-        assert_eq!(
-            suggest_field_correction("stat", KNOWN_TASK_FIELDS),
-            Some("status".to_string())
-        );
-        // Unknown field with no close match returns None.
-        assert_eq!(
-            suggest_field_correction("zzzzunknown", KNOWN_TASK_FIELDS),
-            None
-        );
     }
 
     // ---- next_tier_model tests ----

@@ -49,7 +49,7 @@ use roko_agent::provider::{AgentOptions, LocalToolMcpServer, ProviderSemaphores}
 use roko_agent::rate_limit::ProviderRateLimiter;
 use roko_agent::safety::contract::AgentContract;
 use roko_agent::{Agent, AgentResult, create_agent_for_model};
-use roko_core::agent::{ProviderKind, resolve_model};
+use roko_core::agent::{ProviderKind, resolve_model, try_resolve_model};
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
 use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
 use roko_core::{Body, Context, Kind, Signal};
@@ -141,7 +141,9 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
     // (find-0dc1d5).
     let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
 
-    let feedback_service = FeedbackService::from_roko_dir(&workdir.join(".roko"));
+    // Nothing else costs this direct model call (bug-724982).
+    let roko_dir = workdir.join(".roko");
+    let feedback_service = FeedbackService::from_roko_dir(&roko_dir).with_cost_records();
     let feedback_sink: Arc<dyn FeedbackSink> = match &cascade_router {
         Some(router) => Arc::new(
             feedback_service
@@ -377,7 +379,9 @@ impl CliProviderConfig {
         }
     }
 
-    /// Build a Codex CLI provider.
+    /// Build a Codex CLI provider. It resolves like the others, but
+    /// [`CliDispatchProvider::build_invocation`] refuses it: Codex runs only
+    /// through roko-agent's `CodexCliAdapter`.
     pub fn codex(provider_id: impl Into<String>, command: impl Into<PathBuf>) -> Self {
         Self {
             descriptor: CliProviderDescriptor::new(provider_id, CliProtocol::CodexExecJson),
@@ -504,9 +508,24 @@ impl CliDispatchProvider for CliProviderConfig {
         request: &CliDispatchRequest,
     ) -> Result<CliInvocation, DispatchV2Error> {
         request.validate()?;
+        // A CLI gets the system prompt's cache markers as inert text; only
+        // the Anthropic API translators turn them into `cache_control`
+        // (bug-6052d8).
+        let request = &CliDispatchRequest {
+            system_prompt: roko_agent::translate::claude::strip_cache_markers(
+                &request.system_prompt,
+            ),
+            ..request.clone()
+        };
         match self.descriptor.protocol {
             CliProtocol::ClaudeStreamJson => self.build_claude_invocation(request),
-            CliProtocol::CodexExecJson => self.build_codex_invocation(request),
+            // Codex runs only through roko-agent's `CodexCliAdapter`, whose
+            // operation broker stops a denied operation; a bare subprocess
+            // here would run Codex's built-in tools unchecked (gap-baab0a).
+            CliProtocol::CodexExecJson => Err(DispatchV2Error::UnsupportedCliProvider {
+                provider_id: self.descriptor.provider_id.clone(),
+                kind: self.descriptor.protocol.provider_kind(),
+            }),
             CliProtocol::GeminiStreamJson => self.build_gemini_invocation(request),
         }
     }
@@ -605,99 +624,6 @@ impl CliProviderConfig {
         Ok(invocation)
     }
 
-    fn build_codex_invocation(
-        &self,
-        request: &CliDispatchRequest,
-    ) -> Result<CliInvocation, DispatchV2Error> {
-        // Codex CLI has no binding native-tool allow/deny flag. The MCP
-        // bridge enforces its own contract-scoped catalog, but accepting a
-        // request-level policy here would still leave Codex built-ins outside
-        // that policy. Log a warning and proceed relying on codex's own sandbox
-        // rather than hard-failing, since many safety contracts include tool
-        // denials that are irrelevant to codex's tool surface.
-        if request.allowed_tools.is_some() || !request.disallowed_tools.is_empty() {
-            if env_flag_enabled("ROKO_REQUIRE_BINDING_TOOL_POLICY") {
-                return Err(DispatchV2Error::ToolPolicyUnsupported {
-                    provider_id: self.descriptor.provider_id.clone(),
-                    protocol: self.descriptor.protocol,
-                });
-            }
-            tracing::warn!(
-                provider_id = %self.descriptor.provider_id,
-                allowed_tools = ?request.allowed_tools,
-                disallowed_tools = ?request.disallowed_tools,
-                "codex CLI cannot enforce tool policy; proceeding without enforcement"
-            );
-        }
-        if env_flag_enabled("ROKO_REQUIRE_NATIVE_TURN_LIMIT") {
-            return Err(DispatchV2Error::TurnLimitUnsupported {
-                provider_id: self.descriptor.provider_id.clone(),
-                protocol: self.descriptor.protocol,
-                requested_max_turns: request.max_turns,
-            });
-        }
-        let mut args = vec!["exec".to_string()];
-        args.extend(self.provider_args.clone());
-        if let Some(plugin_mcp) = &request.plugin_mcp {
-            args.extend(codex_plugin_mcp_args(plugin_mcp));
-        }
-        args.push("--json".to_string());
-        args.push("--cd".to_string());
-        args.push(request.workdir.to_string_lossy().to_string());
-        args.push("--skip-git-repo-check".to_string());
-        args.push("--color".to_string());
-        args.push("never".to_string());
-
-        if env_flag_enabled("ROKO_FAST_MODE") {
-            // Codex has no native general tool allowlist or turn-count flag.
-            // Disable avoidable expansion surfaces that do have binding config
-            // switches; the runner's hard wall-clock deadline remains the
-            // authoritative bound for the opaque process.
-            for setting in [
-                "tools.web_search=false",
-                "history.persistence=\"none\"",
-                "features.multi_agent=false",
-                "sandbox_workspace_write.network_access=false",
-            ] {
-                args.push("--config".to_string());
-                args.push(setting.to_string());
-            }
-        }
-
-        if request.dangerously_skip_permissions {
-            args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
-        } else {
-            args.push("--sandbox".to_string());
-            args.push("workspace-write".to_string());
-            // Shared Cargo output is a separate, explicit trust decision. The
-            // normal runner never grants it: runner-owned gates compile outside
-            // the agent sandbox. When a trusted caller opts in, fail-closed
-            // validation below limits Codex to the canonical target subtree.
-            if let Some(target_dir) = codex_shared_target_dir(request) {
-                args.push("--add-dir".to_string());
-                args.push(target_dir.to_string_lossy().to_string());
-            }
-        }
-
-        if !request.model.trim().is_empty() && !request.model.starts_with("claude") {
-            args.push("--model".to_string());
-            args.push(request.model.clone());
-        }
-        args.push("-".to_string());
-
-        let stdin = if request.system_prompt.trim().is_empty() {
-            request.prompt.clone()
-        } else {
-            format!(
-                "{}\n\n---\n\n{}",
-                request.system_prompt.trim(),
-                request.prompt
-            )
-        };
-
-        Ok(CliInvocation::new(self, request, args, stdin))
-    }
-
     fn build_gemini_invocation(
         &self,
         request: &CliDispatchRequest,
@@ -765,14 +691,15 @@ impl CliProviderConfig {
     }
 }
 
-/// Resolve an explicitly supplied Cargo target directory for Codex's
-/// additional writable-root flag.
+/// Resolve an explicitly supplied shared Cargo target directory: the
+/// canonical repository's own `target` subtree, outside the task worktree.
+/// `CliInvocation::new` turns incremental builds on only for such a target.
 ///
-/// A target already contained by the task worktree needs no extra authority.
-/// Existing paths are canonicalized so a symlink cannot accidentally grant a
-/// wider lexical path than the directory Cargo actually writes to. Missing
-/// directories and requests without `ROKO_AGENT_SHARED_TARGET=1` fail closed.
-fn codex_shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
+/// A target already contained by the task worktree is not shared. Existing
+/// paths are canonicalized so a symlink cannot pass for a wider lexical path
+/// than the directory Cargo actually writes to. Missing directories and
+/// requests without `ROKO_AGENT_SHARED_TARGET=1` fail closed.
+fn shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
     let explicitly_enabled = request.env.iter().rev().find_map(|(key, value)| {
         (key == "ROKO_AGENT_SHARED_TARGET").then(|| {
             matches!(
@@ -811,9 +738,9 @@ fn codex_shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
     }
 
     // A generic dispatch request can carry arbitrary environment values. Do
-    // not turn CARGO_TARGET_DIR into an arbitrary Codex writable-root grant:
-    // linked worktrees may only share the canonical repository's own `target`
-    // subtree, derived from Git's common directory.
+    // not treat an arbitrary CARGO_TARGET_DIR as shared: linked worktrees may
+    // only share the canonical repository's own `target` subtree, derived from
+    // Git's common directory.
     let git = std::process::Command::new("git")
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
         .current_dir(&request.workdir)
@@ -840,7 +767,7 @@ fn codex_shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
         return None;
     }
 
-    // Resolve every path component before granting it. Requiring an existing
+    // Resolve every path component before accepting it. Requiring an existing
     // directory prevents a missing leaf below a symlink from escaping the
     // lexical `<repo>/target` prefix.
     if !target_dir.is_dir()
@@ -916,9 +843,8 @@ pub struct CliDispatchRequest {
     /// Tool names the agent must not invoke, translated into native policy.
     ///
     /// Claude and Gemini support this binding restriction. Codex has no
-    /// equivalent built-in-tool flag: ordinary runs record a degradation and
-    /// rely on its sandbox, while `ROKO_REQUIRE_BINDING_TOOL_POLICY=1` rejects
-    /// the dispatch fail-closed.
+    /// equivalent built-in-tool flag, so this path refuses it; Codex runs
+    /// through roko-agent's `CodexCliAdapter` and its operation broker.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
     /// Contract-scoped bridge for local plugin handlers, when the runner has
@@ -955,32 +881,6 @@ fn claude_plugin_mcp_json(config: &CliPluginMcpConfig) -> String {
         }),
     );
     json!({ "mcpServers": servers }).to_string()
-}
-
-fn codex_plugin_mcp_args(config: &CliPluginMcpConfig) -> Vec<String> {
-    let prefix = format!("mcp_servers.{}", config.server_name);
-    let tools = toml::Value::Array(
-        config
-            .tool_names
-            .iter()
-            .cloned()
-            .map(toml::Value::String)
-            .collect(),
-    )
-    .to_string();
-    [
-        format!("{prefix}.url={}", toml::Value::String(config.url.clone())),
-        format!(
-            "{prefix}.bearer_token_env_var={}",
-            toml::Value::String("ROKO_PLUGIN_MCP_TOKEN".to_string())
-        ),
-        format!("{prefix}.required=true"),
-        format!("{prefix}.enabled_tools={tools}"),
-        format!("{prefix}.default_tools_approval_mode=\"auto\""),
-    ]
-    .into_iter()
-    .flat_map(|value| ["--config".to_string(), value])
-    .collect()
 }
 
 fn gemini_policy_tool_name(name: &str, plugin_mcp: Option<&CliPluginMcpConfig>) -> Option<String> {
@@ -1207,7 +1107,7 @@ impl CliInvocation {
         stdin: String,
     ) -> Self {
         let mut env = request.env.clone();
-        let fast_shared_target = codex_shared_target_dir(request).is_some();
+        let fast_shared_target = shared_target_dir(request).is_some();
         upsert_env(
             &mut env,
             "CARGO_INCREMENTAL",
@@ -1317,6 +1217,9 @@ pub enum UnsupportedProviderReason {
     UnsupportedCliProvider,
     /// The command is not a known supported CLI protocol.
     UnsupportedCommand,
+    /// No `[models.*]` entry, configured slug or builtin model resolves the
+    /// key (bug-5cff57).
+    UnknownModel,
 }
 
 /// Fully resolved dispatch target for a model key.
@@ -1357,7 +1260,10 @@ impl ProviderDispatchResolver {
         Self { config }
     }
 
-    /// Resolve a model key into a dispatchable provider target.
+    /// Resolve a model key into a dispatchable provider target. A key that no
+    /// `[models.*]` entry, configured slug or builtin model resolves is
+    /// unsupported, with [`try_resolve_model`]'s reason, rather than sent to
+    /// whichever provider its name suggests (bug-5cff57).
     pub fn resolve(&self, model_key: &str) -> ProviderDispatchSpec {
         let resolved = resolve_model(&self.config, model_key);
         let models = self.config.effective_models();
@@ -1373,6 +1279,22 @@ impl ProviderDispatchResolver {
                     .find(|profile| profile.slug == resolved.slug)
                     .cloned()
             });
+        if model_profile.is_none()
+            && let Err(error) = try_resolve_model(&self.config, model_key)
+        {
+            return ProviderDispatchSpec {
+                model_key: model_key.to_string(),
+                model_slug: resolved.slug.clone(),
+                provider_id: resolved.provider_kind.label().to_string(),
+                provider_kind: resolved.provider_kind,
+                model_profile: None,
+                provider_config: None,
+                runtime: ProviderRuntime::Unsupported(UnsupportedProvider {
+                    reason: UnsupportedProviderReason::UnknownModel,
+                    detail: error.to_string(),
+                }),
+            };
+        }
 
         let model_slug = model_profile
             .as_ref()
@@ -1455,6 +1377,9 @@ pub struct AgentDispatcherV2 {
     /// Per-call trace and metrics sinks for the tool calls of every agent
     /// this dispatcher creates (find-f489db).
     observability: Option<roko_fs::FsObservabilitySinks>,
+    /// The safety provenance sinks of the runs in flight; a dispatch's tool
+    /// calls record with its run's sink (gap-ff95f5).
+    provenance: Option<crate::safety_provenance::ProvenanceSinks>,
 }
 
 impl std::fmt::Debug for AgentDispatcherV2 {
@@ -1487,6 +1412,7 @@ impl AgentDispatcherV2 {
             cancel_token: None,
             tool_audit: None,
             observability: None,
+            provenance: None,
         }
     }
 
@@ -1505,6 +1431,7 @@ impl AgentDispatcherV2 {
             cancel_token: None,
             tool_audit: None,
             observability: None,
+            provenance: None,
         }
     }
 
@@ -1559,6 +1486,17 @@ impl AgentDispatcherV2 {
         self
     }
 
+    /// Record the tool calls of each dispatch with the safety provenance
+    /// sink `sinks` holds for the dispatch's run, when it holds one
+    /// (gap-ff95f5).
+    pub fn with_provenance_sinks(
+        mut self,
+        sinks: crate::safety_provenance::ProvenanceSinks,
+    ) -> Self {
+        self.provenance = Some(sinks);
+        self
+    }
+
     /// Resolve a model without launching anything.
     pub fn resolve(&self, model_key: &str) -> ProviderDispatchSpec {
         self.resolver.resolve(model_key)
@@ -1610,42 +1548,27 @@ impl AgentDispatcherV2 {
         let input = Signal::builder(Kind::Prompt)
             .body(Body::text(request.prompt.clone()))
             .build();
+        let audit_mark = self.tool_audit_mark(&request).await;
         let started = Instant::now();
         let mut result = created.agent.run(&input, &Context::now()).await;
         let latency_ms = started.elapsed().as_millis() as u64;
         fill_cost_from_profile(&mut result, &created.target);
 
-        // Record provider outcome for the circuit breaker (E48-T05). A run
-        // stopped at its turn cap is a task outcome, not a provider fault.
-        if let Some(registry) = &self.health_registry {
-            let provider_id = &created.target.provider_id;
-            let turn_cap_stop = result
-                .output
-                .body
-                .as_text()
-                .ok()
-                .and_then(roko_agent::provider::error_classify::detect_turn_cap)
-                .is_some();
-            if result.success || turn_cap_stop {
-                registry.record_provider_success(provider_id);
-            } else {
-                let output_text = result
-                    .output
-                    .body
-                    .as_text()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                registry
-                    .record_provider_failure(provider_id, classify_provider_error(&output_text));
-            }
-        }
+        self.record_provider_outcome(&created.target.provider_id, &result);
 
         record_agent_dispatch_feedback(&request, &created.target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &created.target, &result);
+        let tool_calls = match audit_mark {
+            Some(mark) => mark.tool_calls().await,
+            None => Vec::new(),
+        };
+        let tool_policy = tool_policy_record(&request, &created.target, &result);
         Ok(AgentResultDispatch {
             target: created.target,
             result,
             events,
+            tool_calls,
+            tool_policy,
         })
     }
 
@@ -1710,7 +1633,7 @@ impl AgentDispatcherV2 {
                     output_tokens: u64::from(result.usage.output_tokens),
                     cache_read_tokens: u64::from(result.usage.cache_read_tokens),
                     cache_write_tokens: u64::from(result.usage.cache_create_tokens),
-                    reasoning_tokens: 0,
+                    reasoning_tokens: u64::from(result.usage.reasoning_tokens),
                 })
                 .await;
         }
@@ -1824,41 +1747,79 @@ impl AgentDispatcherV2 {
         let input = Signal::builder(Kind::Prompt)
             .body(Body::text(request.prompt.clone()))
             .build();
+        let audit_mark = self.tool_audit_mark(&request).await;
         let started = Instant::now();
         let mut result = agent.run(&input, &Context::now()).await;
         let latency_ms = started.elapsed().as_millis() as u64;
         fill_cost_from_profile(&mut result, &target);
 
-        // Record provider outcome for the circuit breaker (E48-T05).
         // This must happen before any gate verdict is applied so a provider
         // success followed by a failing code/test gate remains a provider
         // success in the health registry.
-        if let Some(registry) = &self.health_registry {
-            let provider_id = &target.provider_id;
-            if result.success {
-                registry.record_provider_success(provider_id);
-            } else {
-                let output_text = result
-                    .output
-                    .body
-                    .as_text()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                registry
-                    .record_provider_failure(provider_id, classify_provider_error(&output_text));
-            }
-        }
+        self.record_provider_outcome(&target.provider_id, &result);
 
         record_agent_dispatch_feedback(&request, &target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &target, &result);
+        let tool_calls = match audit_mark {
+            Some(mark) => mark.tool_calls().await,
+            None => Vec::new(),
+        };
+        let tool_policy = tool_policy_record(&request, &target, &result);
         Ok(AgentResultDispatch {
             target,
             result,
             events,
+            tool_calls,
+            tool_policy,
         })
     }
 
+    /// Mark the tool audit before `request` runs, so the tool calls its
+    /// agent makes can be read back after it (gap-4d5e2d). `None` without an
+    /// attached audit or an attempt key to find its lines by.
+    async fn tool_audit_mark(&self, request: &AgentDispatchRequest) -> Option<ToolAuditMark> {
+        let audit = self.tool_audit.as_ref()?;
+        let attempt_key = request.attempt_key.as_deref()?;
+        Some(ToolAuditMark::at(audit.path().to_path_buf(), attempt_key).await)
+    }
+
+    /// Record a provider run's outcome for the circuit breaker (E48-T05).
+    ///
+    /// - A successful run, or one stopped at its turn cap (a task outcome,
+    ///   not a provider fault), is a provider success.
+    /// - A run killed at its attempt's wall-clock timeout says how long the
+    ///   task took, not how healthy the provider is, so it records nothing
+    ///   (bug-7cdce7): three slow attempts must not open the circuit.
+    /// - Any other unsuccessful run is a provider failure, classified from
+    ///   its text.
+    fn record_provider_outcome(&self, provider_id: &str, result: &AgentResult) {
+        use roko_agent::provider::error_classify::{detect_attempt_timeout, detect_turn_cap};
+
+        let Some(registry) = &self.health_registry else {
+            return;
+        };
+        let text = result.output.body.as_text().unwrap_or_default();
+        if result.success || detect_turn_cap(text).is_some() {
+            registry.record_provider_success(provider_id);
+        } else if detect_attempt_timeout(text) {
+            tracing::debug!(
+                provider = %provider_id,
+                "an attempt timeout is a task outcome; the provider's health is unchanged"
+            );
+        } else {
+            registry.record_provider_failure(
+                provider_id,
+                classify_provider_error(&text.to_ascii_lowercase()),
+            );
+        }
+    }
+
     fn agent_options(&self, request: &AgentDispatchRequest) -> AgentOptions {
+        let correlation = tool_correlation(request);
+        let provenance_sink = self
+            .provenance
+            .as_ref()
+            .and_then(|sinks| sinks.for_run(&correlation.run_id));
         AgentOptions {
             command: request.command.clone(),
             timeout_ms: request.timeout_ms,
@@ -1902,7 +1863,9 @@ impl AgentDispatcherV2 {
                 .observability
                 .as_ref()
                 .map(roko_fs::FsObservabilitySinks::metrics_sink_dyn),
-            tool_correlation: Some(tool_correlation(request)),
+            tool_correlation: Some(correlation),
+            // gap-ff95f5: the run's tool calls leave durable safety provenance.
+            provenance_sink,
             // Thread the live output channel so the immune boundary can
             // forward tool steps and unscreened events before screening.
             live_output: request.live_output.clone(),
@@ -1945,10 +1908,25 @@ fn target_supports_per_call_local_mcp(target: &ProviderDispatchSpec) -> bool {
             }))
 }
 
-fn validate_contract_support(
+/// Refuse a provider that cannot enforce the request's agent contract.
+///
+/// Codex's built-in tools have no binding allowlist, so it cannot honour a
+/// contract that names the only tools a role may use (gap-baab0a); Graph
+/// failover moves such a task to a provider that can.
+pub(crate) fn validate_contract_support(
     request: &AgentDispatchRequest,
     target: &ProviderDispatchSpec,
 ) -> Result<(), DispatchV2Error> {
+    let allowlist = request
+        .agent_contract
+        .as_ref()
+        .is_some_and(|contract| contract.allowed_tools.is_some());
+    if allowlist && target.provider_kind == ProviderKind::CodexCli {
+        return Err(DispatchV2Error::ContractUnsupported {
+            provider_id: target.provider_id.clone(),
+            kind: target.provider_kind,
+        });
+    }
     if request.agent_contract.is_none()
         || matches!(
             target.provider_kind,
@@ -1978,28 +1956,9 @@ fn validate_contract_support(
 /// Classify a provider error from output text into an error kind string
 /// suitable for [`ProviderHealthRegistry::record_provider_failure`].
 pub(crate) fn classify_provider_error(output_text_lower: &str) -> &'static str {
-    // Billing/credit errors must be checked before generic rate-limit detection
-    // so that messages containing "quota" + billing indicators are not
-    // misclassified as transient rate limits.
-    if roko_agent::provider::error_classify::is_billing_message(output_text_lower) {
-        "insufficient_credits"
-    } else if output_text_lower.contains("rate limit")
-        || output_text_lower.contains("rate_limit")
-        || output_text_lower.contains("429")
-        || output_text_lower.contains("too many requests")
-    {
-        "rate_limit"
-    } else if output_text_lower.contains("timeout") || output_text_lower.contains("timed out") {
-        "timeout"
-    } else if output_text_lower.contains("503")
-        || output_text_lower.contains("502")
-        || output_text_lower.contains("server error")
-        || output_text_lower.contains("temporarily unavailable")
-    {
-        "server_error"
-    } else {
-        "unknown"
-    }
+    // One classifier for every provider-health caller (backlog 1113): it
+    // also names auth failures, which this copy used to report as unknown.
+    roko_agent::provider::error_classify::classify_failure_text(output_text_lower)
 }
 
 /// Record one bridge call's model-call feedback: its efficiency row and the
@@ -2150,6 +2109,128 @@ pub struct AgentResultDispatch {
     pub result: AgentResult,
     /// Provider-neutral event projection.
     pub events: Vec<DispatchEvent>,
+    /// The tool calls roko's own tool loop made for the dispatch, read back
+    /// from the tool audit with each one's outcome (gap-4d5e2d). Empty when
+    /// no audit is attached, the request names no attempt, or the provider
+    /// ran its own tools.
+    pub tool_calls: Vec<ToolCallRecord>,
+    /// The tool policy the request's contract asked for and what the
+    /// provider enforced, for a provider that runs its own tools
+    /// (gap-baab0a).
+    pub tool_policy: Option<roko_learn::telemetry::ToolPolicyRecord>,
+}
+
+/// A tool call a dispatch made, as the tool audit (gap-4d5e2d) or the
+/// provider's live output (bug-264c41) recorded it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallRecord {
+    /// The provider's call id.
+    pub id: String,
+    /// The tool's name; empty when the record saw only the call's result.
+    pub name: String,
+    /// Whether the call succeeded; `None` when no result for it was seen.
+    pub succeeded: Option<bool>,
+}
+
+/// Where a dispatch's tool-audit lines start: the audit file, its length
+/// before the dispatch ran, and the attempt whose lines to read back.
+struct ToolAuditMark {
+    path: PathBuf,
+    offset: u64,
+    attempt_key: String,
+}
+
+impl ToolAuditMark {
+    /// Mark the audit at `path` before a dispatch of `attempt_key` runs.
+    async fn at(path: PathBuf, attempt_key: &str) -> Self {
+        let offset = tokio::fs::metadata(&path)
+            .await
+            .map_or(0, |metadata| metadata.len());
+        Self {
+            path,
+            offset,
+            attempt_key: attempt_key.to_string(),
+        }
+    }
+
+    /// The attempt's tool calls among the lines appended since the mark. An
+    /// audit that can't be read gives none, so their outcomes stay unknown.
+    async fn tool_calls(&self) -> Vec<ToolCallRecord> {
+        match read_from(&self.path, self.offset).await {
+            Ok(appended) => {
+                audited_tool_calls(&String::from_utf8_lossy(&appended), &self.attempt_key)
+            }
+            Err(error) => {
+                tracing::debug!(
+                    path = %self.path.display(),
+                    %error,
+                    "tool audit unreadable; tool outcomes stay unknown"
+                );
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// The bytes of the file at `path` from `offset` on.
+async fn read_from(path: &Path, offset: u64) -> std::io::Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let mut file = tokio::fs::File::open(path).await?;
+    file.seek(std::io::SeekFrom::Start(offset)).await?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).await?;
+    Ok(bytes)
+}
+
+/// The tool calls of attempt `attempt_key` in the tool-audit `lines`, in the
+/// order they were admitted. A result settles the earliest call admitted
+/// under its id that has none yet, so a provider that reuses call ids still
+/// gets one record per call; a result whose admission isn't among the lines
+/// is a call of its own. Other attempts' lines, and lines that aren't audit
+/// JSON (a line another writer is still appending), are skipped.
+fn audited_tool_calls(lines: &str, attempt_key: &str) -> Vec<ToolCallRecord> {
+    use roko_fs::tool_audit::AuditLine;
+
+    let mut calls: Vec<ToolCallRecord> = Vec::new();
+    for line in lines.lines() {
+        let Ok(audited) = serde_json::from_str::<AuditLine>(line) else {
+            continue;
+        };
+        match audited {
+            AuditLine::Admit {
+                call_id,
+                call_name,
+                correlation,
+                ..
+            } if correlation.attempt_id == attempt_key => calls.push(ToolCallRecord {
+                id: call_id,
+                name: call_name,
+                succeeded: None,
+            }),
+            AuditLine::Result {
+                call_id,
+                call_name,
+                ok,
+                correlation,
+                ..
+            } if correlation.attempt_id == attempt_key => {
+                let admitted = calls
+                    .iter_mut()
+                    .find(|call| call.id == call_id && call.succeeded.is_none());
+                match admitted {
+                    Some(call) => call.succeeded = Some(ok),
+                    None => calls.push(ToolCallRecord {
+                        id: call_id,
+                        name: call_name,
+                        succeeded: Some(ok),
+                    }),
+                }
+            }
+            _ => {}
+        }
+    }
+    calls
 }
 
 /// Provider-neutral events emitted by dispatch v2.
@@ -2197,6 +2278,58 @@ pub(crate) fn fill_usage_cost_from_pricing(
     }
 }
 
+/// What `usage` would have cost with no prompt caching, priced like
+/// [`fill_usage_cost_from_pricing`]: the profile's input and output prices,
+/// else the model's built-in pricing. `None` when neither prices the model
+/// (gap-7a8474).
+pub(crate) fn usage_cost_without_cache(
+    usage: &roko_core::Usage,
+    profile: Option<&ModelProfile>,
+    model_slug: &str,
+) -> Option<f64> {
+    if let Some((input, output)) =
+        profile.and_then(|profile| profile.cost_input_per_m.zip(profile.cost_output_per_m))
+    {
+        return Some(usage.cost_without_cache(input, output));
+    }
+    let pricing = roko_core::config::model_registry::builtin_pricing(model_slug)?;
+    Some(usage.cost_without_cache(pricing.input_per_m, pricing.output_per_m))
+}
+
+/// The tool policy `request`'s contract asked for and what `target`'s
+/// provider enforced, for the attempt's record (gap-baab0a). Codex runs its
+/// own tools under roko's operation broker: the record lists the operations
+/// the broker denies, whether its network was switched off, and the denial
+/// that stopped `result`, if any. `None` for other providers and for a
+/// request without a contract.
+fn tool_policy_record(
+    request: &AgentDispatchRequest,
+    target: &ProviderDispatchSpec,
+    result: &AgentResult,
+) -> Option<roko_learn::telemetry::ToolPolicyRecord> {
+    let contract = request.agent_contract.as_ref()?;
+    if target.provider_kind != ProviderKind::CodexCli {
+        return None;
+    }
+    let policy = roko_agent::exec::CodexOperationPolicy::from_contract(contract);
+    let denial = result
+        .output
+        .tag(roko_agent::exec::CODEX_POLICY_DENIAL_TAG)
+        .map(str::to_string);
+    Some(roko_learn::telemetry::ToolPolicyRecord {
+        allowed_tools: contract.allowed_tools.clone(),
+        forbidden_tools: contract.forbidden_tool_names(),
+        enforcement: "broker".to_string(),
+        denied_operations: policy
+            .denied_operations()
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        network_off: !contract.permits_network(),
+        denial,
+    })
+}
+
 fn dispatch_events_from_result(
     request: &AgentDispatchRequest,
     target: &ProviderDispatchSpec,
@@ -2232,7 +2365,7 @@ fn dispatch_events_from_result(
             output_tokens: u64::from(result.usage.output_tokens),
             cache_read_tokens: u64::from(result.usage.cache_read_tokens),
             cache_write_tokens: u64::from(result.usage.cache_create_tokens),
-            reasoning_tokens: 0,
+            reasoning_tokens: u64::from(result.usage.reasoning_tokens),
         });
     }
 
@@ -2290,7 +2423,7 @@ fn stream_chunk_from_event(event: roko_agent::tool_loop::StreamEvent) -> StreamC
             name_delta: Some(name),
             args_delta: None,
         },
-        StreamEventKind::ToolResult { id, output } => {
+        StreamEventKind::ToolResult { id, output, .. } => {
             // Map provider-surfaced tool results to ToolProgress so they flow
             // through to AgentRuntimeEvent::ToolOutput via agent_event_from_chunk.
             StreamChunk::ToolProgress {
@@ -2323,7 +2456,7 @@ fn agent_event_from_chunk(chunk: StreamChunk) -> AgentRuntimeEvent {
             output_tokens: u64::from(usage.output_tokens),
             cache_read_tokens: u64::from(usage.cache_read_tokens),
             cache_write_tokens: u64::from(usage.cache_create_tokens),
-            reasoning_tokens: 0,
+            reasoning_tokens: u64::from(usage.reasoning_tokens),
         },
         StreamChunk::Done(_) => AgentRuntimeEvent::TurnCompleted {
             session_id: None,
@@ -2458,15 +2591,6 @@ pub enum DispatchV2Error {
         model_key: String,
         message: String,
     },
-    ToolPolicyUnsupported {
-        provider_id: String,
-        protocol: CliProtocol,
-    },
-    TurnLimitUnsupported {
-        provider_id: String,
-        protocol: CliProtocol,
-        requested_max_turns: u32,
-    },
     McpConfigUnsupported {
         provider_id: String,
         protocol: CliProtocol,
@@ -2516,21 +2640,6 @@ impl fmt::Display for DispatchV2Error {
             Self::AgentCreation { model_key, message } => {
                 write!(f, "failed to create agent for `{model_key}`: {message}")
             }
-            Self::ToolPolicyUnsupported {
-                provider_id,
-                protocol,
-            } => write!(
-                f,
-                "provider `{provider_id}` ({protocol:?}) cannot enforce the requested tool policy"
-            ),
-            Self::TurnLimitUnsupported {
-                provider_id,
-                protocol,
-                requested_max_turns,
-            } => write!(
-                f,
-                "provider `{provider_id}` ({protocol:?}) cannot natively enforce the requested {requested_max_turns}-turn limit"
-            ),
             Self::McpConfigUnsupported {
                 provider_id,
                 protocol,
@@ -2561,15 +2670,6 @@ impl fmt::Display for DispatchV2Error {
 }
 
 impl Error for DispatchV2Error {}
-
-fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
-}
 
 #[cfg(test)]
 mod tests {
@@ -2607,11 +2707,11 @@ mod tests {
         );
     }
 
-    fn codex_request(workdir: PathBuf, target_dir: PathBuf) -> CliDispatchRequest {
+    fn shared_target_request(workdir: PathBuf, target_dir: PathBuf) -> CliDispatchRequest {
         CliDispatchRequest {
             prompt: "implement it".to_string(),
             system_prompt: String::new(),
-            model: "gpt-5".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
             workdir,
             max_turns: 10,
             effort: None,
@@ -2625,7 +2725,7 @@ mod tests {
                 ),
                 ("ROKO_AGENT_SHARED_TARGET".to_string(), "1".to_string()),
             ],
-            agent_id: "p/codex-target".to_string(),
+            agent_id: "p/shared-target".to_string(),
             allowed_tools: None,
             disallowed_tools: Vec::new(),
             plugin_mcp: None,
@@ -2633,7 +2733,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_add_dir_is_limited_to_canonical_repo_target() {
+    fn shared_target_is_limited_to_canonical_repo_target() {
         let fixture = tempdir().expect("fixture tempdir");
         let repo = fixture.path().join("repo");
         let attempt = fixture.path().join("attempt");
@@ -2651,44 +2751,41 @@ mod tests {
                 "worktree",
                 "add",
                 "-b",
-                "codex-target-test",
+                "shared-target-test",
                 attempt.to_str().expect("attempt path"),
             ],
         );
         let shared_target = repo.join("target");
         std::fs::create_dir(&shared_target).expect("shared target");
 
-        let request = codex_request(attempt.clone(), shared_target.clone());
+        let request = shared_target_request(attempt.clone(), shared_target.clone());
         let canonical_shared_target =
             std::fs::canonicalize(&shared_target).expect("canonical target");
-        assert_eq!(
-            codex_shared_target_dir(&request),
-            Some(canonical_shared_target.clone())
-        );
-        let invocation = CliProviderConfig::codex("codex_cli", "codex")
-            .build_invocation(&request)
-            .expect("Codex invocation");
-        assert!(invocation.args.windows(2).any(|pair| {
-            pair[0] == "--add-dir" && pair[1] == canonical_shared_target.to_string_lossy().as_ref()
-        }));
+        assert_eq!(shared_target_dir(&request), Some(canonical_shared_target));
+        let incremental = |request: &CliDispatchRequest| {
+            CliProviderConfig::claude("claude_cli", "claude")
+                .build_invocation(request)
+                .expect("Claude invocation")
+                .env
+                .into_iter()
+                .find(|(key, _)| key == "CARGO_INCREMENTAL")
+                .map(|(_, value)| value)
+        };
+        assert_eq!(incremental(&request).as_deref(), Some("1"));
         let mut default_request = request.clone();
         default_request
             .env
             .retain(|(key, _)| key != "ROKO_AGENT_SHARED_TARGET");
-        let default_invocation = CliProviderConfig::codex("codex_cli", "codex")
-            .build_invocation(&default_request)
-            .expect("default Codex invocation");
-        assert!(
-            !default_invocation
-                .args
-                .iter()
-                .any(|argument| argument == "--add-dir"),
-            "default mode must not widen the agent sandbox"
+        assert_eq!(shared_target_dir(&default_request), None);
+        assert_eq!(
+            incremental(&default_request).as_deref(),
+            Some("0"),
+            "default mode must not share the target"
         );
 
         for forbidden in [PathBuf::from("/"), outside.clone()] {
             assert_eq!(
-                codex_shared_target_dir(&codex_request(attempt.clone(), forbidden)),
+                shared_target_dir(&shared_target_request(attempt.clone(), forbidden)),
                 None
             );
         }
@@ -2698,19 +2795,19 @@ mod tests {
             std::os::unix::fs::symlink(&outside, shared_target.join("escape"))
                 .expect("escape symlink");
             assert_eq!(
-                codex_shared_target_dir(&codex_request(
+                shared_target_dir(&shared_target_request(
                     attempt.clone(),
                     shared_target.join("escape"),
                 )),
                 None,
-                "a symlink below target must not widen the writable root"
+                "a symlink below target must not widen the shared root"
             );
 
             std::fs::remove_file(shared_target.join("escape")).expect("remove nested symlink");
             std::fs::remove_dir(&shared_target).expect("remove target directory");
             std::os::unix::fs::symlink(&repo, &shared_target).expect("target-root symlink");
             assert_eq!(
-                codex_shared_target_dir(&codex_request(attempt, shared_target)),
+                shared_target_dir(&shared_target_request(attempt, shared_target)),
                 None,
                 "the target root itself must never widen authority through a symlink"
             );
@@ -2767,9 +2864,11 @@ mod tests {
         }
     }
 
+    /// gap-baab0a: Codex runs only through `CodexCliAdapter` and its
+    /// operation broker, so no bare Codex subprocess is built here, with or
+    /// without a tool policy, from a configured or a legacy runner program.
     #[test]
-    fn codex_invocation_folds_system_prompt_into_stdin() {
-        let provider = CliProviderConfig::codex("codex_cli", "codex");
+    fn codex_has_no_cli_invocation() {
         let request = CliDispatchRequest {
             prompt: "implement it".to_string(),
             system_prompt: "system".to_string(),
@@ -2786,16 +2885,109 @@ mod tests {
             disallowed_tools: Vec::new(),
             plugin_mcp: None,
         };
+        let restricted = CliDispatchRequest {
+            allowed_tools: Some(vec!["read_file".into()]),
+            disallowed_tools: vec!["web_search".into()],
+            plugin_mcp: Some(plugin_mcp_config()),
+            ..request.clone()
+        };
+
+        for provider in [
+            CliProviderConfig::codex("codex_cli", "codex"),
+            CliProviderConfig::from_legacy_runner_program("/opt/bin/codex"),
+        ] {
+            for request in [&request, &restricted] {
+                assert_eq!(
+                    provider.build_invocation(request),
+                    Err(DispatchV2Error::UnsupportedCliProvider {
+                        provider_id: "codex_cli".to_string(),
+                        kind: ProviderKind::CodexCli,
+                    })
+                );
+            }
+        }
+    }
+
+    /// bug-6052d8: `roko chat`'s own CLI invocation drops the system prompt's
+    /// cache markers, which only the Anthropic API reads.
+    #[test]
+    fn chat_strips_cache_markers() {
+        let provider = CliProviderConfig::claude("claude_cli", "claude");
+        let system_prompt = "Role\n\n<!-- cache:system -->\n\nWorkspace\n\n\
+                             <!-- cache:session -->\n\nTurn";
+        let request = CliDispatchRequest {
+            prompt: "implement it".to_string(),
+            system_prompt: system_prompt.to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            workdir: std::env::current_dir().unwrap(),
+            max_turns: 50,
+            effort: None,
+            dangerously_skip_permissions: false,
+            mcp_config: None,
+            resume_session: None,
+            env: Vec::new(),
+            agent_id: "p/t".to_string(),
+            allowed_tools: None,
+            disallowed_tools: Vec::new(),
+            plugin_mcp: None,
+        };
 
         let invocation = provider.build_invocation(&request).unwrap();
-        assert_eq!(invocation.protocol, CliProtocol::CodexExecJson);
-        assert_eq!(
-            invocation.turn_limit.enforcement,
-            CliTurnLimitEnforcement::Unsupported
+        let at = invocation
+            .args
+            .iter()
+            .position(|arg| arg == "--append-system-prompt")
+            .expect("the system prompt flag");
+        assert_eq!(invocation.args[at + 1], "Role\n\nWorkspace\n\nTurn");
+        assert!(
+            !invocation
+                .args
+                .iter()
+                .any(|arg| arg.contains("<!-- cache:"))
         );
-        assert_eq!(invocation.turn_limit.effective_max_turns, None);
-        assert!(invocation.args.iter().any(|arg| arg == "--model"));
-        assert_eq!(invocation.stdin, "system\n\n---\n\nimplement it");
+    }
+
+    /// bug-5cff57: a key nothing configures is unsupported, with the reason,
+    /// even when a provider of the kind its name suggests is configured; a
+    /// builtin model is not unknown.
+    #[test]
+    fn provider_dispatch_resolver_unknown_model_is_unsupported() {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.providers.insert(
+            "claude_cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                command: Some("claude".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        let resolver = ProviderDispatchResolver::new(Arc::new(config));
+
+        let spec = resolver.resolve("mystery-model-9");
+        let ProviderRuntime::Unsupported(unsupported) = &spec.runtime else {
+            panic!("an unknown model must not dispatch: {:?}", spec.runtime);
+        };
+        assert_eq!(unsupported.reason, UnsupportedProviderReason::UnknownModel);
+        assert!(
+            unsupported.detail.contains("`mystery-model-9`"),
+            "{}",
+            unsupported.detail
+        );
+        assert!(spec.provider_config.is_none());
+        let builtin = resolver.resolve("claude-sonnet-4-6");
+        assert!(
+            !matches!(
+                &builtin.runtime,
+                ProviderRuntime::Unsupported(UnsupportedProvider {
+                    reason: UnsupportedProviderReason::UnknownModel,
+                    ..
+                })
+            ),
+            "{:?}",
+            builtin.runtime
+        );
     }
 
     #[test]
@@ -2872,36 +3064,6 @@ mod tests {
         assert_eq!(invocation.args[tools_index + 1], "");
     }
 
-    #[test]
-    fn codex_invocation_warns_but_proceeds_with_unenforceable_tool_policy() {
-        let provider = CliProviderConfig::codex("codex_cli", "codex");
-        let request = CliDispatchRequest {
-            prompt: "restricted work".to_string(),
-            system_prompt: String::new(),
-            model: "gpt-5".to_string(),
-            workdir: std::env::current_dir().unwrap(),
-            max_turns: 1,
-            effort: None,
-            dangerously_skip_permissions: false,
-            mcp_config: None,
-            resume_session: None,
-            env: Vec::new(),
-            agent_id: "p/restricted".to_string(),
-            allowed_tools: Some(vec!["read_file".into()]),
-            disallowed_tools: Vec::new(),
-            plugin_mcp: None,
-        };
-
-        // Codex CLI cannot enforce tool policy natively, but the dispatch now
-        // warns and proceeds (relying on codex's own sandbox) rather than
-        // hard-failing, since many safety contracts include tool denials that
-        // are irrelevant to codex's tool surface.
-        assert!(
-            provider.build_invocation(&request).is_ok(),
-            "codex should warn but proceed when tool policy is present"
-        );
-    }
-
     fn plugin_mcp_config() -> CliPluginMcpConfig {
         CliPluginMcpConfig {
             server_name: "roko_plugins".to_string(),
@@ -2959,50 +3121,6 @@ mod tests {
                 .any(|(key, value)| { key == "ROKO_PLUGIN_MCP_TOKEN" && value == "signed-secret" })
         );
         assert!(!format!("{:?}", request.plugin_mcp).contains("signed-secret"));
-    }
-
-    #[test]
-    fn codex_invocation_configures_required_mcp_and_keeps_native_policy_fail_closed() {
-        let provider = CliProviderConfig::codex("codex_cli", "codex");
-        let mut request = CliDispatchRequest {
-            prompt: "use the plugin".to_string(),
-            system_prompt: String::new(),
-            model: "gpt-5".to_string(),
-            workdir: std::env::current_dir().unwrap(),
-            max_turns: 2,
-            effort: None,
-            dangerously_skip_permissions: false,
-            mcp_config: None,
-            resume_session: None,
-            env: Vec::new(),
-            agent_id: "p/plugin".to_string(),
-            allowed_tools: None,
-            disallowed_tools: Vec::new(),
-            plugin_mcp: Some(plugin_mcp_config()),
-        };
-
-        let invocation = provider
-            .build_invocation(&request)
-            .expect("Codex MCP invocation");
-        let rendered = invocation.args.join(" ");
-        assert!(rendered.contains("mcp_servers.roko_plugins.url="));
-        assert!(rendered.contains("mcp_servers.roko_plugins.bearer_token_env_var="));
-        assert!(rendered.contains("mcp_servers.roko_plugins.required=true"));
-        assert!(rendered.contains("mcp_servers.roko_plugins.enabled_tools="));
-        assert!(
-            invocation
-                .secret_env
-                .iter()
-                .any(|(key, value)| { key == "ROKO_PLUGIN_MCP_TOKEN" && value == "signed-secret" })
-        );
-
-        // Setting allowed_tools now warns but still succeeds (codex relies on
-        // its own sandbox rather than hard-failing on unenforceable policy).
-        request.allowed_tools = Some(vec!["demo.echo".to_string()]);
-        assert!(
-            provider.build_invocation(&request).is_ok(),
-            "codex should warn but proceed when native tool policy is present alongside MCP"
-        );
     }
 
     #[test]
@@ -3174,6 +3292,94 @@ mod tests {
         ));
     }
 
+    /// A resolved target on a provider of `kind`, for checks that read only
+    /// the kind.
+    fn kind_target(kind: ProviderKind) -> ProviderDispatchSpec {
+        ProviderDispatchSpec {
+            provider_id: "p".to_string(),
+            provider_kind: kind,
+            model_key: "m".to_string(),
+            model_slug: "m".to_string(),
+            model_profile: None,
+            provider_config: None,
+            runtime: ProviderRuntime::AgentResultBridge {
+                provider_kind: kind,
+            },
+        }
+    }
+
+    /// gap-baab0a: Codex cannot enforce a tool allowlist, so a contract with
+    /// one is refused for it. Codex with forbidden tools alone passes, and so
+    /// does another provider with the allowlist.
+    #[test]
+    fn codex_cannot_take_a_contract_with_a_tool_allowlist() {
+        use roko_agent::safety::contract::GovernanceRule;
+
+        let mut request = fake_claude_request(Path::new("."), 1_000);
+        request.agent_contract = Some(AgentContract {
+            allowed_tools: Some(vec!["read_file".to_string(), "grep".to_string()]),
+            ..AgentContract::default()
+        });
+
+        let codex = kind_target(ProviderKind::CodexCli);
+        let claude = kind_target(ProviderKind::ClaudeCli);
+        let refused = validate_contract_support(&request, &codex);
+        assert!(
+            matches!(
+                refused,
+                Err(DispatchV2Error::ContractUnsupported {
+                    kind: ProviderKind::CodexCli,
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+        assert!(validate_contract_support(&request, &claude).is_ok());
+
+        request.agent_contract = Some(AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".to_string()])],
+            ..AgentContract::default()
+        });
+        assert!(validate_contract_support(&request, &codex).is_ok());
+    }
+
+    /// gap-baab0a: a Codex attempt records the tool policy its contract
+    /// asked for and what the broker enforced, with the denial that stopped
+    /// it. Other providers record none.
+    #[test]
+    fn codex_attempts_record_their_tool_policy() {
+        use roko_agent::safety::contract::GovernanceRule;
+
+        let mut request = fake_claude_request(Path::new("."), 1_000);
+        request.agent_contract = Some(AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec![
+                "web_fetch".to_string(),
+                "web_search".to_string(),
+            ])],
+            ..AgentContract::default()
+        });
+        let denial = "web_search denied by policy: rust";
+        let output = Signal::builder(Kind::AgentOutput)
+            .body(Body::text(format!(
+                "Codex operation policy violation: {denial}"
+            )))
+            .tag(roko_agent::exec::CODEX_POLICY_DENIAL_TAG, denial)
+            .build();
+        let result = AgentResult::fail(output);
+
+        let codex = kind_target(ProviderKind::CodexCli);
+        let record = tool_policy_record(&request, &codex, &result).expect("a Codex record");
+        assert_eq!(record.allowed_tools, None);
+        assert_eq!(record.forbidden_tools, ["web_fetch", "web_search"]);
+        assert_eq!(record.enforcement, "broker");
+        assert_eq!(record.denied_operations, ["web_search"]);
+        assert!(record.network_off);
+        assert_eq!(record.denial.as_deref(), Some(denial));
+
+        let claude = kind_target(ProviderKind::ClaudeCli);
+        assert_eq!(tool_policy_record(&request, &claude, &result), None);
+    }
+
     #[test]
     fn openclaw_contract_calls_fail_closed_before_adapter_creation() {
         let target = ProviderDispatchSpec {
@@ -3335,6 +3541,204 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
         );
     }
 
+    /// A config whose one model, `dispatch-model`, runs the Claude CLI
+    /// `script` through the `dispatch-cli` provider.
+    fn fake_claude_config(script: &Path) -> RokoConfig {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "dispatch-model".to_string();
+        config.providers.insert(
+            "dispatch-cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: Some(DEFAULT_REQUEST_TIMEOUT_MS),
+                ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
+                connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        config.models.insert(
+            "dispatch-model".to_string(),
+            ModelProfile {
+                provider: "dispatch-cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                ..Default::default()
+            },
+        );
+        config
+    }
+
+    /// A request for `dispatch-model` in `workdir`, killed after
+    /// `timeout_ms`.
+    fn fake_claude_request(workdir: &Path, timeout_ms: u64) -> AgentDispatchRequest {
+        AgentDispatchRequest {
+            model_key: "dispatch-model".to_string(),
+            prompt: "do work".to_string(),
+            system_prompt: "system".to_string(),
+            workdir: workdir.to_path_buf(),
+            immune_root: None,
+            agent_id: "dispatch-agent".to_string(),
+            command: None,
+            timeout_ms: Some(timeout_ms),
+            mcp_config: None,
+            env: Vec::new(),
+            extra_args: Vec::new(),
+            effort: None,
+            tools: None,
+            agent_contract: None,
+            bare_mode: false,
+            dangerously_skip_permissions: false,
+            max_turns: None,
+            live_output: None,
+            attempt_key: None,
+        }
+    }
+
+    /// gap-ff95f5: a dispatch's agent records its tool calls with the safety
+    /// provenance sink of the run its attempt belongs to, while that run is
+    /// registered, and with none otherwise.
+    #[test]
+    fn agent_options_carry_the_runs_safety_provenance_sink() {
+        use crate::safety_provenance::{GraphProvenanceSink, ProvenanceSinks};
+
+        let workspace = tempdir().expect("tempdir");
+        let sinks = ProvenanceSinks::default();
+        let sink = GraphProvenanceSink::open(workspace.path()).expect("provenance sink");
+        let registration = sinks.register("run-7", Arc::new(sink));
+        let dispatcher = AgentDispatcherV2::new(Arc::new(RokoConfig::default()))
+            .with_provenance_sinks(sinks.clone());
+        let mut request = fake_claude_request(workspace.path(), 1_000);
+        request.attempt_key = Some("run-7:plan:task-1:1".to_string());
+        assert!(dispatcher.agent_options(&request).provenance_sink.is_some());
+        request.attempt_key = Some("run-8:plan:task-1:1".to_string());
+        assert!(dispatcher.agent_options(&request).provenance_sink.is_none());
+        drop(registration);
+        request.attempt_key = Some("run-7:plan:task-1:1".to_string());
+        assert!(dispatcher.agent_options(&request).provenance_sink.is_none());
+    }
+
+    /// bug-7cdce7: an attempt killed at its wall-clock timeout, or stopped at
+    /// its turn cap, is a task outcome. Three in a row through the Graph
+    /// bridge leave the provider's circuit closed, while three real provider
+    /// failures still open it.
+    #[tokio::test]
+    async fn attempt_timeouts_do_not_open_the_provider_circuit() {
+        let cases = [
+            (
+                "attempt timeout",
+                "#!/bin/sh\ncat >/dev/null\nexec sleep 30\n",
+                100,
+                "timed out after",
+                true,
+            ),
+            (
+                "turn cap",
+                r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":2,"total_cost_usd":0}'
+exit 1
+"#,
+                10_000,
+                "turn cap reached",
+                true,
+            ),
+            (
+                "provider failure",
+                r#"#!/bin/sh
+cat >/dev/null
+echo '503 service temporarily unavailable' >&2
+exit 1
+"#,
+                10_000,
+                "503",
+                false,
+            ),
+        ];
+        for (case, body, timeout_ms, says, stays_closed) in cases {
+            let tmp = tempdir().expect("tempdir");
+            let script = write_fake_claude_script(&tmp, body);
+            let registry = Arc::new(ProviderHealthRegistry::new());
+            let dispatcher = AgentDispatcherV2::new(Arc::new(fake_claude_config(&script)))
+                .with_health_registry(registry.clone());
+            for _ in 0..3 {
+                let dispatch = dispatcher
+                    .run_agent_result_bridge_with_tools_and_cli_mcp(
+                        fake_claude_request(tmp.path(), timeout_ms),
+                        None,
+                        None,
+                        None,
+                        false,
+                    )
+                    .await
+                    .expect("dispatch");
+                let text = dispatch.result.output.body.as_text().unwrap_or_default();
+                assert!(!dispatch.result.success, "{case}: {text}");
+                assert!(text.contains(says), "{case}: {text}");
+            }
+            let health = registry.get("dispatch-cli");
+            assert_eq!(
+                registry.is_available("dispatch-cli"),
+                stays_closed,
+                "{case}: {health:?}"
+            );
+            if stays_closed {
+                assert_eq!(health.consecutive_failures, 0, "{case}: {health:?}");
+            }
+        }
+    }
+
+    /// gap-28ceb9: a usage-window refusal is a class of its own, which the
+    /// circuit breaker records as exhaustion, ahead of the billing and
+    /// rate-limit wording it can share.
+    #[test]
+    fn classify_provider_error_detects_usage_exhaustion() {
+        for text in [
+            "You've hit your session limit · resets 4pm",
+            "You've hit your usage limit. Upgrade to Pro or try again later.",
+            "usage limit reached for this quota window",
+        ] {
+            assert_eq!(
+                classify_provider_error(&text.to_ascii_lowercase()),
+                "provider_exhausted",
+                "{text}"
+            );
+        }
+        assert_eq!(
+            classify_provider_error("429 too many requests"),
+            "rate_limit"
+        );
+        assert_eq!(
+            classify_provider_error("insufficient credits"),
+            "insufficient_credits"
+        );
+    }
+
+    /// backlog 1113: a CLI that is not logged in is an auth failure, not an
+    /// unknown error that is retried and opens the circuit.
+    #[test]
+    fn not_logged_in_classifies_as_auth_failure() {
+        assert_eq!(
+            classify_provider_error("exit 1: not logged in · please run /login"),
+            "auth_failure"
+        );
+        assert_eq!(
+            classify_provider_error("429 too many requests"),
+            "rate_limit"
+        );
+        assert_eq!(
+            classify_provider_error("provider returned an empty response (empty_response)"),
+            "empty_response"
+        );
+    }
+
     /// E04-T06: Verify that the default Claude CLI dispatch path exercises
     /// roko-side pre- and post-dispatch safety checks via SafetyLayer.
     #[test]
@@ -3410,6 +3814,112 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 "secret leak violations must be Block severity per E04-T05"
             );
         }
+    }
+
+    /// One tool-audit line of `attempt`: an admission, or with `ok` a result.
+    fn audit_line(call_id: &str, ok: Option<bool>, attempt: &str) -> String {
+        use roko_fs::tool_audit::AuditLine;
+
+        let correlation = roko_core::tool::CorrelationEnvelope {
+            attempt_id: attempt.to_string(),
+            ..roko_core::tool::CorrelationEnvelope::empty()
+        };
+        let line = match ok {
+            None => AuditLine::Admit {
+                ts_ms: 1,
+                call_id: call_id.to_string(),
+                call_name: "read_file".to_string(),
+                arguments_scrubbed: "{}".to_string(),
+                correlation,
+            },
+            Some(ok) => AuditLine::Result {
+                ts_ms: 2,
+                call_id: call_id.to_string(),
+                call_name: "read_file".to_string(),
+                ok,
+                content_scrubbed: String::new(),
+                correlation,
+            },
+        };
+        serde_json::to_string(&line).expect("serialize audit line")
+    }
+
+    /// gap-4d5e2d: an attempt's audit lines pair into its tool calls. A
+    /// result settles the earliest call admitted under its id that has none
+    /// yet, so reused ids still give one record per call; a call with no
+    /// result keeps an unknown outcome; other attempts' lines and stray text
+    /// are skipped.
+    #[test]
+    fn audited_tool_calls_pair_each_result_with_its_admission() {
+        let attempt = "run-1:plan:T01:1";
+        let other = "run-1:plan:T02:1";
+        let lines = [
+            audit_line("call-1", None, attempt),
+            "{\"kind\":\"res".to_string(),
+            audit_line("call-1", None, other),
+            audit_line("call-1", Some(false), other),
+            audit_line("call-1", Some(true), attempt),
+            audit_line("call-2", None, attempt),
+            audit_line("call-1", None, attempt),
+            audit_line("call-1", Some(false), attempt),
+            audit_line("call-3", Some(true), attempt),
+        ]
+        .join("\n");
+
+        let calls = audited_tool_calls(&lines, attempt);
+        let outcomes: Vec<(&str, Option<bool>)> = calls
+            .iter()
+            .map(|call| (call.id.as_str(), call.succeeded))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("call-1", Some(true)),
+                ("call-2", None),
+                ("call-1", Some(false)),
+                ("call-3", Some(true)),
+            ]
+        );
+        assert!(calls.iter().all(|call| call.name == "read_file"));
+    }
+
+    /// gap-4d5e2d: a dispatch reads back only the audit lines written after
+    /// its mark, so an earlier attempt's lines under a reused key don't
+    /// count. A missing audit gives no calls.
+    #[tokio::test]
+    async fn tool_audit_mark_reads_only_lines_written_after_it() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("tool_audit.jsonl");
+        let attempt = "run-1:plan:T01:1";
+        let missing = ToolAuditMark::at(path.clone(), attempt).await;
+        assert!(missing.tool_calls().await.is_empty());
+
+        let before = format!(
+            "{}\n{}\n",
+            audit_line("call-0", None, attempt),
+            audit_line("call-0", Some(true), attempt)
+        );
+        std::fs::write(&path, before).expect("write earlier lines");
+        let mark = ToolAuditMark::at(path.clone(), attempt).await;
+        let after = format!(
+            "{}\n{}\n",
+            audit_line("call-1", None, attempt),
+            audit_line("call-1", Some(false), attempt)
+        );
+        let mut audit = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open audit");
+        std::io::Write::write_all(&mut audit, after.as_bytes()).expect("append lines");
+
+        assert_eq!(
+            mark.tool_calls().await,
+            [ToolCallRecord {
+                id: "call-1".to_string(),
+                name: "read_file".to_string(),
+                succeeded: Some(false),
+            }]
+        );
     }
 
     fn cost_test_target(model_slug: &str, profile: Option<ModelProfile>) -> ProviderDispatchSpec {

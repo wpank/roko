@@ -39,6 +39,7 @@ pub mod network;
 pub mod normalize;
 pub mod path;
 pub mod provenance;
+pub mod provenance_sink;
 pub mod rate_limit;
 pub mod recursive;
 pub mod result_filter;
@@ -85,7 +86,8 @@ pub use capabilities::{
     delegate, delegate_at,
 };
 pub use data_llm::{
-    DataLlmAuditEntry, DataLlmDecision, DataLlmRouter, SanitizeResult, sanitize_input,
+    DataLlmAuditEntry, DataLlmBoundary, DataLlmDecision, DataLlmRouter, DataLlmWithheld,
+    SanitizeResult, sanitize_input,
 };
 pub use hallucination::HallucinationDetector;
 pub use hooks::{
@@ -93,6 +95,10 @@ pub use hooks::{
     TaintLevelHook, TaintedString, evaluate_tool_corrigibility,
 };
 pub use provenance::{AttestationLevel, Custody, CustodyLogger, Taint};
+pub use provenance_sink::{
+    MemoryProvenanceSink, ProvenanceAck, ProvenanceCall, ProvenanceError, ProvenanceIntent,
+    ProvenanceOutcome, ProvenanceRecord, ProvenanceVerdict, SafetyProvenanceSink,
+};
 pub use recursive::{
     MAX_META_AGENT_GRANT_TTL_SECS, MetaAgentGrant, RecursiveSafetyError, RecursiveSafetyEvidence,
     RecursiveSafetyMonitor, SpawnAuthority, intersect_tools, validate_delegation,
@@ -463,6 +469,7 @@ impl SafetyLayer {
                 block_force_push: false,
                 block_hard_reset_on_protected: false,
                 block_branch_delete_protected: false,
+                block_discarding_commands: false,
             },
             network_policy: NetworkPolicy {
                 allow_schemes: Vec::new(),
@@ -1976,7 +1983,7 @@ mod tests {
         let ctx = test_ctx();
 
         // Safe command passes.
-        let call = bash_call("git push origin feature");
+        let call = bash_call("git commit -m feature");
         assert!(layer.check_pre_execution(&call, &ctx).is_ok());
 
         // Dangerous command is blocked by temporal monitor.

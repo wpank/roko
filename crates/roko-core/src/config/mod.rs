@@ -19,6 +19,8 @@ pub mod execution;
 pub mod fingerprint;
 pub mod gates;
 pub mod graduation;
+pub mod harness_params;
+pub mod homeostasis;
 pub mod hot_reload;
 pub mod learning;
 pub mod loader;
@@ -31,6 +33,7 @@ pub mod retrieval;
 pub mod routing;
 pub mod schema;
 pub mod serve;
+pub mod spec_quality;
 pub mod subscriptions;
 pub mod timeouts;
 pub mod tools;
@@ -83,6 +86,7 @@ pub use schema::{
     WebhooksConfig, WorktreeCountConfig, builtin_profiles, resolve_profile,
 };
 pub use serve::GitHubConfig;
+pub use spec_quality::{SpecQualityConfig, SpecQualityMode};
 
 /// Error returned when loading a `roko.toml` file from disk.
 #[derive(Debug, Error)]

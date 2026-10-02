@@ -134,7 +134,6 @@ cmd_fast() {
   local max_tasks=1
   local plans_dir=""
   local show_fast_help=false
-  local collect_screenshots=false
   local extra_args=()
   # Always validate the structured runner lifecycle. Optional behavior probes
   # are appended only when the operator explicitly selects them.
@@ -181,7 +180,7 @@ cmd_fast() {
         evidence_args+=("$1")
         ;;
       --screenshots)
-        collect_screenshots=true
+        # Only the evidence import: `plan run` takes no --screenshots.
         evidence_args+=(--collect-roko-screenshots)
         ;;
       --require-status-sample|--require-cli-smoke-pass|--require-endpoints-pass|--require-screenshots|--allow-remote-endpoints|--no-openapi|--no-default-endpoints|--allow-low-disk)
@@ -223,8 +222,13 @@ event log (--log-file {bundle}/events.jsonl), and these environment variables:
   SKIP_FRONTEND_BUILD=1
 
 On the Graph engine, ROKO_FAST_MODE bounds prompt context, enforces the
-one-verify plan contract, and stops the run at ROKO_FAST_PLAN_DEADLINE_SECS;
-the remaining variables are recorded in the evidence metadata.
+one-verify plan contract, and stops the run at ROKO_FAST_PLAN_DEADLINE_SECS
+(exit 143, reported as `deadline`). Each task attempt gets at most
+ROKO_FAST_MAX_AGENT_TURNS turns (default 6) and 90 s, and a prompt section
+telling the agent to patch and hand off without running Cargo; simple cargo
+verify commands build with --profile dev-fast when Cargo.toml declares it, and
+a failed verify never runs cargo fix. The remaining variables are recorded in
+the evidence metadata.
 
 Wrapper options:
   --deadline <seconds>    Hard command deadline including settlement (default: 300)
@@ -317,9 +321,6 @@ HELP
     --log-file "{bundle}/events.jsonl"
   )
   command_args+=(--max-tasks "$max_tasks")
-  if $collect_screenshots; then
-    command_args+=(--screenshots)
-  fi
   # Bash 3.2 + `set -u` treats expansion of an empty array as unbound.
   if [ "${#extra_args[@]}" -gt 0 ]; then
     command_args+=("${extra_args[@]}")

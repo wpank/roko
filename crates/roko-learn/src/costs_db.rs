@@ -231,9 +231,10 @@ impl CostTable {
     ///
     /// Seeds from the canonical shared registry
     /// ([`roko_core::config::model_registry::BUILTIN_PRICING`]) for all
-    /// well-known models, then layers provider-specific overrides (OpenRouter
-    /// prefixed slugs, Gemini high-context tiers, Perplexity per-request fees)
-    /// that the shared registry does not track.
+    /// well-known models, then layers what the shared registry does not
+    /// track (OpenRouter prefixed slugs, Gemini high-context tiers, Perplexity
+    /// per-request fees, models with no registry row). A registry row keeps
+    /// the registry's rates (bug-0c0747).
     #[must_use]
     pub fn with_defaults() -> Self {
         let mut models = HashMap::new();
@@ -283,14 +284,6 @@ impl CostTable {
                 ..Default::default()
             },
         );
-        models.insert(
-            "anthropic/claude-opus-4-6".to_string(),
-            ModelPricing {
-                input_per_m: 15.00,
-                output_per_m: 75.00,
-                ..Default::default()
-            },
-        );
 
         // Kimi thinking variant.
         models.insert(
@@ -322,33 +315,15 @@ impl CostTable {
                 ..Default::default()
             });
 
-        // Gemini models with high-context tier pricing.
-        models.insert(
-            "gemini-2.5-pro".to_string(),
-            ModelPricing {
-                input_per_m: 1.25,
-                output_per_m: 10.00,
-                input_per_m_high: Some(2.50),
-                output_per_m_high: Some(15.00),
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "gemini-2.5-flash".to_string(),
-            ModelPricing {
-                input_per_m: 0.30,
-                output_per_m: 2.50,
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "gemini-2.5-flash-lite".to_string(),
-            ModelPricing {
-                input_per_m: 0.10,
-                output_per_m: 0.40,
-                ..Default::default()
-            },
-        );
+        // Gemini 2.5 Pro's rates for prompts over 200K tokens
+        // (https://ai.google.dev/gemini-api/docs/pricing, checked
+        // 2026-10-01); its other rates are the shared registry's (bug-0c0747).
+        models.entry("gemini-2.5-pro".to_string()).and_modify(|p| {
+            p.input_per_m_high = Some(2.50);
+            p.output_per_m_high = Some(15.00);
+        });
+
+        // Gemini models with no registry row.
         models.insert(
             "gemini-3.1-pro-preview".to_string(),
             ModelPricing {
@@ -376,40 +351,25 @@ impl CostTable {
             },
         );
 
-        // Perplexity Sonar models — per-request search fees.
+        // Perplexity Sonar per-request fees, every model at the default "low"
+        // search context size: https://docs.perplexity.ai/docs/getting-started/pricing,
+        // checked 2026-10-02, in "$ per 1,000 requests (varies by search context
+        // size)". Medium and high cost more: $8 and $12 for Sonar, $10 and $14
+        // for the others (bug-e2b31a).
         models.entry("sonar".to_string()).and_modify(|p| {
             p.per_request = Some(0.005);
         });
         models.entry("sonar-pro".to_string()).and_modify(|p| {
-            p.per_request = Some(0.014);
+            p.per_request = Some(0.006);
         });
-        models.insert(
-            "sonar-reasoning".to_string(),
-            ModelPricing {
-                input_per_m: 1.00,
-                output_per_m: 5.00,
-                per_request: Some(0.005),
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "sonar-reasoning-pro".to_string(),
-            ModelPricing {
-                input_per_m: 2.00,
-                output_per_m: 8.00,
-                per_request: Some(0.008),
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "sonar-deep-research".to_string(),
-            ModelPricing {
-                input_per_m: 2.00,
-                output_per_m: 8.00,
-                per_request: Some(0.005),
-                ..Default::default()
-            },
-        );
+        models
+            .entry("sonar-reasoning-pro".to_string())
+            .and_modify(|p| {
+                p.per_request = Some(0.006);
+            });
+        // Sonar Deep Research stays unpriced, as in the shared registry: it
+        // bills citation tokens, reasoning tokens and search queries, which
+        // `ModelPricing` cannot express (bug-c0602b).
 
         Self { models }
     }
@@ -799,7 +759,7 @@ mod tests {
         let glm_5 = table.lookup("glm-5").expect("glm-5 pricing");
         assert!((glm_5.input_per_m - 1.00).abs() < 1e-9);
         assert!((glm_5.output_per_m - 3.20).abs() < 1e-9);
-        assert_eq!(glm_5.cache_read_per_m, Some(0.50));
+        assert_eq!(glm_5.cache_read_per_m, Some(0.20));
 
         let glm_4_7 = table.lookup("glm-4.7").expect("glm-4.7 pricing");
         assert!((glm_4_7.input_per_m - 0.60).abs() < 1e-9);
@@ -837,12 +797,6 @@ mod tests {
             .expect("moonshotai/kimi-k2.5 pricing");
         assert!((kimi_k2_5.input_per_m - 0.38).abs() < 1e-9);
         assert!((kimi_k2_5.output_per_m - 1.72).abs() < 1e-9);
-
-        let claude_opus = table
-            .lookup("anthropic/claude-opus-4-6")
-            .expect("anthropic/claude-opus-4-6 pricing");
-        assert!((claude_opus.input_per_m - 15.00).abs() < 1e-9);
-        assert!((claude_opus.output_per_m - 75.00).abs() < 1e-9);
     }
 
     #[test]
@@ -876,7 +830,7 @@ mod tests {
             true,
             "session-1",
         );
-        assert!((calculated.cost_usd - 0.002_393_5).abs() < 1e-12);
+        assert!((calculated.cost_usd - 0.002_376).abs() < 1e-12);
 
         let reported_usage = Usage {
             cost_usd: 0.123,
@@ -918,6 +872,28 @@ mod tests {
         assert!((gemini_flash.output_per_m - 2.50).abs() < 1e-9);
         assert_eq!(gemini_flash.input_per_m_high, None);
         assert_eq!(gemini_flash.output_per_m_high, None);
+    }
+
+    /// bug-0c0747: a model the shared registry prices has the registry's
+    /// rates here too, cache prices included.
+    #[test]
+    fn price_tables_agree_costs_db_with_builtin_pricing() {
+        let table = CostTable::default();
+        for (slug, builtin) in roko_core::config::model_registry::BUILTIN_PRICING {
+            let row = table.lookup(slug).expect("a costs_db row");
+            assert_eq!(row.input_per_m, builtin.input_per_m, "{slug}");
+            assert_eq!(row.output_per_m, builtin.output_per_m, "{slug}");
+            assert_eq!(
+                row.cache_read_per_m,
+                Some(builtin.cache_read_per_m),
+                "{slug}"
+            );
+            assert_eq!(
+                row.cache_write_per_m,
+                Some(builtin.cache_write_per_m),
+                "{slug}"
+            );
+        }
     }
 
     #[test]
@@ -1267,35 +1243,27 @@ mod tests {
         assert!((sonar.output_per_m - 1.00).abs() < 1e-9);
         assert_eq!(sonar.per_request, Some(0.005));
 
-        // sonar-pro: $3.00/M in, $15.00/M out, $0.014 per-request
+        // sonar-pro: $3.00/M in, $15.00/M out, $0.006 per-request
         let sonar_pro = table.lookup("sonar-pro").expect("sonar-pro pricing");
         assert!((sonar_pro.input_per_m - 3.00).abs() < 1e-9);
         assert!((sonar_pro.output_per_m - 15.00).abs() < 1e-9);
-        assert_eq!(sonar_pro.per_request, Some(0.014));
+        assert_eq!(sonar_pro.per_request, Some(0.006));
 
-        // sonar-reasoning: $1.00/M in, $5.00/M out, $0.005 per-request
-        let sonar_r = table
-            .lookup("sonar-reasoning")
-            .expect("sonar-reasoning pricing");
-        assert!((sonar_r.input_per_m - 1.00).abs() < 1e-9);
-        assert!((sonar_r.output_per_m - 5.00).abs() < 1e-9);
-        assert_eq!(sonar_r.per_request, Some(0.005));
+        // sonar-reasoning is no longer on Perplexity's price page (checked
+        // 2026-10-01), so it is unpriced here as everywhere (bug-1f81ab).
+        assert!(!table.models.contains_key("sonar-reasoning"));
 
-        // sonar-reasoning-pro: $2.00/M in, $8.00/M out, $0.008 per-request
+        // sonar-reasoning-pro: $2.00/M in, $8.00/M out, $0.006 per-request
         let sonar_rp = table
             .lookup("sonar-reasoning-pro")
             .expect("sonar-reasoning-pro pricing");
         assert!((sonar_rp.input_per_m - 2.00).abs() < 1e-9);
         assert!((sonar_rp.output_per_m - 8.00).abs() < 1e-9);
-        assert_eq!(sonar_rp.per_request, Some(0.008));
+        assert_eq!(sonar_rp.per_request, Some(0.006));
 
-        // sonar-deep-research: $2.00/M in, $8.00/M out, $0.005 per-request
-        let sonar_dr = table
-            .lookup("sonar-deep-research")
-            .expect("sonar-deep-research pricing");
-        assert!((sonar_dr.input_per_m - 2.00).abs() < 1e-9);
-        assert!((sonar_dr.output_per_m - 8.00).abs() < 1e-9);
-        assert_eq!(sonar_dr.per_request, Some(0.005));
+        // sonar-deep-research is unpriced: a price row cannot express its
+        // citation, reasoning and search-query charges (bug-c0602b).
+        assert!(!table.models.contains_key("sonar-deep-research"));
 
         // estimate_total includes the per-request fee.
         // 1M input + 1M output on sonar = $1.00 + $1.00 + $0.005 = $2.005
@@ -1304,15 +1272,31 @@ mod tests {
 
         // 500k input + 200k output on sonar-pro:
         // token = 0.5 * $3.00 + 0.2 * $15.00 = $1.50 + $3.00 = $4.50
-        // + $0.014 per-request = $4.514
+        // + $0.006 per-request = $4.506
         let total_pro = sonar_pro.estimate_total(500_000, 200_000);
-        assert!((total_pro - 4.514).abs() < 1e-9);
+        assert!((total_pro - 4.506).abs() < 1e-9);
 
         // Non-Perplexity model has no per-request fee.
         let glm_5 = table.lookup("glm-5").expect("glm-5 pricing");
         assert_eq!(glm_5.per_request, None);
         let glm_total = glm_5.estimate_total(1_000_000, 1_000_000);
         assert!((glm_total - 4.20).abs() < 1e-9);
+    }
+
+    /// bug-e2b31a: every Sonar model pays the request fee of one search-context
+    /// size, the default "low" one, from Perplexity's price page in $ per 1,000
+    /// requests: Sonar $5, Sonar Pro and Sonar Reasoning Pro $6.
+    #[test]
+    fn perplexity_request_fees_use_the_default_low_tier() {
+        let table = CostTable::default();
+        for (model, per_thousand) in [
+            ("sonar", 5.0),
+            ("sonar-pro", 6.0),
+            ("sonar-reasoning-pro", 6.0),
+        ] {
+            let fee = table.lookup(model).and_then(|pricing| pricing.per_request);
+            assert_eq!(fee, Some(per_thousand / 1000.0), "{model}");
+        }
     }
 
     #[test]

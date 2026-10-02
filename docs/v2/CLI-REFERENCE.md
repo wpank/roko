@@ -601,8 +601,8 @@ roko plan run <plans-dir> [--engine graph|legacy] [--workdir <path>]
 | `--dry-run` | false | Parse and display the plan without executing. Shows tasks, dependencies, and estimates. |
 | `--fresh` | false | Archive existing state and start from scratch. |
 | `--force-resume` | false | Graph archives a mismatched fingerprint and starts a new run; legacy re-queues drifted work. |
-| `--budget-override <usd>` | config | Override the per-plan cost ceiling; explicit overrides record and report overage but do not block later dispatches. |
-| `--no-budget` | false | Disable the per-plan cost ceiling. |
+| `--budget-override <usd>` | config | Override the per-plan cost ceiling; once the plan has spent it, no further task starts. `0` removes the plan ceiling; the per-task and daily ceilings still apply. |
+| `--no-budget` | false | Turn off budget enforcement: no plan, per-task or daily ceiling stops a dispatch. |
 
 </details>
 
@@ -622,7 +622,7 @@ the last call crosses the ceiling, and reports per-plan and total spend.
 3. The `GraphEngine` executes nodes in bounded parallel topological waves.
 4. Each task runs an agent via `TaskExecutorCell`, then runs gate validation via `GatePipelineCell` (using `CellResources.gates`).
 5. Gate failures trigger the replan controller. Failure context drives revised task generation.
-6. `GuaranteedFinallyController` ensures cleanup (terminal receipt, lease release, agent stop, snapshot flush) regardless of outcome.
+6. `run_one_plan` writes the checkpoint's terminal status, and on an interrupt stops in-flight agents.
 7. The 12-row `FeedbackSettler` settles completion sinks with exactly-once idempotency.
 8. Efficiency events, episodes, and C-factor metrics are written to `.roko/learn/`.
 
@@ -744,7 +744,7 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 | `Ctrl+A` | Approve all pending commands |
 | `Ctrl+T` | Toggle agent topology panel |
 | `Ctrl+X` | Force advance (with confirmation) |
-| `Ctrl+D` | Reset selected plan state (with confirmation) |
+| `Ctrl+D` | Cancel selected plan (with confirmation) |
 | `Ctrl+E` | Toggle full-screen post-processing effects |
 | `v` | Cycle visual effects preset |
 | `Ctrl+G` | Reconcile git state (with confirmation) |
@@ -777,7 +777,7 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 | `P` | Switch to Processes sub-tab |
 | `w` | Show wave overview |
 | `p` | Toggle pause |
-| `i` | Enter inject mode (type directive to send to agent) |
+| `i` | Inject a directive (not available yet: shows a warning) |
 | `y` | Approve pending command |
 | `` ` `` | Cycle agent role tabs |
 
@@ -809,10 +809,23 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 | `s` | Soft retry plan |
 | `z` | Diagnose plan |
 | `S` | Repair plan (preserve) |
-| `R` | Repair plan (clean) |
+| `R` | Reset plan: run it again from scratch (with confirmation) |
+| `C` | Cancel plan (with confirmation) |
 | `c` | Reverify plan |
 | `F` | Force advance |
 | `V` | Reverify plan |
+
+During `roko plan run` these keys act on the run:
+
+- pause (`p`) and cancel (`C`, `Ctrl+D`);
+- for a plan that failed or was cancelled earlier in the same run, soft retry (`s`) and repair
+  (`S`), which resume its checkpoint so the tasks that passed stay done, and reset (`R`), which
+  archives its checkpoint and runs every task again. A plan it blocked waits for it again;
+- `X` on the Agents tab, which stops the selected agent: its task fails as stopped by the
+  operator, its dependants are skipped, and the plan's other tasks run on.
+
+Re-verifying gates, force advance and approvals are rejected with a reason. Once the run has
+ended, `roko plan run --resume-plan` re-runs the tasks that did not pass.
 
 </details>
 
@@ -836,14 +849,8 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 <details>
 <summary>Modal and dialog keybindings</summary>
 
-**Inject mode** (entered via `i` in Dashboard tab):
-
-| Key | Action |
-|---|---|
-| Any char | Append to inject buffer |
-| `Backspace` | Delete last character |
-| `Enter` | Submit inject (sends directive signal to agent) |
-| `Esc` | Cancel inject |
+**Inject mode** is not available in the TUI yet: `i` shows a warning instead of collecting a
+directive. `roko inject` delivers one to a running plan.
 
 **Filter mode** (entered via `/` in Plans or Logs tab):
 
@@ -1601,8 +1608,8 @@ roko config init [--yes] [--agent <cmd>] [--model <model>] [--budget <n>] [--rol
 | `--yes` | Skip all confirmation prompts. |
 | `--agent <cmd>` | Pre-select agent command (skip picker). |
 | `--model <model>` | Pre-set model name (ollama-only convenience). |
-| `--budget <n>` | Pre-set token budget. |
-| `--role <role>` | Pre-set role string. |
+| `--budget <n>` | Pre-set token budget (`budget.prompt_token_budget`). |
+| `--role <role>` | Ignored: no config key stores a role text any more. |
 | `--enable-gates` | Enable default compile+clippy gates. |
 | `--path <path>` | Write to this path instead of the resolved global path. |
 | `--non-interactive` | Skip all prompts, fail if any answer is missing. |
@@ -2171,8 +2178,22 @@ roko replay <hash> [--workdir <path>] [--forensic] [--as-of <step>] [--format tr
 
 ### `roko inject`
 
-Inject a signal into a running session. Use `i` in the TUI dashboard for the interactive
-version; use this CLI command when scripting.
+Send a directive, context or abort to a running `roko plan run`. Each plan run listens on an
+owner-only socket of its own, `.roko/runtime/inject/<pid>.sock`, and a client must first present
+the token the run wrote beside it. The session names a running plan, by its id or by its Graph
+checkpoint run. The command exits 0 only once that run has acknowledged the request:
+
+- a `directive` or `context` is added, once, to the prompt of the next task of that plan to
+  start, under an "Operator directive" or "Operator context" heading. A text may be up to 8 KiB,
+  and a plan holds at most 8 waiting texts;
+- an `abort` cancels that plan, and only it.
+
+A request sent again under the same request ID is answered again rather than delivered twice.
+Otherwise the command exits non-zero, writes nothing, and says why:
+`inject_transport_unavailable` (no plan run is listening), `inject_unknown_session` (no
+listening run has that plan) or `inject_rejected` (the run refused it, did not answer in time, or
+has finished). With `--json` it prints one object with `code` and `message`, plus `hint` on a
+failure.
 
 ```
 roko inject <session> <payload> [--kind directive|abort|context] [--workdir <path>]
@@ -2180,8 +2201,8 @@ roko inject <session> <payload> [--kind directive|abort|context] [--workdir <pat
 
 | Arg/Flag | Default | Description |
 |---|---|---|
-| `<session>` | required | Target session ID. |
-| `<payload>` | required | Payload text. |
+| `<session>` | required | A running plan's ID, or its checkpoint run ID. |
+| `<payload>` | required | The text; empty for `abort`. |
 | `--kind <kind>` | `directive` | Kind of signal to inject: `directive`, `abort`, `context`. |
 
 ### `roko completions`

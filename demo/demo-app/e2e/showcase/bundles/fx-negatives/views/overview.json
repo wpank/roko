@@ -1,0 +1,228 @@
+{
+  "schema": "showcase-view/overview/1",
+  "tiles": [
+    {
+      "id": "p1-usd-per-verified",
+      "pillar": "P1",
+      "mechanism": null,
+      "title": "$/verified success",
+      "hypothesis": "H1",
+      "claim_state": "NOT_SUPPORTED",
+      "rows": [
+        {
+          "label": "cheap·roko",
+          "estimate": {"value": 0.083, "ci": [0.072, 0.097], "metric_ref": "m-1f2b31080b25c8d8"}
+        },
+        {
+          "label": "frontier·direct",
+          "estimate": {"value": 1.92, "ci": [1.61, 2.31], "metric_ref": "m-523f4e2b2150cdb6"}
+        }
+      ],
+      "planned_in": [],
+      "view": "p1-head-to-head"
+    },
+    {
+      "id": "p1-consistency",
+      "pillar": "P1",
+      "mechanism": null,
+      "title": "consistency pass^3",
+      "hypothesis": "H2",
+      "claim_state": "INCONCLUSIVE",
+      "rows": [
+        {
+          "label": "cheap·roko",
+          "estimate": {"value": 0.55, "ci": [0.47, 0.63], "metric_ref": "m-922a83961b7552d3"}
+        },
+        {
+          "label": "frontier·direct",
+          "estimate": {"value": 0.64, "ci": [0.56, 0.71], "metric_ref": "m-4e99998f7a28dfdd"}
+        }
+      ],
+      "planned_in": [],
+      "view": "p1-head-to-head"
+    },
+    {
+      "id": "p1-routing",
+      "pillar": "P1",
+      "mechanism": null,
+      "title": "routing saving",
+      "hypothesis": "H4",
+      "claim_state": "NOT_YET_MEASURED",
+      "rows": [],
+      "planned_in": ["R-H4"],
+      "view": null
+    },
+    {
+      "id": "p1-spec-effect",
+      "pillar": "P1",
+      "mechanism": null,
+      "title": "spec effect",
+      "hypothesis": "H3",
+      "claim_state": "NOT_YET_MEASURED",
+      "rows": [],
+      "planned_in": ["LOG1"],
+      "view": null
+    },
+    {
+      "id": "p2-m4-false-green",
+      "pillar": "P2",
+      "mechanism": "M4",
+      "title": "false-green rate",
+      "hypothesis": "H5",
+      "claim_state": "NOT_SUPPORTED",
+      "rows": [
+        {
+          "label": "false-green",
+          "estimate": {"value": 0.14, "ci": [0.09, 0.21], "metric_ref": "m-a81dcedb64e5d4a9"}
+        }
+      ],
+      "planned_in": [],
+      "view": "m4-audits"
+    }
+  ],
+  "negatives": [
+    {
+      "id": "neg-frontier-wins-l3",
+      "kind": "frontier_wins",
+      "text": "frontier·direct wins envelope level ℓ ≤ 3",
+      "rows": [
+        {
+          "label": "resolve ratio",
+          "estimate": {"value": 0.78, "ci": [0.69, 0.87], "metric_ref": "m-25e4c601558309ca"}
+        }
+      ],
+      "view": "p1-head-to-head"
+    },
+    {
+      "id": "neg-playbooks-dormant",
+      "kind": "loop_dormant",
+      "text": "loop playbooks: DORMANT, no exposure in the window",
+      "rows": [],
+      "view": null
+    },
+    {
+      "id": "neg-fgr-above-bound",
+      "kind": "fgr_above_bound",
+      "text": "false-green rate above the S06 bound of 0.05",
+      "rows": [
+        {
+          "label": "false-green",
+          "estimate": {"value": 0.14, "ci": [0.09, 0.21], "metric_ref": "m-a81dcedb64e5d4a9"}
+        }
+      ],
+      "view": "m4-audits"
+    }
+  ],
+  "metrics": [
+    {
+      "metric_ref": "m-1f2b31080b25c8d8",
+      "metric": "usd_per_vs",
+      "kind": "usd",
+      "value": 0.083,
+      "ci": [0.072, 0.097],
+      "ci_method": "paired_stratified_bootstrap",
+      "n": 200,
+      "estimator": "CPR = Σcost/Σhidden_pass",
+      "arm": "roko_fixed",
+      "envelope_level": null
+    },
+    {
+      "metric_ref": "m-523f4e2b2150cdb6",
+      "metric": "usd_per_vs",
+      "kind": "usd",
+      "value": 1.92,
+      "ci": [1.61, 2.31],
+      "ci_method": "paired_stratified_bootstrap",
+      "n": 200,
+      "estimator": "CPR = Σcost/Σhidden_pass",
+      "arm": "fd_claude",
+      "envelope_level": null
+    },
+    {
+      "metric_ref": "m-922a83961b7552d3",
+      "metric": "pass_hat_3",
+      "kind": "rate",
+      "value": 0.55,
+      "ci": [0.47, 0.63],
+      "ci_method": "stratified_bootstrap",
+      "n": 40,
+      "estimator": "unbiased pass^3 (tau-bench)",
+      "arm": "roko_fixed",
+      "envelope_level": null
+    },
+    {
+      "metric_ref": "m-4e99998f7a28dfdd",
+      "metric": "pass_hat_3",
+      "kind": "rate",
+      "value": 0.64,
+      "ci": [0.56, 0.71],
+      "ci_method": "stratified_bootstrap",
+      "n": 40,
+      "estimator": "unbiased pass^3 (tau-bench)",
+      "arm": "fd_claude",
+      "envelope_level": null
+    },
+    {
+      "metric_ref": "m-a81dcedb64e5d4a9",
+      "metric": "false_green_rate",
+      "kind": "rate",
+      "value": 0.14,
+      "ci": [0.09, 0.21],
+      "ci_method": "ht_wilson_eff_n",
+      "n": 31,
+      "estimator": "Hájek (ratio HT)",
+      "arm": null,
+      "envelope_level": null
+    },
+    {
+      "metric_ref": "m-25e4c601558309ca",
+      "metric": "resolve_ratio",
+      "kind": "ratio",
+      "value": 0.78,
+      "ci": [0.69, 0.87],
+      "ci_method": "paired_stratified_bootstrap",
+      "n": 40,
+      "estimator": "vs_rate(roko_fixed) / vs_rate(fd_claude)",
+      "arm": null,
+      "envelope_level": 3
+    }
+  ],
+  "provenance": {
+    "schema": "showcase-provenance/1",
+    "kind": "fixture",
+    "simulated": false,
+    "bundle_id": "fx-negatives",
+    "experiment_ids": ["FIXTURE"],
+    "run_ids": ["run-fx-negatives-01", "run-fx-negatives-02", "run-fx-negatives-03"],
+    "sources": [
+      {
+        "path": "data/metrics.jsonl",
+        "schema": "vb.metric_record/1",
+        "sha256": "7415ebb9584ebf71ba72acdd948dd5c8f449865f0674de6b9757c04e193efdc2",
+        "rows": 43,
+        "simulated": false,
+        "sha256_verified": false
+      }
+    ],
+    "harness_commit": "0000000fixture",
+    "dirty": false,
+    "analysis_commit": "0000000fixture",
+    "config_hashes": ["b3:fixture"],
+    "price_snapshot_id": "prices-2026-09-28",
+    "models": ["cerebras/gpt-oss-120b", "claude-opus-5-5", "claude-sonnet-5"],
+    "n": 200,
+    "seeds": [1, 2, 3],
+    "window": {"from": "2026-10-01T00:00:00Z", "to": "2026-10-01T06:00:00Z"},
+    "estimator": "per tile; see each metric",
+    "record_filter": "true",
+    "ci": {
+      "method": "paired_stratified_bootstrap",
+      "strata": ["family", "ladder"],
+      "level": 0.95,
+      "resamples": 10000
+    },
+    "cost_usd": 0.0,
+    "generated_at": "2026-10-02T00:00:00Z",
+    "reproduce": ["fixture: hand-written test data for the showcase specs, not a measurement"]
+  }
+}

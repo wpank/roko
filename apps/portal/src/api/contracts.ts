@@ -42,6 +42,12 @@ export const TASK_OUTCOME_ALREADY_SATISFIED = 'already_satisfied' as const;
  */
 export const TASK_OUTCOME_BLOCKED = 'blocked' as const;
 
+/**
+ * Outcome string of a task that was still running when its run ended other than by cancellation
+ * (bug-60ccba). Counted as failed: it did not finish.
+ */
+export const TASK_OUTCOME_INTERRUPTED = 'interrupted' as const;
+
 // ---------------------------------------------------------------------------
 // Dashboard events
 // ---------------------------------------------------------------------------
@@ -131,6 +137,12 @@ export type WireDashboardEvent =
   | { type: 'critical_path_eta_updated'; plan_id: string; eta_minutes: number | null }
   | { type: 'snapshot_rebased'; revision: number; source?: string }
   | { type: 'error'; message: string };
+
+/**
+ * A dashboard event as `/api/events` sends it: the server stamps each data frame with the time its
+ * hub published the event (gap-8a1fb3). Older servers send no stamp.
+ */
+export type WireDashboardFrame = WireDashboardEvent & { ts_millis?: number };
 
 // ---------------------------------------------------------------------------
 // Dashboard snapshot — fields the portal reads

@@ -9,8 +9,9 @@ const MICRO_USD_PER_USD: f64 = 1_000_000.0;
 ///
 /// A non-positive or non-finite ceiling means unlimited. When
 /// `continue_on_exhaustion` is enabled, spend is still recorded and exposed
-/// for observability, but new dispatches are not blocked. This mirrors the
-/// existing Runner-v2 semantics for explicit CLI budget overrides.
+/// for observability, but new dispatches are not blocked. Only `--no-budget`
+/// enables it, with an unlimited ceiling, which also turns off the per-task
+/// and daily checks; `--budget-override` is a hard ceiling (gap-d31457).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphPlanBudgetPolicy {
     pub(super) ceiling_micro_usd: Option<u64>,
@@ -38,7 +39,8 @@ impl GraphPlanBudgetPolicy {
                 } else {
                     // With no configured per-turn bound, conservatively reserve
                     // all remaining plan capacity so only one unknown-cost call
-                    // can be in flight at a time.
+                    // can be in flight at a time; the others wait for it to
+                    // settle (bug-0bc2b4).
                     ceiling
                 }
             }),
@@ -98,6 +100,31 @@ struct PlanBudgetState {
 #[derive(Debug, Default)]
 pub(super) struct GraphPlanBudgetLedger {
     plans: parking_lot::Mutex<HashMap<String, PlanBudgetState>>,
+    /// Woken whenever a reservation settles or is released, so a reservation
+    /// waiting for capacity tries again (bug-0bc2b4).
+    capacity: tokio::sync::Notify,
+}
+
+/// How often a reservation waiting for capacity checks again without a
+/// wake-up, and whether its run stopped.
+const RESERVE_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Why [`GraphPlanBudgetLedger::try_reserve`] refused a reservation.
+struct ReserveRefusal {
+    error: RokoError,
+    /// Only reservations in flight hold the plan's remaining budget: it has
+    /// capacity again once they settle. Otherwise settled spend reached the
+    /// ceiling, or the ledger cannot be persisted.
+    blocked: bool,
+}
+
+impl ReserveRefusal {
+    const fn failed(error: RokoError) -> Self {
+        Self {
+            error,
+            blocked: false,
+        }
+    }
 }
 
 impl GraphPlanBudgetLedger {
@@ -171,17 +198,57 @@ impl GraphPlanBudgetLedger {
         })
     }
 
+    /// Reserve capacity for one provider call of `plan_id`, failing at once
+    /// when there is none.
+    #[cfg(test)]
     pub(super) fn reserve(
         &self,
         plan_id: &str,
         policy: GraphPlanBudgetPolicy,
     ) -> Result<GraphPlanBudgetReservation<'_>> {
+        self.try_reserve(plan_id, policy)
+            .map_err(|refusal| refusal.error)
+    }
+
+    /// [`Self::reserve`], waiting while only reservations in flight leave the
+    /// plan no capacity (bug-0bc2b4). Without `max_turn_usd` a call reserves
+    /// the plan's whole remaining budget, so a task that starts beside it
+    /// waits for it to settle instead of failing. It fails once settled spend
+    /// reaches the ceiling, and ends with a cancellation once `stopped`.
+    pub(super) async fn reserve_waiting(
+        &self,
+        plan_id: &str,
+        policy: GraphPlanBudgetPolicy,
+        stopped: impl Fn() -> bool,
+    ) -> Result<GraphPlanBudgetReservation<'_>> {
+        loop {
+            let capacity = self.capacity.notified();
+            match self.try_reserve(plan_id, policy) {
+                Ok(reservation) => return Ok(reservation),
+                Err(refusal) if !refusal.blocked => return Err(refusal.error),
+                Err(_) if stopped() => {
+                    return Err(RokoError::cancelled(format!(
+                        "the run stopped while a task of plan `{plan_id}` waited for its budget"
+                    )));
+                }
+                Err(_) => {
+                    let _ = tokio::time::timeout(RESERVE_RECHECK_INTERVAL, capacity).await;
+                }
+            }
+        }
+    }
+
+    fn try_reserve(
+        &self,
+        plan_id: &str,
+        policy: GraphPlanBudgetPolicy,
+    ) -> std::result::Result<GraphPlanBudgetReservation<'_>, ReserveRefusal> {
         let mut plans = self.plans.lock();
         let state = plans.entry(plan_id.to_string()).or_default();
         if let Some(error) = &state.persistence_error {
-            return Err(RokoError::Store(format!(
+            return Err(ReserveRefusal::failed(RokoError::Store(format!(
                 "Graph cost ledger for plan `{plan_id}` is unavailable: {error}"
-            )));
+            ))));
         }
 
         let mut reserved_micro_usd = 0;
@@ -196,10 +263,14 @@ impl GraphPlanBudgetLedger {
                     .saturating_add(state.reserved_micro_usd);
                 let available = ceiling.saturating_sub(committed);
                 if available == 0 {
-                    return Err(RokoError::BudgetExceeded {
+                    let exceeded = RokoError::BudgetExceeded {
                         dimension: "plan_cost_micro_usd",
                         used: micro_usd_to_usize(committed),
                         limit: micro_usd_to_usize(ceiling),
+                    };
+                    return Err(ReserveRefusal {
+                        error: exceeded,
+                        blocked: state.spent_micro_usd < ceiling,
                     });
                 }
                 reserved_micro_usd = policy
@@ -216,7 +287,7 @@ impl GraphPlanBudgetLedger {
                         state.reserved_micro_usd.saturating_sub(reserved_micro_usd);
                     let message = format!("persist provider-cost reservation: {error:#}");
                     state.persistence_error = Some(message.clone());
-                    return Err(RokoError::Store(message));
+                    return Err(ReserveRefusal::failed(RokoError::Store(message)));
                 }
                 Some(reserved_micro_usd)
             }
@@ -256,8 +327,12 @@ impl GraphPlanBudgetLedger {
         {
             let message = format!("persist actual provider cost: {error:#}");
             state.persistence_error = Some(message.clone());
+            drop(plans);
+            self.capacity.notify_waiters();
             return Err(RokoError::Store(message));
         }
+        drop(plans);
+        self.capacity.notify_waiters();
         Ok(())
     }
 
@@ -277,6 +352,8 @@ impl GraphPlanBudgetLedger {
                 ));
             }
         }
+        drop(plans);
+        self.capacity.notify_waiters();
     }
 
     #[cfg(test)]
@@ -334,16 +411,21 @@ pub(super) fn task_budget_ceiling_usd(
 }
 
 /// Provider spend per task (`"{plan_id}/{task_id}"`), summed across every
-/// attempt of this run, for per-task ceiling admission, and the process's
+/// attempt of the run, for per-task ceiling admission, and the process's
 /// spend across all tasks, for the daily ceiling.
 ///
-/// Unlike the plan ledger it is not checkpointed: a resumed run starts each
-/// task's count at zero.
+/// The run's retry state keeps each task's spend beside its Graph checkpoint
+/// ([`GraphTaskDispatcher::record_task_spend`]), and a resumed run restores
+/// it, so the ceiling counts every attempt of the run (gap-34b2ed).
 #[derive(Debug, Default)]
 pub(super) struct GraphTaskSpendLedger {
+    /// This process's spend per task.
     tasks: parking_lot::Mutex<HashMap<String, u64>>,
     /// Calls whose cost was never priced: they used tokens at $0.
     unpriced_calls: std::sync::atomic::AtomicUsize,
+    /// Spend per task that earlier processes of a resumed run recorded. It
+    /// counts toward the task's ceiling, not toward this process's spend.
+    earlier: parking_lot::Mutex<HashMap<String, u64>>,
 }
 
 /// What this process has spent on provider calls so far.
@@ -383,7 +465,7 @@ impl GraphTaskSpendLedger {
             return Ok(());
         }
         let ceiling_micro_usd = usd_to_micro_usd(ceiling_usd).max(1);
-        let spent_micro_usd = self.tasks.lock().get(task_key).copied().unwrap_or(0);
+        let spent_micro_usd = self.task_total(task_key);
         if spent_micro_usd >= ceiling_micro_usd {
             return Err(RokoError::BudgetExceeded {
                 dimension: "task_cost_micro_usd",
@@ -392,6 +474,20 @@ impl GraphTaskSpendLedger {
             });
         }
         Ok(())
+    }
+
+    /// `task_key`'s spend over the run's attempts: this process's, and what
+    /// earlier processes of a resumed run recorded.
+    pub(super) fn task_total(&self, task_key: &str) -> u64 {
+        let own = self.tasks.lock().get(task_key).copied().unwrap_or(0);
+        let earlier = self.earlier.lock().get(task_key).copied().unwrap_or(0);
+        own.saturating_add(earlier)
+    }
+
+    /// Count `micro_usd`, which an earlier process of a resumed run recorded
+    /// for `task_key`, toward the task's ceiling (gap-34b2ed).
+    pub(super) fn restore(&self, task_key: &str, micro_usd: u64) {
+        self.earlier.lock().insert(task_key.to_string(), micro_usd);
     }
 
     /// Everything this process has recorded, across all tasks.
@@ -511,7 +607,7 @@ impl std::fmt::Display for DailyStop {
                 f,
                 "budget.max_daily_usd = ${:.4} cannot be enforced: today's spend (UTC) includes \
                  {calls} provider call(s) whose cost was never priced; give their models a price \
-                 in [models], or run with --budget-override",
+                 in [models], or run with --no-budget",
                 micro_usd_to_usd(ceiling_micro_usd)
             ),
             Self::Malformed(bits) => write!(
@@ -556,6 +652,17 @@ fn daily_stop(
 }
 
 impl GraphTaskDispatcher {
+    /// Record a provider call of `plan_id/task_id` toward the task's ceiling,
+    /// and keep the task's spend with the run's retry state, so a resumed run
+    /// counts it as well (gap-34b2ed).
+    pub(super) fn record_task_spend(&self, plan_id: &str, task_id: &str, usage: &roko_core::Usage) {
+        let key = format!("{plan_id}/{task_id}");
+        self.task_spend.record(&key, usage);
+        let spent = self.task_spend.task_total(&key);
+        self.gate_retry_context
+            .set_task_spend(plan_id, task_id, spent);
+    }
+
     /// Read today's spend so far from the costs log, so that a run whose day
     /// is already spent starts no task ([`Self::plan_dispatch_stop`]).
     /// Dispatches read it themselves otherwise.
@@ -566,8 +673,9 @@ impl GraphTaskDispatcher {
     }
 
     /// Refuse a provider dispatch once today's spend reached
-    /// `budget.max_daily_usd`, mirroring the plan ceiling: an explicit
-    /// `--budget` override only warns, and `--no-budget` disables the check.
+    /// `budget.max_daily_usd`, mirroring the plan ceiling: a policy that
+    /// continues on exhaustion only warns, and `--no-budget` disables the
+    /// check.
     pub(super) async fn admit_daily_budget(&self, spec: &TaskExecutionSpec) -> Result<()> {
         let policy = self.budget_policy;
         if policy.continue_on_exhaustion && policy.ceiling_micro_usd.is_none() {
@@ -585,7 +693,7 @@ impl GraphTaskDispatcher {
             tracing::warn!(
                 plan_id = %spec.plan_id,
                 task = %spec.title,
-                "{stop}; continuing under the explicit --budget override"
+                "{stop}; continuing, as the plan's budget policy allows"
             );
             return Ok(());
         }
@@ -684,7 +792,8 @@ mod tests {
     use super::*;
     use crate::graph_task_dispatch::tests::{
         STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD, VERIFY_PROVIDER, batch_ctx,
-        make_batch_dispatcher, make_scripted_batch_dispatcher, make_spec, make_task_def,
+        make_bare_dispatcher, make_batch_dispatcher, make_scripted_batch_dispatcher, make_spec,
+        make_task_def,
     };
 
     #[test]
@@ -840,6 +949,69 @@ mod tests {
             thread.join().expect("admission thread");
         }
         assert_eq!(ledger.snapshot("plan-a", policy).reserved_usd, 0.0);
+    }
+
+    /// bug-0bc2b4: with a plan budget and no `max_turn_usd` a call reserves
+    /// the plan's whole remaining budget. A task dispatched beside it waits
+    /// for that reservation to settle instead of failing, and both run.
+    #[tokio::test]
+    async fn concurrent_tasks_wait_for_a_reserved_plan_budget() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.10, |_| {}).await;
+        let dispatcher = dispatcher.with_plan_budget(1.0, 0.0, false);
+        let mut other = task.clone();
+        other.id = "T-OTHER".to_string();
+        let (spec, other_spec) = (make_spec(&task), make_spec(&other));
+        let ctx = batch_ctx();
+
+        let first = dispatcher.dispatch(&spec, Vec::new(), &ctx);
+        let second = dispatcher.dispatch(&other_spec, Vec::new(), &ctx);
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .expect("both tasks finish");
+        first.expect("the first task runs");
+        second.expect("the second waits for the budget, then runs");
+        let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+        assert!((spent - 0.20).abs() < 1e-6, "{spent}");
+    }
+
+    /// A reservation waiting for capacity fails once settled spend reaches
+    /// the ceiling, and ends with a cancellation once its run stops.
+    #[tokio::test]
+    async fn a_waiting_reservation_ends_at_the_ceiling_or_a_stop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let ledger = GraphPlanBudgetLedger::default();
+        let policy = GraphPlanBudgetPolicy::from_ceiling(0.50, false);
+        let first = ledger
+            .reserve_waiting("plan-a", policy, || false)
+            .await
+            .expect("capacity");
+        let stopped = AtomicBool::new(false);
+        let waiting = ledger.reserve_waiting("plan-a", policy, || stopped.load(Ordering::SeqCst));
+        let stop = async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            stopped.store(true, Ordering::SeqCst);
+        };
+        let (waited, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(waiting, stop)
+        })
+        .await
+        .expect("the stop ends the wait");
+        assert!(matches!(waited.err(), Some(RokoError::Cancelled(_))));
+
+        first.settle(0.50).expect("settle at the ceiling");
+        let spent = ledger
+            .reserve_waiting("plan-a", policy, || false)
+            .await
+            .err()
+            .expect("the plan is spent");
+        assert!(
+            matches!(spent, RokoError::BudgetExceeded { .. }),
+            "{spent:?}"
+        );
     }
 
     #[test]
@@ -1068,6 +1240,53 @@ mod tests {
         panic!("no provider streamed its message before its time ran out");
     }
 
+    /// gap-34b2ed: a task's spend and the turn-cap retry it is owed are kept
+    /// with the run's retry state. A resumed process of the run counts the
+    /// spend toward the task's ceiling, not as its own, and raises the cap;
+    /// a fresh run starts from nothing.
+    #[tokio::test]
+    async fn task_spend_and_turn_cap_retry_survive_resume() {
+        let temp = tempdir().expect("tempdir");
+        let kept = temp
+            .path()
+            .join(".roko/state/graph/plan/retry-feedback.json");
+        let usage = roko_core::Usage {
+            input_tokens: 1_000,
+            output_tokens: 200,
+            cost_usd: 0.10,
+            ..roko_core::Usage::default()
+        };
+        let retry = TurnCapRetry {
+            cap: 60,
+            num_turns: Some(61),
+        };
+
+        let first = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        first.attach_retry_feedback("plan", kept.clone(), "run-1");
+        first.record_task_spend("plan", "T1", &usage);
+        first.keep_turn_cap_retry("plan", "T1", retry);
+        drop(first);
+
+        let resumed = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        resumed.attach_retry_feedback("plan", kept.clone(), "run-1");
+        assert!(
+            resumed.task_spend.admit("plan/T1", 0.10).is_err(),
+            "the earlier process's spend counts toward the task"
+        );
+        assert_eq!(
+            resumed.task_spend.process_spend(),
+            ProcessSpend::default(),
+            "but not as this process's spend"
+        );
+        assert_eq!(resumed.take_turn_cap_retry("plan", "T1"), Some(retry));
+        drop(resumed);
+
+        let fresh = make_bare_dispatcher(RokoConfig::default(), temp.path()).await;
+        fresh.attach_retry_feedback("plan", kept, "run-2");
+        assert!(fresh.task_spend.admit("plan/T1", 0.10).is_ok());
+        assert_eq!(fresh.take_turn_cap_retry("plan", "T1"), None);
+    }
+
     // ── budget.max_daily_usd (bug-ae28ac) ───────────────────────────────
 
     /// A call an earlier run recorded at `timestamp`.
@@ -1202,13 +1421,13 @@ mod tests {
         );
     }
 
-    /// `--budget-override` only warns about a spent day, `--no-budget` turns
-    /// the check off, and a ceiling of `0.0` is unlimited.
+    /// `--no-budget` turns the daily check off, and a daily ceiling of `0.0`
+    /// is unlimited, so a spent day still dispatches. `--budget-override`
+    /// lifts only the plan ceiling (`a_budget_override_leaves_a_spent_day_spent`).
     #[tokio::test]
-    async fn overrides_and_a_zero_ceiling_let_a_spent_day_dispatch() {
+    async fn no_budget_and_a_zero_daily_ceiling_let_a_spent_day_dispatch() {
         let earlier = [earlier_call(chrono::Utc::now(), 3.0)];
         for (label, max_daily_usd, override_ceiling) in [
-            ("--budget-override", 1.0, Some(10.0)),
             ("--no-budget", 1.0, Some(0.0)),
             ("max_daily_usd = 0", 0.0, None),
         ] {
@@ -1231,6 +1450,34 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{label}: the call is admitted: {error}"));
             assert!(provider_ran(&temp), "{label}");
         }
+    }
+
+    /// gap-d31457: `--budget-override` sets a hard plan ceiling and lifts no
+    /// other limit, so a spent day still starts no task.
+    #[tokio::test]
+    async fn a_budget_override_leaves_a_spent_day_spent() {
+        let temp = tempdir().expect("tempdir");
+        let earlier = [earlier_call(chrono::Utc::now(), 3.0)];
+        let (dispatcher, task) = daily_dispatcher(&temp, 1.0, &earlier, true).await;
+        // The policy `--budget-override 10` runs with.
+        let dispatcher = dispatcher.with_plan_budget(10.0, 0.0, false);
+        let spec = make_spec(&task);
+        dispatcher.prime_daily_budget().await;
+        assert!(dispatcher.plan_dispatch_stop(&spec.plan_id).is_some());
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect_err("the day is spent");
+        assert!(
+            matches!(
+                error,
+                RokoError::BudgetExceeded { dimension, .. }
+                    if dimension.contains("budget.max_daily_usd")
+            ),
+            "got {error:?}"
+        );
+        assert!(!provider_ran(&temp), "the provider was never called");
     }
 
     /// A call whose cost was never priced makes the day's spend unknown,

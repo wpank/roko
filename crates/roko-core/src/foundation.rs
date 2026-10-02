@@ -634,6 +634,11 @@ pub enum FeedbackEvent {
         /// (`"{run}:{plan}:{task}:{attempt}"`), when the caller has one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         attempt_key: Option<String>,
+        /// True when the response came from a response cache: no provider
+        /// was called, so the call cost nothing. The usage fields repeat
+        /// the cached call's.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cache_hit: bool,
     },
     /// Feedback from a gate execution.
     GateResult {
@@ -890,8 +895,8 @@ pub enum SharedGateError {
 /// `CellContext.resources.gates`.
 ///
 /// This is the executor-neutral contract that both Runner-v2 and Graph can use.
-/// The `DefaultGateService` in `roko-gate` wraps `GatePipelineBuilder` to
-/// provide the production implementation.
+/// The production implementation is roko-cli's `RunnerProductionGateAdapter`,
+/// which runs `roko-gate`'s `ProductionGateService`.
 #[async_trait]
 pub trait SharedGateEvaluator: Send + Sync + 'static {
     /// Evaluate a single gate rung for the given request.

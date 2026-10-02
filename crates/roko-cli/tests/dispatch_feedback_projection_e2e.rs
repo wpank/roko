@@ -68,6 +68,7 @@ fn task() -> TaskDef {
         estimated_minutes: None,
         crates_touched: None,
         sequence: 0,
+        spec: Default::default(),
         hints: Default::default(),
     }
 }
@@ -91,6 +92,7 @@ fn ctx(workdir: std::path::PathBuf) -> DispatchContext {
         cached_workspace_map: String::new(),
         cached_workspace_context: String::new(),
         cached_cfactor_context: String::new(),
+        concurrent_plans: Vec::new(),
     }
 }
 

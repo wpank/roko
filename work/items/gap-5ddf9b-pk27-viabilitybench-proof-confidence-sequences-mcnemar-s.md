@@ -77,3 +77,10 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK20 (gap-5ebb4f), PK21 (gap-1149aa), PK22 (gap-46fd19).
 - Suggested model: sonnet.
+- 2026-10-02 (filer-grpD, backlog wave reports, PK96 gap-a6dab7): task 3340 (replay IO) is one of the producers
+  `benchmarks/viabilitybench/analysis/figlib.py`'s "Metric names" section names for metric names the figure/table
+  scripts already declare in their `READS` but nothing emits yet — at minimum `regret_cum`
+  (`fig_f9_routing.py:32`: "cumulative regret against the oracle after p tasks"), which needs the replayed
+  policy's per-step choices this task's "Replay IO: read run records ... deterministically" is meant to provide.
+  Check `fig_f9_routing.py` and `figlib.py:52-54` for the exact name/clause contract (metric name, `stream.position`
+  clause) before closing this task so the already-written reader doesn't need its own follow-up fix.

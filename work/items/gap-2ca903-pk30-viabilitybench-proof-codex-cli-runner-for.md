@@ -8,7 +8,6 @@ severity = "p1"
 goal = "proof"
 rank = 30
 size = "L"
-hold = "paper rewrite in progress (session roko-55, at Will's request, 2026-10-02): no work on docs/whitepaper/* or tmp/cybernetic-harness/paper/* until it reports done"
 subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-10-02
 updated = 2026-10-02
@@ -93,3 +92,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK08 (gap-a0043b), PK10 (gap-f61823), PK12 (gap-08120e), PK13 (gap-9e3134), PK20 (gap-5ebb4f), PK23 (gap-eb1aa3), PK25 (gap-daeaa9), PK27 (gap-5ddf9b), PK28 (gap-c06ff3), PK29 (gap-064c40).
 - Existing work items this package covers or touches: dec-39c781, gap-644040, q-ab27d3. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
+
+- 2026-10-02 (coordinator): the paper-rewrite hold is lifted. PREREG.md (3345) does not exist yet; put it where the rewritten paper or the benchmark keeps it (the old empirical draft is in `tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/`).

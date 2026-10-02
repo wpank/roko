@@ -8,6 +8,7 @@ severity = "p1"
 goal = "golden-path"
 rank = 15
 size = "L"
+hold = "workflow-audit migration in progress (session roko-7d, at Will's request, 2026-10-02): it removes the PRD pipeline and folds roko do/develop into roko run; check with roko-7d before starting work that edits PRD code, do_cmd.rs or the Run/Do/Prd parts of main.rs"
 subsystem = ["roko-cli/tests"]
 created = 2026-10-02
 updated = 2026-10-02

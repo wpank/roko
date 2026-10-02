@@ -65,3 +65,11 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK22 (gap-46fd19).
 - Suggested model: sonnet.
+- 2026-10-02 (filer-grpD, backlog wave reports, PK96 gap-a6dab7): task 3328's P1 stream work should name the 30-task
+  pass^5 subset's stream id exactly `p1_pass5` — `benchmarks/viabilitybench/analysis/figlib.py:102-103` already
+  hardcodes `H3_STREAM = "p1_h3"  # task 3328's stream ids` and
+  `PASS5_STREAM = "p1_pass5"  # the 30-task pass^5 subset's stream`, and `fig_f4_passk.py` reads
+  `stream.id == "p1_pass5"` (and `CORE_STREAM`/`"p1_core"`). Confirmed at HEAD: this task's own file
+  (`tmp/backlog/2026-10-02-complete-and-wire/3328-p1-streams-p1-core-and-p1-h3.md`) mentions a "pass^5 subset"
+  inside `p1_core` but never commits to the literal id `p1_pass5` — whoever implements it should use that exact
+  string so the already-written figure/table scripts resolve without edits.

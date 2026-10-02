@@ -492,7 +492,7 @@ fn agent_tool_shells_exclude_provider_keys() {
             "allowed_tools = []",
             "allowed_tools = [\"run_tests\", \"bash\"]",
         )
-        .replace("env >> {fixtures}/gate-env.txt", "true");
+        .replace("env >> {fixtures}/gate-env.txt", "test -d .");
     // The fake provider's config is set once its port is known.
     let (workspace, _provider) = workspace(TOOLS_PLAN, &tasks, "");
     let base_url = spawn_tool_calling_server(&workspace.fixtures);

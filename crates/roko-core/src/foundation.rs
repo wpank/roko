@@ -895,8 +895,8 @@ pub enum SharedGateError {
 /// `CellContext.resources.gates`.
 ///
 /// This is the executor-neutral contract that both Runner-v2 and Graph can use.
-/// The `DefaultGateService` in `roko-gate` wraps `GatePipelineBuilder` to
-/// provide the production implementation.
+/// The production implementation is roko-cli's `RunnerProductionGateAdapter`,
+/// which runs `roko-gate`'s `ProductionGateService`.
 #[async_trait]
 pub trait SharedGateEvaluator: Send + Sync + 'static {
     /// Evaluate a single gate rung for the given request.

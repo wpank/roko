@@ -753,8 +753,11 @@ fn default_strata() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::{
-        Qualifier, REGISTRY_OVERRIDE_PATH, ReasonCode, Registry, RegistryError, StaticFinding,
+        Lifecycle, Qualifier, REGISTRY_OVERRIDE_PATH, ReasonCode, ReceiptKind, Registry,
+        RegistryError, StaticFinding,
     };
 
     /// One valid loop: the base the rejection tests break.
@@ -803,6 +806,16 @@ receipt = "executed_model"
             .iter()
             .map(|spec| spec.id.as_str())
             .collect()
+    }
+
+    /// Whether `text` holds `word` between non-identifier characters.
+    fn contains_word(text: &str, word: &str) -> bool {
+        let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+        text.match_indices(word).any(|(at, _)| {
+            let before = text[..at].chars().next_back();
+            let after = text[at + word.len()..].chars().next();
+            !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+        })
     }
 
     #[test]
@@ -995,5 +1008,131 @@ receipt = "artifact_hash_in_request"
             Registry::load(workdir.path()),
             Err(RegistryError::File { .. })
         ));
+    }
+
+    #[test]
+    fn embedded_registry_declares_every_loop() {
+        // S03 v1.1 §6 T1's loops, plus the retry-budget reader of the gate
+        // thresholds (5103 option a).
+        const EXPECTED: [&str; 21] = [
+            "L-route",
+            "L-dream-bias",
+            "L-linucb",
+            "L-model-exp",
+            "L-routing-log",
+            "L-know",
+            "L-rag11",
+            "L-play",
+            "L-hdc",
+            "L-err",
+            "L-dream",
+            "L-prompt-exp",
+            "L-bid",
+            "L-sec",
+            "L-gate-thr",
+            "L-retry-budget",
+            "L-holdout",
+            "L-M1",
+            "L-M3",
+            "L-M4",
+            "L-placebo",
+        ];
+        let registry = Registry::embedded().expect("the embedded registry is valid");
+        assert_eq!(ids(&registry), EXPECTED);
+        let spec = |id: &str| registry.get(id).expect("registered loop");
+
+        // Observe-only loops are measured but never randomized; nothing is
+        // retired yet, and nothing enforces before C2, C4 and 14 days (D10).
+        let observe_only: Vec<&str> = ids(&registry)
+            .into_iter()
+            .filter(|id| spec(id).lifecycle == Lifecycle::ObserveOnly)
+            .collect();
+        assert_eq!(observe_only, ["L-routing-log", "L-err", "L-gate-thr", "L-retry-budget"]);
+        for loop_spec in registry.loops() {
+            let id = loop_spec.id.as_str();
+            assert!(!matches!(loop_spec.lifecycle, Lifecycle::Retired { .. }), "{id}");
+            assert!(!loop_spec.enforce && !loop_spec.exempt, "{id}");
+        }
+
+        // L-M1's static 10% and the placebo's 0.5 replace the schedule.
+        let fixed: Vec<(&str, f64)> = registry
+            .loops()
+            .iter()
+            .filter_map(|loop_spec| Some((loop_spec.id.as_str(), loop_spec.fixed_holdout?)))
+            .collect();
+        assert_eq!(fixed, [("L-M1", 0.10), ("L-placebo", 0.5)]);
+
+        // Nested loops draw only inside their parent's learned arm, and L-M3
+        // rotates with L-route on the route layer.
+        let nested: Vec<(&str, &str)> = registry
+            .loops()
+            .iter()
+            .filter_map(|loop_spec| {
+                let parent = loop_spec.nested_in.as_ref()?;
+                Some((loop_spec.id.as_str(), parent.as_str()))
+            })
+            .collect();
+        let expected = [
+            ("L-dream-bias", "L-route"),
+            ("L-linucb", "L-route"),
+            ("L-rag11", "L-know"),
+        ];
+        assert_eq!(nested, expected);
+        assert_eq!(spec("L-M3").layer, spec("L-route").layer);
+        assert_eq!(spec("L-dream-bias").assignment_layer().as_str(), "route.dream_bias");
+
+        // Every receipt kind proves at least one loop's exposure.
+        let receipts = [
+            ReceiptKind::ExecutedModel,
+            ReceiptKind::ArtifactHashInRequest,
+            ReceiptKind::IncludedIds,
+            ReceiptKind::ThresholdUsed,
+            ReceiptKind::ParamsDigest,
+            ReceiptKind::PredictionConsumed,
+            ReceiptKind::AuditPenaltyApplied,
+            ReceiptKind::Sham,
+        ];
+        for receipt in receipts {
+            let used = registry.loops().iter().any(|loop_spec| loop_spec.receipt == receipt);
+            assert!(used, "no loop proves exposure with {receipt:?}");
+        }
+
+        // Each finding points at a file under the workspace root that holds
+        // its symbol, checked at a full commit sha.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for loop_spec in registry.loops() {
+            let id = loop_spec.id.as_str();
+            for finding in &loop_spec.static_findings {
+                let (file, symbol) = finding.pointer_parts().expect("validated pointer");
+                let text = std::fs::read_to_string(root.join(file))
+                    .unwrap_or_else(|error| panic!("{id}: {file}: {error}"));
+                for segment in symbol.split("::") {
+                    assert!(contains_word(&text, segment), "{id}: `{segment}` is not in {file}");
+                }
+                assert_eq!(finding.verified_at.len(), 40, "{id}: {}", finding.pointer);
+            }
+        }
+
+        // The facts 5103 re-verified at HEAD each appear with their pointer.
+        let facts = [
+            ("L-route", "model_routing.rs::ModelRouter::route"),
+            ("L-route", "::ladder_choice"),
+            ("L-dream-bias", "::cascade_pick"),
+            ("L-prompt-exp", "prompt_experiment.rs::context"),
+            ("L-prompt-exp", "::check_conclusion"),
+            ("L-prompt-exp", "::RETRIEVAL_STRATEGY_EXPERIMENT_ID"),
+            ("L-gate-thr", "retry_budget.rs::AdaptiveThresholds"),
+            ("L-rag11", "::assign_retrieval_strategy_arm"),
+            ("L-holdout", "::should_update_learning"),
+            ("L-holdout", "verification.rs::record_outcome"),
+            ("L-bid", "::load_attention_bidders"),
+            ("L-bid", "::ATTENTION_BIDDERS_FILENAME"),
+            ("L-err", "::ErrorPatternSink"),
+        ];
+        for (id, pointer) in facts {
+            let findings = &spec(id).static_findings;
+            let found = findings.iter().any(|finding| finding.pointer.ends_with(pointer));
+            assert!(found, "{id} has no finding at {pointer}");
+        }
     }
 }

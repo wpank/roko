@@ -5,9 +5,16 @@
 # Each static finding is a code-review fact the census prints as `declared`
 # evidence, with a `path::symbol` pointer and the commit it was checked at.
 # `verified_at` rots by design: the census marks a finding `declared_stale`
-# when it differs from the harness sha.
+# when it differs from the harness sha. A finding's `reason` or `qualifier`
+# is the code it is evidence for; findings without one are context.
+#
+# Facts that only logs show (LinUCB's observation count, the bidders'
+# posteriors, the holdout's pass rates) belong to the census, not here.
+# Nothing enforces yet: enforcement waits for C2, C4 and 14 days (D10).
 
 schema = "roko.loop_registry/1"
+
+# ── Route decision ────────────────────────────────────────────────────────
 
 [[loop]]
 id = "L-route"
@@ -17,9 +24,438 @@ layer = "route"
 opportunity = "no pin (model_hint, force_backend) and at least two eligible models"
 default_policy = "default_slug"
 receipt = "executed_model"
+notes = [
+    "L-M3 shares the route layer and rotates with this loop by epoch, never crossed (S03 §4.3).",
+    "Decision 4111: while the ladder routes plan tasks, the cascade router stays a shadow learner credited only for its own picks; whether it keeps an actuator is G32 (41xx).",
+]
 
 [[loop.static_findings]]
 claim = "The three default_slug fallbacks (unconfigured model, disabled provider, no tool support) return ModelChoiceSource::Router, so a guard's pick carries the router's label (G55)."
 pointer = "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route"
 verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
 reason = "dormant:mask"
+
+[[loop.static_findings]]
+claim = "With [routing.ladder] on by default (D11), ladder_choice routes a plan task to its ladder rung and only logs the cascade pick as router_pick, a shadow."
+pointer = "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::ladder_choice"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop]]
+id = "L-dream-bias"
+name = "dream routing bias"
+decision_point = "dispatch::model_routing::ModelRouter::effective_bias -> CascadeRouter::route_with_bias"
+layer = "route"
+nested_in = "L-route"
+opportunity = "dream routing advice exists for the task category"
+default_policy = "the router's pick without the bias"
+receipt = "executed_model"
+notes = [
+    "Decision 3108 removes RoutingBias (task 3109); the loop retires with it.",
+]
+
+[[loop.static_findings]]
+claim = "With provider health attached, cascade_pick calls route_with_health_scored, which takes no bias, so the dream bias never reaches the pick."
+pointer = "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::cascade_pick"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+reason = "dormant:write_only"
+
+[[loop.static_findings]]
+claim = "The dispatch factory always attaches provider health to the router."
+pointer = "crates/roko-cli/src/dispatch/factory.rs::with_provider_health"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop]]
+id = "L-linucb"
+name = "LinUCB stage of the cascade router"
+decision_point = "roko_learn::cascade_router::CascadeRouter (LinUCB stage)"
+layer = "route"
+nested_in = "L-route"
+opportunity = "the cascade stage selects with LinUCB"
+default_policy = "the stage's default arm"
+receipt = "executed_model"
+
+[[loop.static_findings]]
+claim = "Settled router outcomes update LinUCB on failures as well as successes (bug-8da8ba), so S03 v1.1's 'learns only from successes' is stale."
+pointer = "crates/roko-cli/src/runtime_feedback/routing.rs::observe_router_outcome"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop]]
+id = "L-model-exp"
+name = "model experiments"
+decision_point = "roko_learn::model_experiment::ModelExperiment::assign_variant"
+layer = "route"
+opportunity = "an active model experiment for the role"
+default_policy = "the experiment's control model"
+receipt = "executed_model"
+notes = [
+    "On the route layer if it is ever wired, rotating by epoch with L-route and L-M3; 5119 replaces its rule.",
+]
+
+[[loop.static_findings]]
+claim = "Only the CLI (commands/experiment.rs, commands/learn.rs) reads or writes model-experiments.json; no dispatch path consults it."
+pointer = "crates/roko-cli/src/commands/experiment.rs::ModelExperimentStore"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+reason = "dormant:no_opportunity"
+
+[[loop.static_findings]]
+claim = "assign_variant is UCB1 over a DefaultHasher partition, and check_conclusion is re-tested after every outcome, which optional stopping makes invalid."
+pointer = "crates/roko-learn/src/model_experiment.rs::ModelExperiment::assign_variant"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+qualifier = "misspecified"
+
+[[loop]]
+id = "L-routing-log"
+name = "routing decision log"
+decision_point = "roko_learn::routing_log::RoutingLogger"
+layer = "route"
+opportunity = "every route decision"
+default_policy = "no route decision row"
+receipt = "executed_model"
+lifecycle = "observe_only"
+notes = [
+    "A record of the route decision rather than a decision of its own, so there is nothing to randomize; S01 P0-8 makes RoutingDecisionLog the route row of decisions.jsonl, whose receipts L-route then uses.",
+]
+
+[[loop.static_findings]]
+claim = "RoutingLogger has no production caller: the Graph wiring census reports the decision writer off, so route decisions are traced, not written (S01 P0-8)."
+pointer = "crates/roko-cli/src/graph_task_dispatch/wiring.rs::decision_writer"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+# ── Knowledge, playbooks and recall ───────────────────────────────────────
+
+[[loop]]
+id = "L-know"
+name = "knowledge injection"
+decision_point = "dispatch::prompt_builder::collect_neuro_knowledge_cached"
+layer = "knowledge"
+opportunity = "the knowledge store is non-empty, the role admits knowledge, and at least one entry clears the floor"
+default_policy = "no knowledge section"
+receipt = "artifact_hash_in_request"
+notes = [
+    "Withhold arm at h = 0.2 per chain, separate from L-play's (D16, decision 4115; S02.P1-7).",
+]
+
+[[loop.static_findings]]
+claim = "Graph feedback now carries the injected knowledge ids (diagnostics.knowledge_ids) into its TaskCompleted and TaskVerified events, so S03 v1.1's knowledge_ids: vec![] is stale; whether rows carry them is a log fact."
+pointer = "crates/roko-cli/src/graph_task_dispatch/feedback.rs::knowledge_ids"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop]]
+id = "L-rag11"
+name = "retrieval strategy experiment (RAG-11)"
+decision_point = "graph_task_dispatch::routing_context::assign_retrieval_strategy_arm"
+layer = "knowledge"
+nested_in = "L-know"
+opportunity = "a knowledge retrieval runs for the attempt"
+default_policy = "the keyword strategy"
+receipt = "artifact_hash_in_request"
+notes = [
+    "Pending retirement: S02.P1-8 deletes the label-only arm.",
+]
+
+[[loop.static_findings]]
+claim = "assign_retrieval_strategy_arm draws the strategy arm after the prompt is assembled, so the arm only labels the attempt."
+pointer = "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::assign_retrieval_strategy_arm"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+reason = "dormant:label_only"
+
+[[loop.static_findings]]
+claim = "GraphTaskDispatcher::dispatch calls plan_dispatch, which assembles the prompt, before its RAG-11 block draws the strategy."
+pointer = "crates/roko-cli/src/graph_task_dispatch.rs::plan_dispatch"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+reason = "dormant:label_only"
+
+[[loop]]
+id = "L-play"
+name = "playbook injection"
+decision_point = "dispatch::prompt_builder::collect_playbooks_cached"
+layer = "playbooks"
+opportunity = "a matching playbook exists"
+default_policy = "seeded playbooks only"
+receipt = "artifact_hash_in_request"
+notes = [
+    "Withhold arm at h = 0.2 per chain, separate from L-know's (D16, decision 4115; S02.P1-7).",
+]
+
+[[loop.static_findings]]
+claim = "Graph feedback passes the injected playbook ids and credits each with the attempt's learning label (W07)."
+pointer = "crates/roko-cli/src/graph_task_dispatch/feedback.rs::playbook_ids"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop]]
+id = "L-hdc"
+name = "HDC episode recall"
+decision_point = "dispatch::prompt_builder::collect_episode_knowledge_cached (similar-episode recall)"
+layer = "episodes"
+opportunity = "a past episode resembles the task"
+default_policy = "no episode section"
+receipt = "artifact_hash_in_request"
+
+[[loop.static_findings]]
+claim = "An episode's HDC fingerprint is HdcVector::from_seed of the serialized prompt and outcome, one 64-bit FNV-1a hash expanded, so it identifies exact inputs and carries no similarity."
+pointer = "crates/roko-primitives/src/hdc.rs::HdcVector::from_seed"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+reason = "dormant:degenerate"
+
+[[loop.static_findings]]
+claim = "Prompt assembly recalls episodes by keyword overlap, not by fingerprint."
+pointer = "crates/roko-cli/src/dispatch/prompt_builder.rs::collect_episode_knowledge_cached"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop]]
+id = "L-err"
+name = "error patterns"
+decision_point = "dispatch::factory::SharedAgentFactory::format_error_patterns_for_prompt"
+layer = "error_patterns"
+opportunity = "a discovered error pattern matches the task"
+default_policy = "no error-pattern section"
+receipt = "artifact_hash_in_request"
+lifecycle = "observe_only"
+notes = [
+    "Observe-only: no withhold arm, so its benefit is not identified (D16, decision 4115).",
+]
+
+[[loop.static_findings]]
+claim = "Graph runs write error patterns through ErrorPatternSink (gap-2ce86f, ed471a8c1) into the store dispatch reads."
+pointer = "crates/roko-cli/src/graph_execution/plan_runner.rs::ErrorPatternSink"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop.static_findings]]
+claim = "Graph dispatch formats the top five error patterns into every prompt."
+pointer = "crates/roko-cli/src/graph_task_dispatch.rs::format_error_patterns_for_prompt"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop]]
+id = "L-dream"
+name = "dream consolidation"
+decision_point = "roko_dreams consolidation cycle (dream-sourced artifacts)"
+layer = "provenance"
+opportunity = "the attempt is exposed to artifacts with source = dream"
+default_policy = "withhold dream-sourced artifacts"
+receipt = "artifact_hash_in_request"
+
+[[loop.static_findings]]
+claim = "roko serve never starts the resident dream scheduler; only roko daemon calls start_dream_loop (gap-4d1bff)."
+pointer = "crates/roko-serve/src/dreams.rs::start_dream_loop"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop.static_findings]]
+claim = "Dream journal entries record hard-coded and fabricated fields (bug-7257cb)."
+pointer = "crates/roko-dreams/src/runner.rs::persist_journal_entry"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+# ── Prompt variants and sections ──────────────────────────────────────────
+
+[[loop]]
+id = "L-prompt-exp"
+name = "prompt experiments"
+decision_point = "dispatch::DispatchContext::prompt_experiment"
+layer = "prompt_variant"
+opportunity = "an active prompt experiment for the role"
+default_policy = "the experiment's control variant"
+receipt = "artifact_hash_in_request"
+notes = [
+    "5118 replaces the UCB1 assignment and the peeking χ² rule with confidence sequences and logged propensities.",
+]
+
+[[loop.static_findings]]
+claim = "Prompt experiments run on the Graph path: context builds an attempt's treatments whenever the store holds a prompt experiment (gap-fdd27f)."
+pointer = "crates/roko-cli/src/graph_task_dispatch/prompt_experiment.rs::context"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop.static_findings]]
+claim = "assign_variant is UCB1, and record_outcome re-tests check_conclusion (χ² or a Wilson early stop) after every outcome, which optional stopping makes invalid."
+pointer = "crates/roko-learn/src/prompt_experiment.rs::PromptExperiment::check_conclusion"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+qualifier = "misspecified"
+
+[[loop.static_findings]]
+claim = "The live .roko/learn/experiments.json holds only the retrieval-strategy experiment, which context skips, so no prompt experiment runs today."
+pointer = "crates/roko-learn/src/prompt_experiment.rs::ExperimentStore::RETRIEVAL_STRATEGY_EXPERIMENT_ID"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop]]
+id = "L-bid"
+name = "attention bidders"
+decision_point = "dispatch::prompt_builder::load_attention_bidders"
+layer = "sections"
+opportunity = "at least one optional section and the token budget binds"
+default_policy = "include every section by static priority"
+receipt = "included_ids"
+notes = [
+    "Pending retirement: S02.P1-10's section bandit (L-sec) replaces it.",
+]
+
+[[loop.static_findings]]
+claim = "load_attention_bidders has test callers only (G75): no run loads the persisted bidders."
+pointer = "crates/roko-cli/src/dispatch/prompt_builder.rs::load_attention_bidders"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop.static_findings]]
+claim = "PromptAssembler::record_outcome, the bidders' only update, has a test caller only."
+pointer = "crates/roko-cli/src/dispatch/prompt_builder.rs::PromptAssembler::record_outcome"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop.static_findings]]
+claim = "The live .roko/learn/attention-bidders.json holds all 7 sections at Beta(39, 4)."
+pointer = "crates/roko-cli/src/dispatch/prompt_builder.rs::ATTENTION_BIDDERS_FILENAME"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop]]
+id = "L-sec"
+name = "section bandit"
+decision_point = "dispatch::prompt_builder::PromptAssembler::assemble (droppable sections)"
+layer = "sections"
+opportunity = "at least one droppable section and the token budget binds"
+default_policy = "include every section by static priority"
+receipt = "included_ids"
+notes = [
+    "Not built: S02.P1-10. Graph-only (decision 4115): a droppable section is excluded with p ≤ 0.2 for its first 100 opportunities, then ≤ 0.5; pinned sections never.",
+]
+
+[[loop.static_findings]]
+claim = "No section is ever excluded at random: prompt assembly only reads section effects through SectionEffectivenessSource."
+pointer = "crates/roko-cli/src/dispatch/prompt_builder.rs::SectionEffectivenessSource"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+# ── Gate thresholds and the retry budget ──────────────────────────────────
+
+[[loop]]
+id = "L-gate-thr"
+name = "adaptive verify thresholds"
+decision_point = "roko_gate::adaptive_threshold::AdaptiveThresholds (verify thresholds)"
+layer = "verify_threshold"
+opportunity = "a rung decides on a continuous score"
+default_policy = "the static threshold"
+receipt = "threshold_used"
+lifecycle = "observe_only"
+notes = [
+    "Observe-only per S02 decision 1. Its new reader, the retry budget, has a different π⁰ and is registered as L-retry-budget.",
+]
+
+[[loop.static_findings]]
+claim = "Graph verify runs write gate-thresholds.json, and none of it changes which verify steps run or what their verdicts mean."
+pointer = "crates/roko-cli/src/graph_task_dispatch/gate_learning.rs::GateThresholdWrites"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+reason = "dormant:no_opportunity"
+
+[[loop.static_findings]]
+claim = "The gate request the Graph runner builds carries adaptive_thresholds: None."
+pointer = "crates/roko-cli/src/runner/gate_adapter.rs::adaptive_thresholds"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop.static_findings]]
+claim = "retry_budget.rs now loads AdaptiveThresholds to set retry budgets (351aa5c8f, X08 L3), so S03 v1.1's 'never constructed on Graph' is stale."
+pointer = "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::AdaptiveThresholds"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop]]
+id = "L-retry-budget"
+name = "retry budget from the gate thresholds"
+decision_point = "graph_task_dispatch::retry_budget::TaskRetryBudgets::max_retries"
+layer = "retry_budget"
+opportunity = "a plan task that does not author max_retries"
+default_policy = "the task's static retry budget"
+receipt = "threshold_used"
+lifecycle = "observe_only"
+notes = [
+    "Registered as its own loop (5103 option a) because its π⁰, the static budget, differs from the verify threshold's.",
+]
+
+[[loop.static_findings]]
+claim = "For a task that does not author max_retries, the budget comes from the likeliest-to-fail rung's suggested_max_retries in gate-thresholds.json."
+pointer = "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets::max_retries"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+[[loop.static_findings]]
+claim = "The attempt-open record logs the budget in force as max_retries, the loop's receipt."
+pointer = "crates/roko-learn/src/telemetry/records.rs::AttemptOpenRecord::max_retries"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+
+# ── The legacy holdout ────────────────────────────────────────────────────
+
+[[loop]]
+id = "L-holdout"
+name = "legacy holdout experiment"
+decision_point = "roko_learn::holdout::HoldoutExperiment::should_update_learning"
+layer = "holdout"
+opportunity = "a settled Graph task outcome"
+default_policy = "no learning update from the outcome"
+receipt = "params_digest"
+notes = [
+    "Pending retirement: S02.P1-14's ArmSet replaces it (R.S03-6); loop_audit::assign supersedes its partition.",
+]
+
+[[loop.static_findings]]
+claim = "The Graph verify path only logs should_update_learning: no learner is gated by the partition."
+pointer = "crates/roko-cli/src/graph_task_dispatch/verification.rs::should_update_learning"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+reason = "dormant:write_only"
+
+[[loop.static_findings]]
+claim = "Each outcome is recorded with cost 0.0 (record_outcome(.., 0.0)), so the holdout's cost accounting is empty."
+pointer = "crates/roko-cli/src/graph_task_dispatch/verification.rs::record_outcome"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+qualifier = "misspecified"
+
+[[loop.static_findings]]
+claim = "The partition hashes each task key once with a seeded DefaultHasher, so a task never changes arm."
+pointer = "crates/roko-learn/src/holdout.rs::deterministic_partition"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+qualifier = "misspecified"
+
+# ── The meta-loops (S03 §4.8) ─────────────────────────────────────────────
+
+[[loop]]
+id = "L-M1"
+name = "M1 ultrastable controller"
+decision_point = "S06 controller: the harness policy θ in force at dispatch"
+layer = "harness_policy"
+opportunity = "every dispatch while θ differs from θ₀ or a disturbance episode is open"
+default_policy = "θ₀, the static config"
+receipt = "params_digest"
+outcome = "IAE and drive against the holdout under the same disturbance, plus U"
+fixed_holdout = 0.10
+notes = [
+    "Not built: S06. Its holdout is S06's fixed static arm, never 0 while M1 is on; a demotion forces S06 into shadow mode.",
+]
+
+[[loop]]
+id = "L-M3"
+name = "M3 self-model allocation"
+decision_point = "S04 self-model: model, effort and verify depth per dispatch"
+layer = "route"
+opportunity = "every dispatch whose allocation is not pinned"
+default_policy = "the static allocation: config default model, effort and verify depth"
+receipt = "prediction_consumed"
+notes = [
+    "Not built: S04. Shares the route layer with L-route, rotating by epoch; predictions are computed on both arms, so the CUPED covariate exists on each.",
+]
+
+[[loop]]
+id = "L-M4"
+name = "M4 audit feedback"
+decision_point = "S05 audit feedback: router penalty, rung trust and item contradiction"
+layer = "audit_feedback"
+opportunity = "a passed chain whose audit result would trigger feedback"
+default_policy = "audits run and are measured, but give no feedback"
+receipt = "audit_penalty_applied"
+outcome = "the true false-green rate on hidden tests, plus U"
+notes = [
+    "Not built: S05. M4's feedback is auditable (S03 §9.6). The M4 sensor, the audits themselves, is exempt (`m4_sensor` in [learning.audit] exempt): never demoted, checked by planted known-bad passes, and outcome_sensor_degraded freezes β-based transitions when its catch rate falls.",
+]
+
+# ── The placebo (S03 §4.3) ────────────────────────────────────────────────
+
+[[loop]]
+id = "L-placebo"
+name = "placebo loop"
+decision_point = "S02.P1-14 ArmSet: the placebo decision row"
+layer = "placebo"
+opportunity = "every dispatch"
+default_policy = "identical to the learned policy: the arms cannot differ"
+receipt = "sham"
+fixed_holdout = 0.5
+notes = [
+    "Permanent, zero cost, its own layer (decision 4115). A placebo transition, or a placebo β sequence that excludes 0, trips audit_broken.",
+]

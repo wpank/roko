@@ -81,6 +81,7 @@ pub mod acceptance_contract;
 pub mod agent_judge;
 pub mod artifact_store;
 pub mod attempt_diff;
+pub mod audit;
 /// Criterion benchmark regression detection: parse JSON output, compare against baselines.
 pub mod benchmark_gate;
 mod cancel_safe_command;

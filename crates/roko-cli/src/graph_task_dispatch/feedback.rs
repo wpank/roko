@@ -38,10 +38,6 @@ pub struct GraphFeedbackContext {
     pub experiment_store_path: Option<PathBuf>,
     /// Path to `.roko/learn/gate-failures.jsonl` for structured gate failure records.
     pub gate_failures_path: Option<PathBuf>,
-    /// Path to `.roko/learn/post-gate-reflections.json` for LLM-generated gate reflection store.
-    pub post_gate_reflection_path: Option<PathBuf>,
-    /// Whether gate failure replanning is enabled (`learning.replan_on_gate_failure`).
-    pub replan_on_gate_failure: bool,
     /// P0-04: CodingOracle for post-gate build/test observations.
     pub coding_oracle: Option<Arc<CodingOracle>>,
     /// P2-LRN-6 Loop 1: Path to `.roko/learn/gate-thresholds.json` for
@@ -100,8 +96,6 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("daimon_state", &self.daimon_state.is_some())
             .field("experiment_store_path", &self.experiment_store_path)
             .field("gate_failures_path", &self.gate_failures_path)
-            .field("post_gate_reflection_path", &self.post_gate_reflection_path)
-            .field("replan_on_gate_failure", &self.replan_on_gate_failure)
             .field("coding_oracle", &self.coding_oracle.is_some())
             .field("gate_thresholds_path", &self.gate_thresholds_path)
             .field("retrieval_outcomes_path", &self.retrieval_outcomes_path)
@@ -121,8 +115,6 @@ impl Default for GraphFeedbackContext {
             daimon_state: None,
             experiment_store_path: None,
             gate_failures_path: None,
-            post_gate_reflection_path: None,
-            replan_on_gate_failure: false,
             coding_oracle: None,
             gate_thresholds_path: None,
             retrieval_outcomes_path: None,
@@ -327,12 +319,10 @@ impl GraphTaskDispatcher {
                 &dispatch.target.model_slug,
             )
             .map_or(cost_usd, |uncached| uncached.max(cost_usd));
-            // The task's first attempt, or a retry of a failed one, which
-            // a replan follows when gate failures trigger one.
+            // The task's first attempt, or a retry of a failed one: Graph
+            // runs retry and never replan.
             let eff_strategy = if settled.key().attempt <= 1 {
                 "initial"
-            } else if self.feedback.replan_on_gate_failure {
-                "replan"
             } else {
                 "retry"
             };
@@ -1388,17 +1378,16 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
     }
 
     /// backlog 2107: an attempt writes one efficiency row, its settled one,
-    /// whatever ended it: a pass, a verify failure with replanning on, or a
-    /// provider failure. The pass row carries the verdict and the call's
-    /// tokens, the failed gate's row names the failed step, and a call that
-    /// streamed nothing marks its time to first token unknown.
+    /// whatever ended it: a pass, a verify failure, or a provider failure.
+    /// The pass row carries the verdict and the call's tokens, the failed
+    /// gate's row names the failed step, and a call that streamed nothing
+    /// marks its time to first token unknown.
     #[tokio::test]
     async fn efficiency_writes_one_keyed_row_per_attempt() {
         let temp = tempdir().expect("tempdir");
         let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
         let feedback = GraphFeedbackContext {
             efficiency_path: Some(efficiency_path.clone()),
-            replan_on_gate_failure: true,
             ..GraphFeedbackContext::default()
         };
         let (dispatcher, mut task) =

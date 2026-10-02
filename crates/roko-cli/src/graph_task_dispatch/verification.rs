@@ -844,15 +844,6 @@ impl GraphTaskDispatcher {
                     attempt = attempt_number,
                     "graph verify steps failed"
                 );
-                // ── W12: Gate failure replan signal ───────────────────────
-                if self.feedback.replan_on_gate_failure {
-                    tracing::info!(
-                        plan_id = %spec.plan_id,
-                        task_id = %task.id,
-                        failed_count = failures.len(),
-                        "gate failure replan enabled; Graph engine will retry via max_retries"
-                    );
-                }
                 // ── error_enrichment: enrich gate failure before retry ───
                 //
                 // Ask a cheap judge model for a two-sentence diagnosis of the
@@ -990,70 +981,9 @@ impl GraphTaskDispatcher {
                         });
                     }
                 }
-                // ── P2-PLN-2: Post-gate LLM reflection ───────────────────
-                //
-                // When `replan_on_gate_failure` is enabled and a cheap
-                // agent is available, ask the LLM for a one-sentence
-                // reflection explaining the root cause. The lesson is
-                // stored in the PostGateReflectionStore (at
-                // `.roko/learn/post-gate-reflections.json`) so subsequent
-                // retry prompts and playbook extraction see real LLM
-                // analysis instead of the deterministic pattern template.
-                if self.feedback.replan_on_gate_failure {
-                    if let Some((reflection_path, cheap_agent)) = self
-                        .feedback
-                        .post_gate_reflection_path
-                        .as_ref()
-                        .cloned()
-                        .zip(self.cheap_agent())
-                    {
-                        let raw_for_reflection = failures.join("\n---\n");
-                        let task_desc = spec.title.clone();
-                        let plan_id = spec.plan_id.clone();
-                        let task_id = task.id.clone();
-                        tokio::spawn(async move {
-                            let lesson =
-                                roko_learn::post_gate_reflection::generate_post_gate_reflection(
-                                    &cheap_agent,
-                                    &task_desc,
-                                    "graph-verify",
-                                    &raw_for_reflection,
-                                )
-                                .await;
-                            tracing::info!(
-                                plan_id = %plan_id,
-                                task_id = %task_id,
-                                lesson_chars = lesson.len(),
-                                "post-gate LLM reflection generated"
-                            );
-                            let input = roko_learn::post_gate_reflection::ReflectionInput {
-                                plan_id: Some(plan_id),
-                                task_id: Some(task_id),
-                                episode_id: None,
-                                trigger_gate: "graph-verify".to_string(),
-                                outcome:
-                                    roko_learn::post_gate_reflection::ReflectionGateOutcome::Failed,
-                                failure_pattern_ids: vec![],
-                                pass_evidence: vec![],
-                                proposed_lesson: lesson,
-                            };
-                            let mut store =
-                                roko_learn::post_gate_reflection::PostGateReflectionStore::load(
-                                    &reflection_path,
-                                );
-                            store.observe(
-                                input,
-                                roko_learn::post_gate_reflection::ReflectionPromotionConfig::default(),
-                            );
-                            if let Err(error) = store.save(&reflection_path) {
-                                tracing::warn!(
-                                    %error,
-                                    "post-gate reflection store write failed (non-fatal)"
-                                );
-                            }
-                        });
-                    }
-                }
+                // No post-gate reflection is generated (decision 4108): the
+                // retry already carries the raw gate output and the
+                // diagnosis above, and nothing read the lessons.
                 // ── RAG-10: Retrieval outcome settlement (gate fail) ─────
                 {
                     let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();

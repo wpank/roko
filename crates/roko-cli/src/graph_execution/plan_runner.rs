@@ -2296,8 +2296,8 @@ pub fn build_graph_feedback_context(
     let _ = std::fs::create_dir_all(&graph_learn_dir);
     // A frozen run (decision 2218) sets none of the paths that only write
     // learned state: playbook outcomes (prompts read playbooks from the
-    // workdir), prompt treatments and post-gate reflections. Paths that are
-    // also read stay; their writers check the flag.
+    // workdir) and prompt treatments. Paths that are also read stay; their
+    // writers check the flag.
     let learning = !config.learning.frozen;
 
     // #144: one daimon state, shared by the feedback facade (plan-completion
@@ -2310,7 +2310,6 @@ pub fn build_graph_feedback_context(
     // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
     let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
 
-    let post_gate_reflections = graph_learn_dir.join("post-gate-reflections.json");
     crate::graph_task_dispatch::GraphFeedbackContext {
         feedback_facade: Some(build_graph_feedback_facade(
             workdir,
@@ -2329,8 +2328,6 @@ pub fn build_graph_feedback_context(
         daimon_state: shared_daimon_state,
         experiment_store_path: learning.then(|| graph_learn_dir.join("experiments.json")),
         gate_failures_path: Some(graph_layout.gate_failures_path()),
-        post_gate_reflection_path: learning.then_some(post_gate_reflections),
-        replan_on_gate_failure: config.learning.replan_on_gate_failure,
         coding_oracle: Some(coding_oracle),
         // P2-LRN-6 Loop 1: Gate threshold EMA updates after each task's
         // verify sequence. Uses the canonical workspace path so the TUI,
@@ -5179,7 +5176,6 @@ max_retries = 0
         let frozen = config.learning.frozen;
         assert_eq!(feedback.playbook_dir.is_none(), frozen);
         assert_eq!(feedback.experiment_store_path.is_none(), frozen);
-        assert_eq!(feedback.post_gate_reflection_path.is_none(), frozen);
         assert!(feedback.runs_dir.is_some());
         assert!(feedback.gate_thresholds_path.is_some());
         let workdir = workdir.to_path_buf();
@@ -5190,8 +5186,8 @@ max_retries = 0
 
     /// Decision 2218: a frozen run's dispatcher has no learning sink, and
     /// none of the paths that only write learned state (playbook outcomes,
-    /// prompt treatments, post-gate reflections). Its telemetry and the
-    /// state it also reads stay. A live run has them all.
+    /// prompt treatments). Its telemetry and the state it also reads stay. A
+    /// live run has them all.
     #[tokio::test]
     async fn frozen_run_registers_no_learning_sinks() {
         const LEARNING: [&str; 6] = [

@@ -428,10 +428,10 @@ mod tests {
     const RUN: &str = "graph-helper-run";
 
     /// A dispatcher whose helper model, `helper-1` on an OpenAI-compatible
-    /// mock ($1 in and $2 out per 1M tokens), answers up to three calls, one
-    /// more than the error diagnosis and the gate reflection make, so a stray
-    /// call is seen; its task's verify step fails on its first run and
-    /// passes on its second. Returns the requests the helper model saw.
+    /// mock ($1 in and $2 out per 1M tokens), answers up to two calls, one
+    /// more than the error diagnosis makes, so a stray call is seen; its
+    /// task's verify step fails on its first run and passes on its second.
+    /// Returns the requests the helper model saw.
     async fn helper_fixture(
         temp: &tempfile::TempDir,
         feedback: GraphFeedbackContext,
@@ -443,12 +443,7 @@ mod tests {
         let mut answer = final_turn("0.5");
         answer["model"] = serde_json::json!("helper-1");
         answer["usage"] = serde_json::json!({ "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120 });
-        let (base_url, requests) = spawn_openai_mock(vec![answer; 3]);
-        let feedback = GraphFeedbackContext {
-            replan_on_gate_failure: true,
-            post_gate_reflection_path: Some(temp.path().join(".roko/learn/reflections.json")),
-            ..feedback
-        };
+        let (base_url, requests) = spawn_openai_mock(vec![answer; 2]);
         let (dispatcher, mut task) = make_test_dispatcher(
             temp,
             VERIFY_PROVIDER,
@@ -502,9 +497,9 @@ mod tests {
     }
 
     /// A task fails its gate once, then passes. After the failure the error
-    /// diagnosis and the gate reflection each call the helper model once;
-    /// both calls are on the first attempt's cost and efficiency rows,
-    /// verdict and episode, and on the plan's spend.
+    /// diagnosis calls the helper model once; the call is on the first
+    /// attempt's cost and efficiency rows, verdict and episode, and on the
+    /// plan's spend.
     #[tokio::test]
     async fn helper_calls_after_a_failed_gate_are_costed() {
         let temp = tempdir().expect("tempdir");
@@ -520,17 +515,17 @@ mod tests {
             .dispatch(&spec, Vec::new(), &ctx)
             .await
             .expect("the second attempt passes");
-        assert_eq!(requests.lock().len(), 2, "the helper model saw two calls");
-        // Two agent calls at $0.01, two helper calls at $0.00014.
+        assert_eq!(requests.lock().len(), 1, "the helper model saw one call");
+        // Two agent calls at $0.01, one helper call at $0.00014.
         let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
-        assert!((spent - 0.020_28).abs() < 1e-5, "{spent}");
+        assert!((spent - 0.020_14).abs() < 1e-5, "{spent}");
         drop(dispatcher);
 
         let failed_key = format!("{RUN}:{}:{}:1", spec.plan_id, task.id);
         let is_helper = |row: &serde_json::Value| row["role"] == HELPER_ROLE;
         let costs =
-            jsonl_rows_where(&temp.path().join(".roko/learn/costs.jsonl"), 2, is_helper).await;
-        assert_eq!(costs.len(), 2);
+            jsonl_rows_where(&temp.path().join(".roko/learn/costs.jsonl"), 1, is_helper).await;
+        assert_eq!(costs.len(), 1);
         for row in &costs {
             assert_eq!(row["attempt_key"], failed_key.as_str());
             assert_eq!(row["model"], "helper-1");
@@ -542,22 +537,18 @@ mod tests {
         }
         let efficiency = jsonl_rows_where(
             &temp.path().join(".roko/learn/efficiency.jsonl"),
-            2,
+            1,
             |row| {
                 row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
                     && is_helper(row)
             },
         )
         .await;
-        let mut ids: Vec<&str> = efficiency
+        let ids: Vec<&str> = efficiency
             .iter()
             .map(|row| row["attempt_id"].as_str().unwrap_or_default())
             .collect();
-        ids.sort_unstable();
-        let expected: Vec<String> = (1..=2)
-            .map(|n| format!("{failed_key}/helper-{n}"))
-            .collect();
-        assert_eq!(ids, expected);
+        assert_eq!(ids, [format!("{failed_key}/helper-1")]);
 
         let verdicts = jsonl_rows_where(
             &temp
@@ -569,8 +560,8 @@ mod tests {
             |row| row["schema_version"] == "roko.verdict/1",
         )
         .await;
-        assert_eq!(verdicts[0]["helpers"]["calls"], 2);
-        assert_eq!(verdicts[0]["helpers"]["tokens_in"], 200);
+        assert_eq!(verdicts[0]["helpers"]["calls"], 1);
+        assert_eq!(verdicts[0]["helpers"]["tokens_in"], 100);
         assert!(
             verdicts[1].get("helpers").is_none(),
             "the pass made no helper call"
@@ -585,12 +576,12 @@ mod tests {
             .iter()
             .find(|episode| !episode.success)
             .expect("failed attempt");
-        assert_eq!(failed.extra["helper_calls"], 2);
-        assert_eq!(failed.extra["helper_tokens_in"], 200);
+        assert_eq!(failed.extra["helper_calls"], 1);
+        assert_eq!(failed.extra["helper_tokens_in"], 100);
         let helper_cost = failed.extra["helper_cost_usd"]
             .as_f64()
             .expect("helper cost");
-        assert!((helper_cost - 0.000_28).abs() < 1e-7, "{helper_cost}");
+        assert!((helper_cost - 0.000_14).abs() < 1e-7, "{helper_cost}");
         let passed = episodes
             .iter()
             .find(|episode| episode.success)
@@ -601,8 +592,8 @@ mod tests {
     /// Helper calls give the cascade router no credit (bug-b8af02). The
     /// router learns from each attempt's settled verdict alone
     /// (`RoutingObservationSink`), and the provider bridge keeps no router
-    /// of its own, so after a failed gate and its two helper calls it
-    /// holds the attempt's failure and nothing for the helper model.
+    /// of its own, so after a failed gate and its helper call it holds the
+    /// attempt's failure and nothing for the helper model.
     #[tokio::test]
     async fn helper_calls_give_the_cascade_router_no_credit() {
         let temp = tempdir().expect("tempdir");
@@ -622,7 +613,7 @@ mod tests {
             .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
             .await
             .expect_err("the first attempt fails its gate");
-        assert_eq!(requests.lock().len(), 2, "the helper model saw two calls");
+        assert_eq!(requests.lock().len(), 1, "the helper model saw one call");
 
         let snapshot = router.confidence_snapshot();
         assert_eq!(
@@ -640,18 +631,17 @@ mod tests {
             "the provider bridge trained a router of its own"
         );
         let helper_costs =
-            jsonl_rows_where(&temp.path().join(".roko/learn/costs.jsonl"), 2, |row| {
+            jsonl_rows_where(&temp.path().join(".roko/learn/costs.jsonl"), 1, |row| {
                 row["role"] == HELPER_ROLE
             })
             .await;
-        assert_eq!(helper_costs.len(), 2, "the helper calls stay helper rows");
+        assert_eq!(helper_costs.len(), 1, "the helper call stays a helper row");
     }
 
     /// Nothing an attempt's verify settles feeds the gate-gaming detector
     /// (S05 F1). A task fails its gate once, then passes, with a helper
-    /// model set: the helper model sees the error diagnosis and the gate
-    /// reflection, no quality judge asks it to rate the attempt, and no
-    /// alerts file appears.
+    /// model set: the helper model sees the error diagnosis, no quality
+    /// judge asks it to rate the attempt, and no alerts file appears.
     #[tokio::test]
     async fn verify_feeds_the_gaming_detector_nothing() {
         let temp = tempdir().expect("tempdir");
@@ -670,7 +660,7 @@ mod tests {
         drop(dispatcher);
 
         let seen = requests.lock();
-        assert_eq!(seen.len(), 2, "the diagnosis and the reflection alone");
+        assert_eq!(seen.len(), 1, "the diagnosis alone");
         for request in seen.iter() {
             let body = request.to_string();
             assert!(
@@ -680,5 +670,24 @@ mod tests {
         }
         let alerts = temp.path().join(".roko/learn/gate-gaming-alerts.jsonl");
         assert!(!alerts.exists(), "{} was written", alerts.display());
+    }
+
+    /// Decision 4108 (b): a failed verify asks the helper model for the error
+    /// diagnosis alone. No post-gate reflection is generated, so no
+    /// reflection store appears.
+    #[tokio::test]
+    async fn verify_failure_makes_no_reflection_call() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task, requests) =
+            helper_fixture(&temp, recording_feedback(temp.path())).await;
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the first attempt fails its gate");
+        drop(dispatcher);
+
+        assert_eq!(requests.lock().len(), 1, "the error diagnosis alone");
+        let reflections = temp.path().join(".roko/learn/post-gate-reflections.json");
+        assert!(!reflections.exists(), "{} was written", reflections.display());
     }
 }

@@ -314,7 +314,47 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         retrieval_stats,
         retrieval_query,
         create_auth_session,
-        end_auth_session
+        end_auth_session,
+        affect_state_handler,
+        list_agent_tokens,
+        issue_agent_token,
+        revoke_agent_token,
+        create_agent,
+        get_agent_config,
+        get_agent_profile,
+        restart_agent,
+        start_agent,
+        list_api_keys,
+        create_api_key,
+        revoke_api_key,
+        rotate_api_key,
+        query_auth_audit,
+        cost_summary,
+        bench_events_sse,
+        export_bench_run,
+        start_matrix_run,
+        bench_list_models,
+        pareto_frontier,
+        provider_status,
+        start_bench_run,
+        delete_bench_run,
+        get_bench_run,
+        bench_run_status,
+        list_bench_runs,
+        bench_start_bench_run,
+        compare_bench_runs,
+        bench_delete_bench_run,
+        bench_get_bench_run,
+        cancel_bench_run,
+        list_suites,
+        upload_suite,
+        get_suite,
+        list_swe_datasets,
+        start_swe_run,
+        list_swe_runs,
+        get_swe_run,
+        cfactor_trend,
+        cache_prune
     ),
     components(schemas(
         ApiErrorResponse,
@@ -440,6 +480,24 @@ macro_rules! doc_delete {
                     path = $path,
                     tag = $tag,
                     params(("id" = String, Path, description = "Path parameter")),
+                    responses(
+                        (status = 200, description = "Successful response", body = Value),
+                        (status = 400, description = "Bad request", body = ApiErrorResponse),
+                        (status = 404, description = "Not found", body = ApiErrorResponse),
+                        (status = 500, description = "Internal error", body = ApiErrorResponse)
+                    )
+                )]
+        fn $name() {}
+    };
+}
+
+macro_rules! doc_delete_param {
+    ($name:ident, $path:literal, $tag:literal, $param:literal) => {
+        #[utoipa::path(
+                    delete,
+                    path = $path,
+                    tag = $tag,
+                    params(($param = String, Path, description = "Path parameter")),
                     responses(
                         (status = 200, description = "Successful response", body = Value),
                         (status = 400, description = "Bad request", body = ApiErrorResponse),
@@ -1243,6 +1301,65 @@ fn create_auth_session() {}
 )]
 fn end_auth_session() {}
 
+// ── affect (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(affect_state_handler, "/affect/state", "affect");
+
+// ── agents (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_post_value!(create_agent, "/agents/create", "agents");
+doc_get_param!(get_agent_config, "/agents/{id}/config", "agents", "id");
+doc_get_param!(get_agent_profile, "/agents/{id}/profile", "agents", "id");
+doc_post_value!(restart_agent, "/agents/{id}/restart", "agents");
+doc_post_value!(start_agent, "/agents/{id}/start", "agents");
+
+// ── auth (gap-c50b85) ──────────────────────────────────────────────────────────────
+doc_get!(list_agent_tokens, "/agent-tokens", "auth");
+doc_post_value!(issue_agent_token, "/agent-tokens", "auth");
+doc_delete_param!(
+    revoke_agent_token,
+    "/agent-tokens/{token_id}",
+    "auth",
+    "token_id"
+);
+doc_get!(list_api_keys, "/api-keys", "auth");
+doc_post_value!(create_api_key, "/api-keys", "auth");
+doc_delete_param!(revoke_api_key, "/api-keys/{name}", "auth", "name");
+doc_post_value!(rotate_api_key, "/api-keys/{name}/rotate", "auth");
+doc_get!(query_auth_audit, "/auth/audit", "auth");
+
+// ── bench (gap-c50b85) ─────────────────────────────────────────────────────────────
+doc_get!(cost_summary, "/bench/cost-summary", "bench");
+doc_get!(bench_events_sse, "/bench/events", "bench");
+doc_get_param!(export_bench_run, "/bench/export/{id}", "bench", "id");
+doc_post_value!(start_matrix_run, "/bench/matrix", "bench");
+doc_get!(bench_list_models, "/bench/models", "bench");
+doc_get!(pareto_frontier, "/bench/pareto", "bench");
+doc_get!(provider_status, "/bench/provider-status", "bench");
+doc_post_value!(start_bench_run, "/bench/run", "bench");
+doc_delete!(delete_bench_run, "/bench/run/{id}", "bench");
+doc_get_param!(get_bench_run, "/bench/run/{id}", "bench", "id");
+doc_get_param!(bench_run_status, "/bench/run/{id}/status", "bench", "id");
+doc_get!(list_bench_runs, "/bench/runs", "bench");
+doc_post_value!(bench_start_bench_run, "/bench/runs", "bench");
+doc_get!(compare_bench_runs, "/bench/runs/compare", "bench");
+doc_delete!(bench_delete_bench_run, "/bench/runs/{id}", "bench");
+doc_get_param!(bench_get_bench_run, "/bench/runs/{id}", "bench", "id");
+doc_post_value!(cancel_bench_run, "/bench/runs/{id}/cancel", "bench");
+doc_get!(list_suites, "/bench/suites", "bench");
+doc_post_value!(upload_suite, "/bench/suites", "bench");
+doc_get_param!(get_suite, "/bench/suites/{id}", "bench", "id");
+
+// ── cache (gap-c50b85) ─────────────────────────────────────────────────────────────
+doc_post_value!(cache_prune, "/cache/prune", "cache");
+
+// ── learning (gap-c50b85) ──────────────────────────────────────────────────────────
+doc_get!(cfactor_trend, "/c-factor/trend", "learning");
+
+// ── swe_bench (gap-c50b85) ─────────────────────────────────────────────────────────
+doc_get!(list_swe_datasets, "/bench/swe/datasets", "swe_bench");
+doc_post_value!(start_swe_run, "/bench/swe/run", "swe_bench");
+doc_get!(list_swe_runs, "/bench/swe/runs", "swe_bench");
+doc_get_param!(get_swe_run, "/bench/swe/runs/{id}", "swe_bench", "id");
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorResponse {
     pub code: String,
@@ -1492,6 +1609,21 @@ mod tests {
         ("routes/providers.rs", "routing_router", "/routing"),
     ];
 
+    /// Routers `routes::build_router` mounts at the server root, not under
+    /// `/api`: their paths outside `/api/` are not part of this document.
+    const ROOT_ROUTERS: [(&str, &str); 7] = [
+        ("routes/ws.rs", "routes"),
+        ("routes/relay_proxy.rs", "routes"),
+        ("terminal.rs", "routes"),
+        ("routes/shared_runs.rs", "public_routes"),
+        ("routes/webhooks.rs", "public_routes"),
+        ("routes/triggers.rs", "public_routes"),
+        ("routes/auth_session.rs", "routes"),
+    ];
+
+    /// Probes `routes::build_router` registers on the root router itself.
+    const ROOT_PATHS: [&str; 3] = ["/health", "/ready", "/metrics"];
+
     #[test]
     fn openapi_documents_every_registered_route() {
         let registered = registered_routes();
@@ -1542,7 +1674,8 @@ mod tests {
 
     /// `METHOD /path` for every `.route("<literal>", <methods>)` registration in
     /// this crate's sources outside test modules, as served under `/api`, with
-    /// parameters written `{}`. Root-mounted `/api/...` literals lose their prefix.
+    /// parameters written `{}`. Root-mounted `/api/...` literals lose their
+    /// prefix; other root-mounted routes are left out.
     fn registered_routes() -> BTreeSet<String> {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = Vec::new();
@@ -1577,8 +1710,13 @@ mod tests {
                 let nest = NESTED_ROUTERS
                     .iter()
                     .find(|(nest_file, nest_fn, _)| *nest_file == rel && *nest_fn == router_fn);
+                let root_router = ROOT_ROUTERS
+                    .iter()
+                    .any(|(root_file, root_fn)| *root_file == rel && *root_fn == router_fn);
+                let root_probe = rel == "routes/mod.rs" && ROOT_PATHS.contains(&path);
                 let api_path = match (path.strip_prefix("/api/"), nest) {
                     (Some(rest), _) => format!("/{rest}"),
+                    (None, _) if root_router || root_probe => continue,
                     (None, Some((_, _, prefix))) if path == "/" => (*prefix).to_string(),
                     (None, Some((_, _, prefix))) => format!("{prefix}{path}"),
                     (None, None) => path.to_string(),

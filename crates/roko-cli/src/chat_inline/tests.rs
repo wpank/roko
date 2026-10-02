@@ -675,6 +675,40 @@ fn truncate_long() {
     assert_eq!(truncate_str("hello world", 8), "hello...");
 }
 
+/// bug-57ed7f: truncate_str cut by bytes, and panicked when the cut fell
+/// inside a multi-byte character.
+#[test]
+fn truncate_str_cuts_at_a_char_boundary() {
+    // 'é' takes bytes 3 and 4, so the old cut at byte 7 - 3 = 4 split it.
+    let error = "café café café";
+    assert!(!error.is_char_boundary(4));
+    assert_eq!(truncate_str(error, 7), "café...");
+    assert_eq!(truncate_str("ééééé", 3), "ééé");
+    assert_eq!(truncate_str("ééééé", 0), "");
+    assert_eq!(truncate_str("éé", 2), "éé");
+}
+
+/// bug-57ed7f: the error line gave truncate_str the area's width minus 6,
+/// which underflowed on an area narrower than that.
+#[test]
+fn render_handles_a_narrow_area() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut session = make_session(DispatchMode::Session, None);
+    session.phase = Phase::Error {
+        prompt: "hi".to_string(),
+        error: "provider error: café closed".to_string(),
+    };
+    let theme = crate::tui::Theme::default();
+    for width in [1, 4, 5, 6, 7, 40] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 2)).expect("terminal");
+        terminal
+            .draw(|frame| super::render::render_viewport(frame, &session, &theme))
+            .expect("draw");
+    }
+}
+
 // -----------------------------------------------------------------------
 // /model atomic switch tests
 // -----------------------------------------------------------------------

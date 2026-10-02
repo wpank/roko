@@ -3,13 +3,14 @@ id = "bug-57ed7f"
 kind = "bug"
 title = "Inline chat's truncate_str slices bytes and its render subtracts from a narrow width, both panicking"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/chat_inline"]
 created = 2026-10-02
-updated = 2026-10-02
+updated = 2026-10-01
+last_verified = 2026-10-01
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-d3c72e"
 anchors = ["crates/roko-cli/src/chat_inline/session.rs", "crates/roko-cli/src/chat_inline/render.rs"]
@@ -35,3 +36,5 @@ Cut at a char boundary, and saturate the width arithmetic. Add tests named `trun
 ## Notes
 
 - Reported on 2026-10-02 by wk-filer4, working on bug-d3c72e, during the overnight close-out round.
+- 2026-10-01 (wk-filer4): implemented on work/gap-cd51b7; cargo verification deferred to the batch check.
+- 2026-10-01 (wk-filer4): What changed: `truncate_str` now counts and cuts characters instead of bytes. It also no longer shortens a string that fits by characters but not by bytes: the old code returned "é" for ("éé", 2). render.rs passes `(area.width as usize).saturating_sub(6)`. The tests are `truncate_str_cuts_at_a_char_boundary` and `render_handles_a_narrow_area`; the second draws the error phase on TestBackend widths 1, 4, 5, 6, 7 and 40. The existing `truncate_short` and `truncate_long` expectations still hold.

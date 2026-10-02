@@ -328,13 +328,15 @@ pub(crate) fn thinking_label(elapsed_s: f64) -> &'static str {
 }
 
 /// Truncate a string to fit within `max` columns, adding "..." if needed.
+/// It counts characters, so a cut never falls inside a multi-byte character.
 pub(crate) fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else if max > 3 {
-        format!("{}...", &s[..max - 3])
+        let head: String = s.chars().take(max - 3).collect();
+        format!("{head}...")
     } else {
-        s[..max].to_string()
+        s.chars().take(max).collect()
     }
 }
 

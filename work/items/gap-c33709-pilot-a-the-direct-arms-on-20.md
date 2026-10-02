@@ -80,3 +80,30 @@ Checked at `41c7ffbd6`: nothing can run yet, and no money has been spent.
 - **This item spends money.** Get the author's go-ahead before starting.
 - **One runner at a time,** from the author's machine. Never run it through roko.
 - **No hot files.**
+
+## Progress
+
+- 2026-10-02, claude-agent on `work/gap-c33709`: **blocked before any paid call; $0 spent.** The driver finds no
+  provider key file (`secret.py keys`: `~/.config/viabilitybench/keys`, no such file; no `VB_KEY_FILE`) and no
+  benchmark secret (`~/.config/viabilitybench/secret`). Per the run rules nobody looked for keys elsewhere. No
+  results root exists yet (`~/.roko-bench/viability`), so no ledger row has been written.
+- Done offline, at 6f85e5efc:
+  - `vb campaign --manifest experiments/pilot_a.toml --dry-run`: 65 runs (4 daily units), planned $5.10 (BL0
+    $3.60, BL8 $1.50), worst case $10.20 (blocks' caps $7.20 + $3.00; worst task $0.2893 and $1.00).
+  - `experiments/test_pilot_a.py`: 3 passed, including the 65-run offline rehearsal. Every rehearsal record says
+    `provenance.network_policy = {network: none, sandbox: sandbox-exec+net}`, which `mini_loop.network_policy`
+    sets whether or not the provider is offline. `driver/test_sandbox_net.py`: 4 passed, none skipped.
+  - Verifier CI, `--families f1,f4 --levels 1-5 --seeds 10` (latents v1 and v2, throwaway secret
+    sha256:8ae87d2143c8b7ae): 200/200 cells green (f1 100/100, f4 100/100) in 401 s.
+  - Synthetic runaway (a stub that never submits; cheap_direct on F1-l1-0001, seed 1, through the metering
+    proxy): `aborted_cap` (`model_calls`) at 30 calls, attempts of 12, 12 and 6 turns.
+  - The scoring path, rehearsed on the offline records: `vb report --bundle`, `report.py --check` (0 problems) and
+    the `gates.py G0` page.
+- c1fc06e4a: `vb campaign --max-cost-usd` holds an experiment's billed spend under one hard cap (the coordinator's
+  $8 for Pilot A): each billed unit gets the smaller of its share of its block's cap and what the experiment's books
+  leave. Lowering the manifest's block caps to $8 instead would cut a unit short once its tasks average more than
+  1.33 × plan, and a cut unit leaves the bundle failing `report.py --check`.
+- To unblock (Will): create the key file, mode 0600 in a 0700 directory, with `CEREBRAS_API_KEY=` and
+  `OPENAI_API_KEY=` lines (keys or projects used only by the pilot keep the usage-export reconciliation clean), and
+  the benchmark secret (`driver/secret.py init`). The paid run is then `vb campaign --manifest
+  benchmarks/viabilitybench/experiments/pilot_a.toml --allow-network --max-cost-usd 8 --transcripts`.

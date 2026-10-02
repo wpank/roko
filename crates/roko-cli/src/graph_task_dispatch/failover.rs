@@ -1,6 +1,11 @@
 //! Provider failover: a planned model whose provider cannot take the task hands
 //! it to the next usable candidate within the same attempt.
 
+use roko_learn::provider_failover::{
+    FailoverCandidate as DispatchCandidate, format_local_ms, missing_credentials_reason,
+    provider_brings_own_tools,
+};
+
 use super::helper_calls::SideCall;
 use super::*;
 
@@ -14,15 +19,6 @@ const PROVIDER_EXHAUSTED_CATEGORY: &str = "provider_exhausted";
 
 /// `role` of the cost and efficiency rows of a call failover refused.
 const FAILOVER_REFUSED_ROLE: &str = "failover_refused";
-
-/// A model to dispatch: the key sent to the bridge and the config resolving it.
-#[derive(Clone)]
-struct DispatchCandidate {
-    model_key: String,
-    /// A clone of the run config with a `[models.*]` entry that serves a
-    /// hinted slug on another configured provider; `None` uses the run config.
-    config: Option<Arc<RokoConfig>>,
-}
 
 /// Why the provider behind a model cannot take this dispatch.
 #[derive(Debug, Clone)]
@@ -88,50 +84,6 @@ impl FailoverChain {
                 .collect(),
         }
     }
-}
-
-/// Provider kinds that serve the same model family over another transport.
-fn same_family_kinds(
-    kind: roko_core::agent::ProviderKind,
-) -> &'static [roko_core::agent::ProviderKind] {
-    use roko_core::agent::ProviderKind;
-    match kind {
-        ProviderKind::ClaudeCli | ProviderKind::AnthropicApi => {
-            &[ProviderKind::ClaudeCli, ProviderKind::AnthropicApi]
-        }
-        ProviderKind::GeminiCli | ProviderKind::GeminiApi => {
-            &[ProviderKind::GeminiCli, ProviderKind::GeminiApi]
-        }
-        _ => &[],
-    }
-}
-
-/// CLI and ACP harnesses bring their own tools, so a profile's
-/// `supports_tools` only matters for providers driven by roko's tool loop.
-fn provider_brings_own_tools(provider: &roko_core::config::schema::ProviderConfig) -> bool {
-    matches!(
-        provider.transport(),
-        roko_core::config::ProviderTransport::Cli { .. }
-            | roko_core::config::ProviderTransport::Acp { .. }
-    )
-}
-
-fn missing_credentials_reason(
-    provider: &roko_core::config::schema::ProviderConfig,
-    provider_id: &str,
-) -> String {
-    provider.api_key_env.as_deref().map_or_else(
-        || format!("provider `{provider_id}` is not installed or has no credentials"),
-        |env| format!("{env} is not set"),
-    )
-}
-
-fn format_local_ms(ms: i64) -> String {
-    use chrono::TimeZone as _;
-    chrono::Local.timestamp_millis_opt(ms).single().map_or_else(
-        || ms.to_string(),
-        |at| at.format("%Y-%m-%d %H:%M %:z").to_string(),
-    )
 }
 
 impl GraphTaskDispatcher {
@@ -397,69 +349,24 @@ impl GraphTaskDispatcher {
     /// Candidates after `refusals`, in order: the first refused model's slug
     /// on another configured provider of its family (claude_cli can run any
     /// Claude slug), `[routing] fallback_models`, `agent.fallback_model`, and
-    /// `agent.default_model`.
+    /// `agent.default_model`. The order is the shared failover policy's
+    /// (`roko_learn::provider_failover`), which serve and ACP apply too.
     fn failover_candidates(&self, refusals: &[ProviderRefusal]) -> Vec<DispatchCandidate> {
-        let mut candidates: Vec<DispatchCandidate> = Vec::new();
-        let push_run_model = |candidates: &mut Vec<DispatchCandidate>, model_key: &str| {
-            if !model_key.trim().is_empty()
-                && !candidates
-                    .iter()
-                    .any(|candidate| candidate.model_key == model_key)
-            {
-                candidates.push(DispatchCandidate {
-                    model_key: model_key.to_string(),
-                    config: None,
-                });
-            }
-        };
-        if let Some(first) = refusals.first() {
-            for (key, profile) in self.config.effective_models() {
-                if profile.slug == first.model_slug && key != first.model_key {
-                    push_run_model(&mut candidates, &key);
-                }
-            }
-            let family = same_family_kinds(first.provider_kind);
-            let base_profile = self
-                .resolve_candidate(&DispatchCandidate {
-                    model_key: first.model_key.clone(),
-                    config: None,
-                })
-                .model_profile
-                .unwrap_or_else(|| roko_core::config::schema::ModelProfile {
-                    slug: first.model_slug.clone(),
-                    supports_tools: true,
-                    ..Default::default()
-                });
-            for (provider_id, provider) in self.config.effective_providers() {
-                if !family.contains(&provider.kind) || provider_id == first.provider_id {
-                    continue;
-                }
-                let model_key = format!("{}@{provider_id}", first.model_slug);
-                let mut config = (*self.config).clone();
-                config.models.insert(
-                    model_key.clone(),
-                    roko_core::config::schema::ModelProfile {
-                        provider: provider_id,
-                        ..base_profile.clone()
-                    },
-                );
-                candidates.push(DispatchCandidate {
-                    model_key,
-                    config: Some(Arc::new(config)),
-                });
-            }
-        }
-        for model_key in self
-            .config
-            .routing
-            .fallback_models
-            .iter()
-            .chain(self.config.agent.fallback_model.iter())
-            .chain(std::iter::once(&self.config.agent.default_model))
-        {
-            push_run_model(&mut candidates, model_key);
-        }
-        candidates
+        let first = refusals
+            .first()
+            .map(|first| roko_learn::provider_failover::RefusedModel {
+                model_key: first.model_key.clone(),
+                model_slug: first.model_slug.clone(),
+                provider_id: first.provider_id.clone(),
+                provider_kind: first.provider_kind,
+                profile: self
+                    .resolve_candidate(&DispatchCandidate {
+                        model_key: first.model_key.clone(),
+                        config: None,
+                    })
+                    .model_profile,
+            });
+        roko_learn::provider_failover::failover_candidates(&self.config, first.as_ref())
     }
 
     /// The first usable model in [`Self::failover_candidates`], with the

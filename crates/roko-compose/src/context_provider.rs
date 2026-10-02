@@ -2882,10 +2882,8 @@ mod tests {
     #[test]
     fn failure_patterns_bidder_reads_error_patterns_json() {
         let live = failure_pattern_sources(ERROR_PATTERNS_FILE);
-        assert!(
-            live.iter().any(|id| id.contains("failure-patterns:plan-test")),
-            "{live:?}"
-        );
+        let plan_source = "failure-patterns:plan-test";
+        assert!(live.iter().any(|id| id.contains(plan_source)), "{live:?}");
         let legacy = failure_pattern_sources(
             roko_learn::error_pattern_store::LEGACY_DISCOVERED_PATTERNS_FILE,
         );

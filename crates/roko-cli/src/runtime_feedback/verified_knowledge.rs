@@ -330,8 +330,9 @@ mod tests {
             panic!("one lesson, one entry: {entries:#?}");
         };
         assert_eq!(learned.content, LESSON);
-        assert!(learned.tags.contains(&"lesson".to_string()), "{:?}", learned.tags);
-        assert!(learned.tags.contains(&"hello".to_string()), "{:?}", learned.tags);
+        let tags = &learned.tags;
+        assert!(tags.contains(&"lesson".to_string()), "{tags:?}");
+        assert!(tags.contains(&"hello".to_string()), "{tags:?}");
 
         let long = format!("Lesson: {}", "x".repeat(MAX_LESSON_CHARS + 1));
         assert_eq!(stated_lesson(&long), None);

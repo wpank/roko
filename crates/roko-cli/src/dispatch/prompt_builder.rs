@@ -184,8 +184,9 @@ impl PromptContext {
     ///
     /// When `ctx` carries pre-computed `cached_workspace_map` or
     /// `cached_workspace_context` (non-empty), those values are used
-    /// directly — no filesystem I/O is performed for those fields.  This avoids blocking the Tokio reactor on repeated
-    /// directory walks and `git` subprocess spawns.
+    /// directly — no filesystem I/O is performed for those fields.  This
+    /// avoids blocking the Tokio reactor on repeated directory walks and
+    /// `git` subprocess spawns.
     ///
     /// `GraphTaskDispatcher` populates the cache fields via a `OnceLock` so
     /// the work is done at most once per plan run, on the first dispatch.
@@ -2469,7 +2470,9 @@ fn collect_playbooks_cached(
         return None;
     }
     let net_successes = |playbook: &roko_learn::playbook::Playbook| {
-        playbook.success_count.saturating_sub(playbook.failure_count)
+        playbook
+            .success_count
+            .saturating_sub(playbook.failure_count)
     };
     scored.sort_by(|a, b| {
         b.0.cmp(&a.0)
@@ -2561,7 +2564,7 @@ fn file_topic_words(file: &str) -> Vec<String> {
         None => None,
     };
     let stem = path.file_stem().and_then(|stem| stem.to_str());
-    package.into_iter().chain(stem).map(str::to_string).collect()
+    package.into_iter().chain(stem).map(String::from).collect()
 }
 
 /// A runtime success note: the "Successful runtime episode for …" entry a
@@ -3753,7 +3756,8 @@ mod tests {
         let assembler = PromptAssembler::minimal();
         let prompt_for = |task: &TaskDef| {
             let pctx = PromptContext::from_task(task, &ctx());
-            assembler.assemble(task, &pctx).expect("assemble").user_prompt
+            let assembled = assembler.assemble(task, &pctx).expect("assemble");
+            assembled.user_prompt
         };
         let verified = prompt_for(&task());
         assert!(verified.contains(LESSON_NOTE), "{verified}");
@@ -3804,7 +3808,8 @@ mod tests {
         );
         let playbooks = temp.path().join(".roko/learn/playbooks");
         std::fs::create_dir_all(&playbooks).expect("playbook dir");
-        let playbook = roko_learn::playbook::Playbook::new("pb-wiring", "Wire the dispatcher wiring");
+        let playbook =
+            roko_learn::playbook::Playbook::new("pb-wiring", "Wire the dispatcher wiring");
         let json = serde_json::to_string(&playbook).expect("playbook json");
         std::fs::write(playbooks.join("pb-wiring.json"), json).expect("write playbook");
         let cache = Arc::new(PromptCache::load(temp.path()));

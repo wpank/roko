@@ -824,6 +824,7 @@ fn truncate_chars(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     /// backlog 4209: a keyed summary selects a pattern of the same task, or
     /// of one of the task's verify commands from another task, and skips a
@@ -907,10 +908,10 @@ mod tests {
         let retired = tmp.path().join("discovered-patterns.json.v2-legacy");
         let kept = std::fs::read_to_string(&retired).expect("the file set aside");
         assert_eq!(kept, "{\"patterns\":{}}");
-        assert!(!tmp.path().join(ERROR_PATTERNS_FILE).exists(), "nothing imported");
+        let imported = tmp.path().join(ERROR_PATTERNS_FILE);
+        assert!(!imported.exists(), "nothing imported");
         assert!(!retire_legacy_discovered_patterns(tmp.path()).expect("nothing to do"));
     }
-    use tempfile::TempDir;
 
     #[test]
     fn append_upserts_by_digest() {

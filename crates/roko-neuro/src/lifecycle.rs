@@ -1017,8 +1017,9 @@ fn runtime_tags(observation: &RuntimeEpisodeObservation, kind: KnowledgeKind) ->
     // task's files (backlog 4216).
     if observation.gate_passed && observation.lesson.is_some() {
         tags.push("lesson".to_string());
-        let packages = observation.task_tags.iter().filter_map(|tag| package_of(tag));
-        tags.extend(packages.map(str::to_string));
+        for tag in &observation.task_tags {
+            tags.extend(package_of(tag).map(str::to_string));
+        }
     }
     dedupe(tags)
 }
@@ -1028,12 +1029,13 @@ fn runtime_tags(observation: &RuntimeEpisodeObservation, kind: KnowledgeKind) ->
 /// tag that is no path.
 fn package_of(path: &str) -> Option<&str> {
     let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-    let index = parts
+    // The last part is the file itself.
+    let (_, dirs) = parts.split_last()?;
+    let index = dirs
         .iter()
         .position(|part| matches!(*part, "crates" | "packages"))
         .map_or(0, |index| index + 1);
-    // The last part is the file itself.
-    parts.get(index).copied().filter(|_| index + 1 < parts.len())
+    dirs.get(index).copied()
 }
 
 fn task_tags_from_episode(episode: &Episode) -> Vec<String> {
@@ -1479,19 +1481,22 @@ mod tests {
         let record = lifecycle.ingest_observation(silent).expect("ingest");
         assert_eq!(record.candidate_entry_id, None);
         assert_eq!(record.admission_path, RuntimeAdmissionPath::NoCandidate);
-        assert!(lifecycle.knowledge_store().read_all().expect("read").is_empty());
+        let stored = lifecycle.knowledge_store().read_all().expect("read");
+        assert!(stored.is_empty(), "{stored:#?}");
         assert_eq!(lifecycle.read_records().expect("receipts").len(), 1);
 
         let mut stated = observation("episode-stated", true);
-        stated.task_tags.push("crates/roko-neuro/src/lifecycle.rs".to_string());
+        let file = "crates/roko-neuro/src/lifecycle.rs";
+        stated.task_tags.push(file.to_string());
         lifecycle.ingest_observation(stated).expect("ingest");
         let entries = lifecycle.knowledge_store().read_all().expect("read");
         let [entry] = entries.as_slice() else {
             panic!("one lesson, one entry: {entries:#?}");
         };
         assert_eq!(entry.content, "Bound retries and verify after each attempt");
-        assert!(entry.tags.contains(&"lesson".to_string()), "{:?}", entry.tags);
-        assert!(entry.tags.contains(&"roko-neuro".to_string()), "{:?}", entry.tags);
+        let tags = &entry.tags;
+        assert!(tags.contains(&"lesson".to_string()), "{tags:?}");
+        assert!(tags.contains(&"roko-neuro".to_string()), "{tags:?}");
     }
 
     #[test]

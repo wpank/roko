@@ -221,6 +221,10 @@ pub struct FailurePatternQuery<'a> {
     pub gate: Option<&'a str>,
     /// Failure class to prefer.
     pub classification: Option<&'a str>,
+    /// The task's verify commands. A keyed summary
+    /// ([`ErrorPatternStore::bounded_summary_keyed`]) selects the patterns
+    /// whose gate is one of them (backlog 4209).
+    pub verify_commands: &'a [String],
 }
 
 /// A bounded prompt/context summary for failure memory.
@@ -469,6 +473,8 @@ impl ErrorPatternStore {
     }
 
     /// Return a bounded, relevance-ranked summary for retry prompt context.
+    /// Every pattern that scores against `query` qualifies, or every pattern
+    /// when the query is empty; prompts use [`Self::bounded_summary_keyed`].
     #[must_use]
     pub fn bounded_summary(
         &self,
@@ -476,12 +482,40 @@ impl ErrorPatternStore {
         limit: usize,
         max_chars: usize,
     ) -> FailurePatternSummary {
+        self.summary_where(query, limit, max_chars, |pattern| {
+            pattern.relevance_score(query) > 0 || query.is_empty()
+        })
+    }
+
+    /// [`Self::bounded_summary`] for a prompt (backlog 4209): a pattern
+    /// qualifies only when it was seen on the query's task, or its gate is
+    /// one of the query's verify commands, compared with whitespace
+    /// collapsed. Plan and class only order the qualifying patterns. A query
+    /// with neither a task nor commands selects none.
+    #[must_use]
+    pub fn bounded_summary_keyed(
+        &self,
+        query: FailurePatternQuery<'_>,
+        limit: usize,
+        max_chars: usize,
+    ) -> FailurePatternSummary {
+        self.summary_where(query, limit, max_chars, |pattern| pattern.keyed_to(query))
+    }
+
+    /// The bounded summary of the unresolved patterns that `qualifies`
+    /// accepts, ranked by relevance to `query`.
+    fn summary_where(
+        &self,
+        query: FailurePatternQuery<'_>,
+        limit: usize,
+        max_chars: usize,
+        qualifies: impl Fn(&ErrorPattern) -> bool,
+    ) -> FailurePatternSummary {
         let mut candidates: Vec<(usize, &ErrorPattern)> = self
             .patterns
             .iter()
-            .filter(|pattern| !pattern.resolved)
+            .filter(|pattern| !pattern.resolved && qualifies(pattern))
             .map(|pattern| (pattern.relevance_score(query), pattern))
-            .filter(|(score, _)| *score > 0 || query.is_empty())
             .collect();
         candidates.sort_by(|(score_a, a), (score_b, b)| {
             score_b
@@ -522,11 +556,13 @@ impl ErrorPatternStore {
         }
     }
 
-    /// Format the top patterns as a markdown-ish block suitable for
-    /// injection into an agent system prompt.
+    /// Format the top patterns as a markdown-ish block.
     ///
     /// Each entry shows the digest, category, occurrence count, and any
     /// known resolution or suggestion. Output is capped at `limit` entries.
+    /// It is unkeyed, every pattern qualifying, so it suits display
+    /// (`roko learn`); prompts use [`Self::bounded_summary_keyed`]
+    /// (backlog 4209).
     pub fn format_for_prompt(&self, limit: usize) -> String {
         self.bounded_summary(FailurePatternQuery::default(), limit, 2_000)
             .format_for_prompt()
@@ -643,6 +679,28 @@ impl ErrorPattern {
         }
         score
     }
+
+    /// Whether the pattern is about the query's work (backlog 4209): it was
+    /// seen on the query's task, or it is the failure of one of the query's
+    /// verify commands (its gate), compared with whitespace collapsed.
+    fn keyed_to(&self, query: FailurePatternQuery<'_>) -> bool {
+        let same_task = query
+            .task_id
+            .is_some_and(|task_id| self.task_ids.contains(task_id));
+        let same_command = self.gate.as_deref().is_some_and(|gate| {
+            let gate = collapse_whitespace(gate);
+            query
+                .verify_commands
+                .iter()
+                .any(|command| collapse_whitespace(command) == gate)
+        });
+        same_task || same_command
+    }
+}
+
+/// `text` with each run of whitespace made one space, and none at the ends.
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 impl FailurePatternQuery<'_> {
@@ -651,6 +709,7 @@ impl FailurePatternQuery<'_> {
             && self.task_id.is_none()
             && self.gate.is_none()
             && self.classification.is_none()
+            && self.verify_commands.is_empty()
     }
 }
 
@@ -765,6 +824,49 @@ fn truncate_chars(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// backlog 4209: a keyed summary selects a pattern of the same task, or
+    /// of one of the task's verify commands from another task, and skips a
+    /// pattern of another task and command, though it shares the plan.
+    #[test]
+    fn keyed_summary_skips_patterns_of_other_tasks_and_commands() {
+        let mut store = ErrorPatternStore::empty();
+        for (task, command) in [
+            ("T1", "cargo test -p app"),
+            ("T2", "cargo  clippy -p app"),
+            ("T3", "cargo test -p other"),
+        ] {
+            store.observe_gate_failure(GateFailureObservation::new(
+                format!("verify::{task}"),
+                "plan-1",
+                Some(task.to_string()),
+                command,
+                "verify",
+                format!("{command} failed"),
+                GateFailureSource::GateClassification,
+            ));
+        }
+        let commands = vec!["cargo clippy -p app".to_string()];
+        let query = FailurePatternQuery {
+            plan_id: Some("plan-1"),
+            task_id: Some("T1"),
+            verify_commands: &commands,
+            ..FailurePatternQuery::default()
+        };
+
+        let summary = store.bounded_summary_keyed(query, 5, 2_000);
+        let mut gates: Vec<&str> = summary
+            .patterns
+            .iter()
+            .filter_map(|pattern| pattern.gate.as_deref())
+            .collect();
+        gates.sort_unstable();
+        assert_eq!(gates, ["cargo  clippy -p app", "cargo test -p app"]);
+        let unkeyed = FailurePatternQuery::default();
+        let keyed = store.bounded_summary_keyed(unkeyed, 5, 2_000);
+        assert!(keyed.patterns.is_empty(), "no key selects nothing");
+        assert_eq!(store.bounded_summary(unkeyed, 5, 2_000).patterns.len(), 3);
+    }
 
     /// backlog 4208: loading drops the turn-cap and timeout rows older runs
     /// recorded, and keeps verify failures.
@@ -1107,6 +1209,7 @@ mod tests {
                 task_id: Some("task-a"),
                 gate: Some("compile:cargo"),
                 classification: Some("type_error"),
+                ..FailurePatternQuery::default()
             },
             5,
             500,

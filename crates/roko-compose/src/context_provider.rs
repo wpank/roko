@@ -924,6 +924,7 @@ impl ContextBidder for RecentFailurePatternsBidder {
                 task_id: Some(&request.task_id),
                 gate: None,
                 classification: None,
+                ..Default::default()
             },
             5,
             1_600,

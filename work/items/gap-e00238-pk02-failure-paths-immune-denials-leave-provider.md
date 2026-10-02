@@ -90,3 +90,19 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK01 (gap-625195).
 - Suggested model: opus.
+
+## Progress
+
+Static worker, 2026-10-02, branch `work/gap-e00238` from `248d279c7`. Each task is implemented on the branch; cargo
+verification is deferred to the batch gate.
+
+- 1114: implemented at 8b7ceee1f
+- 1115: implemented at d51fbb059
+- 1116: implemented at 2a8bc2a4d (deviation: `agent_isolated` stays retryable, because decision 1107/1109 gives
+  each attempt its own agent id; the test drives the auth and unreadable-ledger denials instead)
+- 1117: implemented at c4ee39306
+- 1118: implemented at 76e1ec475
+- 1120: implemented at bfc8eb72b (an open circuit with no usable rung above still probes the routed model, as
+  before; the no-usable-provider error is for definitive refusals)
+- 1121: implemented at a0971af2d
+- 1122: implemented at 27896a439

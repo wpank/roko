@@ -463,9 +463,9 @@ mod tests {
             ("gpt-5.4-mini", 0.1, 1.0),
             ("gpt-5.5", 0.1, 1.0),
             ("gpt-5.6-sol", 0.1, 1.25),
-            // Perplexity: Sonar caches at $0.0625 against $1; Sonar Pro
-            // and Sonar Reasoning Pro have no cache price.
-            ("sonar", 0.0625, 1.0),
+            // Perplexity: no Sonar model publishes a cache price, so a
+            // cached token costs the input price (bug-9d77f1).
+            ("sonar", 1.0, 1.0),
             ("sonar-pro", 1.0, 1.0),
             ("sonar-reasoning-pro", 1.0, 1.0),
             // Gemini 2.5: context caching at a tenth of input.

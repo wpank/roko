@@ -120,11 +120,14 @@ where
             Inbound(TransportResult<Option<JsonRpcMessage>>),
         }
 
+        // Under the server's request loop, that loop reads stdin and routes the
+        // client's cancels and responses here; reading it too would race it.
+        let read_inbound = !session.inbound_routed;
         let action = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => StreamAction::Cancelled,
             maybe_event = events.recv() => StreamAction::Event(maybe_event),
-            inbound = transport.read_message() => StreamAction::Inbound(inbound),
+            inbound = transport.read_message(), if read_inbound => StreamAction::Inbound(inbound),
         };
 
         match action {
@@ -293,7 +296,22 @@ where
     if !session.try_begin_prompt() {
         return Err(BridgeEventsError::SessionBusy(session.session_id.clone()));
     }
+    run_begun_prompt(transport, session, params, workdir, roko_config).await
+}
 
+/// Runs a prompt for a session that has already begun it
+/// ([`AcpSession::try_begin_prompt`]), then marks the session idle.
+pub(crate) async fn run_begun_prompt<R, W>(
+    transport: &mut StdioTransport<R, W>,
+    session: &mut AcpSession,
+    params: SessionPromptParams,
+    workdir: &Path,
+    roko_config: &RokoConfig,
+) -> Result<SessionPromptResult>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let outcome =
         handle_session_prompt_inner(transport, session, params, workdir, roko_config).await;
     session.finish_prompt();

@@ -67,6 +67,9 @@ where
     tokio::pin!(request_future);
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(30));
     tokio::pin!(timeout);
+    // Under the server's request loop, that loop reads stdin and routes the
+    // editor's response here; reading it too would race it.
+    let read_inbound = !session.inbound_routed;
 
     loop {
         tokio::select! {
@@ -138,7 +141,7 @@ where
                     }
                 }
             }
-            inbound = transport.read_message() => {
+            inbound = transport.read_message(), if read_inbound => {
                 match inbound {
                     Ok(Some(JsonRpcMessage::Response(response))) => {
                         transport.handle_incoming_response(response);

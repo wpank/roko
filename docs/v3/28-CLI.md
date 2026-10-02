@@ -651,7 +651,7 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--log-file <path>` | -- | Write structured JSONL event log to this file. |
 | `--worktree-per-task` | config (`true`) | Run each task in an isolated git worktree, the default from `[runner] worktree_per_task`. Finished plans are delivered into the run's batch branch, `roko/batch/<run-id>`; your checkout is never changed, and the run ends with the command that takes the work (`git merge --ff-only roko/batch/<run-id>`). Without this flag, a workdir that is not the top level of a git checkout with a commit runs its tasks in the shared working tree. |
 | `--no-worktree-per-task` | false | Run every task in the shared working tree, whatever `[runner] worktree_per_task` says: tasks edit your checkout directly. |
-| `--rich-topology` | false | Use the 11-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs per-task worktrees (the default). |
+| `--rich-topology` | false | Use the 5-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs per-task worktrees (the default). |
 | `--promote <branch>` | -- | Once every plan is delivered, promote the batch into BRANCH and tag it `roko/run/<run-id>`. A BRANCH checked out anywhere is not moved: the promotion is parked at `refs/roko/delivered/run-<run-id>`. Needs per-task worktrees. |
 
 ```bash

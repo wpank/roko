@@ -256,23 +256,19 @@ pub fn plan_to_graph(
 
 **Source:** `crates/roko-graph/src/topology.rs`
 
-Builds a richer 11-node subgraph per task. Each task becomes:
+Builds a richer 5-node subgraph per task (`plan run --rich-topology`). Each
+task becomes:
 
 ```
-[TaskContextCell] --> [KnowledgeCell]    --+
-                  --> [EpisodesCell]      --|
-                  --> [PlaybookCell]      --|-> [ComposeCell] -> [TaskExecutorCell] -> [GateCell] -> [SuccessBoundary]
-                  --> [ModulationCell]    --|
-                  --> [SafetyCell]        --|
-                  --> [ExperimentCell]    --+
+[TaskContextCell] -> [ComposeCell] -> [TaskExecutorCell] -> [GateCell] -> [SuccessBoundary]
 ```
 
-The six enricher nodes run in parallel (same wave). ComposeCell receives
-seven inputs: six enrichment Signals plus the TaskContext Signal. Inter-task
+ComposeCell turns the TaskContext Signal into the task's prompt. Inter-task
 dependencies connect predecessor SuccessBoundary nodes to dependent
-TaskContext nodes.
+TaskContext nodes. Six `plan.enricher.*` passthrough stubs that used to sit
+between context and compose changed nothing and were removed (9206).
 
-For a plan with N tasks, the production topology produces 11N nodes. A
+For a plan with N tasks, the production topology produces 5N nodes. A
 `TopologyReport` summarizes totals, entry tasks, and exit tasks.
 
 Cross-plan dependencies (`depends_on_plan`) are outside single-graph
@@ -512,13 +508,11 @@ executor actions in a plan graph:
 |---|---|---|
 | Dispatch agent | `task-executor` | Build prompt, launch LLM provider, collect response |
 | Run gate | `plan.gate` | Invoke compile/test/clippy pipeline, emit verdict |
-| Compose prompt | `plan.compose` | Assemble system prompt from enrichment signals |
-| Enrich context | `plan.knowledge`, `plan.episodes`, etc. | Query knowledge store, episodes, playbooks |
+| Compose prompt | `plan.compose` | Assemble the task's prompt from its context |
 | Success boundary | `plan.success-boundary` | Mark task complete, emit downstream signal |
 
-For the production topology, each task flows through all 11 nodes in
-sequence: context -> 6 enrichers (parallel) -> compose -> executor -> gate
--> success boundary.
+For the production topology, each task flows through its 5 nodes in
+sequence: context -> compose -> executor -> gate -> success boundary.
 
 ---
 
@@ -1041,7 +1035,7 @@ cargo run -p roko-cli -- resume [run-id]
 | # | File | Topic |
 |---|---|---|
 | 01 | `depth/04-01-plan-discovery.md` | Plan scanning, frontmatter parsing, ranking, validation |
-| 02 | `depth/04-02-plan-to-graph.md` | `plan_to_graph()`, `ProductionPlanTopology`, 11-node subgraph |
+| 02 | `depth/04-02-plan-to-graph.md` | `plan_to_graph()`, `ProductionPlanTopology`, 5-node subgraph |
 | 03 | `depth/04-03-unified-task-dag.md` | Cross-plan DAG, wave computation, critical path, crate overlaps |
 | 04 | `depth/04-04-graph-engine-execution.md` | `GraphEngine`, topological waves, node activation, conditional routing |
 | 05 | `depth/04-05-plan-phases.md` | Phase lifecycle, state transitions, retry loops |

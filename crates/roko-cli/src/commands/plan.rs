@@ -278,23 +278,17 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// directly.
         #[arg(long, conflicts_with = "worktree_per_task")]
         no_worktree_per_task: bool,
-        /// Use the rich 11-node-per-task production topology instead of the
+        /// Use the rich 5-node-per-task production topology instead of the
         /// simple single-Activity-per-task converter.
         ///
         /// When enabled, each task becomes a subgraph of:
-        ///   [TaskContext] -> 6 parallel enrichers (knowledge, episodes,
-        ///   playbook, modulation, safety, experiment) -> [Compose] ->
-        ///   [TaskExecutor] -> [Gate] -> [SuccessBoundary]
+        ///   [TaskContext] -> [Compose] -> [TaskExecutor] -> [Gate] -> [SuccessBoundary]
         ///
         /// Each task's [Gate] runs the compile, lint and test rungs in the
         /// worktree its attempt ran in, and accepts the attempt onto the plan
         /// branch when they pass, so this needs per-task worktrees (the
-        /// default; see `--worktree-per-task`).
-        ///
-        /// Note: enricher cells are currently passthrough stubs. The richer
-        /// topology does not yet add runtime value over the simple converter,
-        /// but makes the structure available for incremental implementation of
-        /// each enricher cell type. Only applies to the Graph engine.
+        /// default; see `--worktree-per-task`). Only applies to the Graph
+        /// engine.
         #[arg(long)]
         rich_topology: bool,
         /// After every plan is delivered into the run's batch branch

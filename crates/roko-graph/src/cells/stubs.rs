@@ -1,9 +1,8 @@
 //! Stub cell implementations for graph nodes that don't have real implementations yet.
 //!
 //! `PassthroughCell` is a generic stub that passes input signals through unchanged
-//! and logs a trace message. It is used for enricher topology cells
-//! (`plan.enricher.*`), the `plan.success-boundary` anchor, and any other graph
-//! nodes that still need a placeholder.
+//! and logs a trace message. It is used for the `plan.success-boundary` anchor
+//! and any other graph nodes that still need a placeholder.
 //!
 //! The following topology cells have real implementations and are **no longer stubs**:
 //! - `plan.task-context` → `TaskContextCell` (see `cells/task_context.rs`)

@@ -12,7 +12,14 @@ Every plan starts as a directory on disk containing `plan.md` and `tasks.toml`.
 Before the Graph engine can execute it, the plan must be converted into a typed
 `Graph` -- a DAG of `Node` values connected by `Edge` values. Two converters
 exist, serving different use cases: a simple one-node-per-task converter and a
-production topology that builds an 11-node subgraph per task.
+production topology that builds a 5-node subgraph per task.
+
+> **Status (2026-10-03):** the production topology's six `plan.enricher.*`
+> nodes (knowledge, episodes, playbook, modulation, safety, experiment) were
+> passthrough stubs that changed nothing, and were removed (9206). A task's
+> subgraph is now context -> compose -> executor -> gate -> success: 5 nodes
+> and 4 edges. The node counts, enricher nodes and wave figures in the
+> production-converter sections below describe the removed 11-node layout.
 
 **Source:** `crates/roko-graph/src/convert.rs`, `crates/roko-graph/src/topology.rs`
 
@@ -102,7 +109,7 @@ at runtime:
 ## Production Converter: `ProductionPlanTopology::build()`
 
 The production converter builds a richer subgraph per task. Instead of a
-single node, each task becomes an 11-node pipeline that expresses enrichment,
+single node, each task becomes a 5-node pipeline that expresses its context,
 composition, execution, gating, and success boundary as explicit graph nodes.
 
 **Source:** `crates/roko-graph/src/topology.rs`
@@ -110,17 +117,10 @@ composition, execution, gating, and success boundary as explicit graph nodes.
 ### Per-task subgraph
 
 ```
-[TaskContextCell] --> [KnowledgeCell]    --+
-                  --> [EpisodesCell]      --|
-                  --> [PlaybookCell]      --|-> [ComposeCell] -> [TaskExecutorCell] -> [GateCell] -> [SuccessBoundary]
-                  --> [ModulationCell]    --|
-                  --> [SafetyCell]        --|
-                  --> [ExperimentCell]    --+
+[TaskContextCell] -> [ComposeCell] -> [TaskExecutorCell] -> [GateCell] -> [SuccessBoundary]
 ```
 
-The six enricher nodes run in parallel within the same topological wave.
-`ComposeCell` receives seven inputs: six enrichment Signals plus the original
-`TaskContext` Signal.
+`ComposeCell` turns the `TaskContext` Signal into the task's prompt.
 
 ### Node ID conventions
 

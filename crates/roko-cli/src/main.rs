@@ -1307,6 +1307,7 @@ impl PlanCmd {
             | Self::Resume { .. }
             | Self::Cancel { .. }
             | Self::Retry { .. }
+            | Self::Budget { .. }
             | Self::Review { .. }
             | Self::Status { .. } => false,
             Self::Run { dry_run, .. } | Self::Regenerate { dry_run, .. } => !dry_run,

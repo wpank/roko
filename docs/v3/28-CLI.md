@@ -832,6 +832,21 @@ roko plan retry [<task-id>] [--plan-id <id>] [--workdir <path>]
 | `<task-id>` | Accepted, but a Graph run reruns the whole plan from its checkpoint, so its passed tasks stay done. |
 | `--plan-id <id>` | The plan to run again. |
 
+#### `roko plan budget raise`
+
+Raise the budget ceiling of a running plan for the rest of its run. The command reaches the run over the socket
+`roko inject` uses and prints the run's answer; it exits non-zero when no run is listening or the run refuses. It
+refuses an amount that is not above what the plan's checkpoint says it has spent, and the run refuses one that is not
+above the plan's ceiling. The run keeps the new ceiling in the plan's `costs.json`, so a resume keeps it; its event
+log (`graph.plan_budget_raised`) and the run's `.roko/runs/<run>/manifest.json` (`budget_raises`) record who raised
+it and to what, and the plan's budget alerts (`[budget] alert_at_percent`) are armed again against it. A plan run
+also takes a raise written to `.roko/state/control.json`:
+`{"command": "raise_budget", "plan_id": "<id>", "budget_usd": <usd>}`.
+
+```
+roko plan budget raise <plan-id> --to <usd> [--workdir <path>]
+```
+
 #### `roko plan status`
 
 Show lightweight runner status from `.roko/state/status.json`. With a plan directory, show that plan's tasks and

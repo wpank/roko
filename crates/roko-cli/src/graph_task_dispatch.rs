@@ -90,7 +90,10 @@ mod watchdog;
 mod wiring;
 
 pub use attempt_workspace::{AWAITING_APPROVAL_PHASE, record_review};
-pub use budget::{GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot};
+pub use budget::{
+    GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot, PlanBudgetControl, PlanBudgetRaise,
+    plan_ceiling_micro_usd,
+};
 pub use feedback::GraphFeedbackContext;
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
 pub use operator_directives::OperatorDirectives;
@@ -159,7 +162,8 @@ pub struct GraphTaskDispatcher {
     config: Arc<RokoConfig>,
     workdir: PathBuf,
     budget_policy: GraphPlanBudgetPolicy,
-    budget_ledger: GraphPlanBudgetLedger,
+    /// Shared with the operator's [`PlanBudgetControl`] (backlog 2118).
+    budget_ledger: Arc<GraphPlanBudgetLedger>,
     /// CLI model override (from `--model`). When set, this replaces the
     /// config default and any per-task `model_hint` in dispatch.
     cli_model_override: Option<String>,
@@ -313,7 +317,7 @@ impl GraphTaskDispatcher {
             config,
             workdir,
             budget_policy: GraphPlanBudgetPolicy::unlimited(),
-            budget_ledger: GraphPlanBudgetLedger::default(),
+            budget_ledger: Arc::default(),
             cli_model_override: None,
             dangerously_skip_permissions: false,
             fast: None,

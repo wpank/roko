@@ -7,8 +7,9 @@
 //! and config it runs under, when a plan's run starts or resumes; a resume
 //! under another build or config marks the run's provenance mixed.
 //! [`RunManifests::close`] records how the run ended and how many attempts it
-//! opened, settled and abandoned. A manifest that cannot be written is
-//! logged; it never stops a run.
+//! opened, settled and abandoned, and [`RunManifests::record_budget_raise`]
+//! who raised a plan's budget ceiling, and to what. A manifest that cannot be
+//! written is logged; it never stops a run.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,13 +18,14 @@ use std::process::Command;
 use roko_core::config::schema::RokoConfig;
 use roko_fs::RokoLayout;
 use roko_learn::telemetry::records::{
-    ConfigHashProvenance, HarnessProvenance, RunClosed, RunInvocation, WorkspaceProvenance,
-    b3_digest,
+    BudgetRaise, ConfigHashProvenance, HarnessProvenance, RunClosed, RunInvocation,
+    WorkspaceProvenance, b3_digest,
 };
 use roko_learn::telemetry::{AttemptTally, RunProvenanceManifest, TelemetryWriterStats};
 use sha2::Digest as _;
 
 use crate::graph_checkpoint::GraphCheckpointStatus;
+use crate::graph_task_dispatch::PlanBudgetRaise;
 
 /// `kind` of the manifests a Graph plan run writes.
 const PLAN_RUN_KIND: &str = "plan_run";
@@ -168,6 +170,45 @@ impl RunManifests {
         });
         if let Err(error) = manifest.store(&run_dir) {
             tracing::warn!(run_id, %error, "run manifest not closed");
+        }
+    }
+
+    /// Record in run `run_id`'s manifest that `by` raised plan `plan_id`'s
+    /// budget ceiling (`raise`, backlog 2118).
+    pub fn record_budget_raise(
+        &self,
+        run_id: &str,
+        plan_id: &str,
+        raise: &PlanBudgetRaise,
+        by: &str,
+    ) {
+        let run_dir = self.runs_dir.join(run_id);
+        let mut manifest = match RunProvenanceManifest::load(&run_dir) {
+            Ok(Some(manifest)) => manifest,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(
+                    run_id,
+                    %error,
+                    "run manifest unreadable; the budget raise is not in it"
+                );
+                return;
+            }
+        };
+        manifest.budget_raises.push(BudgetRaise {
+            at: now_iso(),
+            plan_id: plan_id.to_string(),
+            from_usd: raise.from_usd,
+            to_usd: raise.to_usd,
+            spent_usd: raise.spent_usd,
+            by: by.to_string(),
+        });
+        if let Err(error) = manifest.store(&run_dir) {
+            tracing::warn!(
+                run_id,
+                %error,
+                "run manifest not written; the budget raise is not in it"
+            );
         }
     }
 }

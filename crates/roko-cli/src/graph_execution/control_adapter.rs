@@ -304,7 +304,7 @@ impl std::fmt::Debug for GraphExecutionControlAdapter {
 // ---------------------------------------------------------------------------
 
 /// Map a CLI `ExecutionCommandKind` to a graph `ControlCommandKind`, if it
-/// has one: an inject command does not.
+/// has one: an inject command and a budget raise do not.
 ///
 /// The two enums are intentionally separate to avoid a dependency from
 /// `roko-graph` (layer 2) to `roko-cli` (layer 4).
@@ -330,7 +330,9 @@ fn map_command_kind(kind: &ExecutionCommandKind) -> Option<ControlCommandKind> {
             reason: reason.clone(),
         },
         ExecutionCommandKind::Reset => ControlCommandKind::Reset,
-        ExecutionCommandKind::Inject { .. } => return None,
+        ExecutionCommandKind::Inject { .. } | ExecutionCommandKind::RaiseBudget { .. } => {
+            return None;
+        }
     };
     Some(graph_kind)
 }

@@ -1082,6 +1082,26 @@ fn cli_parses_non_mutating_plan_index_check() {
     ));
 }
 
+/// backlog 2118: `roko plan budget raise <plan> --to <usd>`; the amount is
+/// required.
+#[test]
+fn cli_parses_plan_budget_raise() {
+    use commands::plan::PlanBudgetCmd;
+
+    let cli =
+        Cli::try_parse_from(["roko", "plan", "budget", "raise", "p1", "--to", "0.5"]).unwrap();
+    let Some(Command::Plan {
+        cmd: PlanCmd::Budget { cmd },
+    }) = cli.command
+    else {
+        panic!("expected plan budget");
+    };
+    let PlanBudgetCmd::Raise { plan_id, to, .. } = cmd;
+    assert_eq!((plan_id.as_str(), to), ("p1", 0.5));
+    let missing = Cli::try_parse_from(["roko", "plan", "budget", "raise", "p1"]);
+    assert!(missing.is_err(), "--to is required");
+}
+
 #[test]
 fn cli_parses_plan_resume_flag() {
     let cli = Cli::try_parse_from(["roko", "plan", "run", "plans", "--resume-plan"]).unwrap();

@@ -1714,6 +1714,8 @@ async fn run_graph_plan_body(
     // `roko inject` reaches the run through a socket of its own, and what it
     // sends is routed like a TUI command (gap-f118b3).
     let operator_directives = graph_task_dispatcher.operator_directives();
+    // `roko plan budget raise` raises a running plan's ceiling (backlog 2118).
+    let budget_control = graph_task_dispatcher.plan_budget_control();
     let (inject_sender, mut inject_rx, inject_ack_tx, inject_acks) =
         ExecutionCommandSender::channel("graph-engine");
     let inject_target = Arc::clone(&graph_task_dispatcher);
@@ -1757,6 +1759,7 @@ async fn run_graph_plan_body(
             &shared_pause_flag,
             &task_stops,
             &operator_directives,
+            &budget_control,
             workdir,
         );
         routed.merge(route_execution_commands(
@@ -1767,6 +1770,7 @@ async fn run_graph_plan_body(
             &shared_pause_flag,
             &task_stops,
             &operator_directives,
+            &budget_control,
             workdir,
         ));
         for plan_id in routed.cancelled_before_start {
@@ -1782,6 +1786,19 @@ async fn run_graph_plan_body(
             graph_tui_bridge.log_event("graph.plan_rerun", &rerun.describe(&plan_id));
             pending_reruns.insert(plan_id, rerun);
             reran_plans = true;
+        }
+        // The event log and the plan's run manifest say who raised a plan's
+        // ceiling, and to what (backlog 2118); its costs.json keeps it.
+        for raised in routed.budget_raises {
+            graph_tui_bridge.log_event("graph.plan_budget_raised", &raised.describe());
+            if let Some(run_id) = graph_task_dispatcher.plan_run_id(&raised.plan_id) {
+                run_manifests.record_budget_raise(
+                    &run_id,
+                    &raised.plan_id,
+                    &raised.raise,
+                    &raised.requested_by,
+                );
+            }
         }
 
         // A paused run starts no plan (decision 1206).
@@ -2657,6 +2674,8 @@ struct RoutedCommands {
     /// Plans the operator runs again, each with how
     /// ([`PlanSetScheduler::retry`]).
     reruns: Vec<(String, PlanRerun)>,
+    /// Running plans whose budget ceiling the operator raised.
+    budget_raises: Vec<RaisedBudget>,
 }
 
 impl RoutedCommands {
@@ -2665,6 +2684,33 @@ impl RoutedCommands {
         self.cancelled_before_start
             .extend(other.cancelled_before_start);
         self.reruns.extend(other.reruns);
+        self.budget_raises.extend(other.budget_raises);
+    }
+}
+
+/// A raise of a running plan's budget ceiling that
+/// [`route_execution_commands`] applied (backlog 2118).
+#[derive(Debug)]
+struct RaisedBudget {
+    plan_id: String,
+    raise: crate::graph_task_dispatch::PlanBudgetRaise,
+    /// Who asked: the control surface the raise came through.
+    requested_by: String,
+}
+
+impl RaisedBudget {
+    /// What the event log says of it.
+    fn describe(&self) -> String {
+        let Self {
+            plan_id,
+            raise,
+            requested_by,
+        } = self;
+        format!(
+            "plan '{plan_id}' budget ceiling raised from ${:.4} to ${:.4} by {requested_by}, \
+             with ${:.4} spent",
+            raise.from_usd, raise.to_usd, raise.spent_usd
+        )
     }
 }
 
@@ -2754,6 +2800,8 @@ fn report_blocked_plan(
 ///   review that the approval id names (`<plan>/<task>`), as `roko plan
 ///   review` does; the held attempt in `workdir` reads it
 ///   ([`record_held_task_review`]).
+/// - A budget raise (`roko plan budget raise`) lifts the ceiling of the
+///   running plan it names for the rest of its run (`budget`, backlog 2118).
 ///
 /// Every other command, and one these cannot carry out, is rejected with
 /// the reason ([`reject_command`]): none is acknowledged and then dropped.
@@ -2765,6 +2813,7 @@ fn route_execution_commands(
     pause: &AtomicBool,
     task_stops: &crate::graph_task_dispatch::OperatorStops,
     directives: &crate::graph_task_dispatch::OperatorDirectives,
+    budget: &crate::graph_task_dispatch::PlanBudgetControl,
     workdir: &Path,
 ) -> RoutedCommands {
     let mut routed = RoutedCommands::default();
@@ -2860,6 +2909,29 @@ fn route_execution_commands(
                 approval_id,
                 reason,
             } => record_held_task_review(workdir, &cmd, approval_id, "rejected", reason),
+            ExecutionCommandKind::RaiseBudget {
+                ceiling_micro_usd,
+                requested_by,
+            } => match cmd.plan_id.as_deref() {
+                Some(plan_id) if controls.contains_key(plan_id) => {
+                    match budget.raise(plan_id, *ceiling_micro_usd) {
+                        Ok(raise) => {
+                            let raised = RaisedBudget {
+                                plan_id: plan_id.to_string(),
+                                raise,
+                                requested_by: requested_by.clone(),
+                            };
+                            let note = raised.describe();
+                            tracing::info!(command_id = %cmd.command_id, "{note}");
+                            routed.budget_raises.push(raised);
+                            (CommandAckStatus::Completed, Some(note))
+                        }
+                        Err(reason) => reject_command(&cmd, &reason),
+                    }
+                }
+                Some(plan_id) => reject_command(&cmd, &format!("plan '{plan_id}' is not running")),
+                None => reject_command(&cmd, "name the running plan whose ceiling to raise"),
+            },
         };
         if matches!(cmd.kind, ExecutionCommandKind::Cancel) {
             tracing::info!(
@@ -4013,6 +4085,7 @@ mod tests {
             command: crate::runner::types::ControlAction::Cancel,
             plan_id: Some("p1".to_string()),
             task_id: None,
+            budget_usd: None,
         }
         .write(state_dir.path())
         .expect("write control.json");
@@ -5670,6 +5743,17 @@ exec sleep 60
         commands: Vec<(ExecutionCommandKind, Option<&str>, Option<&str>)>,
         task_stops: &crate::graph_task_dispatch::OperatorStops,
     ) -> RoutedTui {
+        let budget = crate::graph_task_dispatch::PlanBudgetControl::default();
+        route_tui_commands_with(workdir, commands, task_stops, &budget)
+    }
+
+    /// [`route_tui_commands_in`], with `budget` the plans' budget ledger.
+    fn route_tui_commands_with(
+        workdir: &Path,
+        commands: Vec<(ExecutionCommandKind, Option<&str>, Option<&str>)>,
+        task_stops: &crate::graph_task_dispatch::OperatorStops,
+        budget: &crate::graph_task_dispatch::PlanBudgetControl,
+    ) -> RoutedTui {
         let (sender, mut receiver, ack_tx, ack_rx) = ExecutionCommandSender::channel("graph");
         for (kind, plan_id, task_id) in commands {
             let command = sender.build_command(
@@ -5710,6 +5794,7 @@ exec sleep 60
             &pause,
             task_stops,
             &directives,
+            budget,
             workdir,
         );
         RoutedTui {
@@ -5789,6 +5874,57 @@ exec sleep 60
         let (kind, _, _) = inject("01-run");
         let shown = format!("{kind:?} {kind}");
         assert!(!shown.contains("SECRET-71d0"), "{shown}");
+    }
+
+    /// backlog 2118: a budget raise lifts the ceiling of the running plan it
+    /// names and is acknowledged with what changed, for the driver to record.
+    /// One for a plan that is not running, one naming no plan, and one that
+    /// does not raise the ceiling are rejected with the reason.
+    #[test]
+    fn a_budget_raise_reaches_only_a_running_plan() {
+        let raise = |plan_id: Option<&'static str>, ceiling_micro_usd: u64| {
+            let kind = ExecutionCommandKind::RaiseBudget {
+                ceiling_micro_usd,
+                requested_by: "the test".to_string(),
+            };
+            (kind, plan_id, None::<&str>)
+        };
+        let budget =
+            crate::graph_task_dispatch::PlanBudgetControl::spent_for_test("01-run", 0.05, 0.05);
+        let workdir = tempfile::tempdir().expect("workdir");
+
+        let seen = route_tui_commands_with(
+            workdir.path(),
+            vec![
+                raise(Some("02-wait"), 100_000),
+                raise(None, 100_000),
+                raise(Some("01-run"), 50_000),
+                raise(Some("01-run"), 100_000),
+            ],
+            &crate::graph_task_dispatch::OperatorStops::default(),
+            &budget,
+        );
+
+        let answers: Vec<_> = seen
+            .acks
+            .iter()
+            .map(|ack| (ack.status, ack.message.clone().unwrap_or_default()))
+            .collect();
+        assert_eq!(answers[0].0, CommandAckStatus::Rejected);
+        assert!(answers[0].1.contains("is not running"), "{answers:?}");
+        assert_eq!(answers[1].0, CommandAckStatus::Rejected);
+        assert_eq!(answers[2].0, CommandAckStatus::Rejected);
+        assert!(answers[2].1.contains("does not raise"), "{answers:?}");
+        assert_eq!(
+            answers[3],
+            (
+                CommandAckStatus::Completed,
+                "plan '01-run' budget ceiling raised from $0.0500 to $0.1000 by the test, with \
+                 $0.0500 spent"
+                    .to_string()
+            )
+        );
+        assert_eq!(seen.routed.budget_raises.len(), 1);
     }
 
     /// gap-c002bb: a Graph run rejects, with its reason, every TUI command

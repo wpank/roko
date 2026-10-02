@@ -2724,7 +2724,6 @@ fn live_and_replayed_tool_streams_are_identical() {
         kinds,
         [
             OutputRecordKind::ToolCall,
-            OutputRecordKind::ToolResult,
             OutputRecordKind::Text,
             OutputRecordKind::ToolCall,
             OutputRecordKind::ToolResult,
@@ -2740,7 +2739,6 @@ fn live_and_replayed_tool_streams_are_identical() {
         texts,
         [
             "Bash cat src/main.rs",
-            "fn main() {}",
             "Reading the file",
             "Bash",
             "fn main() {}",
@@ -2750,7 +2748,8 @@ fn live_and_replayed_tool_streams_are_identical() {
     );
 
     // Rendered, both read alike: the live step keeps its target, and the
-    // unscreened draft is gone, settled by its screened copy (bug-cc61a3).
+    // unscreened draft and tool result are gone, settled by their screened
+    // copies (bug-cc61a3, bug-9affca).
     let render = |records: &[AgentOutputRecord]| {
         render_output_records_styled(records, &Theme::dark(), &RenderOptions::default())
             .iter()

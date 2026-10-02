@@ -1926,3 +1926,47 @@ fn screened_transcript_replaces_unscreened_text() {
     app.drain_state_events();
     assert_eq!(texts(&app), ["Bash ls", "final answer", "retry draft"]);
 }
+
+/// bug-9affca: an attempt's screened transcript also replaces the tool call
+/// and result it streamed unscreened, with their raw arguments and output, and
+/// keeps the live tool step that names the call. A raw result that trails the
+/// screened copy is dropped.
+#[test]
+fn screened_tool_steps_replace_unscreened() {
+    use crate::runner::tui_bridge::TuiBridge;
+    use crate::tui::widgets::stream_output::display_text;
+    use serde_json::json;
+
+    let dir = tempdir().expect("tempdir");
+    let hub = crate::state_hub::shared_state_hub();
+    let mut app = App::new_connected(dir.path(), &hub);
+    let bridge = TuiBridge::new(hub.sender());
+    let unscreened = |kind: &str, payload: serde_json::Value| {
+        bridge.publish_unscreened_stream_record("a", "p", "t", 0, kind, payload);
+    };
+    let texts = |app: &App| {
+        app.tui_state
+            .agent_output_history
+            .records_for("a")
+            .iter()
+            .map(|record| display_text(&record.text).into_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // The attempt streams a live step, then the call with its raw arguments
+    // and the raw output.
+    bridge.agent_spawned("a", "p", "t", 1, "impl", "sonnet", "claude_cli");
+    bridge.tool_step("a", "p", "t", 0, "c1", "Bash", "ls");
+    let call = json!({ "tool_id": "c1", "tool": "Bash", "args": "{\"command\":\"ls\"}" });
+    unscreened("tool_start", call);
+    unscreened("tool_result", json!({ "tool_id": "c1", "output": "raw" }));
+    app.drain_state_events();
+    assert_eq!(texts(&app), ["Bash ls", "Bash", "raw"]);
+
+    // Its screened transcript arrives, and a late raw result trails it.
+    bridge.tool_call("a", "p", "t", 0, "c1", "Bash");
+    bridge.tool_output("a", "p", "t", 0, "c1", "screened");
+    unscreened("tool_result", json!({ "tool_id": "c1", "output": "late" }));
+    app.drain_state_events();
+    assert_eq!(texts(&app), ["Bash ls", "Bash", "screened"]);
+}

@@ -1160,11 +1160,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
             .map(|(_, key)| *key)
             .collect();
         assert_eq!(abandoned, [killed.as_str()]);
+        // One per-run seq runs across every record kind (S01 §4.7), so the
+        // decision records between these rows leave gaps; a resumed writer
+        // that restarted the count would repeat a number.
         let seqs: Vec<u64> = rows.iter().filter_map(|row| row["seq"].as_u64()).collect();
-        assert_eq!(
-            seqs,
-            [1, 2, 3],
-            "the resumed writer continues the run's seq"
+        assert_eq!(seqs.len(), 3, "{seqs:?}");
+        assert!(
+            seqs.windows(2).all(|pair| pair[0] < pair[1]),
+            "the resumed writer continues the run's seq: {seqs:?}"
         );
     }
 

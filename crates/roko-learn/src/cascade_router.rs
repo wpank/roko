@@ -2433,7 +2433,8 @@ impl CascadeRouter {
         }
         let n_obs = snapshot.total_observations;
         // The snapshot always serializes: `save` writes it.
-        let state = serde_json::to_value(&snapshot).unwrap_or_default();
+        let mut state = serde_json::to_value(&snapshot).unwrap_or_default();
+        quantize_floats(&mut state);
         let canonical = roko_core::config::fingerprint::canonical_json(&state);
         RouterStateDigest {
             digest: crate::telemetry::records::b3_digest(canonical.as_bytes()),
@@ -3535,6 +3536,22 @@ fn apply_provider_pass_rate(
             let multiplier = 1.0 - weight + weight * pass_rate;
             *score *= multiplier;
         }
+    }
+}
+
+/// Each float of `value` as a string of 12 significant digits, so a router
+/// state that went through a save and a load has the digest it had before:
+/// serde_json's default parser can move a float by one ulp.
+fn quantize_floats(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Number(number) if number.is_f64() => {
+            if let Some(float) = number.as_f64() {
+                *value = serde_json::Value::String(format!("{float:.11e}"));
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(quantize_floats),
+        serde_json::Value::Object(map) => map.values_mut().for_each(quantize_floats),
+        _ => {}
     }
 }
 

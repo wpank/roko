@@ -2,7 +2,7 @@
 id = "gap-5e9292"
 kind = "gap"
 title = "PK73 Domains and assistant: The runner's FeedRegistry is built empty and never read (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "hermes"
@@ -12,6 +12,7 @@ subsystem = ["roko-serve/routes"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "d426c86d7"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK73"
 anchors = ["crates/roko-cli/src/run.rs", "crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/serve_runtime.rs", "crates/roko-core/src/domain_profile.rs", "crates/roko-core/src/lib.rs", "crates/roko-serve/Cargo.toml", "crates/roko-serve/src/routes/mod.rs", "crates/roko-serve/src/routes/plans/run_control.rs", "crates/roko-serve/src/routes/plans/tests.rs", "crates/roko-serve/src/routes/route_permissions.rs", "crates/roko-serve/src/routes/run.rs", "crates/roko-serve/src/routes/runs.rs", "crates/roko-serve/src/runtime.rs", "crates/roko-serve/src/state.rs", "docs/v3/26-HTTP-API.md", "docs/v3/depth/05-agent/16-domain-profiles.md", "docs/v3/depth/05-agent/domain-profiles.md"]
 lane = "rust-cold"
@@ -41,6 +42,17 @@ command = "grep -rqw 'fn api_run_reports_the_gated_runs_id_and_verdict' crates/r
 
 [[verify]]
 command = "grep -rqw 'fn mcp_tools_list_returns_annotated_tools' crates/roko-serve/ && cargo test -p roko-serve mcp_tools_list_returns_annotated_tools"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T19:08:28Z"
+commit = "d426c86d7"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:52Z"
+forced = false
+evidence = "Gate 3b on work/backlog-batch-3b (merged into main as d426c86d7, tree identical to the gated one): cargo check --workspace --tests, clippy -D warnings (roko-agent/cli/core/learn/serve), nextest --lib 10,077 passed, golden-path canaries 13/13, portal vitest 4/4 + tsc --noEmit, ViabilityBench verifier CI (f2,f3,f5,f7,f8) and audit pytest; every [[verify]] passes."
 +++
 
 ## Problem

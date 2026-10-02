@@ -2,7 +2,7 @@
 id = "gap-46fd19"
 kind = "gap"
 title = "PK22 ViabilityBench proof: analysis/bootstrap.py: the paired bootstrap stratified by family and level (+5 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -12,6 +12,7 @@ subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "d426c86d7"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK22"
 anchors = ["benchmarks/viabilitybench/analysis", "benchmarks/viabilitybench/families"]
 lane = "bench"
@@ -35,6 +36,17 @@ command = "test -f benchmarks/viabilitybench/families/f7_rustiter/hidden.py && b
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/families/f8_honeypot/hidden.py && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families f8 --levels 1-5 --seeds 2"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T19:09:30Z"
+commit = "d426c86d7"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:52Z"
+forced = false
+evidence = "Gate 3b on work/backlog-batch-3b (merged into main as d426c86d7, tree identical to the gated one): cargo check --workspace --tests, clippy -D warnings (roko-agent/cli/core/learn/serve), nextest --lib 10,077 passed, golden-path canaries 13/13, portal vitest 4/4 + tsc --noEmit, ViabilityBench verifier CI (f2,f3,f5,f7,f8) and audit pytest; every [[verify]] passes."
 +++
 
 ## Problem

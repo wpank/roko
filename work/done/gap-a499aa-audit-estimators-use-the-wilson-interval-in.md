@@ -2,7 +2,7 @@
 id = "gap-a499aa"
 kind = "gap"
 title = "Audit estimators use the Wilson interval in every cell (Wald misses S05's coverage target)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["bench/audit"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "d426c86d7"
 source = "backlog wave 1, task 7107 report; Will's decision 2026-10-02"
 anchors = ["benchmarks/viabilitybench/audit"]
 lane = "bench"
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'def test_wilson_interval_meets_coverage_in_every_cell' benchmarks/viabilitybench/audit/ && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/audit -k test_wilson_interval_meets_coverage_in_every_cell"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T19:09:32Z"
+commit = "d426c86d7"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-02T16:02:40Z"
+forced = false
+evidence = "Gate 3b on work/backlog-batch-3b (merged into main as d426c86d7, tree identical to the gated one): cargo check --workspace --tests, clippy -D warnings (roko-agent/cli/core/learn/serve), nextest --lib 10,077 passed, golden-path canaries 13/13, portal vitest 4/4 + tsc --noEmit, ViabilityBench verifier CI (f2,f3,f5,f7,f8) and audit pytest; every [[verify]] passes."
 +++
 
 ## Problem

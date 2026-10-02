@@ -209,27 +209,38 @@ impl GraphTaskDispatcher {
 
                 // Wait until no sibling is mid-edit on what this step reads,
                 // and keep siblings from starting to edit it while the step
-                // runs (gap-1920ba).
+                // runs (gap-1920ba). A run that begins to stop ends this wait
+                // and the one for the compile lock (bug-3a3968).
                 let step_scope = sibling_settle::StepScope::of(step, &effective_workdir);
                 let reading = self
-                    .in_flight
-                    .begin_step(&sibling_settle::StepRead {
-                        plan_id: &spec.plan_id,
-                        task_id: &task.id,
-                        label: step_label,
-                        workdir: &effective_workdir,
-                        scope: &step_scope,
-                        limit: sibling_wait,
-                    })
-                    .await;
-                let compile_permit = verify_compile_permit(
-                    &effective_workdir,
-                    self.config.gates.compile_concurrency,
-                    step,
-                    &spec.plan_id,
-                    &task.id,
-                )
-                .await;
+                    .unless_stopped(
+                        spec,
+                        task,
+                        step_label,
+                        self.in_flight.begin_step(&sibling_settle::StepRead {
+                            plan_id: &spec.plan_id,
+                            task_id: &task.id,
+                            label: step_label,
+                            workdir: &effective_workdir,
+                            scope: &step_scope,
+                            limit: sibling_wait,
+                        }),
+                    )
+                    .await?;
+                let compile_permit = self
+                    .unless_stopped(
+                        spec,
+                        task,
+                        step_label,
+                        verify_compile_permit(
+                            &effective_workdir,
+                            self.config.gates.compile_concurrency,
+                            step,
+                            &spec.plan_id,
+                            &task.id,
+                        ),
+                    )
+                    .await?;
                 // A run that began to stop starts no further step (bug-82cbef).
                 if let Some(cancelled) = self.stopped_verify(spec, task, step_label) {
                     return Err(cancelled);
@@ -261,18 +272,20 @@ impl GraphTaskDispatcher {
                     (verdict, blocked_by_sibling) = self
                         .in_flight
                         .settle_failed_step(&failed_step, verdict, || async {
-                            // Nothing re-runs once the run began to stop.
-                            if self.is_stopping() {
-                                return roko_core::Verdict::fail(step_label, "stopping");
-                            }
-                            let _compile_permit = verify_compile_permit(
+                            // Nothing re-runs once the run began to stop, and
+                            // a stop ends the wait for the compile lock.
+                            let permit = verify_compile_permit(
                                 &effective_workdir,
                                 self.config.gates.compile_concurrency,
                                 step,
                                 &spec.plan_id,
                                 &task.id,
-                            )
-                            .await;
+                            );
+                            let Ok(_compile_permit) =
+                                self.unless_stopped(spec, task, step_label, permit).await
+                            else {
+                                return roko_core::Verdict::fail(step_label, "stopping");
+                            };
                             gate.verify(&gate_signal, &gate_ctx).await
                         })
                         .await;
@@ -537,24 +550,28 @@ impl GraphTaskDispatcher {
                             let step_scope =
                                 sibling_settle::StepScope::of(step, &effective_workdir);
                             let reading = self
-                                .in_flight
-                                .begin_step(&sibling_settle::StepRead {
-                                    plan_id: &spec.plan_id,
-                                    task_id: &task.id,
-                                    label: step_label,
-                                    workdir: &effective_workdir,
-                                    scope: &step_scope,
-                                    limit: sibling_wait,
-                                })
-                                .await;
+                                .unless_stopped(
+                                    spec,
+                                    task,
+                                    step_label,
+                                    self.in_flight.begin_step(&sibling_settle::StepRead {
+                                        plan_id: &spec.plan_id,
+                                        task_id: &task.id,
+                                        label: step_label,
+                                        workdir: &effective_workdir,
+                                        scope: &step_scope,
+                                        limit: sibling_wait,
+                                    }),
+                                )
+                                .await?;
                             if let Some(cancelled) = self.stopped_verify(spec, task, step_label) {
                                 return Err(cancelled);
                             }
                             // The re-run builds like the first run, so it
                             // queues on the same compile lock, and a stop
-                            // that began while it waited keeps it from
-                            // starting (bug-c33c6e).
-                            let mut retry_verdict = verify_step_locked(
+                            // ends that wait or keeps it from starting once
+                            // it holds the lock (bug-c33c6e, bug-3a3968).
+                            let Some(mut retry_verdict) = verify_step_locked(
                                 &retry_gate,
                                 &gate_signal,
                                 &gate_ctx,
@@ -563,9 +580,12 @@ impl GraphTaskDispatcher {
                                 step,
                                 &spec.plan_id,
                                 &task.id,
-                                || self.stopped_verify(spec, task, step_label),
+                                &self.stopping,
                             )
-                            .await?;
+                            .await
+                            else {
+                                return Err(verify_cancelled(spec, task, step_label));
+                            };
                             if !retry_verdict.passed {
                                 if let Some(cancelled) = self.stopped_verify(spec, task, step_label)
                                 {
@@ -1327,13 +1347,35 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         at: &str,
     ) -> Option<RokoError> {
-        self.is_stopping().then(|| {
-            RokoError::cancelled(format!(
-                "the plan run stopped during the verify of {}/{} at {at}",
-                spec.plan_id, task.id
-            ))
-        })
+        self.is_stopping().then(|| verify_cancelled(spec, task, at))
     }
+
+    /// `wait`, unless `task`'s plan run begins to stop first: then the
+    /// cancellation its verify ends in at `at` (bug-3a3968). A step waits for
+    /// siblings editing what it reads and for the compile lock, and behind
+    /// another process's long build either wait can outlast the run's drain.
+    async fn unless_stopped<T>(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        at: &str,
+        wait: impl std::future::Future<Output = T>,
+    ) -> Result<T> {
+        tokio::select! {
+            biased;
+            () = self.stopping.cancelled() => Err(verify_cancelled(spec, task, at)),
+            value = wait => Ok(value),
+        }
+    }
+}
+
+/// The cancellation `task`'s verify ends in at `at`, a step or the auto-fix,
+/// when its plan run stops it (bug-82cbef).
+fn verify_cancelled(spec: &TaskExecutionSpec, task: &TaskDef, at: &str) -> RokoError {
+    RokoError::cancelled(format!(
+        "the plan run stopped during the verify of {}/{} at {at}",
+        spec.plan_id, task.id
+    ))
 }
 
 /// Queue a cargo verify step on the per-repository compile lock before its
@@ -1370,9 +1412,9 @@ pub(super) async fn verify_compile_permit(
 
 /// Run a verify step's gate while holding the compile lock its command needs
 /// ([`verify_compile_permit`]). The post-auto-fix re-run goes through here
-/// (bug-951930). Once the lock is taken, `stopped` says whether the step's
-/// plan run began to stop meanwhile: then the step does not start, and its
-/// cancellation is returned (bug-c33c6e).
+/// (bug-951930). A step whose plan run `stop`s while it waits for the lock
+/// (bug-3a3968), or by the time it holds it (bug-c33c6e), does not start:
+/// `None`.
 pub(super) async fn verify_step_locked(
     gate: &ShellGate,
     signal: &Signal,
@@ -1382,14 +1424,18 @@ pub(super) async fn verify_step_locked(
     step: &crate::task_parser::VerifyStep,
     plan_id: &str,
     task_id: &str,
-    stopped: impl Fn() -> Option<RokoError>,
-) -> Result<roko_core::Verdict> {
-    let _compile_permit =
-        verify_compile_permit(workdir, compile_concurrency, step, plan_id, task_id).await;
-    if let Some(cancelled) = stopped() {
-        return Err(cancelled);
+    stop: &tokio_util::sync::CancellationToken,
+) -> Option<roko_core::Verdict> {
+    let lock = verify_compile_permit(workdir, compile_concurrency, step, plan_id, task_id);
+    let _compile_permit = tokio::select! {
+        biased;
+        () = stop.cancelled() => return None,
+        permit = lock => permit,
+    };
+    if stop.is_cancelled() {
+        return None;
     }
-    Ok(gate.verify(signal, ctx).await)
+    Some(gate.verify(signal, ctx).await)
 }
 
 impl GraphTaskDispatcher {
@@ -2197,11 +2243,11 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         )
         .await
         .expect("compile permit");
-        let running = || None;
+        let running = tokio_util::sync::CancellationToken::new();
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
             verify_step_locked(
-                &gate, &signal, &ctx, workdir, 1, &step, "plan", "T1", running,
+                &gate, &signal, &ctx, workdir, 1, &step, "plan", "T1", &running,
             ),
         )
         .await
@@ -2210,7 +2256,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
 
         drop(held);
         let verdict = verify_step_locked(
-            &gate, &signal, &ctx, workdir, 1, &step, "plan", "T1", running,
+            &gate, &signal, &ctx, workdir, 1, &step, "plan", "T1", &running,
         )
         .await
         .expect("the run is not stopping");
@@ -2219,8 +2265,8 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
     }
 
     /// bug-c33c6e: a post-auto-fix re-run whose plan run begins to stop while
-    /// it waits for the compile lock does not start once it holds the lock;
-    /// it ends with the run's cancellation.
+    /// it waits for the compile lock does not start (bug-3a3968 ends the wait
+    /// itself on the stop).
     #[tokio::test]
     async fn auto_fix_rerun_stops_after_the_lock_wait() {
         let temp = tempdir().expect("tempdir");
@@ -2246,29 +2292,98 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         .await
         .expect("compile permit");
 
-        let stopping = std::sync::atomic::AtomicBool::new(false);
-        let stopped = || {
-            stopping
-                .load(std::sync::atomic::Ordering::SeqCst)
-                .then(|| RokoError::cancelled("the plan run is stopping"))
-        };
-        let rerun = verify_step_locked(
-            &gate, &signal, &ctx, workdir, 1, &step, "plan", "T1", stopped,
-        );
+        let stop = tokio_util::sync::CancellationToken::new();
+        let rerun =
+            verify_step_locked(&gate, &signal, &ctx, workdir, 1, &step, "plan", "T1", &stop);
         // The run begins to stop while the re-run waits for the lock, then the
         // lock frees.
         let stop_then_release = async {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            stopping.store(true, std::sync::atomic::Ordering::SeqCst);
+            stop.cancel();
             drop(held);
         };
         let (rerun, ()) = tokio::join!(rerun, stop_then_release);
 
-        assert!(matches!(rerun, Err(RokoError::Cancelled(_))), "{rerun:?}");
+        assert!(rerun.is_none(), "{rerun:?}");
         assert!(
             !marker.exists(),
             "the step started after its run began to stop"
         );
+    }
+
+    /// bug-3a3968: a verify step waiting for a sibling that edits what it
+    /// reads, or for the compile lock another build holds, stops waiting when
+    /// its plan run begins to stop, though the sibling still edits and the
+    /// build still holds the lock. The step never runs, and the attempt
+    /// settles as cancelled.
+    #[tokio::test]
+    async fn verify_waits_end_on_a_stop() {
+        for blocker in ["sibling", "compile lock"] {
+            let temp = tempdir().expect("tempdir");
+            let runs = temp.path().join(".roko/runs");
+            let feedback = GraphFeedbackContext {
+                runs_dir: Some(runs.clone()),
+                ..GraphFeedbackContext::default()
+            };
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, VERIFY_PROVIDER, wait_while_siblings_edit, feedback)
+                    .await;
+            task.timeout_secs = 600;
+            let marker = temp.path().join("ran.txt");
+            let mut step = verify_step("compile", "echo ran > ran.txt # cargo check");
+            step.timeout_ms = 120_000;
+            task.verify = vec![step];
+            let spec = make_spec(&task);
+            // What the step waits for, held until the case ends.
+            let sibling = (blocker == "sibling").then(|| {
+                dispatcher.in_flight.register(
+                    &format!("{}/T12", spec.plan_id),
+                    &dispatcher.workdir,
+                    &["web/src/PlanView.tsx".to_string()],
+                )
+            });
+            let build = if blocker == "compile lock" {
+                let held = crate::runner::gate_dispatch::acquire_compile_ownership(
+                    &dispatcher.workdir,
+                    1,
+                    std::time::Duration::from_secs(5),
+                    "other-plan",
+                    "T9",
+                    "cargo build",
+                )
+                .await
+                .expect("compile permit");
+                Some(held)
+            } else {
+                None
+            };
+
+            let key = format!("{}/{}", spec.plan_id, task.id);
+            let ctx = CellContext::new().with_run_id("stopped-run".to_string());
+            let dispatched = dispatcher.dispatch(&spec, Vec::new(), &ctx);
+            let stop = async {
+                dispatcher.in_flight.reading_began(&key).await;
+                dispatcher.begin_stop();
+            };
+            let (result, ()) =
+                tokio::time::timeout(HANG_GUARD, async { tokio::join!(dispatched, stop) })
+                    .await
+                    .expect("the wait ends on the stop");
+            let error = result.expect_err("the stopped wait fails the attempt");
+            assert!(
+                matches!(error, RokoError::Cancelled(_)),
+                "{blocker}: {error}"
+            );
+            assert!(!marker.exists(), "{blocker}: the step ran");
+            let verdicts = crate::graph_task_dispatch::tests::jsonl_rows_where(
+                &runs.join("stopped-run").join("attempts.jsonl"),
+                1,
+                |row| row["schema_version"] == "roko.verdict/1",
+            )
+            .await;
+            assert_eq!(verdicts[0]["outcome"], "cancelled", "{blocker}");
+            drop((sibling, build));
+        }
     }
 
     #[tokio::test]

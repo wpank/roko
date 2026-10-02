@@ -2,7 +2,8 @@
 
 > Full mathematical treatment of the three bandit algorithms used for repeated
 > decision-making throughout the learning system, plus Track-and-Stop for
-> best-arm identification, bandit ensembles, and visualization diagnostics.
+> best-arm identification (removed 2026-10-02, see section 5), bandit
+> ensembles, and visualization diagnostics.
 
 **Parent:** [08-LEARNING](../../08-LEARNING.md)
 
@@ -25,21 +26,21 @@ Garivier & Kaufmann (2016) -- Track-and-Stop
 
 ## 1. Purpose
 
-Roko uses multi-armed bandit algorithms for every repeated decision in the
-system: which model to route a task to, which prompt section to include, which
-tool format to use, which backend to prefer. Bandits provide a principled
-framework for balancing exploration (trying less-tested options) against
-exploitation (using the best-known option), with formal regret bounds that
-guarantee convergence to optimal choices.
+Roko uses multi-armed bandit algorithms for repeated decisions in the system:
+which model to route a task to, which prompt section to include, which backend
+to prefer. (Choosing the tool format was designed too; see section 5.) Bandits
+provide a principled framework for balancing exploration (trying less-tested
+options) against exploitation (using the best-known option), with formal regret
+bounds that guarantee convergence to optimal choices.
 
-The `roko-learn` crate provides four bandit implementations, each suited to a
-different decision structure:
+The `roko-learn` crate provides three bandit implementations, each suited to a
+different decision structure; a fourth, `TrackAndStopBandit`, was removed:
 
 | Bandit | Algorithm | Use Case | Key Property |
 |--------|-----------|----------|--------------|
 | `UcbBandit` | UCB1 (Auer et al. 2002) | Context-free repeated decisions | O(sqrt(T ln T)) cumulative regret |
 | `LinUCBRouter` | LinUCB (Li et al. 2010) | Context-dependent model routing | Handles 18-dim context vectors |
-| `TrackAndStopBandit` | Track-and-Stop (Garivier & Kaufmann 2016) | Best-arm identification | Stops when confident |
+| `TrackAndStopBandit` (removed) | Track-and-Stop (Garivier & Kaufmann 2016) | Best-arm identification | Stops when confident |
 | `BanditBank` | Collection of UCB1 instances | Keyed decision spaces | One bandit per context key |
 
 ---
@@ -395,6 +396,11 @@ static bonus for cache-consistent routing during the confidence stage.
 
 ## 5. Track-and-Stop: Best-Arm Identification
 
+> **Removed (2026-10-02, find-34a4b5).** `TrackAndStopBandit`, the
+> `FormatBandit` trait and its roko-core and roko-fs companions were deleted in
+> `310f984b6`: after Runner-v2 nothing selected a tool format with them or fed
+> them an outcome. This section is kept as design reference.
+
 ### 5.1 Algorithm
 
 The `TrackAndStopBandit` implements the Track-and-Stop algorithm (Garivier &
@@ -698,7 +704,7 @@ exploration on `PrematureExploitation`).
 | `UcbBandit` | JSON (arm stats) | Per-bandit file |
 | `BanditBank` | JSON (all bandits) | Single file |
 | `LinUCBRouter` | JSON (A matrices, b vectors, obs count) | `.roko/learn/cascade-router.json` |
-| `TrackAndStopBandit` | JSON (per-key state) | Per-instance file |
+| `TrackAndStopBandit` (removed) | JSON (per-key state) | Per-instance file |
 
 All persistence uses the atomic tempfile+rename pattern for crash safety.
 

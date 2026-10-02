@@ -68,6 +68,7 @@ mod judge_step;
 mod ladder;
 mod live_tool_calls;
 mod operator_directives;
+mod operator_pause;
 mod operator_stop;
 mod prompt_experiment;
 mod red_flags;
@@ -827,6 +828,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
         input: Vec<Signal>,
         ctx: &CellContext,
     ) -> Result<Vec<Signal>> {
+        // A paused run starts no attempt, a retry included (G10).
+        operator_pause::hold_while_paused(ctx, &spec.plan_id, &spec.title).await?;
         self.admit_daily_budget(spec).await?;
         // A task that starts while another call holds the plan's remaining
         // budget waits for it to settle (bug-0bc2b4).

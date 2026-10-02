@@ -15,7 +15,8 @@
 //!
 //! `agent_tool_shells_exclude_provider_keys` covers the shells of roko's own
 //! agent tools (`run_tests`, `bash`), which OpenAI-compatible models reach
-//! through roko's tool loop.
+//! through roko's tool loop, and `agent_tool_loop_refuses_git_stash` covers
+//! the git guard of that tool loop.
 
 mod common;
 
@@ -24,6 +25,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
 
 use common::scripted_provider::{Script, ScriptedProvider, Turn};
 use common::{ScriptedPlanWorkspace, describe_leak, files_containing, mask_secret};
@@ -312,38 +314,69 @@ fn secrets_and_git_guard_canary() {
 /// provider may receive it; a tool shell may not.
 const PROVIDER_KEY: (&str, &str) = ("C2_FAKE_OPENAI_KEY", "c2-canary-provider-key-0b8c3d");
 
+/// A tool call a fake model makes: its id, the tool's name and the JSON
+/// arguments.
+type FakeToolCall = (&'static str, &'static str, String);
+
+/// A fake model's `bash` call that runs `command`.
+fn bash_call(id: &'static str, command: &str) -> FakeToolCall {
+    (
+        id,
+        "bash",
+        serde_json::json!({ "command": command }).to_string(),
+    )
+}
+
 /// An OpenAI-compatible chat server on a free local port. A request without
 /// a tool result gets calls to `run_tests` (a Makefile target) and `bash`;
-/// any other gets a final answer. A streaming request is answered with
-/// server-sent events, one tool call per chunk as the providers send them.
-/// Returns the base URL; the server thread lives as long as the test.
+/// any other gets a final answer.
 fn spawn_tool_calling_server(fixtures: &Path) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake provider");
-    let base_url = format!("http://{}", listener.local_addr().expect("address"));
     let bash_command = format!(
         "env > {}/bash-env.txt; printf 'attempt\\n' >> NOTES.md",
         fixtures.display()
     );
+    let calls = vec![
+        (
+            "call_run_tests",
+            "run_tests",
+            r#"{"build":"make"}"#.to_string(),
+        ),
+        bash_call("call_bash", &bash_command),
+    ];
+    spawn_chat_server(vec![calls], Arc::default())
+}
+
+/// An OpenAI-compatible chat server on a free local port that plays `turns`,
+/// one per model reply: a request gets the calls of the first turn that its
+/// tool results do not answer yet, and a final answer once they answer every
+/// turn. A streaming request is answered with server-sent events, one tool
+/// call per chunk as the providers send them. Each request is appended to
+/// `requests`. Returns the base URL; the server thread lives as long as the
+/// test.
+fn spawn_chat_server(turns: Vec<Vec<FakeToolCall>>, requests: Arc<Mutex<Vec<String>>>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake provider");
+    let base_url = format!("http://{}", listener.local_addr().expect("address"));
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let request = read_http_request(&mut stream);
-            let answered = request.contains("\"role\":\"tool\"");
-            let tool_calls = [
-                (
-                    "call_run_tests",
-                    "run_tests",
-                    r#"{"build":"make"}"#.to_string(),
-                ),
-                (
-                    "call_bash",
-                    "bash",
-                    serde_json::json!({ "command": bash_command }).to_string(),
-                ),
-            ];
+            let streaming = request.contains("\"stream\":true");
+            // The tool results not yet matched to a turn.
+            let mut results = request.matches("\"role\":\"tool\"").count();
+            let tool_calls: &[FakeToolCall] = turns
+                .iter()
+                .find(|calls| {
+                    let unanswered = results == 0;
+                    results = results.saturating_sub(calls.len());
+                    unanswered
+                })
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            requests.lock().expect("request log").push(request);
+            let answered = tool_calls.is_empty();
             let finish_reason = if answered { "stop" } else { "tool_calls" };
             let usage = serde_json::json!({ "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 });
-            let (content_type, body) = if request.contains("\"stream\":true") {
+            let (content_type, body) = if streaming {
                 let mut chunks = Vec::new();
                 if answered {
                     chunks.push(serde_json::json!({ "choices": [{ "index": 0, "delta": { "role": "assistant", "content": "done" } }] }));
@@ -424,23 +457,9 @@ fn read_http_request(stream: &mut std::net::TcpStream) -> String {
     String::from_utf8_lossy(&buffer).into_owned()
 }
 
-/// roko's own tool shells (`run_tests` and `bash`, which OpenAI-compatible
-/// models reach through roko's tool loop) see no provider key either, the
-/// provider's own included.
-#[test]
-fn agent_tool_shells_exclude_provider_keys() {
-    const TOOLS_PLAN: &str = "c2-tools";
-    let tasks = TASKS
-        .replace("c2-canary", TOOLS_PLAN)
-        .replace("model_hint = \"scripted\"", "model_hint = \"fake-openai\"")
-        .replace(
-            "allowed_tools = []",
-            "allowed_tools = [\"run_tests\", \"bash\"]",
-        )
-        .replace("env >> {fixtures}/gate-env.txt", "true");
-    // The fake provider's config is set once its port is known.
-    let (workspace, _provider) = workspace(TOOLS_PLAN, &tasks, "");
-    let base_url = spawn_tool_calling_server(&workspace.fixtures);
+/// Point `workspace`'s agent at the fake OpenAI-compatible server at
+/// `base_url`, whose key is [`PROVIDER_KEY`]. The caller commits the change.
+fn use_fake_openai(workspace: &ScriptedPlanWorkspace, base_url: &str) {
     let config_path = workspace.repo.join("roko.toml");
     let mut config = fs::read_to_string(&config_path).expect("read roko.toml");
     config = config.replace(
@@ -458,6 +477,26 @@ fn agent_tool_shells_exclude_provider_keys() {
         PROVIDER_KEY.0
     ));
     fs::write(&config_path, config).expect("write roko.toml");
+}
+
+/// roko's own tool shells (`run_tests` and `bash`, which OpenAI-compatible
+/// models reach through roko's tool loop) see no provider key either, the
+/// provider's own included.
+#[test]
+fn agent_tool_shells_exclude_provider_keys() {
+    const TOOLS_PLAN: &str = "c2-tools";
+    let tasks = TASKS
+        .replace("c2-canary", TOOLS_PLAN)
+        .replace("model_hint = \"scripted\"", "model_hint = \"fake-openai\"")
+        .replace(
+            "allowed_tools = []",
+            "allowed_tools = [\"run_tests\", \"bash\"]",
+        )
+        .replace("env >> {fixtures}/gate-env.txt", "true");
+    // The fake provider's config is set once its port is known.
+    let (workspace, _provider) = workspace(TOOLS_PLAN, &tasks, "");
+    let base_url = spawn_tool_calling_server(&workspace.fixtures);
+    use_fake_openai(&workspace, &base_url);
     fs::write(
         workspace.repo.join("Makefile"),
         format!(
@@ -490,5 +529,109 @@ fn agent_tool_shells_exclude_provider_keys() {
     assert!(
         leaky_tools.is_empty(),
         "a provider key reached the shells of {leaky_tools:?}"
+    );
+}
+
+/// The contents of the tool results in `requests`, the HTTP requests a fake
+/// chat server received.
+fn tool_results(requests: &[String]) -> Vec<String> {
+    let mut results = Vec::new();
+    for request in requests {
+        let Some((_, body)) = request.split_once("\r\n\r\n") else {
+            continue;
+        };
+        let Ok(body) = serde_json::from_str::<Value>(body) else {
+            continue;
+        };
+        for message in body["messages"].as_array().into_iter().flatten() {
+            if message["role"] == "tool" {
+                results.push(match &message["content"] {
+                    Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                });
+            }
+        }
+    }
+    results
+}
+
+/// `git <args>`'s standard output in `workspace`'s repository, run with the
+/// workspace's home as [`ScriptedPlanWorkspace::git`] runs git.
+fn git_stdout(workspace: &ScriptedPlanWorkspace, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(&workspace.repo)
+        .env("HOME", &workspace.home)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .expect("run git");
+    assert!(output.status.success(), "git {args:?} failed");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// roko's own tool loop refuses `git stash` and `git clean -fdx` from an
+/// OpenAI-compatible model in the operator's checkout (the shared working
+/// tree): the model is told each command was refused, the operator's
+/// uncommitted edit and untracked file survive the run, and nothing is
+/// stashed (G08).
+#[test]
+fn agent_tool_loop_refuses_git_stash() {
+    const GUARD_PLAN: &str = "c2-git-guard";
+    let tasks = TASKS
+        .replace("c2-canary", GUARD_PLAN)
+        .replace("model_hint = \"scripted\"", "model_hint = \"fake-openai\"")
+        .replace("allowed_tools = []", "allowed_tools = [\"bash\"]")
+        .replace("env >> {fixtures}/gate-env.txt", "true");
+    let (workspace, _provider) = workspace(GUARD_PLAN, &tasks, "");
+    // The model runs `git stash`, then `git clean -fdx`, then ends its turn.
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let base_url = spawn_chat_server(
+        vec![
+            vec![bash_call("call_stash", "git stash")],
+            vec![bash_call("call_clean", "git clean -fdx")],
+        ],
+        Arc::clone(&requests),
+    );
+    use_fake_openai(&workspace, &base_url);
+    let edited = workspace.repo.join("operator.txt");
+    fs::write(&edited, "committed\n").expect("write operator.txt");
+    workspace.git(&["add", "--all"]);
+    workspace.git(&["commit", "--quiet", "-m", "fake OpenAI-compatible provider"]);
+    // The operator's work in progress in the checkout the agent runs in: an
+    // edit to a tracked file and an untracked file.
+    fs::write(&edited, "committed\noperator edit\n").expect("edit operator.txt");
+    let untracked = workspace.repo.join("untracked.txt");
+    fs::write(&untracked, "operator notes\n").expect("write untracked.txt");
+
+    let output = run(&workspace, GUARD_PLAN, &[PROVIDER_KEY]);
+
+    let results = tool_results(&requests.lock().expect("request log"));
+    for command in ["git stash", "git clean -fdx"] {
+        assert!(
+            results
+                .iter()
+                .any(|result| result.contains("command not allowed") && result.contains(command)),
+            "the tool loop did not refuse `{command}`; the model got {results:?}\n{}",
+            context(&output)
+        );
+    }
+    assert_eq!(
+        read(&edited, &output),
+        "committed\noperator edit\n",
+        "the operator's uncommitted edit was lost\n{}",
+        context(&output)
+    );
+    assert_eq!(
+        read(&untracked, &output),
+        "operator notes\n",
+        "the operator's untracked file changed\n{}",
+        context(&output)
+    );
+    let stashes = git_stdout(&workspace, &["stash", "list"]);
+    assert!(
+        stashes.trim().is_empty(),
+        "the operator's work was stashed: {stashes}"
     );
 }

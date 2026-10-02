@@ -469,6 +469,7 @@ impl SafetyLayer {
                 block_force_push: false,
                 block_hard_reset_on_protected: false,
                 block_branch_delete_protected: false,
+                block_discarding_commands: false,
             },
             network_policy: NetworkPolicy {
                 allow_schemes: Vec::new(),
@@ -1982,7 +1983,7 @@ mod tests {
         let ctx = test_ctx();
 
         // Safe command passes.
-        let call = bash_call("git push origin feature");
+        let call = bash_call("git commit -m feature");
         assert!(layer.check_pre_execution(&call, &ctx).is_ok());
 
         // Dangerous command is blocked by temporal monitor.

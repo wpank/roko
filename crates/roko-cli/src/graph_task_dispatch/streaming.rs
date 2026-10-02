@@ -50,7 +50,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             });
         }
 
-        // ── Budget reservation ───────────────────────────────────────────
+        // ── Operator pause and budget reservation ────────────────────────
+        // A paused run starts no attempt, a retry included (G10).
+        operator_pause::hold_while_paused(ctx, &spec.plan_id, &spec.title).await?;
         self.admit_daily_budget(spec).await?;
         let budget_reservation = self
             .budget_ledger

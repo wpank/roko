@@ -518,147 +518,124 @@ pub(super) async fn plan_status(
 
 // ── Pause / Resume ───────────────────────────────────────────────────
 
-/// `POST /api/plans/:id/pause` — pause a running plan execution.
+/// How long `pause_plan` and `resume_plan` wait for the run to take the
+/// command they send it. The plan-set driver reads its control file every
+/// 100 ms.
+const RUN_CONTROL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How often they look whether it has.
+const RUN_CONTROL_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The id of the active run of plan (or run key) `id`: 404 when there is
+/// none, 409 when it already finished.
+async fn running_run(state: &AppState, id: &str) -> Result<String, ApiError> {
+    let active = state.active_plans.read().await;
+    let key = active_run_for(&active, id)
+        .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
+    let handle = active
+        .get(&key)
+        .expect("key from active_run_for must exist in map");
+    if handle.handle.is_finished() {
+        return Err(ApiError::conflict("plan execution already finished"));
+    }
+    Ok(handle.id.clone())
+}
+
+/// Send `action` (`pause` or `resume`) to the plan-set driver of the run in
+/// `workdir` through its control file, `.roko/state/control.json`, as `roko
+/// plan pause` and `roko plan resume` do, and wait for the run to take it.
 ///
-/// Cancels the background task and saves a snapshot so the plan can be
-/// resumed later.  Returns 200 with `{ "paused": true }` on success, 404
-/// if the plan is not actively executing, or 409 if it already finished.
+/// # Errors
+///
+/// 500 when the command cannot be written; 409 when the run did not take it
+/// in time, in which case it is withdrawn.
+async fn send_run_control(workdir: &std::path::Path, action: &str) -> Result<(), ApiError> {
+    let state_dir = roko_fs::RokoLayout::for_project(workdir).state_dir();
+    let path = state_dir.join("control.json");
+    let failed = |error: std::io::Error| {
+        ApiError::internal(format!("cannot send the {action} to the run: {error}"))
+    };
+    tokio::fs::create_dir_all(&state_dir).await.map_err(failed)?;
+    // Written whole, so the run never reads half a command.
+    let staged_name = format!("control.json.{}.tmp", uuid::Uuid::new_v4().simple());
+    let staged = state_dir.join(staged_name);
+    let command = json!({ "command": action }).to_string();
+    tokio::fs::write(&staged, command).await.map_err(failed)?;
+    tokio::fs::rename(&staged, &path).await.map_err(failed)?;
+
+    let started = tokio::time::Instant::now();
+    while tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        if started.elapsed() >= RUN_CONTROL_TIMEOUT {
+            // Withdrawn, unless the run took it meanwhile.
+            return match tokio::fs::remove_file(&path).await {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                _ => Err(ApiError::conflict(format!(
+                    "the plan run did not take the {action} within {}s",
+                    RUN_CONTROL_TIMEOUT.as_secs()
+                ))),
+            };
+        }
+        tokio::time::sleep(RUN_CONTROL_POLL).await;
+    }
+    Ok(())
+}
+
+/// `POST /api/plans/:id/pause` — hold a running plan run (decision 1206).
+///
+/// Sends the run's plan-set driver a pause, as `roko plan pause` does: no
+/// new plan, task or retry starts until resume, the attempts already running
+/// finish, and nothing is cancelled. Returns 200 with `{ "paused": true }`
+/// once the run took the pause, 404 if the plan is not actively executing,
+/// or 409 if it already finished or did not take the pause.
 ///
 /// `{id}` may be the run key **or** any member plan id of an active run.
 pub(super) async fn pause_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let active = state.active_plans.write().await;
-    // Resolve by key or by member plan id.
-    let key = active_run_for(&active, &id)
-        .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
-    let handle = active
-        .get(&key)
-        .expect("key from active_run_for must exist in map");
-
-    if handle.handle.is_finished() {
-        return Err(ApiError::conflict("plan execution already finished"));
-    }
-
-    // Extract data needed for the snapshot before releasing the lock.
-    let task_abort = handle.handle.abort_handle();
-    let captured_plan_dir = handle.plan_dir.clone();
-    let captured_run_id = handle.id.clone();
-
-    // Signal ordered cancellation so the task can unwind cleanly.
-    handle.cancel.cancel();
-
-    // Release the write lock so the spawned task can make progress during the
-    // grace window.  Holding the lock while sleeping would deadlock if the task
-    // tries to acquire it on its way out.
-    drop(active);
-
-    // Give the task a short grace period to observe the cancel signal and shut
-    // down in an orderly way.  Abort is kept as a last resort — it skips
-    // ordered shutdown and may leave shared state partially updated.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    let had_to_abort = {
-        // Re-acquire briefly to check task liveness; abort only if still running.
-        let active_check = state.active_plans.read().await;
-        if let Some(h) = active_check.get(&key) {
-            if !h.handle.is_finished() {
-                task_abort.abort();
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    };
-
-    // Write a lightweight snapshot so the dashboard knows the plan is
-    // paused and `POST /resume` can restart it.
-    let snapshot_dir = state.workdir.join(".roko").join("state");
-    if let Err(err) = tokio::fs::create_dir_all(&snapshot_dir).await {
-        tracing::warn!(path = %snapshot_dir.display(), error = %err, "failed to create state dir for pause snapshot");
-    }
-    let snapshot_path = snapshot_dir.join(format!("{id}.paused.json"));
-    let snapshot = json!({
-        "plan_id": id,
-        "paused": true,
-        "paused_at": chrono::Utc::now().to_rfc3339(),
-        "plan_dir": captured_plan_dir,
-        "run_id": captured_run_id,
-    });
-    if let Err(err) = tokio::fs::write(
-        &snapshot_path,
-        serde_json::to_string_pretty(&snapshot).unwrap_or_default(),
-    )
-    .await
-    {
-        tracing::warn!(path = %snapshot_path.display(), error = %err, "failed to write pause snapshot");
-    }
-
-    // Remove from active set using the resolved key.
-    let mut active_final = state.active_plans.write().await;
-    drop(active_final.remove(&key));
-
-    // Publish PlanCompleted only when the task did not finish cleanly on its
-    // own.  If the run observed the cancel token and returned, it already
-    // published PlanCompleted; publishing again here would deliver a duplicate
-    // to every connected WebSocket client.
-    if had_to_abort {
-        state.event_bus.publish(ServerEvent::PlanCompleted {
-            plan_id: id.clone(),
-            success: false,
-        });
-    }
-
-    Ok(Json(json!({ "paused": true, "snapshot": snapshot_path })))
+    let run_id = running_run(&state, &id).await?;
+    send_run_control(&state.workdir, "pause").await?;
+    Ok(Json(json!({ "paused": true, "run_id": run_id })))
 }
 
-/// `POST /api/plans/:id/resume` — resume a paused plan execution.
+/// `POST /api/plans/:id/resume` — resume a held plan run, or run a plan
+/// again from its checkpoint.
 ///
-/// Removes the `.roko/state/<id>.paused.json` marker written by `pause_plan`,
-/// then delegates to [`start_plan_run`] with `resume: true` — the same path
-/// that `POST /api/plans/{id}/execute` with `{ "resume": true }` follows.
-///
-/// This fixes the previous implementation, which used the legacy flat-file
-/// `find_plan` (404 for every directory plan) and sent the plan as a text
-/// prompt to `run_once` instead of running it through `run_plan_with_options`.
+/// While a run of the plan is active, sends its plan-set driver a resume, as
+/// `roko plan resume` does, and returns 200 with `{ "resumed": true }` once
+/// the run took it (409 if it did not). Otherwise delegates to
+/// [`start_plan_run`] with `resume: true` — the same path that
+/// `POST /api/plans/{id}/execute` with `{ "resume": true }` follows — and
+/// returns 202.
 pub(super) async fn resume_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
-    // Remove the paused marker written by pause_plan (ignore errors: the file
-    // may not exist if the plan was never paused, or was already cleaned up).
-    let paused_path = state
-        .workdir
-        .join(".roko")
-        .join("state")
-        .join(format!("{id}.paused.json"));
-    let _ = tokio::fs::remove_file(&paused_path).await;
+) -> Result<axum::response::Response, ApiError> {
+    if let Ok(run_id) = running_run(&state, &id).await {
+        send_run_control(&state.workdir, "resume").await?;
+        let body = json!({ "resumed": true, "resume": true, "run_id": run_id });
+        return Ok(Json(body).into_response());
+    }
 
     // Delegate to the shared helper (validates id, resolves plan dir from
     // group, checks for conflicts, spawns the run with force_resume: true).
     let started = start_plan_run(&state, id, true).await?;
-
-    Ok((
-        axum::http::StatusCode::ACCEPTED,
-        Json(json!({
-            "id": started.run_id,
-            "run_id": started.run_id,
-            "resumed": true,
-            "resume": true,
-            "skippable_task_ids": started.skippable_task_ids,
-        })),
-    ))
+    let body = json!({
+        "id": started.run_id,
+        "run_id": started.run_id,
+        "resumed": true,
+        "resume": true,
+        "skippable_task_ids": started.skippable_task_ids,
+    });
+    Ok((axum::http::StatusCode::ACCEPTED, Json(body)).into_response())
 }
 
 /// `POST /api/plans/:id/cancel` — permanently cancel a running plan execution.
 ///
-/// Unlike `/pause`, this handler does **not** write a snapshot file, so the
-/// plan cannot be resumed afterwards.  It signals the cancel token for ordered
-/// shutdown, waits a short grace window, aborts the task if still running, and
-/// then removes the plan from the active-plans map.
+/// Unlike `/pause`, which holds the run, this handler stops it. It signals
+/// the cancel token for ordered shutdown, waits a short grace window, aborts
+/// the task if still running, and then removes the plan from the
+/// active-plans map.
 ///
 /// Returns 200 `{ "cancelled": true }` on success, or 404 when the plan is not
 /// actively executing.

@@ -1389,6 +1389,7 @@ impl RokoConfig {
             "max_auto_fix_attempts = {}",
             c.conductor.max_auto_fix_attempts
         );
+        let _ = writeln!(out, "supervise = {}", c.conductor.supervise);
         let _ = writeln!(
             out,
             "silence_timeout_secs = {}",
@@ -1798,6 +1799,12 @@ pub struct ConductorConfig {
     /// supervision. These are consumed by `Conductor::from_config`.
     #[serde(default)]
     pub watchers: WatcherThresholds,
+    /// Whether the conductor's watchers supervise a Graph plan run's running
+    /// attempts (default `true`): they may restart an attempt or stop the
+    /// run. The stall watchdog (`silence_timeout_secs`, `task_stall_secs`)
+    /// runs either way.
+    #[serde(default = "default_supervise")]
+    pub supervise: bool,
 
     // ── Live supervision thresholds ─────────────────────────────────────
     //
@@ -1887,6 +1894,9 @@ const fn default_context_window_opus_tokens() -> u64 {
 const fn default_context_pressure_lookback() -> usize {
     3
 }
+const fn default_supervise() -> bool {
+    true
+}
 
 impl Default for ConductorConfig {
     fn default() -> Self {
@@ -1899,6 +1909,7 @@ impl Default for ConductorConfig {
             max_auto_fix_attempts: default_max_auto_fix(),
             auto_fix_model: default_auto_fix_model(),
             watchers: WatcherThresholds::default(),
+            supervise: default_supervise(),
             silence_timeout_secs: default_silence_timeout_secs(),
             compile_fail_threshold: default_compile_fail_threshold(),
             task_stall_secs: default_task_stall_secs(),
@@ -3020,6 +3031,21 @@ pheromone_decay_rate = 0.5
         let example = RokoConfig::example_toml();
         let cfg = RokoConfig::from_toml(&example).expect("parse");
         assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    /// 1210: the conductor supervises plan runs unless `[conductor]
+    /// supervise = false` turns it off.
+    #[test]
+    fn conductor_supervise_defaults_on_and_parses_off() {
+        assert!(ConductorConfig::default().supervise);
+        assert!(RokoConfig::example_toml().contains("supervise = true"));
+        let cfg = RokoConfig::from_toml("[conductor]\nsupervise = false\n").expect("parse");
+        assert!(!cfg.conductor.supervise);
+        assert_eq!(
+            cfg.conductor.task_stall_secs,
+            ConductorConfig::default().task_stall_secs,
+            "the stall watchdog keeps its thresholds"
+        );
     }
     #[test]
     fn kimi_config_parse() {

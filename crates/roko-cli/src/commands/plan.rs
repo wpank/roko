@@ -316,19 +316,23 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         #[arg(long, value_name = "IDS")]
         from_backlog: Option<String>,
     },
-    /// Pause a running plan executor. Writes a pause signal to `.roko/state/control.json`.
+    /// Pause the plan run in this workspace: no new plan, task or retry
+    /// starts until resume, and running attempts finish. Prints the run's
+    /// answer; fails when no run is listening.
     Pause {
         /// Working directory.
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Resume a paused plan executor. Clears the pause signal.
+    /// Resume a paused plan run. Prints the run's answer; fails when no run
+    /// is listening.
     Resume {
         /// Working directory.
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Cancel a running plan. Writes a cancel signal to `.roko/state/control.json`.
+    /// Cancel a plan of the running plan run, or every running plan. Prints
+    /// the run's answer; fails when no run is listening or it refuses.
     Cancel {
         /// Plan ID to cancel. If omitted, cancels the current run.
         #[arg(long)]
@@ -337,11 +341,14 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Retry failed tasks in a plan. Writes a retry signal to `.roko/state/control.json`.
+    /// Run a plan that failed or was cancelled in the running plan run again,
+    /// from its checkpoint. Prints the run's answer; fails when no run is
+    /// listening or it refuses.
     Retry {
-        /// Specific task ID to retry. If omitted, retries all failed tasks.
+        /// Task ID. A Graph run reruns the whole plan from its checkpoint, so
+        /// its passed tasks stay done.
         task_id: Option<String>,
-        /// Plan ID containing the task. If omitted, targets the active plan.
+        /// The plan to run again.
         #[arg(long)]
         plan_id: Option<String>,
         /// Working directory.
@@ -455,6 +462,58 @@ fn join_approval_tui_thread(handle: Option<std::thread::JoinHandle<anyhow::Resul
             tracing::error!("approval TUI thread panicked");
         }
     }
+}
+
+/// Send plan control command `kind` (`pause`, `resume`, `cancel` or `retry`)
+/// for plan `plan_id`, or for the whole run, to the plan run listening in
+/// `workdir`, over the socket `roko inject` uses, and print the run's answer
+/// (1209). The exit code is non-zero when no run is listening or the run
+/// refuses: nothing is written for a run that may never read it.
+async fn send_plan_control(
+    cli: &Cli,
+    workdir: &Path,
+    kind: &str,
+    plan_id: Option<String>,
+) -> Result<i32> {
+    let request = roko_cli::inject::InjectWireRequest {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        session: plan_id.clone().unwrap_or_default(),
+        kind: kind.to_string(),
+        payload: String::new(),
+    };
+    let reply = roko_cli::inject::deliver(workdir, &request).await;
+    let (code, message) = match &reply {
+        Some(reply) if reply.outcome == roko_cli::inject::InjectOutcome::Accepted => {
+            ("plan_control_accepted", reply.message.clone())
+        }
+        Some(reply) => ("plan_control_refused", reply.message.clone()),
+        None => (
+            "plan_control_no_run",
+            format!("no plan run is listening in {}", workdir.display()),
+        ),
+    };
+    let accepted = code == "plan_control_accepted";
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "code": code,
+                "command": kind,
+                "plan_id": plan_id,
+                "message": message,
+            })
+        );
+    } else if accepted {
+        if !cli.quiet {
+            println!("{kind}: {message}");
+        }
+    } else if reply.is_none() {
+        eprintln!("Error: {kind} was not delivered: {message}");
+        eprintln!("Hint: start a run with `roko plan run`, or pass the run's --workdir.");
+    } else {
+        eprintln!("Error: the plan run refused {kind}: {message}");
+    }
+    Ok(if accepted { EXIT_SUCCESS } else { EXIT_FAILURE })
 }
 
 pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
@@ -1506,70 +1565,26 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
         }
         PlanCmd::Queue { cmd } => cmd_plan_queue(cli, cmd).await,
 
-        // ── Plan control commands (#146) ────────────────────────────
+        // ── Plan control commands (#146, 1209) ──────────────────────
         PlanCmd::Pause { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let state_dir = wd.join(".roko").join("state");
-            let cmd = roko_cli::runner::types::ControlCommand {
-                command: roko_cli::runner::types::ControlAction::Pause,
-                plan_id: None,
-                task_id: None,
-            };
-            cmd.write(&state_dir)
-                .map_err(|e| anyhow!("failed to write control command: {e}"))?;
-            if !cli.quiet {
-                tracing::info!(path = %state_dir.join("control.json").display(), "pause signal written");
-            }
-            Ok(EXIT_SUCCESS)
+            send_plan_control(cli, &wd, "pause", None).await
         }
         PlanCmd::Resume { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let state_dir = wd.join(".roko").join("state");
-            let cmd = roko_cli::runner::types::ControlCommand {
-                command: roko_cli::runner::types::ControlAction::Resume,
-                plan_id: None,
-                task_id: None,
-            };
-            cmd.write(&state_dir)
-                .map_err(|e| anyhow!("failed to write control command: {e}"))?;
-            if !cli.quiet {
-                tracing::info!(path = %state_dir.join("control.json").display(), "resume signal written");
-            }
-            Ok(EXIT_SUCCESS)
+            send_plan_control(cli, &wd, "resume", None).await
         }
         PlanCmd::Cancel { plan_id, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let state_dir = wd.join(".roko").join("state");
-            let cmd = roko_cli::runner::types::ControlCommand {
-                command: roko_cli::runner::types::ControlAction::Cancel,
-                plan_id,
-                task_id: None,
-            };
-            cmd.write(&state_dir)
-                .map_err(|e| anyhow!("failed to write control command: {e}"))?;
-            if !cli.quiet {
-                tracing::info!(path = %state_dir.join("control.json").display(), "cancel signal written");
-            }
-            Ok(EXIT_SUCCESS)
+            send_plan_control(cli, &wd, "cancel", plan_id).await
         }
         PlanCmd::Retry {
-            task_id,
+            task_id: _,
             plan_id,
             workdir,
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            let state_dir = wd.join(".roko").join("state");
-            let cmd = roko_cli::runner::types::ControlCommand {
-                command: roko_cli::runner::types::ControlAction::Retry,
-                plan_id,
-                task_id,
-            };
-            cmd.write(&state_dir)
-                .map_err(|e| anyhow!("failed to write control command: {e}"))?;
-            if !cli.quiet {
-                tracing::info!(path = %state_dir.join("control.json").display(), "retry signal written");
-            }
-            Ok(EXIT_SUCCESS)
+            send_plan_control(cli, &wd, "retry", plan_id).await
         }
         PlanCmd::Review {
             plan_id,

@@ -478,13 +478,19 @@ pub(super) fn build_routing_context(
         .complexity_band
         .unwrap_or_else(|| task.tier_class().complexity_band());
 
-    // Extract daimon policy if the affect state is loaded.
+    // Extract daimon policy if the affect state is loaded (`[daimon] enabled`,
+    // 1211). It shifts the routing tier, and this log line is its record.
     let daimon_policy = daimon_state
         .as_ref()
         .and_then(|d| {
             d.lock().ok().map(|state| {
                 use roko_daimon::AffectEngine;
                 let affect = state.query();
+                tracing::info!(
+                    behavioral_state = ?affect.behavioral_state,
+                    confidence = affect.confidence,
+                    "affect shapes this dispatch's routing tier ([daimon] enabled)"
+                );
                 roko_core::DaimonPolicy::new(affect.confidence, affect.behavioral_state)
             })
         })

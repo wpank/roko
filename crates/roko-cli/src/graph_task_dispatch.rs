@@ -98,7 +98,7 @@ pub use streaming::streaming_event_channel_capacity;
 pub use supervision::{ConductorStop, ConductorTicker, SUPERVISION_INTERVAL};
 pub use wiring::{WiringComponent, WiringKind, WiringReport};
 
-use attempt::{AttemptBook, SettledAttempt, Settlement, first_token_seen};
+use attempt::{AttemptBook, SettledAttempt, Settlement, attempt_agent_id, first_token_seen};
 use budget::{
     GraphDailyBudget, GraphPlanBudgetLedger, GraphTaskSpendLedger, effective_routing_budget,
     task_budget_ceiling_usd,
@@ -1389,10 +1389,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // belongs to the workspace, not the attempt checkout, so it
             // survives checkout cleanup and the safety routes see it.
             immune_root: Some(self.workdir.clone()),
-            agent_id: format!(
-                "{}/{}",
-                spec.plan_id,
-                ctx.cell_id.as_deref().unwrap_or(&task.id)
+            // One id per attempt: an isolation the boundary records for this
+            // attempt cannot deny the next one (decision 1107). The dashboard
+            // row stays on plan/task (`pre_dispatch_agent_id`).
+            agent_id: attempt_agent_id(
+                &attempt.key,
+                &spec.plan_id,
+                ctx.cell_id.as_deref().unwrap_or(&task.id),
             ),
             command: None,
             timeout_ms: Some(timeout_ms),
@@ -2025,6 +2028,88 @@ exit 1
             .await
             .expect_err("later dispatch must fail closed after plan budget exhaustion");
         assert!(matches!(blocked, RokoError::BudgetExceeded { .. }));
+    }
+
+    /// Answers with a content-hash mismatch on its first call (a tamper
+    /// signal the provider immune boundary contains and isolates) and
+    /// honestly after that.
+    struct TamperOnceAgent {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl roko_agent::Agent for TamperOnceAgent {
+        async fn run(
+            &self,
+            input: &roko_core::Signal,
+            _ctx: &roko_core::Context,
+        ) -> roko_agent::AgentResult {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut output = input
+                .derive(
+                    roko_core::Kind::AgentOutput,
+                    roko_core::Body::text("patched the file"),
+                )
+                .build();
+            if call == 0 {
+                output.id = roko_core::ContentHash::of(b"tampered provider output");
+            }
+            roko_agent::AgentResult::ok(output)
+        }
+
+        fn name(&self) -> &str {
+            "tamper-once-agent"
+        }
+    }
+
+    /// backlog 1109 (decision 1107): Graph dispatch names each attempt's
+    /// provider agent by its attempt, so the isolation that one attempt's
+    /// tamper signal leaves does not deny the next attempt of the task.
+    #[tokio::test]
+    async fn isolation_of_one_attempt_does_not_deny_the_next() {
+        use roko_agent::Agent as _;
+
+        let workspace = tempdir().expect("tempdir");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempt = |ordinal: u32| {
+            let key = roko_learn::telemetry::AttemptKey::new("run-1", "p1", "T01", ordinal);
+            roko_agent::ImmuneScreenedAgent::durable(
+                Box::new(TamperOnceAgent {
+                    calls: Arc::clone(&calls),
+                }),
+                attempt_agent_id(&key, "p1", "T01"),
+                workspace.path(),
+            )
+        };
+        let prompt = roko_core::Signal::builder(roko_core::Kind::Prompt)
+            .body(roko_core::Body::text("patch the file"))
+            .build();
+
+        let first = attempt(1).run(&prompt, &roko_core::Context::now()).await;
+        assert!(!first.success);
+        assert_eq!(first.output.tag("immune_denied"), Some("true"));
+        let controls = roko_agent::list_agent_controls(workspace.path()).expect("controls");
+        assert_eq!(controls.len(), 1, "{controls:?}");
+        assert_eq!(controls[0].agent_id, "run-1:p1:T01:1");
+
+        let second = attempt(2).run(&prompt, &roko_core::Context::now()).await;
+        assert!(second.success, "attempt 2 must reach the provider");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        // The isolated attempt itself stays denied before its provider.
+        let again = attempt(1).run(&prompt, &roko_core::Context::now()).await;
+        assert_eq!(again.output.tag("immune_reason"), Some("agent_isolated"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn attempt_agent_id_names_the_attempt() {
+        let key = roko_learn::telemetry::AttemptKey::new("graph-1", "p1", "T01", 3);
+        assert_eq!(attempt_agent_id(&key, "p1", "T01"), "graph-1:p1:T01:3");
+
+        // A key the provider boundary would refuse falls back to plan/task.
+        let long = roko_learn::telemetry::AttemptKey::new("r".repeat(300), "p1", "T01", 2);
+        assert_eq!(attempt_agent_id(&long, "p1", "T01"), "p1/T01#2");
     }
 
     /// gap-5d3b82 (proof case 1): an agent that exits before its first event

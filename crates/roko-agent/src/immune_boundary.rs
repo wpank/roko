@@ -10,6 +10,9 @@
 //! output is withheld from the caller and persisted in a dedicated file-backed
 //! quarantine Store. High and Critical findings also create a deterministic
 //! isolation control record checked before subsequent provider execution.
+//!
+//! A blank answer from an agent that did no tool work is a provider failure,
+//! not a threat: it fails as `empty_response` and nothing is persisted.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,7 +20,7 @@ use std::time::Instant;
 
 use roko_core::{
     AnomalyScore, Body, ContentHash, Context, ImmunePipeline, ImmunePipelineResult,
-    IncidentRelation, Kind, Provenance, QuarantineDecision, Signal, Store, ThreatSeverity,
+    IncidentRelation, Kind, Provenance, QuarantineDecision, Query, Signal, Store, ThreatSeverity,
     error::Result,
 };
 use roko_graph::NodeStatus;
@@ -29,8 +32,10 @@ use tokio::sync::mpsc;
 use crate::agent::{Agent, AgentResult};
 use crate::dispatcher::truncate::{bounded_json_bytes, bounded_serialized_bytes};
 use crate::immune_evidence::{
-    AGENT_ISOLATION_CONTROL_KIND as AGENT_ISOLATION_CONTROL_KIND_VALUE, get_agent_control,
-    persist_agent_control, persist_evidence_signals, validate_boundary_label,
+    AGENT_ISOLATION_CONTROL_KIND as AGENT_ISOLATION_CONTROL_KIND_VALUE, DEFAULT_ISOLATION_TTL,
+    PROVIDER_CONTAINMENT_REASON, agent_isolation_control, get_agent_control, is_live_agent_control,
+    legacy_agent_isolation_control, persist_agent_control, persist_evidence_signals, unix_now_ms,
+    validate_boundary_label,
 };
 use crate::live_output::{LiveAgentEvent, LiveOutput, tool_step_target};
 use crate::tool_immune::update_vault;
@@ -54,6 +59,14 @@ const MAX_PROVIDER_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PROVIDER_SECURITY_METADATA_BYTES: usize = 64 * 1024;
 const MAX_PROVIDER_STREAM_CHUNKS: usize = 4_096;
 const MAX_PROVIDER_STREAM_BYTES: usize = 4 * 1024 * 1024;
+/// Version of [`ProviderBoundaryRecord`] this build writes. Version 2 scores
+/// a record's anomaly without the blank-output dimensions (backlog 1101).
+/// Version 1 receipts already on disk are still validated with the rules
+/// they were written under, so an existing evidence ledger stays readable.
+const PROVIDER_BOUNDARY_RECORD_SCHEMA_VERSION: u32 = 2;
+/// Text of the failed result a blank answer from an agent that did no tool
+/// work becomes.
+const EMPTY_RESPONSE_TEXT: &str = "provider returned an empty response (empty_response)";
 
 /// Resolve the dedicated quarantine Store beneath a workspace root.
 #[must_use]
@@ -109,11 +122,14 @@ pub struct ProviderBoundaryRecord {
 }
 
 /// Durable agent-control state checked before a provider process or request is
-/// started. Its identity is deterministic for one `agent_id`.
+/// started. A control covers one agent id, which Graph dispatch makes one
+/// attempt, and expires (decision 1107). Schema 1 controls, written before
+/// controls expired, have no lifetime and stay until an operator releases
+/// them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentIsolationControl {
-    /// Record schema version.
+    /// Record schema version: 1 without a lifetime, 2 with one.
     pub schema_version: u32,
     /// Agent denied at the provider boundary.
     pub agent_id: String,
@@ -121,6 +137,13 @@ pub struct AgentIsolationControl {
     pub state: String,
     /// Stable reason code, intentionally excluding suspect provider text.
     pub reason: String,
+    /// When the control was written, in Unix milliseconds (schema 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolated_at_ms: Option<u64>,
+    /// When the control stops denying its agent, in Unix milliseconds
+    /// (schema 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
 }
 
 /// Compute anomaly evidence solely from facts visible in an [`AgentResult`].
@@ -134,6 +157,16 @@ pub fn detect_provider_output_anomaly(input: &Signal, result: &AgentResult) -> A
 }
 
 fn detect_provider_output_evidence_anomaly(input: ContentHash, output: &Signal) -> AnomalyScore {
+    score_provider_output(input, output, PROVIDER_BOUNDARY_RECORD_SCHEMA_VERSION)
+}
+
+/// Score `output` with the rules of receipt schema `schema_version`.
+///
+/// Version 1 also rated an empty or blank body 0.9, which contained every
+/// blank answer as a High-severity threat and isolated its agent. A blank
+/// answer is a provider failure (`empty_response`, see
+/// [`ImmuneScreenedAgent::screen_result`]), so version 2 does not score it.
+fn score_provider_output(input: ContentHash, output: &Signal, schema_version: u32) -> AnomalyScore {
     let mut anomaly = AnomalyScore::clean();
 
     let mut observe = |dimension: &str, score: f64| {
@@ -146,13 +179,15 @@ fn detect_provider_output_evidence_anomaly(input: ContentHash, output: &Signal) 
     if output.kind != Kind::AgentOutput {
         observe("unexpected_primary_output_kind", 0.95);
     }
-    match &output.body {
-        Body::Empty => observe("empty_primary_output_body", 0.9),
-        Body::Text(text) if text.trim().is_empty() => {
-            observe("blank_primary_output_text", 0.9);
+    if schema_version == 1 {
+        match &output.body {
+            Body::Empty => observe("empty_primary_output_body", 0.9),
+            Body::Text(text) if text.trim().is_empty() => {
+                observe("blank_primary_output_text", 0.9);
+            }
+            Body::Bytes(bytes) if bytes.is_empty() => observe("empty_primary_output_bytes", 0.9),
+            Body::Text(_) | Body::Json(_) | Body::Bytes(_) => {}
         }
-        Body::Bytes(bytes) if bytes.is_empty() => observe("empty_primary_output_bytes", 0.9),
-        Body::Text(_) | Body::Json(_) | Body::Bytes(_) => {}
     }
     if !provider_body_within_limit(&output.body) {
         observe("oversized_primary_output", 0.9);
@@ -188,23 +223,35 @@ impl BoundaryStore {
         Self::Durable { workspace_root }
     }
 
-    async fn get_isolation(
-        &self,
-        agent_id: &str,
-        marker_id: &ContentHash,
-    ) -> Result<Option<Signal>> {
+    /// The isolation control in force for `agent_id`, if any. A control
+    /// carries its own lifetime, so it is read by agent id and checked for
+    /// expiry rather than recomputed from the id.
+    async fn get_isolation(&self, agent_id: &str) -> Result<Option<Signal>> {
         match self {
             Self::Durable { workspace_root } => get_agent_control(workspace_root, agent_id)
                 .map_err(|error| roko_core::RokoError::Store(error.to_string())),
-            Self::Injected(store) => store.get(marker_id).await,
+            Self::Injected(store) => {
+                let query = Query {
+                    kinds: Some(vec![Kind::Custom(AGENT_ISOLATION_CONTROL_KIND.to_string())]),
+                    tags: vec![("agent_id".to_string(), agent_id.to_string())],
+                    ..Query::default()
+                };
+                let now_ms = unix_now_ms();
+                let controls = store.query(&query, &Context::now()).await?;
+                Ok(controls
+                    .into_iter()
+                    .find(|control| is_live_agent_control(control, agent_id, now_ms)))
+            }
         }
     }
 
-    async fn put_isolation(&self, signal: &Signal) -> Result<()> {
+    /// Record `signal` and return the control in force: an agent that is
+    /// already isolated keeps its control.
+    async fn put_isolation(&self, signal: &Signal) -> Result<Signal> {
         match self {
             Self::Durable { workspace_root } => persist_agent_control(workspace_root, signal)
                 .map_err(|error| roko_core::RokoError::Store(error.to_string())),
-            Self::Injected(store) => store.put(signal.clone()).await.map(|_| ()),
+            Self::Injected(store) => store.put(signal.clone()).await.map(|_| signal.clone()),
         }
     }
 
@@ -321,16 +368,11 @@ impl ImmuneScreenedAgent {
         }
     }
 
-    async fn isolation_marker(&self) -> Result<Signal> {
-        isolation_marker_for(&self.agent_id)
-    }
-
     async fn is_isolated(&self) -> Result<Option<ContentHash>> {
-        let marker = self.isolation_marker().await?;
         self.store
-            .get_isolation(&self.agent_id, &marker.id)
+            .get_isolation(&self.agent_id)
             .await
-            .map(|stored| stored.map(|_| marker.id))
+            .map(|stored| stored.map(|control| control.id))
     }
 
     fn denied_result(
@@ -340,11 +382,17 @@ impl ImmuneScreenedAgent {
         reason_code: &str,
         record: Option<ContentHash>,
     ) -> AgentResult {
+        // Every denial names its reason, in the log and in the result text
+        // (backlog 1103).
+        tracing::warn!(
+            agent_id = %self.agent_id,
+            reason = reason_code,
+            record = ?record,
+            "provider result denied by immune boundary"
+        );
+        let text = format!("provider result denied by immune boundary (reason: {reason_code})");
         let mut output = input
-            .derive(
-                Kind::AgentOutput,
-                Body::text("provider result denied by immune boundary"),
-            )
+            .derive(Kind::AgentOutput, Body::text(text))
             .provenance(Provenance::trusted("immune-provider-boundary"))
             .tag("immune_denied", "true")
             .tag("immune_reason", reason_code)
@@ -365,6 +413,33 @@ impl ImmuneScreenedAgent {
                 success: false,
                 ttft_ms: original.ttft_ms,
             },
+        }
+    }
+
+    /// The failed result a blank answer from an agent that did no tool work
+    /// becomes: a provider error that retry, failover and the ladder
+    /// understand, not a containment. It keeps the answer's tags, trace,
+    /// usage and time to first token, and nothing is persisted, so the next
+    /// attempt under the same agent id runs (backlog 1101).
+    fn empty_response_result(&self, input: &Signal, original: AgentResult) -> AgentResult {
+        tracing::warn!(
+            agent_id = %self.agent_id,
+            "provider returned an empty response; failing the attempt as empty_response"
+        );
+        let mut output = input
+            .derive(Kind::AgentOutput, Body::text(EMPTY_RESPONSE_TEXT))
+            .provenance(Provenance::trusted("immune-provider-boundary"));
+        for (key, value) in &original.output.tags {
+            output = output.tag(key.clone(), value.clone());
+        }
+        let output = output
+            .tag("provider_error", "empty_response")
+            .tag("agent_id", &self.agent_id)
+            .build();
+        AgentResult {
+            output,
+            success: false,
+            ..original
         }
     }
 
@@ -390,9 +465,11 @@ impl ImmuneScreenedAgent {
     /// limits, and forwards to the live output channel when one is present.
     /// The first model output on the stream sets the result's
     /// [`AgentResult::ttft_ms`], unless the provider measured its own.
-    ///
-    /// Returns `(AgentResult, stream_limit_exceeded)`.
-    async fn drive_streaming_inner(&self, input: &Signal, ctx: &Context) -> (AgentResult, bool) {
+    async fn drive_streaming_inner(
+        &self,
+        input: &Signal,
+        ctx: &Context,
+    ) -> (AgentResult, StreamObservation) {
         let (buffer_tx, mut buffer_rx) = mpsc::channel::<StreamEvent>(1);
         let live_sink = self
             .live_output
@@ -404,15 +481,32 @@ impl ImmuneScreenedAgent {
             let mut chunk_count = 0_usize;
             let mut byte_count = 0_usize;
             let mut exceeded = false;
+            let mut tool_work = false;
             let mut first_output = None;
             while let Some(event) = buffer_rx.recv().await {
                 if first_output.is_none() && is_model_output(&event.kind) {
                     first_output = Some(started.elapsed());
                 }
-                chunk_count = chunk_count.saturating_add(1);
-                byte_count = byte_count.saturating_add(stream_event_bytes(&event));
-                exceeded |= chunk_count > MAX_PROVIDER_STREAM_CHUNKS
-                    || byte_count > MAX_PROVIDER_STREAM_BYTES;
+                tool_work |= matches!(
+                    event.kind,
+                    StreamEventKind::ToolCallStart { .. }
+                        | StreamEventKind::ToolCallEnd { .. }
+                        | StreamEventKind::ToolResult { .. }
+                );
+                // The limits bound one model call: the tool loop tees every
+                // event of each turn here and `Done` ends each call. A tool's
+                // own result is host output the tool boundary screens, so it
+                // counts towards neither limit (backlog 1103).
+                if !matches!(event.kind, StreamEventKind::ToolResult { .. }) {
+                    chunk_count = chunk_count.saturating_add(1);
+                    byte_count = byte_count.saturating_add(stream_event_bytes(&event));
+                    exceeded |= chunk_count > MAX_PROVIDER_STREAM_CHUNKS
+                        || byte_count > MAX_PROVIDER_STREAM_BYTES;
+                }
+                if matches!(event.kind, StreamEventKind::Done { .. }) {
+                    chunk_count = 0;
+                    byte_count = 0;
+                }
                 if let Some((ref sink, trusted)) = live_sink {
                     match &event.kind {
                         StreamEventKind::ToolCallEnd { id, name, args } => {
@@ -444,15 +538,19 @@ impl ImmuneScreenedAgent {
                     }
                 }
             }
-            (exceeded, first_output)
+            let observed = StreamObservation {
+                limit_exceeded: exceeded,
+                tool_work,
+            };
+            (observed, first_output)
         };
-        let (mut result, (exceeded, first_output)) =
+        let (mut result, (observed, first_output)) =
             tokio::join!(self.inner.run_streaming(input, ctx, buffer_tx), collect);
         if result.ttft_ms.is_none() {
             result.ttft_ms =
                 first_output.map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
         }
-        (result, exceeded)
+        (result, observed)
     }
 
     async fn preflight(&self, input: &Signal) -> Option<AgentResult> {
@@ -488,14 +586,12 @@ impl ImmuneScreenedAgent {
         let requires_isolation =
             matches!(severity, ThreatSeverity::High | ThreatSeverity::Critical);
         let isolation = if requires_isolation {
-            Some(self.isolation_marker().await?)
+            // Commit enforcement before any fallible evidence/index work.
+            let control = isolation_control_for(&self.agent_id)?;
+            Some(self.store.put_isolation(&control).await?)
         } else {
             None
         };
-        if let Some(isolation) = &isolation {
-            // Commit enforcement before any fallible evidence/index work.
-            self.store.put_isolation(isolation).await?;
-        }
         let mut effects = vec![
             ProviderBoundaryEffect::DeliveryDenied,
             ProviderBoundaryEffect::QuarantineEvidencePersisted,
@@ -508,7 +604,7 @@ impl ImmuneScreenedAgent {
         }
 
         let record = ProviderBoundaryRecord {
-            schema_version: 1,
+            schema_version: PROVIDER_BOUNDARY_RECORD_SCHEMA_VERSION,
             agent_id: self.agent_id.clone(),
             input: input.id,
             output: original.output.id,
@@ -568,7 +664,14 @@ impl ImmuneScreenedAgent {
         Ok(record_signal.id)
     }
 
-    async fn screen_result(&self, input: &Signal, result: AgentResult) -> AgentResult {
+    /// Screen one finished result. `streamed_tool_work` says the provider's
+    /// event stream showed a tool call or result.
+    async fn screen_result(
+        &self,
+        input: &Signal,
+        result: AgentResult,
+        streamed_tool_work: bool,
+    ) -> AgentResult {
         let anomaly = detect_provider_output_anomaly(input, &result);
         let graph = match self
             .pipeline
@@ -602,6 +705,14 @@ impl ImmuneScreenedAgent {
         }
 
         if graph.result.validation.containment.decision == QuarantineDecision::Accept {
+            // A blank closing answer after tool work is not a failure here:
+            // the work is in the tree and the verify steps judge it.
+            if is_blank_body(&result.output.body)
+                && !streamed_tool_work
+                && !shows_tool_work(&result)
+            {
+                return self.empty_response_result(input, result);
+            }
             return result;
         }
 
@@ -627,23 +738,23 @@ impl ImmuneScreenedAgent {
     }
 }
 
-fn isolation_marker_for(agent_id: &str) -> Result<Signal> {
-    validate_boundary_label(agent_id, "agent ID")
-        .map_err(|error| roko_core::RokoError::Store(error.to_string()))?;
-    let control = AgentIsolationControl {
-        schema_version: 1,
-        agent_id: agent_id.to_string(),
-        state: "isolated".to_string(),
-        reason: "provider_output_immune_containment".to_string(),
-    };
-    Ok(
-        Signal::builder(Kind::Custom(AGENT_ISOLATION_CONTROL_KIND.to_string()))
-            .body(Body::from_json(&control)?)
-            .provenance(Provenance::trusted("immune-provider-boundary"))
-            .tag("agent_id", agent_id)
-            .tag("control_state", "isolated")
-            .build(),
+/// A new isolation control for `agent_id`, in force for
+/// [`DEFAULT_ISOLATION_TTL`] from now (decision 1107).
+fn isolation_control_for(agent_id: &str) -> Result<Signal> {
+    agent_isolation_control(
+        agent_id,
+        PROVIDER_CONTAINMENT_REASON,
+        unix_now_ms(),
+        DEFAULT_ISOLATION_TTL,
     )
+    .map_err(|error| roko_core::RokoError::Store(error.to_string()))
+}
+
+/// The deterministic control a version 1 receipt binds: the one the
+/// boundary wrote before controls expired.
+fn legacy_isolation_marker_for(agent_id: &str) -> Result<Signal> {
+    legacy_agent_isolation_control(agent_id)
+        .map_err(|error| roko_core::RokoError::Store(error.to_string()))
 }
 
 pub(crate) fn validate_provider_boundary_receipt(
@@ -660,7 +771,7 @@ pub(crate) fn validate_provider_boundary_receipt(
         return Err("provider boundary receipt has an invalid identity".to_string());
     }
     let record: ProviderBoundaryRecord = decode_exact_json_body(&signal.body)?;
-    if record.schema_version != 1
+    if !(1..=PROVIDER_BOUNDARY_RECORD_SCHEMA_VERSION).contains(&record.schema_version)
         || signal.attestation.is_some()
         || signal.provenance != Provenance::trusted("immune-provider-boundary")
         || signal.tag("agent_id") != Some(record.agent_id.as_str())
@@ -704,7 +815,7 @@ pub(crate) fn validate_provider_boundary_receipt(
     {
         return Err("provider boundary evidence does not match its receipt".to_string());
     }
-    let expected_anomaly = detect_provider_output_evidence_anomaly(record.input, evidence);
+    let expected_anomaly = score_provider_output(record.input, evidence, record.schema_version);
     let expected_decision =
         ImmunePipeline::default().run(record.output, expected_anomaly.clone(), Vec::new());
     if record.anomaly != expected_anomaly
@@ -714,8 +825,17 @@ pub(crate) fn validate_provider_boundary_receipt(
         return Err("provider boundary receipt decision is not bound to its evidence".to_string());
     }
     if isolation_expected {
-        let marker = isolation_marker_for(&record.agent_id).map_err(|error| error.to_string())?;
-        if record.isolation_control != Some(marker.id) {
+        // A version 1 receipt binds the deterministic control of its day. A
+        // later control carries its own lifetime, so its id cannot be
+        // recomputed here: the receipt must name one.
+        let bound = if record.schema_version == 1 {
+            let marker =
+                legacy_isolation_marker_for(&record.agent_id).map_err(|error| error.to_string())?;
+            record.isolation_control == Some(marker.id)
+        } else {
+            record.isolation_control.is_some()
+        };
+        if !bound {
             return Err("provider isolation binding is invalid".to_string());
         }
     } else if record.isolation_control.is_some() {
@@ -778,8 +898,8 @@ impl Agent for ImmuneScreenedAgent {
             return denied;
         }
         if self.live_output.is_some() && self.inner.supports_streaming() {
-            let (result, exceeded) = self.drive_streaming_inner(input, ctx).await;
-            if exceeded {
+            let (result, observed) = self.drive_streaming_inner(input, ctx).await;
+            if observed.limit_exceeded {
                 return self.denied_result(
                     input,
                     Some(&result),
@@ -787,10 +907,10 @@ impl Agent for ImmuneScreenedAgent {
                     None,
                 );
             }
-            return self.screen_result(input, result).await;
+            return self.screen_result(input, result, observed.tool_work).await;
         }
         let result = self.inner.run(input, ctx).await;
-        self.screen_result(input, result).await
+        self.screen_result(input, result, false).await
     }
 
     fn name(&self) -> &str {
@@ -818,7 +938,7 @@ impl Agent for ImmuneScreenedAgent {
         if let Some(denied) = self.preflight(input).await {
             let _ = event_tx
                 .send(StreamEvent::now(StreamEventKind::Done {
-                    finish_reason: "error: provider stream denied by immune boundary".to_string(),
+                    finish_reason: stream_failure_reason(&denied),
                 }))
                 .await;
             return denied;
@@ -827,18 +947,18 @@ impl Agent for ImmuneScreenedAgent {
         // Drive the inner stream through the shared counting+forwarding loop.
         // Provider events are buffered, limits are enforced, and qualifying
         // events reach the live output channel (when set) before screening.
-        let (result, stream_limit_exceeded) = self.drive_streaming_inner(input, ctx).await;
-        if stream_limit_exceeded {
+        let (result, observed) = self.drive_streaming_inner(input, ctx).await;
+        if observed.limit_exceeded {
             let denied =
                 self.denied_result(input, Some(&result), "provider_stream_limit_exceeded", None);
             let _ = event_tx
                 .send(StreamEvent::now(StreamEventKind::Done {
-                    finish_reason: "error: provider stream denied by immune boundary".to_string(),
+                    finish_reason: stream_failure_reason(&denied),
                 }))
                 .await;
             return denied;
         }
-        let screened = self.screen_result(input, result).await;
+        let screened = self.screen_result(input, result, observed.tool_work).await;
         if screened.success {
             // Provider events are not replayed: only the accepted canonical
             // final body can cross this boundary, so divergent reasoning,
@@ -858,12 +978,60 @@ impl Agent for ImmuneScreenedAgent {
         } else {
             let _ = event_tx
                 .send(StreamEvent::now(StreamEventKind::Done {
-                    finish_reason: "error: provider stream denied by immune boundary".to_string(),
+                    finish_reason: stream_failure_reason(&screened),
                 }))
                 .await;
         }
         screened
     }
+}
+
+/// What the boundary saw on a provider's event stream.
+#[derive(Clone, Copy, Debug, Default)]
+struct StreamObservation {
+    /// The stream passed the chunk or byte limit.
+    limit_exceeded: bool,
+    /// The stream showed a tool call or a tool result.
+    tool_work: bool,
+}
+
+/// Whether `body` carries no answer: empty, blank text or no bytes.
+fn is_blank_body(body: &Body) -> bool {
+    match body {
+        Body::Empty => true,
+        Body::Text(text) => text.trim().is_empty(),
+        Body::Bytes(bytes) => bytes.is_empty(),
+        Body::Json(_) => false,
+    }
+}
+
+/// Whether `result` shows tool work: a tool loop that ran tool-call
+/// iterations, or a trace Signal for a tool call (a tool-loop `agent.trace`
+/// turn with tool calls, a `tool_use` message or a tool invocation).
+fn shows_tool_work(result: &AgentResult) -> bool {
+    let iterations = result
+        .output
+        .tag("iterations")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    iterations > 0 || result.trace.iter().any(is_tool_work_signal)
+}
+
+fn is_tool_work_signal(signal: &Signal) -> bool {
+    if signal.kind == Kind::ToolInvocation
+        || signal.tag("tool_name").is_some()
+        || signal.tag("stream") == Some("tool_use")
+    {
+        return true;
+    }
+    let Body::Json(trace) = &signal.body else {
+        return false;
+    };
+    signal.is(&Kind::Custom("agent.trace".to_string()))
+        && trace
+            .get("tool_calls")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|calls| !calls.is_empty())
 }
 
 /// Whether `kind` is model output, whose first arrival ends a call's time to
@@ -880,6 +1048,8 @@ fn is_model_output(kind: &StreamEventKind) -> bool {
     )
 }
 
+/// Bytes `event` adds to its model call's stream. A tool result is host
+/// output, not provider output, and adds none.
 fn stream_event_bytes(event: &StreamEvent) -> usize {
     match &event.kind {
         StreamEventKind::ReasoningDelta(text) | StreamEventKind::TextDelta(text) => text.len(),
@@ -888,8 +1058,23 @@ fn stream_event_bytes(event: &StreamEvent) -> usize {
         StreamEventKind::ToolCallEnd { id, name, args } => {
             id.len() + name.len() + args.to_string().len()
         }
-        StreamEventKind::ToolResult { id, output, .. } => id.len() + output.len(),
-        StreamEventKind::Usage(_) | StreamEventKind::Done { .. } => 0,
+        StreamEventKind::ToolResult { .. }
+        | StreamEventKind::Usage(_)
+        | StreamEventKind::Done { .. } => 0,
+    }
+}
+
+/// The finish reason a failed streamed run reports: an empty response, or a
+/// denial and its reason.
+fn stream_failure_reason(result: &AgentResult) -> String {
+    if result.output.tag("provider_error") == Some("empty_response") {
+        return format!("error: {EMPTY_RESPONSE_TEXT}");
+    }
+    match result.output.tag("immune_reason") {
+        Some(reason) => {
+            format!("error: provider stream denied by immune boundary (reason: {reason})")
+        }
+        None => "error: provider stream denied by immune boundary".to_string(),
     }
 }
 
@@ -935,7 +1120,8 @@ mod tests {
 
     struct CountingAgent {
         calls: Arc<AtomicUsize>,
-        blank: bool,
+        /// Return output carrying a tamper signal the boundary contains.
+        tampered: bool,
         preserve_lineage: bool,
     }
 
@@ -943,16 +1129,16 @@ mod tests {
     impl Agent for CountingAgent {
         async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            let body = if self.blank {
-                Body::text("   ")
-            } else {
-                Body::text("provider output")
-            };
+            let body = Body::text("provider output");
             let mut builder = Signal::builder(Kind::AgentOutput).body(body);
             if self.preserve_lineage {
                 builder = builder.lineage([input.id]);
             }
-            AgentResult::ok(builder.build())
+            let mut output = builder.build();
+            if self.tampered {
+                output.attestation = Some(invalid_attestation());
+            }
+            AgentResult::ok(output)
         }
 
         fn name(&self) -> &str {
@@ -964,6 +1150,216 @@ mod tests {
         Signal::builder(Kind::Prompt)
             .body(Body::text("test prompt"))
             .build()
+    }
+
+    /// An attestation that verifies no output: a tamper signal
+    /// (`invalid_output_attestation`, Critical) whose evidence the ledger can
+    /// hold, unlike a content-hash mismatch.
+    fn invalid_attestation() -> roko_core::Attestation {
+        roko_core::Attestation {
+            signature: roko_core::Ed25519Signature([5; 64]),
+            public_key: roko_core::PublicKey([9; 32]),
+            chain_attestation: None,
+        }
+    }
+
+    /// `text` as provider output whose id no longer matches its content.
+    fn hash_mismatched_output(input: &Signal, text: &str) -> Signal {
+        let mut output = input.derive(Kind::AgentOutput, Body::text(text)).build();
+        output.id = ContentHash::of(b"tampered provider output");
+        output
+    }
+
+    /// Answers blank on its first call and with text after that, reporting
+    /// usage on every call.
+    struct BlankThenTextAgent {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Agent for BlankThenTextAgent {
+        async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let body = if call == 0 {
+                Body::text("  ")
+            } else {
+                Body::text("second answer")
+            };
+            let usage = crate::usage::Usage {
+                input_tokens: 11,
+                output_tokens: 3,
+                ..crate::usage::Usage::zero()
+            };
+            AgentResult::ok(input.derive(Kind::AgentOutput, body).build()).with_usage(usage)
+        }
+
+        fn name(&self) -> &str {
+            "blank-then-text-agent"
+        }
+    }
+
+    /// backlog 1101: a blank answer from an agent that did no work fails as
+    /// `empty_response` and leaves no control, vault entry or receipt, so the
+    /// next attempt under the same agent id reaches the provider.
+    #[tokio::test]
+    async fn blank_answer_then_retry_runs_second_attempt() {
+        let workspace = tempdir().expect("temp workspace");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let boundary = ImmuneScreenedAgent::durable(
+            Box::new(BlankThenTextAgent {
+                calls: Arc::clone(&calls),
+            }),
+            "live-a/cli",
+            workspace.path(),
+        );
+
+        let first = boundary.run(&prompt(), &Context::now()).await;
+        assert!(!first.success);
+        assert_eq!(
+            first.output.body.as_text().expect("text output"),
+            "provider returned an empty response (empty_response)"
+        );
+        assert_eq!(first.output.tag("provider_error"), Some("empty_response"));
+        assert_eq!(first.output.tag("immune_denied"), None);
+        assert_eq!(first.usage.input_tokens, 11);
+        assert_eq!(first.usage.output_tokens, 3);
+        assert!(!crate::immune_evidence::agent_controls_path(workspace.path()).exists());
+        assert!(!crate::immune_evidence::immune_evidence_path(workspace.path()).exists());
+        assert!(!crate::tool_immune::quarantine_vault_path(workspace.path()).exists());
+
+        let second = boundary.run(&prompt(), &Context::now()).await;
+        assert!(second.success, "the retry must reach the provider");
+        assert_eq!(
+            second.output.body.as_text().expect("text output"),
+            "second answer"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A blank closing answer after tool work is let through: the verify
+    /// steps judge the work, the boundary does not.
+    #[tokio::test]
+    async fn blank_answer_after_tool_work_crosses_boundary() {
+        struct ToolWorkThenBlankAgent;
+
+        #[async_trait::async_trait]
+        impl Agent for ToolWorkThenBlankAgent {
+            async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
+                let turn = input
+                    .derive(
+                        Kind::Custom("agent.trace".to_string()),
+                        Body::Json(serde_json::json!({
+                            "turn": 1,
+                            "tool_calls": [{"name": "write_file", "result_preview": "ok"}],
+                        })),
+                    )
+                    .build();
+                AgentResult::ok(input.derive(Kind::AgentOutput, Body::text("")).build())
+                    .with_trace(vec![turn])
+            }
+
+            fn name(&self) -> &str {
+                "tool-work-agent"
+            }
+        }
+
+        let workspace = tempdir().expect("temp workspace");
+        let boundary = ImmuneScreenedAgent::durable(
+            Box::new(ToolWorkThenBlankAgent),
+            "tool-work-agent",
+            workspace.path(),
+        );
+        let result = boundary.run(&prompt(), &Context::now()).await;
+        assert!(result.success);
+        assert_eq!(result.output.tag("provider_error"), None);
+        assert!(!crate::immune_evidence::agent_controls_path(workspace.path()).exists());
+    }
+
+    /// A tamper signal still isolates its agent, blank body or not.
+    #[tokio::test]
+    async fn content_hash_mismatch_still_writes_a_control() {
+        struct MismatchAgent;
+
+        #[async_trait::async_trait]
+        impl Agent for MismatchAgent {
+            async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
+                AgentResult::ok(hash_mismatched_output(input, " "))
+            }
+
+            fn name(&self) -> &str {
+                "mismatch-agent"
+            }
+        }
+
+        let workspace = tempdir().expect("temp workspace");
+        let boundary = ImmuneScreenedAgent::durable(
+            Box::new(MismatchAgent),
+            "mismatch-agent",
+            workspace.path(),
+        );
+        let result = boundary.run(&prompt(), &Context::now()).await;
+        assert!(!result.success);
+        assert_eq!(result.output.tag("immune_denied"), Some("true"));
+        assert_eq!(result.output.tag("provider_error"), None);
+        assert!(
+            crate::immune_evidence::get_agent_control(workspace.path(), "mismatch-agent")
+                .expect("read controls")
+                .is_some(),
+            "a content-hash mismatch must isolate its agent"
+        );
+    }
+
+    /// A version 1 receipt for a blank answer, written before backlog 1101,
+    /// still validates, so an existing evidence ledger stays readable.
+    #[test]
+    fn version_one_blank_receipt_still_validates() {
+        let input = prompt();
+        let evidence = input.derive(Kind::AgentOutput, Body::text("   ")).build();
+        let anomaly = score_provider_output(input.id, &evidence, 1);
+        assert_eq!(anomaly.dimensions["blank_primary_output_text"], 0.9);
+        assert_eq!(
+            detect_provider_output_evidence_anomaly(input.id, &evidence),
+            AnomalyScore::clean(),
+            "version 2 does not score a blank body"
+        );
+        let decision = ImmunePipeline::default().run(evidence.id, anomaly.clone(), Vec::new());
+        let isolation = legacy_isolation_marker_for("legacy-agent").unwrap();
+        let record = ProviderBoundaryRecord {
+            schema_version: 1,
+            agent_id: "legacy-agent".to_string(),
+            input: input.id,
+            output: evidence.id,
+            output_security_metadata: provider_output_security_metadata_hash(&evidence).unwrap(),
+            anomaly,
+            decision,
+            stage_order: IMMUNE_STAGE_ORDER.map(str::to_string).to_vec(),
+            effects: vec![
+                ProviderBoundaryEffect::DeliveryDenied,
+                ProviderBoundaryEffect::QuarantineEvidencePersisted,
+                ProviderBoundaryEffect::QuarantineVaultIndexed,
+                ProviderBoundaryEffect::AgentIsolation,
+            ],
+            isolation_control: Some(isolation.id),
+        };
+        let receipt = Signal::builder(Kind::Custom(PROVIDER_BOUNDARY_RECORD_KIND.to_string()))
+            .body(Body::from_json(&record).unwrap())
+            .provenance(Provenance::trusted("immune-provider-boundary"))
+            .lineage([input.id, evidence.id])
+            .tag("agent_id", "legacy-agent")
+            .tag("quarantine_decision", "quarantine")
+            .tag("boundary", "provider_final_output")
+            .build();
+        validate_provider_boundary_receipt(&receipt, Some(&evidence), true).unwrap();
+
+        let mut as_version_two = record;
+        as_version_two.schema_version = PROVIDER_BOUNDARY_RECORD_SCHEMA_VERSION;
+        let mut rewritten = receipt;
+        rewritten.body = Body::from_json(&as_version_two).unwrap();
+        rewritten.id = rewritten.content_hash();
+        assert!(
+            validate_provider_boundary_receipt(&rewritten, Some(&evidence), true).is_err(),
+            "a version 2 receipt is bound to version 2 scoring"
+        );
     }
 
     #[test]
@@ -1000,7 +1396,7 @@ mod tests {
         let boundary = ImmuneScreenedAgent::with_store(
             Box::new(CountingAgent {
                 calls: Arc::clone(&calls),
-                blank: false,
+                tampered: false,
                 preserve_lineage: true,
             }),
             "clean-agent",
@@ -1020,7 +1416,7 @@ mod tests {
         let boundary = ImmuneScreenedAgent::with_store(
             Box::new(CountingAgent {
                 calls: Arc::clone(&calls),
-                blank: false,
+                tampered: false,
                 preserve_lineage: false,
             }),
             "legacy-provider-agent",
@@ -1117,14 +1513,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn high_anomaly_is_denied_persisted_ordered_and_durably_isolated() {
+    async fn tamper_anomaly_is_denied_persisted_ordered_and_durably_isolated() {
         let workspace = tempdir().expect("temp workspace");
         let calls = Arc::new(AtomicUsize::new(0));
         let input = prompt();
         let boundary = ImmuneScreenedAgent::durable(
             Box::new(CountingAgent {
                 calls: Arc::clone(&calls),
-                blank: true,
+                tampered: true,
                 preserve_lineage: true,
             }),
             "isolated-agent",
@@ -1148,11 +1544,11 @@ mod tests {
         assert_eq!(record.stage_order, IMMUNE_STAGE_ORDER.map(str::to_string));
         assert_eq!(
             record.decision.validation.containment.assessment.severity,
-            ThreatSeverity::High
+            ThreatSeverity::Critical
         );
         assert_eq!(
             record.decision.validation.containment.action,
-            Some(ResponseAction::IsolateAgent)
+            Some(ResponseAction::Purge)
         );
         assert!(record.isolation_control.is_some());
         assert!(
@@ -1255,7 +1651,7 @@ mod tests {
         let recreated = ImmuneScreenedAgent::durable(
             Box::new(CountingAgent {
                 calls: Arc::clone(&calls),
-                blank: false,
+                tampered: false,
                 preserve_lineage: true,
             }),
             "isolated-agent",
@@ -1294,7 +1690,7 @@ mod tests {
         let boundary = ImmuneScreenedAgent::durable(
             Box::new(CountingAgent {
                 calls: Arc::clone(&calls),
-                blank: true,
+                tampered: true,
                 preserve_lineage: true,
             }),
             "capacity-isolated-agent",
@@ -1326,7 +1722,7 @@ mod tests {
         let first = ImmuneScreenedAgent::durable(
             Box::new(CountingAgent {
                 calls: Arc::clone(&calls_a),
-                blank: true,
+                tampered: true,
                 preserve_lineage: true,
             }),
             "shared-agent-id",
@@ -1340,7 +1736,7 @@ mod tests {
         let later_same_root = ImmuneScreenedAgent::durable(
             Box::new(CountingAgent {
                 calls: Arc::clone(&calls_a),
-                blank: false,
+                tampered: false,
                 preserve_lineage: true,
             }),
             "shared-agent-id",
@@ -1354,7 +1750,7 @@ mod tests {
         let separate_workspace = ImmuneScreenedAgent::durable(
             Box::new(CountingAgent {
                 calls: Arc::clone(&calls_b),
-                blank: false,
+                tampered: false,
                 preserve_lineage: true,
             }),
             "shared-agent-id",
@@ -1379,7 +1775,7 @@ mod tests {
         let boundary = ImmuneScreenedAgent::durable(
             Box::new(CountingAgent {
                 calls: Arc::clone(&calls),
-                blank: true,
+                tampered: true,
                 preserve_lineage: true,
             }),
             "malformed-evidence-agent",
@@ -1426,7 +1822,7 @@ mod tests {
         let boundary = ImmuneScreenedAgent::with_store(
             Box::new(CountingAgent {
                 calls: Arc::clone(&calls),
-                blank: true,
+                tampered: true,
                 preserve_lineage: true,
             }),
             "write-failure-agent",
@@ -1442,21 +1838,21 @@ mod tests {
         );
         assert_eq!(
             result.output.body.as_text().expect("safe denial"),
-            "provider result denied by immune boundary"
+            "provider result denied by immune boundary (reason: containment_persistence_failed)"
         );
         assert!(result.trace.is_empty());
     }
 
-    struct StreamingBlankAgent;
+    struct StreamingSuspectAgent;
 
     #[async_trait::async_trait]
-    impl Agent for StreamingBlankAgent {
+    impl Agent for StreamingSuspectAgent {
         async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
-            AgentResult::ok(input.derive(Kind::AgentOutput, Body::text(" ")).build())
+            AgentResult::ok(hash_mismatched_output(input, "suspect output"))
         }
 
         fn name(&self) -> &str {
-            "streaming-blank-agent"
+            "streaming-suspect-agent"
         }
 
         fn supports_streaming(&self) -> bool {
@@ -1474,7 +1870,7 @@ mod tests {
                     "suspect streamed content".to_string(),
                 )))
                 .await;
-            AgentResult::ok(input.derive(Kind::AgentOutput, Body::text(" ")).build())
+            AgentResult::ok(hash_mismatched_output(input, "suspect output"))
         }
     }
 
@@ -1482,14 +1878,15 @@ mod tests {
     async fn suspicious_stream_is_buffered_and_never_released() {
         let store = Arc::new(MemorySubstrate::new());
         let boundary = ImmuneScreenedAgent::with_store(
-            Box::new(StreamingBlankAgent),
-            "streaming-blank-agent",
+            Box::new(StreamingSuspectAgent),
+            "streaming-suspect-agent",
             store,
         );
         let (tx, mut rx) = mpsc::channel(8);
         let result = boundary.run_streaming(&prompt(), &Context::now(), tx).await;
 
         assert!(!result.success);
+        assert_eq!(result.output.tag("immune_denied"), Some("true"));
         let mut chunks = Vec::new();
         while let Some(chunk) = rx.recv().await {
             chunks.push(chunk);
@@ -1590,6 +1987,163 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert!(
             matches!(&chunks[0].kind, StreamEventKind::Done { finish_reason } if finish_reason.starts_with("error:"))
+        );
+    }
+
+    /// Streams `deltas` one-token text deltas split over `calls` model calls,
+    /// each followed by a tool result and ending in `Done`, then answers.
+    struct MultiCallStreamingAgent {
+        deltas: usize,
+        calls: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl Agent for MultiCallStreamingAgent {
+        async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
+            AgentResult::ok(
+                input
+                    .derive(Kind::AgentOutput, Body::text("final answer"))
+                    .build(),
+            )
+        }
+
+        fn name(&self) -> &str {
+            "multi-call-stream-agent"
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        async fn run_streaming(
+            &self,
+            input: &Signal,
+            ctx: &Context,
+            event_tx: mpsc::Sender<StreamEvent>,
+        ) -> AgentResult {
+            let per_call = self.deltas.div_ceil(self.calls);
+            let mut sent = 0;
+            for call in 0..self.calls {
+                let batch = per_call.min(self.deltas - sent);
+                for _ in 0..batch {
+                    let _ = event_tx
+                        .send(StreamEvent::now(StreamEventKind::TextDelta("x".to_string())))
+                        .await;
+                }
+                sent += batch;
+                let _ = event_tx
+                    .send(StreamEvent::now(StreamEventKind::Done {
+                        finish_reason: "tool_calls".to_string(),
+                    }))
+                    .await;
+                let _ = event_tx
+                    .send(StreamEvent::now(StreamEventKind::ToolResult {
+                        id: format!("call-{call}"),
+                        output: "y".repeat(MAX_PROVIDER_STREAM_BYTES),
+                        is_error: false,
+                    }))
+                    .await;
+            }
+            self.run(input, ctx).await
+        }
+    }
+
+    /// backlog 1103: the stream limits apply to one model call, and a tool's
+    /// own result counts towards neither, so a long honest tool loop is not
+    /// denied after it finished.
+    #[tokio::test]
+    async fn multi_turn_stream_over_4096_events_is_accepted() {
+        let boundary = ImmuneScreenedAgent::with_store(
+            Box::new(MultiCallStreamingAgent {
+                deltas: 5_000,
+                calls: 3,
+            }),
+            "multi-call-stream-agent",
+            Arc::new(MemorySubstrate::new()),
+        );
+        let (tx, _rx) = mpsc::channel(8);
+        let result = boundary.run_streaming(&prompt(), &Context::now(), tx).await;
+
+        assert!(result.success, "{:?}", result.output.body);
+        assert_eq!(
+            result.output.body.as_text().expect("text output"),
+            "final answer"
+        );
+    }
+
+    /// Records the fields of every tracing event as `name=value` text.
+    #[derive(Clone, Default)]
+    struct CapturedEvents(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl CapturedEvents {
+        fn lines(&self) -> Vec<String> {
+            self.0.lock().expect("captured events").clone()
+        }
+    }
+
+    struct EventFields(String);
+
+    impl tracing::field::Visit for EventFields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.push_str(&format!("{}={value:?} ", field.name()));
+        }
+    }
+
+    impl tracing::Subscriber for CapturedEvents {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut fields = EventFields(String::new());
+            event.record(&mut fields);
+            self.0.lock().expect("captured events").push(fields.0);
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    /// backlog 1103: a denial names its reason in a log line and in the
+    /// result text, here for one model call over the per-call cap.
+    #[tokio::test]
+    async fn every_immune_denial_logs_its_reason() {
+        let captured = CapturedEvents::default();
+        let _guard = tracing::subscriber::set_default(captured.clone());
+        let boundary = ImmuneScreenedAgent::with_store(
+            Box::new(MultiCallStreamingAgent {
+                deltas: MAX_PROVIDER_STREAM_CHUNKS + 1,
+                calls: 1,
+            }),
+            "oversized-call-agent",
+            Arc::new(MemorySubstrate::new()),
+        );
+        let (tx, mut rx) = mpsc::channel(8);
+        let result = boundary.run_streaming(&prompt(), &Context::now(), tx).await;
+
+        assert!(!result.success);
+        assert_eq!(
+            result.output.tag("immune_reason"),
+            Some("provider_stream_limit_exceeded")
+        );
+        assert_eq!(
+            result.output.body.as_text().expect("text output"),
+            "provider result denied by immune boundary (reason: provider_stream_limit_exceeded)"
+        );
+        let done = rx.recv().await.expect("a Done event");
+        assert!(
+            matches!(&done.kind, StreamEventKind::Done { finish_reason }
+                if finish_reason.contains("provider_stream_limit_exceeded")),
+            "{done:?}"
+        );
+        let lines = captured.lines();
+        assert!(
+            lines.iter().any(|line| line.contains("provider_stream_limit_exceeded")
+                && line.contains("oversized-call-agent")),
+            "{lines:?}"
         );
     }
 
@@ -1694,15 +2248,19 @@ mod tests {
             .expect("create fallback provider agent");
         let result = agent.run(&prompt(), &Context::now()).await;
 
-        assert!(!result.success, "blank provider output must be denied");
-        assert_eq!(
-            result.output.tag("immune_reason"),
-            Some("provider_output_quarantined")
-        );
-        assert!(crate::immune_evidence::immune_evidence_path(workspace.path()).is_file());
+        assert!(!result.success, "a blank provider answer must fail");
+        assert_eq!(result.output.tag("provider_error"), Some("empty_response"));
+        assert!(!crate::immune_evidence::agent_controls_path(workspace.path()).exists());
         assert!(!attempt.join(".roko/immune").exists());
         std::fs::remove_dir_all(&attempt).unwrap();
 
+        // An isolation recorded at the immune root binds a later attempt that
+        // runs in another worktree.
+        persist_agent_control(
+            workspace.path(),
+            &isolation_control_for("factory-immune-agent").unwrap(),
+        )
+        .unwrap();
         let later_attempt = workspace.path().join("later-attempt");
         std::fs::create_dir_all(&later_attempt).unwrap();
         let later_options = AgentOptions {
@@ -1790,19 +2348,14 @@ mod tests {
         paused_notify: Arc<tokio::sync::Notify>,
         /// Fired by the test to let the agent finish.
         resume_notify: Arc<tokio::sync::Notify>,
-        /// When true, return a blank body so the boundary will deny the result.
+        /// When true, return tampered output so the boundary denies the result.
         deny: bool,
     }
 
     #[async_trait::async_trait]
     impl Agent for PausingToolAgent {
         async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
-            let body = if self.deny {
-                Body::text("   ")
-            } else {
-                Body::text("clean output")
-            };
-            AgentResult::ok(input.derive(Kind::AgentOutput, body).build())
+            AgentResult::ok(self.output(input))
         }
 
         fn name(&self) -> &str {
@@ -1830,12 +2383,19 @@ mod tests {
             // Notify the test we are paused and wait for release.
             self.paused_notify.notify_one();
             self.resume_notify.notified().await;
-            let body = if self.deny {
-                Body::text("   ")
+            AgentResult::ok(self.output(input))
+        }
+    }
+
+    impl PausingToolAgent {
+        fn output(&self, input: &Signal) -> Signal {
+            if self.deny {
+                hash_mismatched_output(input, "suspect output")
             } else {
-                Body::text("clean output")
-            };
-            AgentResult::ok(input.derive(Kind::AgentOutput, body).build())
+                input
+                    .derive(Kind::AgentOutput, Body::text("clean output"))
+                    .build()
+            }
         }
     }
 
@@ -2005,7 +2565,7 @@ mod tests {
                     n.notify_one();
                     n
                 },
-                deny: true, // blank body → boundary denies
+                deny: true, // tampered output → boundary denies
             }),
             "denied-with-live-agent",
             store,
@@ -2016,7 +2576,7 @@ mod tests {
         });
 
         let result = boundary.run(&prompt(), &Context::now()).await;
-        assert!(!result.success, "blank output must still be denied");
+        assert!(!result.success, "tampered output must still be denied");
         assert_eq!(result.output.tag("immune_denied"), Some("true"));
 
         // The live channel may have received a ToolStep, but the screened result is still denied.

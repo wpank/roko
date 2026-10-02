@@ -1,6 +1,6 @@
 {
-  "total_registrations": 453,
-  "canonical_registrations": 402,
+  "total_registrations": 455,
+  "canonical_registrations": 404,
   "alias_count": 51,
   "conflict_count": 0,
   "unparsed_count": 0,
@@ -2815,7 +2815,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/safety.rs",
-      "line": 34,
+      "line": 40,
       "router_fn": "routes",
       "path": "/safety/quarantine",
       "method": "GET",
@@ -2823,11 +2823,27 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/safety.rs",
-      "line": 35,
+      "line": 41,
       "router_fn": "routes",
       "path": "/safety/incidents",
       "method": "GET",
       "handler": "incidents_handler"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/safety.rs",
+      "line": 42,
+      "router_fn": "routes",
+      "path": "/safety/controls",
+      "method": "GET",
+      "handler": "controls_handler"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/safety.rs",
+      "line": 43,
+      "router_fn": "routes",
+      "path": "/safety/controls/{agent_id}/release",
+      "method": "POST",
+      "handler": "release_control_handler"
     },
     {
       "source_file": "crates/roko-serve/src/routes/secrets.rs",
@@ -2863,7 +2879,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/shared_runs.rs",
-      "line": 900,
+      "line": 823,
       "router_fn": "auth_routes",
       "path": "/runs/{id}/share",
       "method": "POST",
@@ -2871,7 +2887,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/shared_runs.rs",
-      "line": 910,
+      "line": 833,
       "router_fn": "public_routes",
       "path": "/api/shared/{token}",
       "method": "GET",
@@ -2879,7 +2895,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/shared_runs.rs",
-      "line": 911,
+      "line": 834,
       "router_fn": "public_routes",
       "path": "/runs/{id}",
       "method": "GET",
@@ -2887,7 +2903,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/sse.rs",
-      "line": 54,
+      "line": 55,
       "router_fn": "routes",
       "path": "/events",
       "method": "GET",
@@ -2895,7 +2911,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/sse.rs",
-      "line": 55,
+      "line": 56,
       "router_fn": "routes",
       "path": "/sse",
       "method": "GET",
@@ -3906,7 +3922,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/sse.rs",
-      "line": 55,
+      "line": 56,
       "path": "/sse",
       "method": "GET",
       "handler": "sse_handler"

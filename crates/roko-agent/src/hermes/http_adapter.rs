@@ -567,7 +567,7 @@ mod tests {
         let mut saw_done = false;
 
         for line in fixture.lines() {
-            if let Some(event) = parse_sse_line(line) {
+            for event in parse_sse_line(line) {
                 match &event.kind {
                     StreamEventKind::TextDelta(delta) => content.push_str(delta),
                     StreamEventKind::Done { .. } => saw_done = true,
@@ -594,7 +594,7 @@ mod tests {
         for frame in parse_sse_text(fixture) {
             if frame.event == "message" {
                 // Standard OpenAI-compatible data line.
-                if let Some(event) = parse_sse_line(&format!("data: {}", frame.data)) {
+                for event in parse_sse_line(&format!("data: {}", frame.data)) {
                     if let StreamEventKind::TextDelta(delta) = &event.kind {
                         content.push_str(delta);
                     }
@@ -705,7 +705,7 @@ mod tests {
         let mut content = String::new();
 
         for line in fixture.lines() {
-            if let Some(event) = parse_sse_line(line) {
+            for event in parse_sse_line(line) {
                 match &event.kind {
                     StreamEventKind::TextDelta(delta) => content.push_str(delta),
                     StreamEventKind::Done { .. } => saw_done = true,

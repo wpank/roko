@@ -183,6 +183,11 @@ pub(crate) const ROUTE_PERMISSION_MANIFEST: &[RoutePermission] = &[
         prefix: "/api/providers",
         permission: Permission::ConfigEdit,
     },
+    // Releasing an immune isolation control lifts a security block.
+    RoutePermission {
+        prefix: "/api/safety",
+        permission: Permission::ConfigEdit,
+    },
     RoutePermission {
         prefix: "/relay",
         permission: Permission::AgentSpawn,
@@ -476,6 +481,22 @@ mod tests {
         // Only the session-opening route changes; other reads stay open.
         assert_eq!(required_permission_for(&Method::GET, "/ws/events"), None);
         assert_eq!(required_permission_for(&Method::GET, "/ws/terminals"), None);
+    }
+
+    #[test]
+    fn releasing_an_isolation_control_requires_config_edit() {
+        assert_eq!(
+            required_permission_for(&Method::POST, "/api/safety/controls/plan%2Ftask/release"),
+            Some(Permission::ConfigEdit)
+        );
+        assert_eq!(
+            required_permission_for(&Method::POST, "/safety/controls/plan%2Ftask/release"),
+            Some(Permission::ConfigEdit)
+        );
+        assert_eq!(
+            required_permission_for(&Method::GET, "/api/safety/controls"),
+            None
+        );
     }
 
     #[test]

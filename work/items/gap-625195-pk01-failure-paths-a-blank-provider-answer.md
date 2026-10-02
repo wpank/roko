@@ -112,3 +112,20 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: nothing.
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-625195` by a static worker (no cargo); cargo verification is deferred to the batch gate.
+
+- 1101: implemented at 38dd54864
+- 1102: implemented at 28714282b
+- 1103: implemented at 6e4dd3383
+- 1104: implemented at 220045bcf
+- 1105: implemented at 80ab4098c
+- 1106: implemented at efe7dc553
+- 1108: implemented at 2b00d02be
+- 1109: implemented at 9eed28f79
+- 1110: implemented at 9dd006133
+- 1111: implemented at 0830b0814
+- 1112: blocked: no zai key in the worker's environment (`ZAI_API_KEY` unset; key files may not be read), so no raw GLM-4.7 stream was captured and no fixture was invented
+- 1113: implemented at d562b56b2

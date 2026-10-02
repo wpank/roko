@@ -132,6 +132,19 @@ impl Default for AttemptBook {
     }
 }
 
+/// The provider agent id of one attempt: its attempt key
+/// (`{run}:{plan}:{task}:{attempt}`). The provider immune boundary keys its
+/// isolation controls by this id, so a control covers this attempt and no
+/// other, in this run or a later one (decision 1107). An attempt key the
+/// boundary would refuse falls back to `{plan}/{task}#{attempt}`.
+pub(super) fn attempt_agent_id(key: &AttemptKey, plan_id: &str, task_or_cell: &str) -> String {
+    let attempt_key = key.attempt_key();
+    if roko_agent::immune_boundary::validate_provider_agent_id(&attempt_key).is_ok() {
+        return attempt_key;
+    }
+    format!("{plan_id}/{task_or_cell}#{}", key.attempt)
+}
+
 impl AttemptBook {
     /// The run an attempt dispatched with `ctx` belongs to: the Graph
     /// checkpoint's run the engine names, else this dispatcher's own.

@@ -13,8 +13,8 @@ use crate::model_call_service::{ProviderOutcomeRecorder, provider_error_kind};
 use crate::multimodal::wire_messages_contain_images;
 use crate::provider::{ProviderError, map_provider_error};
 use crate::rate_limit::ProviderRateLimiter;
-use crate::streaming::parse_sse_line;
-use crate::tool_loop::{LlmBackend, LlmError};
+use crate::streaming::{SseError, SseLine, UNKNOWN_FINISH_REASON, parse_sse_frame};
+use crate::tool_loop::{LlmBackend, LlmError, StreamEvent, StreamEventKind};
 use crate::translate::FinishReason;
 use crate::translate::{BackendResponse, RenderedTools, SessionState, convert_images_for_openai};
 use roko_core::agent::ProviderKind;
@@ -59,6 +59,75 @@ fn classify_http_error(e: crate::http::HttpPostError) -> LlmError {
         Some(s @ 500..=599) => LlmError::Provider(ProviderError::ServerError(s)),
         Some(401) => LlmError::Provider(ProviderError::AuthFailure),
         _ => LlmError::Network(e.to_string()),
+    }
+}
+
+/// The turn error a provider `error` object in the stream becomes: classified
+/// like an HTTP error when its code is a status (rate limit, auth, server),
+/// otherwise a backend error that names it (backlog 1111).
+fn sse_error_to_llm_error(error: &SseError) -> LlmError {
+    match error.status() {
+        Some(status) => {
+            classify_http_error(crate::http::HttpPostError::http(status, error.to_string()))
+        }
+        None => LlmError::Backend(error.to_string()),
+    }
+}
+
+/// What one OpenAI-compatible turn's SSE lines become: every chunk event, an
+/// error object as a failed turn, and a `Done` with
+/// [`UNKNOWN_FINISH_REASON`] for a stream that ends (or sends `[DONE]`)
+/// without naming a finish reason, never a made-up `stop` (backlog 1111).
+#[derive(Default)]
+struct SseTurn {
+    /// A chunk named a finish reason.
+    finish_seen: bool,
+    /// A `Done` was sent.
+    done_sent: bool,
+}
+
+impl SseTurn {
+    /// The items to send for one SSE line.
+    fn line(
+        &mut self,
+        line: &str,
+        provider: &str,
+        model: &str,
+    ) -> Vec<Result<StreamEvent, LlmError>> {
+        match parse_sse_frame(line) {
+            SseLine::Events(events) => {
+                if events
+                    .iter()
+                    .any(|event| matches!(event.kind, StreamEventKind::Done { .. }))
+                {
+                    self.finish_seen = true;
+                    self.done_sent = true;
+                }
+                events.into_iter().map(Ok).collect()
+            }
+            // `[DONE]` after a real finish reason adds nothing.
+            SseLine::Done if self.finish_seen => Vec::new(),
+            SseLine::Done => vec![Ok(self.unknown_finish(provider, model, "[DONE]"))],
+            SseLine::Error(error) => vec![Err(sse_error_to_llm_error(&error))],
+        }
+    }
+
+    /// The `Done` to send when the stream ended, unless one was sent.
+    fn end(&mut self, provider: &str, model: &str) -> Option<StreamEvent> {
+        (!self.done_sent).then(|| self.unknown_finish(provider, model, "end of stream"))
+    }
+
+    fn unknown_finish(&mut self, provider: &str, model: &str, at: &str) -> StreamEvent {
+        tracing::warn!(
+            provider,
+            model,
+            at,
+            "provider stream named no finish reason; reporting it as unknown"
+        );
+        self.done_sent = true;
+        StreamEvent::now(StreamEventKind::Done {
+            finish_reason: UNKNOWN_FINISH_REASON.to_string(),
+        })
     }
 }
 
@@ -610,8 +679,6 @@ impl LlmBackend for OpenAiCompatLlmBackend {
         futures::stream::BoxStream<'static, Result<crate::tool_loop::StreamEvent, LlmError>>,
         LlmError,
     > {
-        use crate::tool_loop::{StreamEvent, StreamEventKind};
-
         let body_bytes = self.build_body(messages, tools, session, true)?;
         self.rate_limiter.acquire(&self.provider_id).await;
 
@@ -679,7 +746,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
             let mut response = response;
             let mut pending = Vec::new();
             let mut first_chunk = true;
-            let mut sent_done = false;
+            let mut sse_turn = SseTurn::default();
             let mut ttft_recorded = false;
 
             loop {
@@ -745,7 +812,16 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                     let line_str = String::from_utf8_lossy(&line);
                     let line_str = line_str.trim_end_matches(['\r', '\n']);
 
-                    if let Some(event) = parse_sse_line(line_str) {
+                    // One chunk can carry several events (backlog 1110), and an
+                    // error object fails the turn (backlog 1111).
+                    for item in sse_turn.line(line_str, &metrics_provider, &metrics_model) {
+                        let event = match item {
+                            Ok(event) => event,
+                            Err(error) => {
+                                let _ = tx.send(Err(error)).await;
+                                return;
+                            }
+                        };
                         // Record TTFT on the first non-error content/tool/reasoning chunk.
                         if !ttft_recorded {
                             let is_content_chunk = matches!(
@@ -780,9 +856,6 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                                 }
                             }
                         }
-                        if matches!(event.kind, StreamEventKind::Done { .. }) {
-                            sent_done = true;
-                        }
                         if tx.send(Ok(event)).await.is_err() {
                             return; // consumer dropped
                         }
@@ -814,22 +887,19 @@ impl LlmBackend for OpenAiCompatLlmBackend {
             if !pending.is_empty() {
                 let line_str = String::from_utf8_lossy(&pending);
                 let line_str = line_str.trim_end_matches(['\r', '\n']);
-                if let Some(event) = parse_sse_line(line_str) {
-                    if matches!(event.kind, StreamEventKind::Done { .. }) {
-                        sent_done = true;
+                for item in sse_turn.line(line_str, &metrics_provider, &metrics_model) {
+                    let failed = item.is_err();
+                    let _ = tx.send(item).await;
+                    if failed {
+                        return;
                     }
-                    let _ = tx.send(Ok(event)).await;
                 }
             }
 
-            // Ensure a Done event is always emitted, but avoid duplicates
-            // when the SSE stream already contained `data: [DONE]`.
-            if !sent_done {
-                let _ = tx
-                    .send(Ok(StreamEvent::now(StreamEventKind::Done {
-                        finish_reason: "stop".to_string(),
-                    })))
-                    .await;
+            // Every turn ends with exactly one Done. A stream that named no
+            // finish reason ends as `unknown`, not a made-up `stop`.
+            if let Some(done) = sse_turn.end(&metrics_provider, &metrics_model) {
+                let _ = tx.send(Ok(done)).await;
             }
         });
 
@@ -1705,7 +1775,10 @@ mod tests {
         // Streaming: the final chunk's usage, collected into the response the
         // tool loop prices.
         let chunk = serde_json::json!({ "choices": [], "usage": usage_block });
-        let usage_event = parse_sse_line(&format!("data: {chunk}")).expect("a usage chunk");
+        let usage_event = crate::streaming::parse_sse_line(&format!("data: {chunk}"))
+            .into_iter()
+            .next()
+            .expect("a usage chunk");
         assert!(matches!(usage_event.kind, StreamEventKind::Usage(_)));
         let events = vec![
             Ok(usage_event),
@@ -1868,6 +1941,114 @@ mod tests {
         );
 
         server.join().expect("server thread");
+    }
+
+    /// Serve one streaming response with `body`, then close the connection.
+    fn serve_sse_once(body: &'static str) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let _ = read_http_request(&mut stream);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+            )
+            .expect("write response headers");
+            stream.write_all(body.as_bytes()).expect("write body");
+            stream.flush().expect("flush body");
+        });
+        (format!("http://{addr}/v1/"), server)
+    }
+
+    /// Every item one streamed turn against `base_url` yields.
+    async fn streamed_turn(base_url: &str) -> Vec<Result<StreamEvent, LlmError>> {
+        use futures::StreamExt;
+
+        let backend = OpenAiCompatLlmBackend::new("test-key", "test-model").with_base_url(base_url);
+        backend
+            .stream_turn(
+                &[serde_json::json!({ "role": "user", "content": "hello" })],
+                &RenderedTools::JsonArray(serde_json::json!([])),
+                &SessionState::default(),
+                &TurnConfig::default(),
+            )
+            .await
+            .expect("the request is sent")
+            .collect()
+            .await
+    }
+
+    fn finish_reasons(items: &[Result<StreamEvent, LlmError>]) -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                Ok(StreamEvent {
+                    kind: StreamEventKind::Done { finish_reason },
+                    ..
+                }) => Some(finish_reason.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// backlog 1111: an `error` object in the stream fails the turn with the
+    /// provider's message instead of being dropped, and no made-up `Done`
+    /// follows it.
+    #[tokio::test]
+    async fn sse_error_object_fails_the_turn() {
+        let (base_url, server) = serve_sse_once(
+            "data: {\"error\":{\"message\":\"The model is overloaded\",\"type\":\"server_error\",\"code\":\"1305\"}}\n\n",
+        );
+        let items = streamed_turn(&base_url).await;
+        server.join().expect("server thread");
+
+        let error = items
+            .iter()
+            .find_map(|item| item.as_ref().err())
+            .expect("the turn fails");
+        assert!(
+            error.to_string().contains("The model is overloaded"),
+            "{error}"
+        );
+        assert!(finish_reasons(&items).is_empty(), "{items:?}");
+
+        // An error code that is an HTTP status is classified like one.
+        let rate_limited = sse_error_to_llm_error(&SseError {
+            code: Some("429".to_string()),
+            error_type: Some("rate_limit_error".to_string()),
+            message: "Rate limit reached".to_string(),
+        });
+        assert!(
+            matches!(rate_limited, LlmError::Provider(ProviderError::RateLimit { .. })),
+            "{rate_limited:?}"
+        );
+    }
+
+    /// backlog 1111: content and then the end of the stream, with no finish
+    /// reason, ends the turn as `unknown`, not `stop`; a named finish reason
+    /// followed by `[DONE]` stays the only one.
+    #[tokio::test]
+    async fn stream_without_finish_reason_is_not_stop() {
+        let (base_url, server) =
+            serve_sse_once("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n");
+        let items = streamed_turn(&base_url).await;
+        server.join().expect("server thread");
+        assert_eq!(finish_reasons(&items), vec!["unknown".to_string()]);
+
+        let (base_url, server) = serve_sse_once(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"cut\"},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n",
+        );
+        let items = streamed_turn(&base_url).await;
+        server.join().expect("server thread");
+        assert_eq!(finish_reasons(&items), vec!["Length".to_string()]);
+
+        let (base_url, server) = serve_sse_once(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n",
+        );
+        let items = streamed_turn(&base_url).await;
+        server.join().expect("server thread");
+        assert_eq!(finish_reasons(&items), vec!["unknown".to_string()]);
     }
 
     #[tokio::test]

@@ -70,32 +70,34 @@ impl AuditSelector {
         if !config.enabled {
             return None;
         }
-        let opened = || -> Result<Self, String> {
-            let vault = config.vault(workdir).map_err(|error| error.to_string())?;
-            let secret = workspace_secret(&vault).map_err(|error| error.to_string())?;
-            let ledger = AuditLedger::open(&vault)
-                .map_err(|error| error.to_string())?
-                .with_mirror(workdir.join(".roko/audit/audits.jsonl"));
-            Ok(Self {
-                workdir: workdir.to_path_buf(),
-                secret,
-                params: InclusionParams {
-                    rho: config.rho,
-                    ..InclusionParams::default()
-                },
-                ledger: parking_lot::Mutex::new(ledger),
-                hidden: HiddenStore::open(&vault).ok(),
-                trees: parking_lot::Mutex::new(HashMap::new()),
-                runs: parking_lot::Mutex::new(HashMap::new()),
-            })
-        };
-        match opened() {
+        match Self::open(config, workdir) {
             Ok(selector) => Some(selector),
             Err(error) => {
                 tracing::warn!(%error, "[audit] is enabled, but no attempt is drawn");
                 None
             }
         }
+    }
+
+    /// The lottery's vault, secret and ledger.
+    fn open(config: &AuditConfig, workdir: &Path) -> Result<Self, String> {
+        let vault = config.vault(workdir).map_err(|error| error.to_string())?;
+        let secret = workspace_secret(&vault).map_err(|error| error.to_string())?;
+        let ledger = AuditLedger::open(&vault)
+            .map_err(|error| error.to_string())?
+            .with_mirror(workdir.join(".roko/audit/audits.jsonl"));
+        Ok(Self {
+            workdir: workdir.to_path_buf(),
+            secret,
+            params: InclusionParams {
+                rho: config.rho,
+                ..InclusionParams::default()
+            },
+            ledger: parking_lot::Mutex::new(ledger),
+            hidden: HiddenStore::open(&vault).ok(),
+            trees: parking_lot::Mutex::new(HashMap::new()),
+            runs: parking_lot::Mutex::new(HashMap::new()),
+        })
     }
 
     /// Open run `run_id`: derive its key and commit to it, once.

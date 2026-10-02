@@ -574,8 +574,6 @@ graph TD
     subgraph T7 ["Tier 7: MCP, Plugin & Gateway"]
         mcpgh["roko-mcp-github"]
         mcpstdio["roko-mcp-stdio"]
-        mcpslack["roko-mcp-slack"]
-        mcpscript["roko-mcp-scripts"]
         plugin["roko-plugin"]
         gateway["roko-gateway"]
         eval["roko-eval"]
@@ -717,8 +715,6 @@ Tool ecosystem and inference pipeline.
 |-------|-------------|--------|
 | **roko-mcp-github** | GitHub MCP server (shipped binary). Plan PRs, CI integration. | Wired |
 | **roko-mcp-stdio** | Shared JSON-RPC 2.0 transport for all MCP servers. | Wired |
-| **roko-mcp-slack** | Slack MCP server. | Disconnected |
-| **roko-mcp-scripts** | Script execution MCP server. | Disconnected |
 | **roko-plugin** | Plugin SDK: signed dependency graphs, WASM hooks, strict admission, kernel confinement. | Wired (E32 8/8) |
 | **roko-gateway** | Nine-stage inference gateway: routing/fallback, caching, tool controls, cost accounting, key rotation, backpressure. | Wired (E26 12/12) |
 | **roko-eval** | Evaluation framework: evidence collector, criterion, profile traits. | Wired |

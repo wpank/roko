@@ -63,8 +63,6 @@ integrations.
 | roko-lang-typescript | `crates/roko-lang-typescript/` | ~940 | 33 | Built | TypeScript language support |
 | roko-lang-go | `crates/roko-lang-go/` | ~670 | 25 | Built | Go language support |
 | roko-mcp-github | `crates/roko-mcp-github/` | ~4,300 | 39 | Partial | GitHub MCP integration |
-| roko-mcp-scripts | `crates/roko-mcp-scripts/` | ~770 | 6 | Partial | Script execution MCP server |
-| roko-mcp-slack | `crates/roko-mcp-slack/` | ~1,950 | 3 | Partial | Slack MCP integration |
 
 ### 3.3 T2 -- Service Crates
 

@@ -55,8 +55,6 @@ graph TB
         direction LR
         MCPGH["roko-mcp-github<br/><i>GitHub plan PRs, CI</i>"]
         MCPSTDIO["roko-mcp-stdio<br/><i>JSON-RPC transport</i>"]
-        MCPSLACK["roko-mcp-slack<br/><i>Slack integration</i>"]
-        MCPSCRIPT["roko-mcp-scripts<br/><i>Script execution</i>"]
         PLUGIN["roko-plugin<br/><i>Signed deps, WASM hooks,<br/>strict admission</i>"]
         GATEWAY["roko-gateway<br/><i>9-stage inference pipeline,<br/>caching, cost, backpressure</i>"]
         EVAL["roko-eval<br/><i>Evidence collector,<br/>criterion, profiles</i>"]

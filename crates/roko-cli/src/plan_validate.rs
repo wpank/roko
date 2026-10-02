@@ -686,6 +686,12 @@ fn validate_tasks_file(
         .get("meta")
         .and_then(Value::as_table)
         .is_some_and(is_architecture_queue_meta);
+    // 3212: only the plan itself can let its tasks end unverified.
+    let allow_unverified = parsed
+        .get("meta")
+        .and_then(|meta| meta.get("allow_unverified"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let mut diagnostics = Vec::new();
 
@@ -888,18 +894,27 @@ fn validate_tasks_file(
             });
         }
 
-        // gap-29a84b: a task that runs no verify step ends unverified, and a
-        // plan with an unverified task does not succeed. A warning, so
-        // `--strict` rejects it.
+        // gap-29a84b, 3212: a task that runs no verify step ends unverified,
+        // and a plan with an unverified task does not succeed. An error for
+        // every role, unless the plan sets `[meta] allow_unverified`; then a
+        // warning, which `--strict` rejects.
         if !task.has_verify_steps {
+            let (severity, remedy) = if allow_unverified {
+                (Severity::Warning, "")
+            } else {
+                (
+                    Severity::Error,
+                    "; give it a verify step, or set [meta] allow_unverified = true",
+                )
+            };
             diagnostics.push(Diagnostic {
-                severity: Severity::Warning,
+                severity,
                 rule_id: "PLAN_037".to_string(),
                 plan_id: Some(plan_id.clone()),
                 task_id: task.task_id.clone(),
                 message: format!(
                     "task '{}' has no verify steps: it can only end unverified, and then \
-                     its plan does not succeed",
+                     its plan does not succeed{remedy}",
                     task.label()
                 ),
             });
@@ -2046,10 +2061,11 @@ read_files = [
         );
     }
 
-    /// gap-29a84b: a task with no verify steps is a PLAN_037 warning, which
-    /// `plan validate --strict` rejects.
+    /// gap-29a84b, 3212: a task with no verify steps is a PLAN_037 error,
+    /// whatever its role; in a plan that sets `allow_unverified` it is a
+    /// warning, which `plan validate --strict` rejects.
     #[test]
-    fn task_without_verify_is_rejected_in_strict_mode() {
+    fn task_without_verify_is_an_error_unless_the_plan_allows_it() {
         let temp = TempDir::new().unwrap();
         let root = temp.path();
         fs::create_dir_all(root.join("plans/demo")).unwrap();
@@ -2087,6 +2103,25 @@ depends_on = ["T1"]
             .collect::<Vec<_>>();
         assert_eq!(unverifiable.len(), 1, "{report:?}");
         assert_eq!(unverifiable[0].task_id.as_deref(), Some("T2"));
+        assert_eq!(unverifiable[0].severity, Severity::Error);
+        assert_eq!(report.totals.errors, 1, "{report:?}");
+        assert_eq!(report.exit_code(false), 1, "an error without --strict");
+
+        let tasks = root.join("plans/demo/tasks.toml");
+        let content = fs::read_to_string(&tasks).unwrap();
+        let allowed = content.replace(
+            "plan = \"demo\"\n",
+            "plan = \"demo\"\nallow_unverified = true\n",
+        );
+        fs::write(&tasks, allowed).unwrap();
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+        let unverifiable = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_037")
+            .collect::<Vec<_>>();
+        assert_eq!(unverifiable.len(), 1, "{report:?}");
         assert_eq!(unverifiable[0].severity, Severity::Warning);
         assert_eq!(report.totals.errors, 0, "{report:?}");
         assert_eq!(report.exit_code(false), 0, "a warning without --strict");

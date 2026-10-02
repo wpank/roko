@@ -508,6 +508,45 @@ fn tss_v1_example_passes_strict_validation() {
     assert!(stdout.contains("0 diagnostics in 1 plan"), "{stdout}");
 }
 
+/// 3212: a task of any role without a verify step can only end unverified,
+/// so it is a PLAN_037 error without `--strict`. A plan that sets `[meta]
+/// allow_unverified = true` says it means that, and passes.
+#[test]
+fn plan_validate_rejects_verify_less_researcher_task() {
+    let temp = TempDir::new().unwrap();
+    let plan = |meta: &str| {
+        format!(
+            r#"
+[meta]
+plan = "survey"
+{meta}
+[[task]]
+id = "T1"
+title = "Survey the retry callers"
+role = "researcher"
+depends_on = []
+"#
+        )
+    };
+
+    write_plan(temp.path(), "survey", &plan(""));
+    let assert = run_validate(&temp, &["plans"]).failure();
+    assert_eq!(assert.get_output().status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("error PLAN_037 task 'T1' has no verify steps"),
+        "{stdout}"
+    );
+
+    write_plan(temp.path(), "survey", &plan("allow_unverified = true\n"));
+    let assert = run_validate(&temp, &["plans"]).success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("warn  PLAN_037 task 'T1' has no verify steps"),
+        "{stdout}"
+    );
+}
+
 #[test]
 fn plan_validate_accepts_typed_acceptance_contract() {
     let temp = TempDir::new().unwrap();

@@ -116,6 +116,8 @@ const LOOP_CENSUS_TASKS: &str = r#"[meta]
 plan = "loop-census"
 max_parallel = 1
 skip_enrichment = true
+# T3 ends unverified on purpose; without this, plan run refuses the plan (PLAN_037).
+allow_unverified = true
 
 [[task]]
 id = "T1"

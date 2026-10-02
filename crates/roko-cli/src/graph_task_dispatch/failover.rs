@@ -48,6 +48,23 @@ const FAILOVER_REFUSED_ROLE: &str = "failover_refused";
 /// the error says how to log in (backlog 1115).
 const AUTH_FAILURE: &str = "auth_failure";
 
+/// `RokoError::Gateway` category of an attempt denied in a way no retry can
+/// change (backlog 1116). The error is non-retryable like
+/// [`PROVIDER_EXHAUSTED_CATEGORY`], so the task fails at once with how to
+/// recover instead of spending its retries on the same denial.
+pub(super) const PROVIDER_DENIED_CATEGORY: &str = "provider_denied";
+
+/// How to recover once the workspace's immune isolation ledger cannot be read
+/// and every agent is denied before dispatch (`isolation_state_unavailable`).
+const UNREADABLE_LEDGER_FIX: &str = "`roko safety controls` says why \
+     .roko/immune/agent-controls.json cannot be read; repair that file, or move it aside to drop \
+     its controls";
+
+/// How to recover from an attempt agent id the immune boundary refuses
+/// (`invalid_agent_identity`), which every attempt of the task shares.
+const INVALID_AGENT_ID_FIX: &str = "the plan or task id makes the attempt's agent id invalid \
+     (over 256 bytes, a control character, or secret-shaped text); rename it";
+
 /// Why the provider behind a model cannot take this dispatch.
 #[derive(Debug, Clone)]
 struct ProviderRefusal {
@@ -668,6 +685,58 @@ impl GraphTaskDispatcher {
     }
 }
 
+/// The non-retryable error for `dispatch`'s failed result when no retry can
+/// change it, naming the reason and how to recover (backlog 1116):
+/// - an immune preflight denial that holds for every attempt: the
+///   workspace's isolation ledger cannot be read
+///   (`isolation_state_unavailable`), or the attempt's agent id is not a
+///   valid provider identity (`invalid_agent_identity`);
+/// - a provider that rejected roko's credentials.
+///
+/// `None` for any other failure, which stays retryable. That includes
+/// `agent_isolated`: each attempt runs under its own agent id (decision
+/// 1107), so the next attempt is not isolated, and a quarantined output or
+/// the stream cap, which a new call can pass.
+pub(super) fn permanent_provider_denial(
+    dispatch: &crate::dispatch_v2::AgentResultDispatch,
+) -> Option<RokoError> {
+    let output = &dispatch.result.output;
+    let text = output.body.as_text().unwrap_or_default();
+    let class = crate::dispatch_v2::classify_provider_error(&text.to_ascii_lowercase());
+    let (denial, recovery) = if output.tag("immune_denied") == Some("true") {
+        let reason = output.tag("immune_reason").unwrap_or_default();
+        let recovery = match reason {
+            "isolation_state_unavailable" => UNREADABLE_LEDGER_FIX,
+            "invalid_agent_identity" => INVALID_AGENT_ID_FIX,
+            _ => return None,
+        };
+        (
+            format!("the immune boundary denied the attempt before any call ({reason})"),
+            recovery.to_string(),
+        )
+    } else if class == AUTH_FAILURE {
+        let key_env = dispatch
+            .target
+            .provider_config
+            .as_ref()
+            .and_then(|provider| provider.api_key_env.as_deref());
+        (
+            format!(
+                "provider `{}` rejected its credentials ({text})",
+                dispatch.target.provider_id
+            ),
+            credentials_fix(dispatch.target.provider_kind, key_env),
+        )
+    } else {
+        return None;
+    };
+    Some(RokoError::Gateway {
+        category: PROVIDER_DENIED_CATEGORY,
+        retryable: false,
+        message: format!("{denial}, which no retry can change: {recovery}"),
+    })
+}
+
 /// How to restore credentials a provider of `kind` rejected (backlog 1115): a
 /// CLI agent's login, which needs USER and HOME in its environment, or a valid
 /// key in the variable its config names.
@@ -872,13 +941,22 @@ exit 1
         dispatcher: Arc<GraphTaskDispatcher>,
         model_hint: &str,
     ) -> roko_graph::cells::TaskExecutorCell {
+        failover_cell_with_retries(dispatcher, model_hint, 2)
+    }
+
+    /// [`failover_cell`] with `max_retries` retries.
+    fn failover_cell_with_retries(
+        dispatcher: Arc<GraphTaskDispatcher>,
+        model_hint: &str,
+        max_retries: u32,
+    ) -> roko_graph::cells::TaskExecutorCell {
         let task = TaskDef {
             id: "T08".to_string(),
             title: "Implement with failover".to_string(),
             description: Some("Edit notes and write hello.txt".to_string()),
             model_hint: Some(model_hint.to_string()),
             timeout_secs: FIXTURE_HANG_GUARD_SECS,
-            max_retries: 2,
+            max_retries,
             ..make_task_def("focused")
         };
         let config = toml::Value::Table(toml::map::Map::from_iter([
@@ -891,7 +969,10 @@ exit 1
                 "timeout_secs".to_string(),
                 toml::Value::Integer(FIXTURE_HANG_GUARD_SECS as i64),
             ),
-            ("max_retries".to_string(), toml::Value::Integer(2)),
+            (
+                "max_retries".to_string(),
+                toml::Value::Integer(i64::from(max_retries)),
+            ),
             (
                 "task_def_json".to_string(),
                 toml::Value::String(serde_json::to_string(&task).expect("serialize task")),
@@ -1299,6 +1380,96 @@ exit 1
         assert!(message.contains("Then re-run."), "{message}");
         assert!(!message.contains("wait until"), "{message}");
         assert_eq!(invocations(&calls), 0, "no call reaches the provider");
+    }
+
+    /// backlog 1116: a denial no retry can change fails the task at once,
+    /// with how to recover, though five retries are left: a CLI that is not
+    /// logged in is called once, and an isolation ledger the immune boundary
+    /// cannot read denies one attempt before any call, and no other.
+    #[tokio::test]
+    async fn permanent_provider_denial_is_not_retried() {
+        let temp = tempdir().expect("tempdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        write_executable(
+            &claude,
+            &format!(
+                r#"#!/bin/sh
+cat >/dev/null
+echo called >> '{}'
+echo 'Not logged in. Please run /login' >&2
+exit 1
+"#,
+                calls.display()
+            ),
+        );
+        let config = Arc::new(failover_config(&claude, "http://127.0.0.1:9/v1", &[]));
+
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        ));
+        let error = failover_cell_with_retries(dispatcher, "claude-sonnet-4-6", 5)
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T08".to_string()),
+            )
+            .await
+            .expect_err("a CLI that is not logged in fails the task");
+        let RokoError::Gateway {
+            category,
+            retryable,
+            message,
+        } = &error
+        else {
+            panic!("expected a non-retryable gateway error, got {error:?}");
+        };
+        assert_eq!(*category, PROVIDER_DENIED_CATEGORY);
+        assert!(!retryable);
+        assert!(message.contains("rejected its credentials"), "{message}");
+        assert!(message.contains("run `claude /login`"), "{message}");
+        assert_eq!(invocations(&calls), 1, "the denial is not retried");
+
+        // An isolation ledger the immune boundary cannot read denies every
+        // attempt before its call. The new factory's registry does not hold
+        // the CLI's open circuit from above.
+        let immune_dir = temp.path().join(".roko/immune");
+        std::fs::create_dir_all(&immune_dir).expect("create immune dir");
+        std::fs::write(immune_dir.join("agent-controls.json"), "not json").expect("corrupt");
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        ));
+        let error = failover_cell_with_retries(Arc::clone(&dispatcher), "claude-sonnet-4-6", 5)
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T08".to_string()),
+            )
+            .await
+            .expect_err("an unreadable isolation ledger fails the task");
+        let RokoError::Gateway {
+            category,
+            retryable,
+            message,
+        } = &error
+        else {
+            panic!("expected a non-retryable gateway error, got {error:?}");
+        };
+        assert_eq!(*category, PROVIDER_DENIED_CATEGORY);
+        assert!(!retryable);
+        assert!(message.contains("isolation_state_unavailable"), "{message}");
+        assert!(message.contains("roko safety controls"), "{message}");
+        assert_eq!(invocations(&calls), 1, "no call reaches the provider");
+        assert_eq!(
+            dispatcher.task_attempts.lock().get("p-failover/T08"),
+            Some(&1)
+        );
     }
 
     /// gap-baab0a: Codex cannot honour a task's tool allowlist, so failover

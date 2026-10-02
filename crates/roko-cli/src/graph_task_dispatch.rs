@@ -1728,6 +1728,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
             if roko_agent::provider::error_classify::detect_attempt_timeout(&message) {
                 self.keep_timeout_retry(&spec.plan_id, &task.id, timeout_ms);
             }
+            // A denial no retry can change fails the task at once, saying how
+            // to recover (backlog 1116).
+            if let Some(denial) = failover::permanent_provider_denial(&dispatch) {
+                return Err(denial);
+            }
             return Err(RokoError::Agent {
                 backend: dispatch.target.provider_id,
                 message,

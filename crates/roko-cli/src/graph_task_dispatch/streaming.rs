@@ -415,7 +415,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── Settle cost and build outcome ────────────────────────────────
-        let (outcome, output_signals, verification) = match dispatch_result {
+        let (outcome, output_signals, verification, denial) = match dispatch_result {
             Ok(dispatch) => {
                 let cost_usd = f64::from(dispatch.result.usage.cost_usd);
                 let actual_cost = if cost_usd.is_finite() && cost_usd > 0.0 {
@@ -508,6 +508,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     _ => TaskDispatchOutcomeKind::Failed,
                 };
 
+                // A denial no retry can change fails the task at once
+                // (backlog 1116).
+                let denial = if dispatch.result.success || pinned_model_substituted.is_some() {
+                    None
+                } else {
+                    super::failover::permanent_provider_denial(&dispatch)
+                };
+
                 let output_signals = match &verification {
                     Some(Ok(verdict)) => {
                         let mut output = dispatch.result.output;
@@ -539,7 +547,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     output: output_signals.clone(),
                 };
 
-                (dispatch_outcome, output_signals, verification)
+                (dispatch_outcome, output_signals, verification, denial)
             }
             Err(error) => {
                 // No provider result reached the sinks that predate S01; the
@@ -601,6 +609,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
         if let Some(Err(error)) = verification {
             return Err(error);
+        }
+        if let Some(denial) = denial {
+            return Err(denial);
         }
         if outcome.outcome == TaskDispatchOutcomeKind::Failed {
             return Err(RokoError::Agent {

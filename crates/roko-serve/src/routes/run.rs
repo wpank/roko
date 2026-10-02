@@ -17,7 +17,7 @@ use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
 use crate::runtime::RunResult;
 use crate::sanitize::sanitize_agent_content;
-use crate::state::{AppState, OperationStatus, RunHandle};
+use crate::state::{AppState, OperationStatus, RunHandle, RunState};
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -63,6 +63,10 @@ async fn start_run(
 }
 
 /// `GET /api/run/:id/status` — check the status of a background run.
+///
+/// A run that has ended reports its verdict as its status: `succeeded`,
+/// `failed`, or `unverified` when no gate checked its output (G42). Only
+/// `succeeded` sets `success`.
 async fn run_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -72,12 +76,14 @@ async fn run_status(
         .get(&id)
         .ok_or_else(|| ApiError::not_found("run not found"))?;
 
-    let (status, error) = operation_status_parts(&handle.status);
+    let (status, error) = run_handle_state(handle);
+    let ended = !matches!(handle.status, OperationStatus::Running);
     let result = Json(json!({
         "id": handle.id,
         "prompt": handle.prompt,
-        "status": status,
-        "success": handle.result.as_ref().map(|result| result.success),
+        "status": status.as_str(),
+        "verdict": ended.then_some(status),
+        "success": handle.result.as_ref().map(|_| status == RunState::Succeeded),
         "output_text": handle.result.as_ref().and_then(|result| result.output_text.clone()),
         "error": error,
         "finished": handle.handle.is_finished(),
@@ -151,46 +157,48 @@ pub(crate) async fn spawn_background_run(
             let hub = &state_for_task.state_hub;
             match run_with_heartbeats(hub, agent_label, &plan_id, &task_id, run).await {
                 Ok(result) => {
+                    let verdict = run_verdict(&result);
                     record_run_result(&state_for_task, &run_id, result.clone()).await;
                     publish_run_completed(
                         &bus,
                         &run_id,
                         agent_target.as_deref(),
-                        result.success,
+                        verdict,
                         result.output_text.as_ref().map(|output| {
                             json!({
                                 "output_text": output,
                             })
                         }),
                     );
-                    // Rich TUI events on success
+                    // Rich TUI events on completion
                     {
                         use roko_core::DashboardEvent;
+                        use roko_core::dashboard_snapshot::{
+                            TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED,
+                        };
+                        let (outcome, mark) = match verdict {
+                            RunState::Succeeded => (TASK_OUTCOME_PASSED, "✓"),
+                            RunState::Unverified => (TASK_OUTCOME_UNVERIFIED, "?"),
+                            _ => ("failed", "✗"),
+                        };
                         let mut events = vec![
                             DashboardEvent::TaskCompleted {
                                 plan_id: plan_id.clone(),
                                 task_id: task_id.clone(),
-                                outcome: if result.success {
-                                    "success".into()
-                                } else {
-                                    "failed".into()
-                                },
+                                outcome: outcome.into(),
                             },
                             DashboardEvent::EpisodeRecorded {
                                 agent_id: agent_label.to_string(),
                                 role: "run".into(),
                                 episode_id: run_id.clone(),
-                                passed: result.success,
+                                passed: verdict == RunState::Succeeded,
                             },
                             DashboardEvent::EventLogEntry {
                                 timestamp_ms: run_now_millis(),
                                 event_type: "run_completed".into(),
                                 plan_id: plan_id.clone(),
                                 task_id: task_id.clone(),
-                                message: format!(
-                                    "{} {agent_label}: {task_id}",
-                                    if result.success { "✓" } else { "✗" }
-                                ),
+                                message: format!("{mark} {agent_label}: {task_id}"),
                             },
                         ];
                         if let Some(ref text) = result.output_text {
@@ -220,7 +228,7 @@ pub(crate) async fn spawn_background_run(
                         &bus,
                         &run_id,
                         agent_target.as_deref(),
-                        false,
+                        RunState::Failed,
                         Some(serde_json::json!({ "error": error_message })),
                     );
                     // Rich TUI events on failure
@@ -334,11 +342,30 @@ async fn record_run_failure(state: &AppState, run_id: &str, error_message: &str)
     }
 }
 
-fn operation_status_parts(status: &OperationStatus) -> (&'static str, Option<&str>) {
-    match status {
-        OperationStatus::Running => ("running", None),
-        OperationStatus::Completed { .. } => ("completed", None),
-        OperationStatus::Failed { error } => ("failed", Some(error.as_str())),
+/// The verdict of a run that returned `result` (G42): `failed` when the
+/// runtime says it failed or a gate rejected it, `unverified` when no gate
+/// checked its output, whatever the runtime says, as `roko run` ends work
+/// nothing can check (bug-1410e8), and `succeeded` only when gates passed it.
+fn run_verdict(result: &RunResult) -> RunState {
+    if !result.success || result.gate_results.iter().any(|gate| !gate.passed) {
+        RunState::Failed
+    } else if result.gate_results.is_empty() {
+        RunState::Unverified
+    } else {
+        RunState::Succeeded
+    }
+}
+
+/// The state a run handle reports, with the error of a run that failed:
+/// `running`, then the run's verdict ([`run_verdict`]) once it ends.
+fn run_handle_state(handle: &RunHandle) -> (RunState, Option<&str>) {
+    match &handle.status {
+        OperationStatus::Running => (RunState::Running, None),
+        OperationStatus::Completed { .. } => match &handle.result {
+            Some(result) => (run_verdict(result), None),
+            None => (RunState::Unverified, None),
+        },
+        OperationStatus::Failed { error } => (RunState::Failed, Some(error.as_str())),
     }
 }
 
@@ -367,9 +394,10 @@ fn publish_run_completed(
     bus: &crate::event_bus::EventBus<ServerEvent>,
     run_id: &str,
     agent_target: Option<&str>,
-    success: bool,
+    verdict: RunState,
     metadata: Option<Value>,
 ) {
+    let success = verdict == RunState::Succeeded;
     if let Some(agent_id) = agent_target {
         let raw_content = metadata
             .as_ref()
@@ -384,7 +412,7 @@ fn publish_run_completed(
             content: clean_content,
             done: true,
             metadata: Some(serde_json::json!({
-                "status": if success { "completed" } else { "failed" },
+                "status": verdict.as_str(),
                 "success": success,
                 "details": metadata.clone().unwrap_or(Value::Null),
             })),
@@ -404,6 +432,7 @@ fn publish_run_completed(
     bus.publish(ServerEvent::RunCompleted {
         run_id: run_id.to_owned(),
         success,
+        verdict: Some(verdict),
     });
 }
 
@@ -626,6 +655,58 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    /// G42: a run nothing checked is not a success. With a runtime that says
+    /// it succeeded but returns no gate results, `GET /api/run/{id}/status`
+    /// reports `unverified` with `success: false`, and the run's completion
+    /// event carries the same verdict.
+    #[tokio::test]
+    async fn api_run_without_gates_reports_unverified() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+
+        let run_id = spawn_background_run(&state, "say hi".into(), None, None).await;
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let Json(status) = run_status(State(Arc::clone(&state)), Path(run_id.clone()))
+                    .await
+                    .expect("the run is tracked");
+                if status["finished"] == true {
+                    break status;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run ends in time");
+
+        assert_eq!(status["status"], "unverified", "{status}");
+        assert_eq!(status["verdict"], "unverified", "{status}");
+        assert_eq!(status["success"], false, "{status}");
+        let completed = state
+            .event_bus
+            .replay_from(0)
+            .into_iter()
+            .find_map(|envelope| match envelope.payload {
+                ServerEvent::RunCompleted {
+                    success, verdict, ..
+                } => Some((success, verdict)),
+                _ => None,
+            })
+            .expect("the run's completion event");
+        assert_eq!(completed, (false, Some(RunState::Unverified)));
     }
 
     /// gap-8a1fb3: a one-shot run's agent reports how long it has worked while

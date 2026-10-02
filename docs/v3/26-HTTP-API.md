@@ -500,6 +500,11 @@ aliases (both are mounted).
 | POST | `/api/run` | Spawn a background run (202 Accepted) |
 | GET | `/api/run/{id}/status` | Poll run status |
 
+The status is `running`, then the run's verdict: `succeeded` when gates checked
+its output and passed it, `failed`, or `unverified` when no gate checked it. Only
+`succeeded` sets `success: true`, and the `run_completed` event carries the same
+`verdict`.
+
 ### 8.4 Run-Scoped Observability
 
 Hashed per-run indexes under `.roko/events-by-run/` and

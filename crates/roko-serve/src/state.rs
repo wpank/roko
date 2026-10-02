@@ -280,6 +280,48 @@ pub enum OperationStatus {
     },
 }
 
+/// The state of a run, in the words every run route reports: `GET
+/// /api/run/{id}/status`, `GET /api/plans/{id}/status` and `GET
+/// /api/runs/{run_id}/summary`. A run that has ended is `succeeded`,
+/// `failed`, `unverified` or `cancelled`, and only `succeeded` is a success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    /// Accepted, and waiting for the active run to end.
+    Queued,
+    /// Executing.
+    Running,
+    /// Ended, and the gates that checked its work passed it.
+    Succeeded,
+    /// Ended in an error, or a gate rejected its work.
+    Failed,
+    /// Ended, but no gate checked its work (G42), so it is not a success.
+    Unverified,
+    /// Cancelled before it ended.
+    Cancelled,
+}
+
+impl RunState {
+    /// The state's word, as the run routes report it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Unverified => "unverified",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Whether the run has ended.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        !matches!(self, Self::Queued | Self::Running)
+    }
+}
+
 /// A recorded template run outcome used by the metrics summary endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemplateRunRecord {

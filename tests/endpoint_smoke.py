@@ -164,8 +164,9 @@ def wait_for_run(base_url: str, run_id: str, deadline: float) -> dict[str, Any]:
             raise RuntimeError(f"run status returned HTTP {status}: {body}")
         last_body = body
         if body.get("finished") is True:
-            if body.get("status") != "completed" or body.get("success") is not True:
-                raise RuntimeError(f"run did not complete successfully: {body}")
+            # An ungated run ends "unverified" (G42); only a gated pass is "succeeded".
+            if body.get("status") not in ("succeeded", "unverified"):
+                raise RuntimeError(f"run did not finish cleanly: {body}")
             return body
         time.sleep(0.25)
     raise RuntimeError(f"run did not finish before timeout: {last_body}")

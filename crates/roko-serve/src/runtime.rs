@@ -27,7 +27,10 @@ pub struct RunResultUsage {
 /// Result of a single `run_once()` invocation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunResult {
-    /// Whether the overall run succeeded (all gates passed).
+    /// Whether the overall run succeeded (all gates passed). With no
+    /// `gate_results`, `true` only says the runtime finished: nothing
+    /// verified the output, and `POST /api/run` reports the run
+    /// `unverified`, not a success (G42).
     pub success: bool,
     /// Final text output produced by the run, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,7 +39,8 @@ pub struct RunResult {
     /// Gateway falls back to a character-based heuristic when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<RunResultUsage>,
-    /// Structured gate results collected during execution.
+    /// Structured gate results collected during execution. Empty means no
+    /// gate checked the output.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gate_results: Vec<RuntimeGateResult>,
 }

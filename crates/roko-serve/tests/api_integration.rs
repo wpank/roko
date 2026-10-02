@@ -284,7 +284,9 @@ async fn run_status_returns_terminal_output_text() {
         let (status, body) = get_json(&app, &format!("/api/run/{run_id}/status")).await;
         assert_eq!(status, StatusCode::OK);
         if body["finished"] == true {
-            assert_eq!(body["status"], "completed");
+            // No gate checked the output, so the run is not a success (G42).
+            assert_eq!(body["status"], "unverified");
+            assert_eq!(body["success"], false);
             assert_eq!(body["output_text"], "test runtime output");
             return;
         }

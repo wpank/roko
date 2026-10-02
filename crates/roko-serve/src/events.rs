@@ -266,7 +266,14 @@ pub enum ServerEvent {
     },
 
     /// A one-shot run completed.
-    RunCompleted { run_id: String, success: bool },
+    RunCompleted {
+        run_id: String,
+        success: bool,
+        /// The run's verdict: `succeeded`, `failed`, or `unverified` when no
+        /// gate checked its output (G42). Only `succeeded` sets `success`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verdict: Option<crate::state::RunState>,
+    },
 
     /// A generic operation was started.
     OperationStarted { op_id: String, kind: String },
@@ -1283,6 +1290,7 @@ mod tests {
             ServerEvent::RunCompleted {
                 run_id: "r1".into(),
                 success: true,
+                verdict: Some(crate::state::RunState::Succeeded),
             },
             ServerEvent::HeartbeatReceived {
                 sender_id: "s".into(),

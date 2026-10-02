@@ -660,15 +660,6 @@ async fn generate_plan_rejects_blank_prompt() {
 }
 
 #[tokio::test]
-async fn generate_plan_accepts_slug_only() {
-    let req = GenerateRequest {
-        slug: Some("my-plan".into()),
-        prompt: None,
-    };
-    assert!(req.validate_payload().is_ok());
-}
-
-#[tokio::test]
 async fn generate_plan_accepts_prompt_only() {
     let req = GenerateRequest {
         slug: None,

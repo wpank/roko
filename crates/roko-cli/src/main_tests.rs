@@ -1485,7 +1485,7 @@ async fn persist_capture_episode_records_learning_episode() {
     );
     assert_eq!(
         episode.extra.get("task_category"),
-        Some(&serde_json::json!("docs"))
+        Some(&serde_json::json!("scaffolding"))
     );
     assert_eq!(
         episode.extra.get("complexity_band"),

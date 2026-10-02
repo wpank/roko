@@ -9,6 +9,11 @@
 //! pricing, so the TUI and the learning layer stop re-implementing substring
 //! matchers. Pricing rows come from [`BUILTIN_PRICING`].
 
+use std::collections::HashSet;
+use std::sync::OnceLock;
+
+use parking_lot::Mutex;
+
 use crate::agent::{ModelTier, ProviderKind};
 
 /// A single entry in the built-in model registry.
@@ -526,7 +531,9 @@ pub const DEFAULT_CACHE_READ_MULTIPLIER: f64 = 0.1;
 pub const DEFAULT_CACHE_WRITE_MULTIPLIER: f64 = 1.25;
 
 /// Price of one Perplexity Search API request (`POST /search`), which runs
-/// no model and reports no usage: a flat $5 per 1,000 requests.
+/// no model and reports no usage: a flat $5 per 1,000 requests, the rate
+/// `roko_agent::perplexity::search` documents. Not yet checked against
+/// <https://docs.perplexity.ai/getting-started/pricing>.
 pub const PERPLEXITY_SEARCH_REQUEST_USD: f64 = 0.005;
 
 /// Look up pricing for a model slug.
@@ -569,6 +576,25 @@ pub fn is_snapshot_of(slug: &str, key: &str) -> bool {
         matches!(first, "latest" | "preview") || (first.len() >= 3 && digits(first))
     });
     snapshot && parts.all(digits)
+}
+
+/// Log, once per slug, that `model_slug` has no price, so its usage is
+/// recorded with an unknown cost rather than priced at another model's
+/// rates (gap-ad0d39). Every cost table logs through it, so a model is
+/// reported once.
+pub fn warn_unpriced_model(model_slug: &str) {
+    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let first = WARNED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .insert(model_slug.to_string());
+    if first {
+        tracing::warn!(
+            model = model_slug,
+            "no price for this model: its usage is recorded with an unknown cost; set \
+             cost_input_per_m and cost_output_per_m on its [models.*] entry"
+        );
+    }
 }
 
 /// The cheapest built-in model of `kind` by input price: the model a probe

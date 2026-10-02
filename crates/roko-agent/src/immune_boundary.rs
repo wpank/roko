@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use roko_core::{
     AnomalyScore, Body, ContentHash, Context, ImmunePipeline, ImmunePipelineResult,
@@ -362,6 +363,7 @@ impl ImmuneScreenedAgent {
                 usage: original.usage,
                 usage_obs: original.usage_obs.clone(),
                 success: false,
+                ttft_ms: original.ttft_ms,
             },
         }
     }
@@ -386,20 +388,27 @@ impl ImmuneScreenedAgent {
 
     /// Shared inner loop: buffers provider stream events, counts against the
     /// limits, and forwards to the live output channel when one is present.
+    /// The first model output on the stream sets the result's
+    /// [`AgentResult::ttft_ms`], unless the provider measured its own.
     ///
     /// Returns `(AgentResult, stream_limit_exceeded)`.
     async fn drive_streaming_inner(&self, input: &Signal, ctx: &Context) -> (AgentResult, bool) {
-        let (buffer_tx, mut buffer_rx) = mpsc::channel(1);
+        let (buffer_tx, mut buffer_rx) = mpsc::channel::<StreamEvent>(1);
         let live_sink = self
             .live_output
             .as_ref()
             .map(|lo| (lo.sink.clone(), lo.trusted));
         let tool_step_root = self.tool_step_root.as_deref();
+        let started = Instant::now();
         let collect = async move {
             let mut chunk_count = 0_usize;
             let mut byte_count = 0_usize;
             let mut exceeded = false;
+            let mut first_output = None;
             while let Some(event) = buffer_rx.recv().await {
+                if first_output.is_none() && is_model_output(&event.kind) {
+                    first_output = Some(started.elapsed());
+                }
                 chunk_count = chunk_count.saturating_add(1);
                 byte_count = byte_count.saturating_add(stream_event_bytes(&event));
                 exceeded |= chunk_count > MAX_PROVIDER_STREAM_CHUNKS
@@ -435,10 +444,14 @@ impl ImmuneScreenedAgent {
                     }
                 }
             }
-            exceeded
+            (exceeded, first_output)
         };
-        let (result, exceeded) =
+        let (mut result, (exceeded, first_output)) =
             tokio::join!(self.inner.run_streaming(input, ctx, buffer_tx), collect);
+        if result.ttft_ms.is_none() {
+            result.ttft_ms =
+                first_output.map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+        }
         (result, exceeded)
     }
 
@@ -851,6 +864,20 @@ impl Agent for ImmuneScreenedAgent {
         }
         screened
     }
+}
+
+/// Whether `kind` is model output, whose first arrival ends a call's time to
+/// first token: text, reasoning or a tool call (gap-7a8474). Usage, the end
+/// of a turn and a tool's own result are not.
+fn is_model_output(kind: &StreamEventKind) -> bool {
+    matches!(
+        kind,
+        StreamEventKind::TextDelta(_)
+            | StreamEventKind::ReasoningDelta(_)
+            | StreamEventKind::ToolCallStart { .. }
+            | StreamEventKind::ToolCallDelta { .. }
+            | StreamEventKind::ToolCallEnd { .. }
+    )
 }
 
 fn stream_event_bytes(event: &StreamEvent) -> usize {
@@ -1564,6 +1591,82 @@ mod tests {
         assert!(
             matches!(&chunks[0].kind, StreamEventKind::Done { finish_reason } if finish_reason.starts_with("error:"))
         );
+    }
+
+    /// Streams a usage update, then text after `delay`, and returns the time
+    /// to first token it measured itself, if any.
+    struct TimedStreamingAgent {
+        delay: std::time::Duration,
+        own_ttft_ms: Option<u64>,
+    }
+
+    #[async_trait::async_trait]
+    impl Agent for TimedStreamingAgent {
+        async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
+            AgentResult::ok(
+                input
+                    .derive(Kind::AgentOutput, Body::text("timed output"))
+                    .build(),
+            )
+        }
+
+        fn name(&self) -> &str {
+            "timed-stream-agent"
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        async fn run_streaming(
+            &self,
+            input: &Signal,
+            _ctx: &Context,
+            event_tx: mpsc::Sender<StreamEvent>,
+        ) -> AgentResult {
+            let usage = crate::usage::Usage::zero();
+            let _ = event_tx
+                .send(StreamEvent::now(StreamEventKind::Usage(usage)))
+                .await;
+            tokio::time::sleep(self.delay).await;
+            let _ = event_tx
+                .send(StreamEvent::now(StreamEventKind::TextDelta(
+                    "timed output".to_string(),
+                )))
+                .await;
+            let output = input
+                .derive(Kind::AgentOutput, Body::text("timed output"))
+                .build();
+            AgentResult {
+                ttft_ms: self.own_ttft_ms,
+                ..AgentResult::ok(output)
+            }
+        }
+    }
+
+    /// gap-7a8474: the boundary times a stream's first model output, not a
+    /// usage update before it, as the call's time to first token, and keeps
+    /// one the provider measured itself.
+    #[tokio::test]
+    async fn streamed_first_output_sets_time_to_first_token() {
+        let run = |own_ttft_ms: Option<u64>| async move {
+            let boundary = ImmuneScreenedAgent::with_store(
+                Box::new(TimedStreamingAgent {
+                    delay: std::time::Duration::from_millis(20),
+                    own_ttft_ms,
+                }),
+                "timed-stream-agent",
+                Arc::new(MemorySubstrate::new()),
+            );
+            let (tx, _rx) = mpsc::channel(8);
+            boundary.run_streaming(&prompt(), &Context::now(), tx).await
+        };
+
+        let timed = run(None).await;
+        assert!(timed.success);
+        let ttft_ms = timed.ttft_ms.expect("the stream showed model output");
+        assert!(ttft_ms >= 20, "{ttft_ms} ms");
+        assert_eq!(run(Some(7)).await.ttft_ms, Some(7));
     }
 
     #[cfg(unix)]

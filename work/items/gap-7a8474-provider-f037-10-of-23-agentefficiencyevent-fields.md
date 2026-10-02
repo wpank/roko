@@ -9,12 +9,12 @@ size = "M"
 goal = "learning"
 subsystem = ["roko-learn/efficiency"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "f8906b3c0"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F037"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F037"
-anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::emit_feedback", "crates/roko-learn/src/efficiency.rs::AgentEfficiencyEvent", "crates/roko-core/src/chat_types.rs::Usage::fill_cost_from_pricing", "crates/roko-cli/src/dispatch_v2.rs::dispatch_events_from_result", "crates/roko-agent/src/safety/contract.rs::AgentContract"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::emit_feedback", "crates/roko-learn/src/efficiency.rs::AgentEfficiencyEvent", "crates/roko-core/src/chat_types.rs::Usage::fill_cost_from_pricing", "crates/roko-cli/src/dispatch_v2.rs::dispatch_events_from_result", "crates/roko-agent/src/safety/contract.rs::AgentContract", "crates/roko-agent/src/agent.rs::AgentResult", "crates/roko-agent/src/immune_boundary.rs::is_model_output"]
 links = { depends_on = [], blocks = [], related = ["bug-f9ae3e"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -155,6 +155,16 @@ and latency are invisible in `roko learn efficiency` and in serve's projections 
 - Left: step 4, `time_to_first_token_ms`. Nothing reachable from `emit_feedback` timestamps the first output, and
   option A needs the provider adapters in roko-agent to report it. The verify command fails on that pattern until
   it lands.
+- 2026-10-02 (wk-settle): step 4 implemented on work/bug-f9ae3e (option A); cargo verification deferred to the
+  batch check. `AgentResult` gains `ttft_ms`: ms from the call's start to its first streamed model output. The
+  provider boundary every provider's stream passes through (`ImmuneScreenedAgent::drive_streaming_inner`, for the
+  API tool loop, the Claude CLI and the Codex CLI alike) times the first text, reasoning or tool-call event, not a
+  usage update, unless the provider set its own. Since bug-3a3b0f every Graph attempt streams through it, and
+  `emit_feedback` writes `dispatch.result.ttft_ms.unwrap_or(0)` (0 = unknown). The verify command passes.
+  Tests: `streamed_first_output_sets_time_to_first_token` (roko-agent),
+  `cli_attempt_records_its_time_to_first_token` (fake Claude CLI that answers after 100 ms, end to end).
+- The S01 verdict's `first_token_at` stays unset (`ttft_source = "unavailable"`): the boundary measures from its own
+  call start, not as an epoch time, so it can't be placed on the attempt's clock without a further field.
 
 ## Original notes
 

@@ -9,9 +9,9 @@ size = "L"
 goal = "core"
 subsystem = ["roko-graph"]
 created = 2026-09-21
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "f8906b3c0"
 source = "tmp/archive/CONSOLIDATED-BACKLOG-2026-09-23.md#P1-GE-1 (Subsystem: Graph Engine)"
 discovered_from = "audit:tmp/archive/CONSOLIDATED-BACKLOG-2026-09-23.md#P1-GE-1 (Subsystem: Graph Engine)"
 anchors = ["crates/roko-cli/src/graph_checkpoint.rs::prepare_graph_checkpoint", "crates/roko-cli/src/graph_checkpoint.rs::resume_checkpoint", "crates/roko-cli/src/graph_checkpoint.rs::GraphCheckpointManifest", "crates/roko-cli/src/graph_checkpoint.rs::invalidate_unverified_activities", "crates/roko-cli/src/graph_checkpoint.rs::write_manifest_atomic", "crates/roko-cli/src/graph_checkpoint.rs::write_cost_ledger_atomic", "crates/roko-graph/src/replay.rs::ActivityReplayer::load_scoped", "crates/roko-graph/src/replay.rs::retain_recorded_activities", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
@@ -179,6 +179,16 @@ spend, is set aside visibly and does not block resume.
   - One parser for `recorded_gate_verdicts`, `recorded_nodes`, `recorded_outputs` and `load_scoped` (step 5).
   - `resume_selects_single_immutable_generation` and the repeated-resume test (step 7).
   - Hot Graph resume (`hot.rs`) still fails closed on a torn line.
+- 2026-10-02 (wk-tamper): implemented on work/gap-7147bb; cargo verification deferred to the batch check. Step 1
+  of the remainder, the roko-graph half (Plan steps 4 and 5). `replay::activity_records` is the one parser of a
+  durable Activity log: each record with its line number, blank lines skipped, and an unparseable line or a record
+  of another graph or run an `InvalidData` error. `ActivityReplayer::load_scoped` reads through it, and
+  `ActivityReplayer::from_records` leaves out records refused by line number, so a resume can refuse a record
+  without rewriting the log. `ActivityRecorder::with_commit_hook` hands the host each record's bytes once they are
+  synced, and `set_aside_activities_after` sets aside a log's bytes past a committed length. Tests in `replay.rs`:
+  `activity_records_number_every_line_and_fail_closed`, `records_refused_by_line_stay_in_the_log_and_never_replay`,
+  `the_commit_hook_sees_each_durable_record`, `set_aside_after_keeps_exactly_the_committed_prefix`. The roko-cli
+  half (the generation stamp, the readers and the item's own tests) is the next step.
 
 ## Original notes
 

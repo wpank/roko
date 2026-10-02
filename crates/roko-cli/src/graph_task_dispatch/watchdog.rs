@@ -23,7 +23,8 @@
 //! A plan run that outlives its interrupt's drain asks its attempts to stop
 //! ([`WatchedAttempt::stop`]): `run_watched` drops the call within
 //! [`STOP_CHECK_INTERVAL`], and the attempt settles as cancelled with the usage
-//! its progress saw stream (bug-2b1ddc).
+//! its progress saw stream (bug-2b1ddc). The operator can stop one task's
+//! attempt the same way ([`OperatorStops`], gap-c002bb); it is not retried.
 //!
 //! Silence counts only while the agent waits on its model:
 //!
@@ -209,6 +210,7 @@ impl InterruptedCall {
             result: roko_agent::AgentResult::fail(output).with_usage_obs(usage_obs),
             events: Vec::new(),
             tool_calls: Vec::new(),
+            tool_policy: None,
         };
         (dispatch, self.call.failover)
     }
@@ -433,6 +435,8 @@ pub(super) enum AttemptInterrupted {
     Restarted(ConductorRestart),
     /// Its plan run is stopping (an interrupt the attempt outlived).
     Stopped,
+    /// The operator stopped its task ([`OperatorStops::stop`]).
+    StoppedByOperator,
 }
 
 impl AttemptInterrupted {
@@ -456,6 +460,10 @@ impl AttemptInterrupted {
                 "agent for {}/{} stopped: its plan run is stopping",
                 attempt.plan_id, attempt.task_id
             )),
+            Self::StoppedByOperator => RokoError::cancelled(format!(
+                "agent for {}/{} stopped by the operator",
+                attempt.plan_id, attempt.task_id
+            )),
         }
     }
 
@@ -463,7 +471,9 @@ impl AttemptInterrupted {
     pub(super) const fn outcome(&self) -> TaskDispatchOutcomeKind {
         match self {
             Self::Stalled(_) => TaskDispatchOutcomeKind::TimedOut,
-            Self::Restarted(_) | Self::Stopped => TaskDispatchOutcomeKind::Cancelled,
+            Self::Restarted(_) | Self::Stopped | Self::StoppedByOperator => {
+                TaskDispatchOutcomeKind::Cancelled
+            }
         }
     }
 }
@@ -476,8 +486,8 @@ impl AttemptInterrupted {
 /// - A stall is a timeout, whatever the error's text says (bug-4c553b): the
 ///   agent's once `progress` shows it reported anything, the provider's
 ///   before.
-/// - A cancellation, a stopping plan run's included, teaches nothing
-///   (bug-2b1ddc).
+/// - A cancellation, a stopping plan run's or the operator's included,
+///   teaches nothing (bug-2b1ddc).
 /// - Anything else, a conductor restart included, is a provider failure.
 pub(super) fn failed_call_settlement(
     interrupted: Option<&AttemptInterrupted>,
@@ -489,9 +499,12 @@ pub(super) fn failed_call_settlement(
             &error.to_string(),
             progress.is_some_and(AttemptProgress::reported_progress),
         ),
-        Some(AttemptInterrupted::Restarted(_) | AttemptInterrupted::Stopped) | None => {
-            Settlement::provider_call_error(error)
-        }
+        Some(
+            AttemptInterrupted::Restarted(_)
+            | AttemptInterrupted::Stopped
+            | AttemptInterrupted::StoppedByOperator,
+        )
+        | None => Settlement::provider_call_error(error),
     }
 }
 
@@ -630,8 +643,9 @@ impl GraphTaskDispatcher {
     /// heartbeat every [`AGENT_HEARTBEAT_INTERVAL`] so the dashboard's
     /// elapsed-time counter stays live, and checking `watch` every
     /// [`STALL_CHECK_INTERVAL`]. An attempt that stalls, that the conductor
-    /// restarts through `supervised`, or whose plan run asks it to stop
-    /// ([`WatchedAttempt::stop`]) returns [`AttemptInterrupted`]; `dispatch`
+    /// restarts through `supervised`, whose plan run asks it to stop
+    /// ([`WatchedAttempt::stop`]), or whose task the operator stops
+    /// ([`OperatorStops`]) returns [`AttemptInterrupted`]; `dispatch`
     /// is dropped with it, which cancels the provider call, and `progress`
     /// then gives the call and what it streamed
     /// ([`AttemptProgress::interrupted_call`]), with or without a `watch`
@@ -661,13 +675,21 @@ impl GraphTaskDispatcher {
                 None => std::future::pending().await,
             }
         };
-        tokio::pin!(dispatch, restarted);
+        let operator_stop = self
+            .operator_stops
+            .register(attempt.plan_id, attempt.task_id);
+        let stopped_by_operator = operator_stop.stopped();
+        tokio::pin!(dispatch, restarted, stopped_by_operator);
         loop {
             tokio::select! {
                 result = &mut dispatch => return Ok(result),
                 restart = &mut restarted => {
                     progress.interrupted();
                     return Err(AttemptInterrupted::Restarted(restart));
+                }
+                () = &mut stopped_by_operator => {
+                    progress.interrupted();
+                    return Err(AttemptInterrupted::StoppedByOperator);
                 }
                 _ = heartbeat.tick() => {
                     if let Some(tui) = &self.tui_bridge {
@@ -1080,6 +1102,65 @@ exec sleep 60
             })
             .count();
         assert_eq!(restarts, 2);
+    }
+
+    /// gap-c002bb: the operator's stop of a running task ends its attempt at
+    /// once, and the task fails as stopped by the operator without a retry.
+    #[tokio::test]
+    async fn an_operator_stop_ends_the_running_attempt_without_a_retry() {
+        let temp = tempdir().expect("tempdir");
+        let launches = temp.path().join("launches.log");
+        let script = silent_provider_script(temp.path(), &launches);
+        let mut config = watched_config(&script);
+        // Nothing but the operator ends the attempt.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        ));
+        let stops = dispatcher.operator_stops();
+        // Stop the task once its agent has launched.
+        let operator = tokio::spawn({
+            let launches = launches.clone();
+            async move {
+                for _ in 0..400 {
+                    let launched =
+                        std::fs::read_to_string(&launches).is_ok_and(|log| !log.is_empty());
+                    if launched && stops.stop("p1", "T01") {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                false
+            }
+        });
+
+        let started = Instant::now();
+        let error = stalled_task_cell(dispatcher, 1)
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T01".to_string()),
+            )
+            .await
+            .expect_err("a stopped task fails");
+
+        assert!(
+            operator.await.expect("operator task"),
+            "the attempt never ran"
+        );
+        assert!(matches!(error, RokoError::Cancelled(_)), "{error}");
+        assert!(
+            error.to_string().contains("stopped by the operator"),
+            "{error}"
+        );
+        assert!(started.elapsed() < secs(30), "{:?}", started.elapsed());
+        let launched = std::fs::read_to_string(&launches).expect("launch log");
+        assert_eq!(launched.lines().count(), 1, "no retry after the stop");
     }
 
     /// The streaming path cancels a stalled attempt the same way and ends it

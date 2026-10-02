@@ -1608,13 +1608,14 @@ fn server_event_to_observable(
             plan_id,
             task_id,
             gate,
-            rung: _,
+            rung,
             passed,
         } => {
+            let gate = gate_label_with_rung(gate, *rung);
             let verdict = if *passed {
-                Verdict::pass(gate.clone())
+                Verdict::pass(gate)
             } else {
-                Verdict::fail(gate.clone(), "gate failed")
+                Verdict::fail(gate, "gate failed")
             };
             (
                 ObservableEvent::VerifyPostResult {
@@ -1703,12 +1704,12 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             plan_id,
             task_id,
             gate,
-            rung: _,
+            rung,
             passed,
         } => Some(DashboardEvent::GateResult {
             plan_id: plan_id.clone(),
             task_id: task_id.clone(),
-            gate: gate.clone(),
+            gate: gate_label_with_rung(gate, *rung),
             passed: *passed,
             output_text: None,
         }),
@@ -1810,13 +1811,14 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
         ServerEvent::Error { message } => Some(DashboardEvent::Error {
             message: message.clone(),
         }),
-        // Map one-shot runs as ephemeral plans so the TUI's plan/task views show them.
+        // Map one-shot runs as ephemeral plans so the TUI's plan/task views
+        // show them: the plan the run's own task and agent events name.
         ServerEvent::RunStarted { run_id, .. } => Some(DashboardEvent::PlanStarted {
-            plan_id: format!("run-{run_id}"),
+            plan_id: run_plan_id(run_id),
             tasks_total: 0,
         }),
         ServerEvent::RunCompleted { run_id, success } => Some(DashboardEvent::PlanCompleted {
-            plan_id: format!("run-{run_id}"),
+            plan_id: run_plan_id(run_id),
             success: *success,
         }),
         // Map agent lifecycle events from the supervisor.
@@ -2019,6 +2021,38 @@ fn dashboard_model_label(model: &str, fallback: &str) -> String {
     }
 }
 
+/// The dashboard plan of the one-shot run `run_id`: `run-` and the first
+/// eight characters of its id. The run's task and agent events and the plan
+/// start and end the bridge makes of its `RunStarted` and `RunCompleted` name
+/// the same plan (gap-8a1fb3).
+pub(crate) fn run_plan_id(run_id: &str) -> String {
+    format!("run-{}", run_id.get(..8).unwrap_or(run_id))
+}
+
+/// The dashboard label of a gate result that `ServerEvent::GateResult` sends
+/// with its rung apart: the Graph path's `verify[i:phase]` form, so the rung
+/// survives the bridge (gap-8a1fb3). A label that already names its rung
+/// keeps it.
+fn gate_label_with_rung(gate: &str, rung: u32) -> String {
+    if gate_label_rung(gate).is_some() {
+        gate.to_string()
+    } else if gate.is_empty() {
+        format!("verify[{rung}]")
+    } else {
+        format!("verify[{rung}:{gate}]")
+    }
+}
+
+/// The rung a gate label names, as in `verify[3]` or `verify[3:test]`.
+fn gate_label_rung(gate: &str) -> Option<u32> {
+    let (_, index) = gate.strip_suffix(']')?.rsplit_once('[')?;
+    index
+        .split_once(':')
+        .map_or(index, |(rung, _)| rung)
+        .parse()
+        .ok()
+}
+
 /// Bridge orchestrator events (`StateHub` -> `EventBus`) so SSE/WS clients
 /// see gate results, task completions, and other events from `roko plan run`.
 ///
@@ -2152,7 +2186,7 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
             plan_id: plan_id.clone(),
             task_id: task_id.clone(),
             gate: gate.clone(),
-            rung: 0,
+            rung: gate_label_rung(gate).unwrap_or(0),
             passed: *passed,
         }),
         DashboardEvent::PhaseTransition { plan_id, from, to } => {
@@ -3471,6 +3505,74 @@ mod plan_set_event_mapping_tests {
             assert_eq!(server_event_to_dashboard(&server), Some(dashboard));
         }
     }
+
+    /// gap-8a1fb3: a gate result's rung crosses both bridges. A Graph run's
+    /// label names it (`verify[i:phase]`); a server gate result sends it
+    /// apart, and the dashboard gets it in the same label form.
+    #[test]
+    fn gate_rung_survives_both_bridges() {
+        let graph = roko_core::DashboardEvent::GateResult {
+            plan_id: "p1".into(),
+            task_id: "T1".into(),
+            gate: "verify[3:test]".into(),
+            passed: false,
+            output_text: None,
+        };
+        let server = dashboard_event_to_server(&graph).expect("reaches the server stream");
+        assert!(
+            matches!(server, ServerEvent::GateResult { rung: 3, .. }),
+            "{server:?}"
+        );
+        assert_eq!(server_event_to_dashboard(&server), Some(graph));
+
+        let named = ServerEvent::GateResult {
+            plan_id: "p1".into(),
+            task_id: "T1".into(),
+            gate: "compile".into(),
+            rung: 2,
+            passed: true,
+        };
+        let Some(roko_core::DashboardEvent::GateResult { gate, .. }) =
+            server_event_to_dashboard(&named)
+        else {
+            panic!("a server gate result reaches the dashboard");
+        };
+        assert_eq!(gate, "verify[2:compile]");
+        assert_eq!(gate_label_rung(&gate), Some(2));
+        assert_eq!(gate_label_rung("verify[0]"), Some(0));
+        assert_eq!(gate_label_rung("rung[compile]"), None);
+    }
+
+    /// gap-8a1fb3: a one-shot run starts and ends the plan its task and agent
+    /// events name, so that plan completes when the run does.
+    #[test]
+    fn one_shot_run_starts_and_ends_the_plan_its_events_name() {
+        let run_id = "0123abcd-4567-89ef-0123-456789abcdef";
+        let started = ServerEvent::RunStarted {
+            run_id: run_id.into(),
+            prompt: "say hi".into(),
+        };
+        let completed = ServerEvent::RunCompleted {
+            run_id: run_id.into(),
+            success: true,
+        };
+        assert_eq!(run_plan_id(run_id), "run-0123abcd");
+        assert_eq!(
+            server_event_to_dashboard(&started),
+            Some(roko_core::DashboardEvent::PlanStarted {
+                plan_id: run_plan_id(run_id),
+                tasks_total: 0,
+            })
+        );
+        assert_eq!(
+            server_event_to_dashboard(&completed),
+            Some(roko_core::DashboardEvent::PlanCompleted {
+                plan_id: run_plan_id(run_id),
+                success: true,
+            })
+        );
+        assert_eq!(run_plan_id("r1"), "run-r1");
+    }
 }
 
 /// Discover plugin manifests in the standard search paths and register any
@@ -3931,7 +4033,7 @@ mod tests {
                 }
             ) if lens == "verify-recorder"
                 && block == "task-a"
-                && verdict == &Verdict::pass("compile")
+                && verdict == &Verdict::pass("verify[2:compile]")
                 && evidence.is_empty()
         ));
         assert_eq!(

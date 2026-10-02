@@ -8,16 +8,16 @@ severity = "p2"
 goal = "visibility"
 subsystem = ["roko-cli/graph-execution", "roko-serve/events"]
 created = 2026-09-28
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "f8906b3c0"
 source = "tmp/portal-audit/01-FINDINGS.md#B4"
 discovered_from = "doc:tmp/portal-audit/01-FINDINGS.md"
 anchors = ["crates/roko-serve/src/lib.rs:1635", "crates/roko-core/src/dashboard_snapshot.rs::DashboardEvent", "crates/roko-cli/src/runner/tui_bridge.rs::TuiBridge"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "sed -n '/pub enum DashboardEvent/,/^}/p' crates/roko-core/src/dashboard_snapshot.rs | sed -n '/GateResult {/,/}/p' | grep -q rung && ! grep -q 'rung: _' crates/roko-serve/src/lib.rs && sed -n '/TaskStarted {/,/}/p' crates/roko-core/src/dashboard_snapshot.rs | grep -q '_ms'"
+command = "! grep -q 'rung: _' crates/roko-serve/src/lib.rs && cargo test -p roko-core --lib task_state_carries_start_and_end_times && cargo test -p roko-serve --lib -- data_frames_carry_the_time_the_hub_published_their_event gate_rung_survives_both_bridges one_shot_run_starts_and_ends_the_plan_its_events_name one_shot_run_agent_beats_while_it_works_then_completes && cd apps/portal && npx vitest run src/stores/dashboard.test.ts"
 +++
 
 On the Graph path no run-completion event is emitted (`run_duration_ms` stays null) and agent heartbeats have no caller (`AgentState.elapsed_ms` stays 0).
@@ -46,3 +46,19 @@ Re-verified 2026-09-29 at d9e79e9d8: run_completed (outcome, duration_ms) and ag
     (`verify[i]`, `verify[i:phase]`), so only serve's `ServerEvent::GateResult` bridge (`lib.rs:1701`, `rung: _`)
     drops one. Either way the portal must read the new data; DAG edges stay with the
     `GET /api/plans/{id}/tasks` prefetch by choice (portal audit B4).
+- 2026-10-02 (wk-streams): the cheaper route, implemented on work/gap-b35a57; cargo and vitest deferred to the gate.
+  - Times: each `/api/events` data frame now carries `ts_millis`, the time the hub published the event, and the
+    portal's store folds each event at that time, so replayed events keep their own times (`routes/sse.rs`,
+    `stores/dashboard.ts`). Gate duration is not an event field: it is the gap between the stamped
+    `gate_rung_started` and `gate_result` frames.
+  - Rung: serve's bridges no longer drop it. A `ServerEvent::GateResult` reaches the dashboard and Lens as
+    `verify[rung:gate]`, the Graph path's label form, and a Graph label's rung reaches `ServerEvent::GateResult.rung`
+    (`lib.rs`).
+  - Run completion and heartbeats were already on every Graph run. The gap was serve's one-shot runs (`POST /api/run`,
+    agent messages): their agent never completed or reported elapsed time, and the bridge started and ended a
+    `run-<uuid>` plan while the run's task sat in `run-<first 8>`. They now beat every 5 s, complete, and share one
+    plan. A one-shot run doesn't publish `RunCompleted`: that event ends every running plan, including concurrent
+    plan runs. The task id is now scrubbed before the hub persists it.
+  - Verify re-scoped (coordinator, 2026-10-02) to what this route proves. The old one needed new fields on the
+    `GateResult`/`TaskStarted` variants (about 95 sites), and its rung clause passed on a doc comment ("forwarded
+    from the rung"). DAG edges stay with the `GET /api/plans/{id}/tasks` prefetch by choice.

@@ -284,7 +284,7 @@ pub enum CancelSource {
 // ─── ToolOutcome ──────────────────────────────────────────────────────────
 
 /// Terminal record of one completed tool call — the reward signal for the
-/// [`crate::tool::FormatBandit`] and the DSPy / ToolRL optimizers.
+/// DSPy / ToolRL optimizers.
 ///
 /// `reward` composes success with normalized latency, cost, and recovery
 /// attempts. See [`crate::tool::metrics::compute_reward`] for the default
@@ -444,7 +444,7 @@ pub enum ToolTraceEvent {
         /// Event timestamp.
         at_ms: i64,
     },
-    /// Format bandit demoted from one arm to another.
+    /// The tool format was demoted to another in the model's fallback chain.
     Demotion {
         /// Format before demotion.
         from: ToolFormat,

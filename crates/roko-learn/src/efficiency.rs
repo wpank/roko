@@ -1,4 +1,4 @@
-//! Agent efficiency events, prompt scoring, and role cost profiles.
+//! Agent efficiency events and role cost profiles.
 //!
 //! This module implements the efficiency monitoring pipeline described in
 //! `tmp/mori-agents/22-efficiency-monitoring.md`. It bridges per-agent-turn
@@ -7,8 +7,6 @@
 //! - [`AgentEfficiencyEvent`] — rich per-turn cost and quality snapshot
 //! - [`PromptSectionMeta`] — per-section token attribution
 //! - [`RoleCostProfile`] — aggregate cost profile per agent role
-//! - [`PromptEfficiencyScore`] and [`Grade`] — A-D letter grading for
-//!   prompt assembly efficiency
 //!
 //! # Design
 //!
@@ -157,7 +155,8 @@ pub struct AgentEfficiencyEvent {
     /// Alias for wall-clock task duration in milliseconds.
     #[serde(default)]
     pub duration_ms: u64,
-    /// Time to first token in milliseconds.
+    /// Time to first token in milliseconds: from the start of the provider
+    /// call to its first streamed model output. 0 when unknown.
     pub time_to_first_token_ms: u64,
     /// Whether this agent was a warm-pool reuse or cold start.
     pub was_warm_start: bool,
@@ -498,116 +497,6 @@ pub struct TurnsRow<T> {
     /// The agent reported no turn count.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub turns_unknown: bool,
-}
-
-// ─── Grade ──────────────────────────────────────────────────────────────────
-
-/// Letter grade for prompt efficiency.
-///
-/// - **A**: High signal, low budget usage, high cache, passed gate
-/// - **B**: Moderate signal, moderate budget, passed gate
-/// - **C**: Low signal, high budget usage, or failed gate
-/// - **D**: Very low signal, budget-busting, failed gate
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum Grade {
-    /// Excellent efficiency.
-    A,
-    /// Good efficiency.
-    B,
-    /// Fair efficiency.
-    C,
-    /// Poor efficiency.
-    D,
-}
-
-impl Grade {
-    /// Numeric score: A=4, B=3, C=2, D=1.
-    pub const fn numeric(self) -> u8 {
-        match self {
-            Self::A => 4,
-            Self::B => 3,
-            Self::C => 2,
-            Self::D => 1,
-        }
-    }
-
-    /// Display label.
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::A => "A",
-            Self::B => "B",
-            Self::C => "C",
-            Self::D => "D",
-        }
-    }
-}
-
-impl std::fmt::Display for Grade {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.label())
-    }
-}
-
-// ─── PromptEfficiencyScore ──────────────────────────────────────────────────
-
-/// Scores a single prompt assembly on how efficiently it used its token budget.
-///
-/// Combines four sub-scores into a weighted composite that maps to a letter
-/// [`Grade`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PromptEfficiencyScore {
-    /// Ratio of "useful" tokens to total tokens (`[0..1]`).
-    /// Useful = sections that correlate with pass rate improvement.
-    pub signal_ratio: f64,
-    /// How much of the budget was used (`actual_tokens / max_tokens`).
-    pub budget_utilization: f64,
-    /// What fraction of input tokens was served from cache.
-    pub cache_efficiency: f64,
-    /// Whether the gate passed after this prompt was used.
-    pub gate_passed: bool,
-}
-
-impl PromptEfficiencyScore {
-    /// Create a new efficiency score.
-    pub const fn new(
-        signal_ratio: f64,
-        budget_utilization: f64,
-        cache_efficiency: f64,
-        gate_passed: bool,
-    ) -> Self {
-        Self {
-            signal_ratio: signal_ratio.clamp(0.0, 1.0),
-            budget_utilization: budget_utilization.clamp(0.0, 1.0),
-            cache_efficiency: cache_efficiency.clamp(0.0, 1.0),
-            gate_passed,
-        }
-    }
-
-    /// Compute the weighted composite score (`[0..1]`).
-    ///
-    /// Weights: signal 40%, budget headroom 20%, cache 20%, outcome 20%.
-    #[allow(clippy::suboptimal_flops)]
-    pub fn composite(&self) -> f64 {
-        let outcome = if self.gate_passed { 1.0 } else { 0.0 };
-        self.signal_ratio * 0.4
-            + (1.0 - self.budget_utilization) * 0.2
-            + self.cache_efficiency * 0.2
-            + outcome * 0.2
-    }
-
-    /// Compute the letter grade from the composite score.
-    pub fn grade(&self) -> Grade {
-        let score = self.composite();
-        if score >= 0.75 {
-            Grade::A
-        } else if score >= 0.50 {
-            Grade::B
-        } else if score >= 0.25 {
-            Grade::C
-        } else {
-            Grade::D
-        }
-    }
 }
 
 // ─── RoleCostProfile ────────────────────────────────────────────────────────
@@ -1237,65 +1126,6 @@ mod tests {
     #[allow(unused_imports)]
     use tempfile;
 
-    // ── Grade tests ─────────────────────────────────────────────────
-
-    #[test]
-    fn efficiency_grade_a_high_signal_low_budget_passed() {
-        let s = PromptEfficiencyScore::new(1.0, 0.2, 0.9, true);
-        assert_eq!(s.grade(), Grade::A);
-    }
-
-    #[test]
-    fn efficiency_grade_b_moderate() {
-        let s = PromptEfficiencyScore::new(0.6, 0.5, 0.5, true);
-        assert_eq!(s.grade(), Grade::B);
-    }
-
-    #[test]
-    fn efficiency_grade_c_low_signal() {
-        // 0.4*0.4 + (1-0.6)*0.2 + 0.3*0.2 + 0.0*0.2 = 0.16 + 0.08 + 0.06 = 0.30
-        let s = PromptEfficiencyScore::new(0.4, 0.6, 0.3, false);
-        assert_eq!(s.grade(), Grade::C);
-    }
-
-    #[test]
-    fn efficiency_grade_d_worst_case() {
-        let s = PromptEfficiencyScore::new(0.0, 1.0, 0.0, false);
-        assert_eq!(s.grade(), Grade::D);
-    }
-
-    #[test]
-    fn efficiency_composite_score_range() {
-        // Best case: 1.0*0.4 + (1-0)*0.2 + 1.0*0.2 + 1.0*0.2 = 1.0
-        let best = PromptEfficiencyScore::new(1.0, 0.0, 1.0, true);
-        assert!((best.composite() - 1.0).abs() < 1e-9);
-
-        // Worst case: 0.0*0.4 + (1-1)*0.2 + 0.0*0.2 + 0.0*0.2 = 0.0
-        let worst = PromptEfficiencyScore::new(0.0, 1.0, 0.0, false);
-        assert!((worst.composite()).abs() < 1e-9);
-    }
-
-    #[test]
-    fn efficiency_grade_numeric_values() {
-        assert_eq!(Grade::A.numeric(), 4);
-        assert_eq!(Grade::B.numeric(), 3);
-        assert_eq!(Grade::C.numeric(), 2);
-        assert_eq!(Grade::D.numeric(), 1);
-    }
-
-    #[test]
-    fn efficiency_grade_ordering() {
-        assert!(Grade::A < Grade::B);
-        assert!(Grade::B < Grade::C);
-        assert!(Grade::C < Grade::D);
-    }
-
-    #[test]
-    fn efficiency_grade_display() {
-        assert_eq!(Grade::A.to_string(), "A");
-        assert_eq!(Grade::D.to_string(), "D");
-    }
-
     // ── AgentEfficiencyEvent tests ──────────────────────────────────
 
     #[test]
@@ -1688,15 +1518,6 @@ mod tests {
     }
 
     #[test]
-    fn efficiency_score_clamping() {
-        // Values outside [0,1] should be clamped
-        let s = PromptEfficiencyScore::new(1.5, -0.5, 2.0, true);
-        assert!((s.signal_ratio - 1.0).abs() < 1e-9);
-        assert!((s.budget_utilization).abs() < 1e-9);
-        assert!((s.cache_efficiency - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
     fn efficiency_profile_p95_cost() {
         // 20 events with increasing cost: 0.01, 0.02, ..., 0.20
         let events: Vec<AgentEfficiencyEvent> = (1..=20)
@@ -1710,130 +1531,6 @@ mod tests {
         assert_eq!(profiles.len(), 1);
         // P95 index for 20 elements: 20 * 95 / 100 = 19 → costs[19] = 0.20
         assert!((profiles[0].p95_cost_usd.expect("measured cost") - 0.20).abs() < 1e-9);
-    }
-
-    // ── Score construction and field access ─────────────────────────
-
-    #[test]
-    fn efficiency_score_new_stores_fields() {
-        let s = PromptEfficiencyScore::new(0.8, 0.6, 0.4, true);
-        assert!((s.signal_ratio - 0.8).abs() < 1e-9);
-        assert!((s.budget_utilization - 0.6).abs() < 1e-9);
-        assert!((s.cache_efficiency - 0.4).abs() < 1e-9);
-        assert!(s.gate_passed);
-    }
-
-    #[test]
-    fn efficiency_score_new_gate_failed() {
-        let s = PromptEfficiencyScore::new(0.5, 0.5, 0.5, false);
-        assert!(!s.gate_passed);
-    }
-
-    #[test]
-    fn efficiency_score_all_zeros() {
-        let s = PromptEfficiencyScore::new(0.0, 0.0, 0.0, false);
-        assert!((s.signal_ratio).abs() < 1e-9);
-        assert!((s.budget_utilization).abs() < 1e-9);
-        assert!((s.cache_efficiency).abs() < 1e-9);
-        // composite: 0*0.4 + (1-0)*0.2 + 0*0.2 + 0*0.2 = 0.2
-        assert!((s.composite() - 0.2).abs() < 1e-9);
-        assert_eq!(s.grade(), Grade::D);
-    }
-
-    #[test]
-    fn efficiency_score_all_ones_gate_passed() {
-        let s = PromptEfficiencyScore::new(1.0, 1.0, 1.0, true);
-        // composite: 1.0*0.4 + (1-1)*0.2 + 1.0*0.2 + 1.0*0.2 = 0.8
-        assert!((s.composite() - 0.8).abs() < 1e-9);
-        assert_eq!(s.grade(), Grade::A);
-    }
-
-    // ── Grade boundary tests ────────────────────────────────────────
-
-    #[test]
-    fn efficiency_grade_boundary_exactly_0_75() {
-        // Construct score whose composite is exactly 0.75.
-        // 0.4*s + 0.2*(1-b) + 0.2*c + 0.2*g = 0.75
-        // With gate_passed=true (g=1.0): 0.4*s + 0.2*(1-b) + 0.2*c + 0.2 = 0.75
-        // Let b=0, c=0: 0.4*s + 0.2 + 0.2 = 0.75 → 0.4*s = 0.35 → s = 0.875
-        let s = PromptEfficiencyScore::new(0.875, 0.0, 0.0, true);
-        assert!((s.composite() - 0.75).abs() < 1e-9);
-        assert_eq!(s.grade(), Grade::A);
-    }
-
-    #[test]
-    fn efficiency_grade_boundary_just_below_0_75() {
-        // composite = 0.7499... → Grade::B
-        // 0.4*s + 0.2 + 0 + 0.2 = 0.4*s + 0.4
-        // Want 0.7499: 0.4*s = 0.3499 → s = 0.87475
-        let s = PromptEfficiencyScore::new(0.87475, 0.0, 0.0, true);
-        assert!(s.composite() < 0.75);
-        assert_eq!(s.grade(), Grade::B);
-    }
-
-    #[test]
-    fn efficiency_grade_boundary_exactly_0_50() {
-        // 0.4*s + 0.2*(1-b) + 0.2*c + 0.2*g = 0.50
-        // gate_passed=false (g=0), b=0, c=0: 0.4*s + 0.2 = 0.50 → s = 0.75
-        let s = PromptEfficiencyScore::new(0.75, 0.0, 0.0, false);
-        assert!((s.composite() - 0.50).abs() < 1e-9);
-        assert_eq!(s.grade(), Grade::B);
-    }
-
-    #[test]
-    fn efficiency_grade_boundary_just_below_0_50() {
-        let s = PromptEfficiencyScore::new(0.7499, 0.0, 0.0, false);
-        assert!(s.composite() < 0.50);
-        assert_eq!(s.grade(), Grade::C);
-    }
-
-    #[test]
-    fn efficiency_grade_boundary_exactly_0_25() {
-        // 0.4*s + 0.2*(1-b) + 0.2*c + 0 = 0.25
-        // b=1, c=0: 0.4*s = 0.25 → s = 0.625
-        let s = PromptEfficiencyScore::new(0.625, 1.0, 0.0, false);
-        assert!((s.composite() - 0.25).abs() < 1e-9);
-        assert_eq!(s.grade(), Grade::C);
-    }
-
-    #[test]
-    fn efficiency_grade_boundary_just_below_0_25() {
-        let s = PromptEfficiencyScore::new(0.624, 1.0, 0.0, false);
-        assert!(s.composite() < 0.25);
-        assert_eq!(s.grade(), Grade::D);
-    }
-
-    // ── Grade comparison/ordering ───────────────────────────────────
-
-    #[test]
-    fn efficiency_grade_derive_ord_matches_enum_declaration_order() {
-        // Enum variants: A, B, C, D → A < B < C < D (derive Ord uses discriminant order)
-        let mut grades = vec![Grade::D, Grade::A, Grade::C, Grade::B];
-        grades.sort();
-        assert_eq!(grades, vec![Grade::A, Grade::B, Grade::C, Grade::D]);
-    }
-
-    #[test]
-    fn efficiency_grade_numeric_is_inverse_of_ord() {
-        // Grade::A is "best" (numeric 4) but smallest in Ord.
-        assert!(Grade::A < Grade::D);
-        assert!(Grade::A.numeric() > Grade::D.numeric());
-    }
-
-    #[test]
-    fn efficiency_grade_equality() {
-        assert_eq!(Grade::A, Grade::A);
-        assert_ne!(Grade::A, Grade::B);
-    }
-
-    #[test]
-    fn efficiency_grade_hash_consistent() {
-        use std::collections::HashSet;
-        let mut set = HashSet::new();
-        set.insert(Grade::A);
-        set.insert(Grade::A);
-        set.insert(Grade::B);
-        assert_eq!(set.len(), 2);
     }
 
     // ── Edge cases ──────────────────────────────────────────────────
@@ -1876,48 +1573,7 @@ mod tests {
         assert!((e.tool_utilization() - 1.0).abs() < 1e-9);
     }
 
-    #[test]
-    fn efficiency_score_clamping_negative_values() {
-        let s = PromptEfficiencyScore::new(-1.0, -1.0, -1.0, false);
-        assert!((s.signal_ratio).abs() < 1e-9);
-        assert!((s.budget_utilization).abs() < 1e-9);
-        assert!((s.cache_efficiency).abs() < 1e-9);
-    }
-
-    #[test]
-    fn efficiency_score_clamping_large_values() {
-        let s = PromptEfficiencyScore::new(100.0, 100.0, 100.0, true);
-        assert!((s.signal_ratio - 1.0).abs() < 1e-9);
-        assert!((s.budget_utilization - 1.0).abs() < 1e-9);
-        assert!((s.cache_efficiency - 1.0).abs() < 1e-9);
-    }
-
     // ── Serialization ───────────────────────────────────────────────
-
-    #[test]
-    fn efficiency_score_serialization_roundtrip() {
-        let s = PromptEfficiencyScore::new(0.85, 0.45, 0.72, true);
-        let json = serde_json::to_string(&s).expect("serialize");
-        let s2: PromptEfficiencyScore = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(s, s2);
-    }
-
-    #[test]
-    fn efficiency_grade_serialization_roundtrip() {
-        for grade in [Grade::A, Grade::B, Grade::C, Grade::D] {
-            let json = serde_json::to_string(&grade).expect("serialize");
-            let g2: Grade = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(grade, g2);
-        }
-    }
-
-    #[test]
-    fn efficiency_grade_serializes_as_string() {
-        let json = serde_json::to_string(&Grade::A).expect("serialize");
-        assert_eq!(json, r#""A""#);
-        let json = serde_json::to_string(&Grade::D).expect("serialize");
-        assert_eq!(json, r#""D""#);
-    }
 
     #[test]
     fn efficiency_role_cost_profile_serialization_roundtrip() {
@@ -1975,23 +1631,6 @@ mod tests {
         let json = serde_json::to_string(&profile).expect("serialize");
         let p2: FrequencyCostProfile = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(profile, p2);
-    }
-
-    // ── Composite score arithmetic ──────────────────────────────────
-
-    #[test]
-    fn efficiency_composite_gate_passed_adds_0_2() {
-        let failed = PromptEfficiencyScore::new(0.5, 0.5, 0.5, false);
-        let passed = PromptEfficiencyScore::new(0.5, 0.5, 0.5, true);
-        assert!((passed.composite() - failed.composite() - 0.2).abs() < 1e-9);
-    }
-
-    #[test]
-    fn efficiency_composite_high_budget_penalized() {
-        // Higher budget_utilization → lower composite (budget headroom = 1 - utilization)
-        let low_budget = PromptEfficiencyScore::new(0.5, 0.2, 0.5, true);
-        let high_budget = PromptEfficiencyScore::new(0.5, 0.8, 0.5, true);
-        assert!(low_budget.composite() > high_budget.composite());
     }
 
     // ── Role cost profile edge cases ────────────────────────────────

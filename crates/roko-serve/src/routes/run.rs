@@ -107,9 +107,17 @@ pub(crate) async fn spawn_background_run(
             let _ = start_rx.await;
             publish_run_started(&bus, &run_id, &prompt_for_handle, agent_target.as_deref());
 
-            // Emit rich DashboardEvents so the TUI shows run activity.
-            let plan_id = format!("run-{}", &run_id[..8]);
-            let task_id: String = prompt_for_handle.chars().take(60).collect();
+            // Emit rich DashboardEvents so the TUI shows run activity. The
+            // plan is the one `RunStarted` and `RunCompleted` start and end.
+            let plan_id = crate::run_plan_id(&run_id);
+            // The hub keeps every event under `.roko/`, so the prompt that
+            // names the task is scrubbed before it is cut short.
+            let task_id: String = state_for_task
+                .scrubber
+                .scrub(&prompt_for_handle)
+                .chars()
+                .take(60)
+                .collect();
             let agent_label = agent_target.as_deref().unwrap_or("claude");
             {
                 use roko_core::DashboardEvent;
@@ -139,10 +147,9 @@ pub(crate) async fn spawn_background_run(
                 ]);
             }
 
-            match runtime
-                .run_once(workdir.as_path(), &prompt_for_handle)
-                .await
-            {
+            let run = runtime.run_once(workdir.as_path(), &prompt_for_handle);
+            let hub = &state_for_task.state_hub;
+            match run_with_heartbeats(hub, agent_label, &plan_id, &task_id, run).await {
                 Ok(result) => {
                     record_run_result(&state_for_task, &run_id, result.clone()).await;
                     publish_run_completed(
@@ -257,6 +264,51 @@ pub(crate) async fn spawn_background_run(
         .insert(run_id.clone(), run_handle);
     let _ = start_tx.send(());
     run_id
+}
+
+/// How often a one-shot run's agent reports that it is still working.
+const RUN_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Drive `run` to its end, publishing a heartbeat for the run's agent every
+/// [`RUN_HEARTBEAT_INTERVAL`], as a plan run's agents do, so the dashboard
+/// shows how long it has worked; then publish the agent's completion
+/// (gap-8a1fb3).
+async fn run_with_heartbeats<T>(
+    hub: &roko_runtime::SharedStateHub,
+    agent_id: &str,
+    plan_id: &str,
+    task_id: &str,
+    run: impl std::future::Future<Output = T>,
+) -> T {
+    use roko_core::DashboardEvent;
+
+    let started = tokio::time::Instant::now();
+    let mut heartbeat = tokio::time::interval(RUN_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first tick is immediate; the first heartbeat comes one interval in.
+    heartbeat.tick().await;
+    tokio::pin!(run);
+    let result = loop {
+        tokio::select! {
+            result = &mut run => break result,
+            _ = heartbeat.tick() => {
+                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                hub.publish(DashboardEvent::AgentHeartbeat {
+                    agent_id: agent_id.to_string(),
+                    plan_id: plan_id.to_string(),
+                    task_id: task_id.to_string(),
+                    elapsed_ms,
+                });
+            }
+        }
+    };
+    hub.publish(DashboardEvent::AgentCompleted {
+        agent_id: agent_id.to_string(),
+        plan_id: plan_id.to_string(),
+        task_id: task_id.to_string(),
+        attempt: 0,
+    });
+    result
 }
 
 async fn record_run_result(state: &AppState, run_id: &str, result: RunResult) {
@@ -421,4 +473,43 @@ fn run_now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use roko_core::DashboardEvent;
+
+    /// gap-8a1fb3: a one-shot run's agent reports how long it has worked while
+    /// the run goes on, as a plan run's agents do, and completes with it.
+    #[tokio::test(start_paused = true)]
+    async fn one_shot_run_agent_beats_while_it_works_then_completes() {
+        let hub = roko_runtime::SharedStateHub::new_in_process();
+        hub.publish(DashboardEvent::AgentSpawned {
+            agent_id: "claude".into(),
+            plan_id: "run-0123abcd".into(),
+            task_id: "say hi".into(),
+            attempt: 0,
+            role: "run".into(),
+            model: "claude".into(),
+            provider: String::new(),
+        });
+        let work = tokio::time::sleep(std::time::Duration::from_secs(12));
+        run_with_heartbeats(&hub, "claude", "run-0123abcd", "say hi", work).await;
+
+        let beats: Vec<u64> = hub
+            .subscribe_events_from(0)
+            .replay
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                DashboardEvent::AgentHeartbeat { elapsed_ms, .. } => Some(*elapsed_ms),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(beats, [5_000, 10_000]);
+        let snapshot = hub.current_snapshot();
+        let agent = snapshot.agents.get("claude").expect("the run's agent");
+        assert!(!agent.active, "the agent completes with the run");
+        assert_eq!(agent.elapsed_ms, 10_000);
+    }
 }

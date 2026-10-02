@@ -66,10 +66,11 @@ fn tui_command_pause_toggle_sends_execution_commands() {
     );
 }
 
-/// gap-c002bb: the reset keys cancel the selected plan, and their
-/// confirmation says so; a Graph run cannot reset a plan yet.
-#[test]
-fn reset_plan_key_confirms_and_sends_a_cancel() {
+/// The command the TUI sends for the selected plan `plan-7` when the
+/// operator confirms `action`, and what the confirmation asked.
+fn confirmed_plan_command(
+    action: ConfirmAction,
+) -> (String, crate::execution_control::ExecutionCommand) {
     let dir = tempdir().unwrap();
     let (sender, mut cmd_rx, _ack_tx, ack_rx) =
         crate::execution_control::ExecutionCommandSender::channel("test-run");
@@ -80,14 +81,33 @@ fn reset_plan_key_confirms_and_sends_a_cancel() {
         ..Default::default()
     }];
 
-    app.dispatch_action(TuiAction::RequestConfirm(ConfirmAction::ResetSelectedPlan(
-        String::new(),
-    )));
-    let pending = app.tui_state.pending_confirm.clone().unwrap();
-    assert_eq!(pending.to_string(), "Cancel plan plan-7?");
+    app.dispatch_action(TuiAction::RequestConfirm(action));
+    let asked = app.tui_state.pending_confirm.clone().unwrap().to_string();
     app.dispatch_action(TuiAction::ConfirmYes);
+    (asked, cmd_rx.try_recv().unwrap())
+}
 
-    let sent = cmd_rx.try_recv().unwrap();
+/// gap-c002bb: `R` resets the selected plan, which a Graph run runs again
+/// from scratch once it has failed.
+#[test]
+fn reset_plan_key_confirms_and_sends_a_reset() {
+    let (asked, sent) = confirmed_plan_command(ConfirmAction::ResetSelectedPlan(String::new()));
+
+    assert_eq!(asked, "Reset plan plan-7?");
+    assert_eq!(
+        sent.kind,
+        crate::execution_control::ExecutionCommandKind::Reset
+    );
+    assert_eq!(sent.plan_id.as_deref(), Some("plan-7"));
+}
+
+/// gap-c002bb: cancel has a key of its own, `C`, which sends a cancel for
+/// the selected plan.
+#[test]
+fn cancel_plan_key_confirms_and_sends_a_cancel() {
+    let (asked, sent) = confirmed_plan_command(ConfirmAction::CancelPlan(String::new()));
+
+    assert_eq!(asked, "Cancel plan plan-7?");
     assert_eq!(
         sent.kind,
         crate::execution_control::ExecutionCommandKind::Cancel

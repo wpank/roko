@@ -37,7 +37,8 @@ pub use records::{
     AttemptCost, AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptKeyed, AttemptLadder,
     AttemptOpenRecord, AttemptOutcome, AttemptTiming, AttemptUsage, AttemptVerdictRecord, Blame,
     CostSource, DecisionSource, ExecutedModel, FailoverRefusal, GateVerdictTag, HelperCallsUsage,
-    LadderReason, RunFile, RunProvenanceManifest, Stamped, TelemetryRecord, VerifyStepVerdict,
+    LadderReason, RunFile, RunProvenanceManifest, Stamped, TelemetryRecord, ToolPolicyRecord,
+    VerifyStepVerdict,
 };
 pub use writer::{
     AttemptOrdinals, TelemetryEvent, TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,

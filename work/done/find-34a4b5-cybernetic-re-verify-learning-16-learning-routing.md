@@ -2,23 +2,35 @@
 id = "find-34a4b5"
 kind = "finding"
 title = "16 learning/routing closures wired into deleted Runner-v2 event_loop.rs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
 goal = "learning"
 subsystem = ["roko-learn"]
 created = 2026-09-06
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "fed9d10e8"
 source = "tmp/archive/cybernetic-audit/30-master-checklist.md#P0 -- Close Broken Feedback Loops"
 discovered_from = "audit:tmp/archive/cybernetic-audit/30-master-checklist.md#P0 -- Close Broken Feedback Loops"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/knowledge_helpers.rs::apply_neuro_gate_hints", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets::with_neuro_gate_hints", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs::update_bidders_with_cost", "crates/roko-cli/src/dispatch/factory.rs", "crates/roko-learn/src/cascade_router.rs::select_tier_with_active_inference", "crates/roko-learn/src/efficiency.rs::PromptEfficiencyScore", "crates/roko-learn/src/tool_metrics_store.rs", "crates/roko-learn/src/tool_recommendation.rs", "crates/roko-learn/src/hindsight.rs::HindsightRelabeler", "crates/roko-compose/src/attention.rs::ModelAttentionCurves"]
 links = { depends_on = [], blocks = [], related = ["gap-5fb9a7", "reg-ff6e1a", "reg-c7ecf6", "q-1faa0c", "find-4b4344"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q 'knowledge_ids: vec!\\[\\],' crates/roko-cli/src/graph_task_dispatch.rs && { ! grep -q 'fn apply_neuro_gate_hints' crates/roko-cli/src/knowledge_helpers.rs || grep -rn 'apply_neuro_gate_hints' crates/roko-cli/src --include='*.rs' | grep -v 'knowledge_helpers.rs' | grep -q .; }"
+command = "! grep -q 'knowledge_ids: vec!\\[\\],' crates/roko-cli/src/graph_task_dispatch.rs && { ! grep -q 'fn apply_neuro_gate_hints' crates/roko-cli/src/knowledge_helpers.rs || grep -rn 'apply_neuro_gate_hints' crates/roko-cli/src --include='*.rs' | grep -v 'knowledge_helpers.rs' | grep -q .; } && ! grep -rqE 'PromptEfficiencyScore|ToolRecommender|ToolMetricsStore|FormatBandit|TrackAndStopBandit' crates --include='*.rs'"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T01:34:47Z"
+commit = "fed9d10e8"
+by = "wk-learn2"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-02T01:21:08Z"
+model = "claude-opus-5-5"
+forced = false
+evidence = "Every closure is re-attached, deleted or parked. Deleted unwired: P0-13 PromptEfficiencyScore (54976e29e), P4-19 ToolRecommender (d2de76f60), P4-17 roko-learn ToolMetricsStore (d5d618afc), P1-22 the tool-format bandit stack (310f984b6); docs/v3 marks them removed (fed9d10e8). P3-17 and P4-04's automatic proposals never had code (98e849394). Re-attached earlier: P0-04, P0-07, P0-09, P1-09, P2-15, P3-32, P4-04 assignment. Parked: P0-01, P0-02, P1-19, P1-20. The verify (grep guards) passes; cargo verification is the batch gate's."
 +++
 
 ## Problem
@@ -100,8 +112,9 @@ This finding is an umbrella. Resolve it by giving every lost closure a home, and
 - Graph episodes carry the injected knowledge ids.
 - `apply_neuro_gate_hints` is called on the Graph path, or it is deleted.
 - Every "Lost" or "Not present" row has an open item, or is re-wired or deleted.
-- Verify:
-  `! grep -q 'knowledge_ids: vec!\[\],' crates/roko-cli/src/graph_task_dispatch.rs && { ! grep -q 'fn apply_neuro_gate_hints' crates/roko-cli/src/knowledge_helpers.rs || grep -rn 'apply_neuro_gate_hints' crates/roko-cli/src --include='*.rs' | grep -v 'knowledge_helpers.rs' | grep -q .; }`
+- `PromptEfficiencyScore`, `ToolRecommender`, `ToolMetricsStore` and the format bandit (`FormatBandit`,
+  `TrackAndStopBandit`) are gone from `crates/`.
+- Verify: the `[[verify]]` command above.
 
 ## Notes
 
@@ -153,6 +166,30 @@ This finding is an umbrella. Resolve it by giving every lost closure a home, and
       proposals need a product decision.
   - Plan steps 3 and 4 (file the new items, link them back here) are left to the coordinator: this round's brief
     leaves filing to them and rules out editing other items.
+
+- 2026-10-02 (wk-learn2): the closures left without an item, on work/gap-14f08e; cargo verification deferred to
+  the batch check. None can be wired on the Graph path as it stands, so each is deleted, and P3-17 never existed:
+  - P0-13: deleted `PromptEfficiencyScore` and `Grade` (`roko-learn/src/efficiency.rs`). Nothing built a score,
+    and its main input, the share of prompt tokens that help, needs the per-section effects nothing on the Graph
+    path writes (P0-01).
+  - P4-19: deleted `ToolRecommender` (`roko-learn/src/tool_recommendation.rs`). Nothing called it, and it could not
+    read today's efficiency rows: it parsed `tools_used` as a list of tools, which `AgentEfficiencyEvent` writes as a
+    count, so it skipped every row.
+  - P4-17: deleted roko-learn's `ToolMetricsStore` (`roko-learn/src/tool_metrics_store.rs`), which nothing used.
+    Graph runs keep their tool metrics through roko-fs's `JsonlMetricsSink` (`.roko/metrics/tool_metrics.jsonl`).
+  - P1-22: deleted the format bandit, which nothing selected with or fed: `SharedAgentFactory::format_bandit`,
+    roko-core's `tool::bandit` (`FormatBandit`, `ProfileBandit`, `EpsilonGreedyBandit`, `BanditKey`, `ArmEntry`),
+    roko-learn's `TrackAndStopBandit` and roko-fs's `BanditStore`. Wiring it means choosing each API dispatch's tool
+    format per model and role, which changes what providers are sent and needs live-provider runs to judge. To
+    revive it, start from `310f984b6^`.
+  - P3-17: no affect reward shaping was ever built, so there is nothing to wire or delete. Affect reaches routing
+    only through selection (`RoutingContext::daimon_policy`, read by the cascade router). Shaping the router's
+    reward by affect would be a new learning rule; it needs a decision on what affect should do to a reward
+    before anyone builds it.
+  - P4-04's automatic proposals are the same case: gap-fdd27f re-attached assignment and settlement, but nothing
+    ever proposed experiments on its own, and doing so needs a decision on what to vary and when.
+  - Every closure in the table is now re-attached, deleted, or tracked by a parked item, except P3-17 and P4-04's
+    proposals. Those two have no code and wait on a decision. The verify guards the deletions.
 
 ## Original notes
 

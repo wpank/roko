@@ -320,7 +320,9 @@ impl AttemptContext {
         verdict.gate_verdict = gate_verdict;
         verdict.failure_class = failure_class(outcome, failure_reason.as_deref(), rung);
         verdict.timing = self.timing;
-        // Neither path sees the first token's time yet (S01 P0-5).
+        // The verdict records no first-token time yet (S01 P0-5). The call's
+        // time to first token, relative to its own start, is on the
+        // efficiency row (gap-7a8474).
         verdict.timing.ttft_source = Some("unavailable".to_string());
         verdict.timing.settled_at = Some(now_ms());
         verdict.executed = executed_model(model_requested, dispatch, self.failover);
@@ -648,6 +650,7 @@ fn executed_model(
         executed.model_mismatch = served.mismatch;
         executed.turns = reported_turns(dispatch);
         executed.sampling = request_sampling(&dispatch.target);
+        executed.tool_policy = dispatch.tool_policy.clone();
     }
     executed
 }

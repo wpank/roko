@@ -122,6 +122,9 @@ pub struct RokoConfig {
     pub pipeline: PipelineConfig,
     #[serde(default)]
     pub budget: BudgetConfig,
+    /// The dated price snapshot behind API-equivalent costs.
+    #[serde(default)]
+    pub pricing: crate::pricing_snapshot::PricingConfig,
     #[serde(default)]
     pub conductor: ConductorConfig,
     #[serde(default, skip_serializing_if = "WatcherConfig::is_empty")]
@@ -440,6 +443,7 @@ impl Default for RokoConfig {
             routing: RoutingConfig::default(),
             pipeline: PipelineConfig::default(),
             budget: BudgetConfig::default(),
+            pricing: crate::pricing_snapshot::PricingConfig::default(),
             conductor: ConductorConfig::default(),
             watcher: WatcherConfig::default(),
             learning: LearningConfig::default(),

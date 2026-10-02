@@ -212,6 +212,8 @@ pub mod plugin;
 pub mod policy_manifest;
 pub mod polyglot;
 pub mod prediction;
+/// Dated price snapshots (`config/prices/`) and API-equivalent costs priced from them.
+pub mod pricing_snapshot;
 pub mod project;
 pub mod provenance;
 pub mod provider_catalog;

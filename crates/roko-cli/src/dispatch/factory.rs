@@ -75,9 +75,6 @@ pub struct SharedAgentFactory {
     observability: Option<roko_fs::FsObservabilitySinks>,
     /// The safety provenance sinks of the runs in flight (gap-ff95f5).
     provenance: Option<crate::safety_provenance::ProvenanceSinks>,
-    /// Runtime-scoped format selection bandit. Shared across all dispatches
-    /// so tool-format selection learns from cumulative feedback within a run.
-    pub format_bandit: Arc<dyn roko_core::tool::bandit::FormatBandit>,
     /// Shared in-memory error pattern store. When an agent's gate fails, the
     /// observation is written here immediately so that subsequent agent
     /// dispatches within the same plan run can include the pattern in their
@@ -104,7 +101,6 @@ impl std::fmt::Debug for SharedAgentFactory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedAgentFactory")
             .field("config", &"...")
-            .field("format_bandit", &self.format_bandit.name())
             .finish()
     }
 }
@@ -255,7 +251,6 @@ impl SharedAgentFactory {
             tool_audit: None,
             observability: None,
             provenance: None,
-            format_bandit: Arc::new(roko_core::tool::bandit::ProfileBandit::with_static_profiles()),
             // Start with an empty in-memory store. Callers should replace it
             // via `with_error_pattern_store` or `with_error_patterns_from_disk`.
             error_pattern_store: Arc::new(std::sync::RwLock::new(ErrorPatternStore::empty())),
@@ -734,10 +729,5 @@ impl SharedAgentFactory {
     /// Pre-discovered MCP tools, if available.
     pub fn mcp_tools(&self) -> Option<&Arc<Vec<ToolDef>>> {
         self.mcp_runtime.as_ref().map(|runtime| runtime.tools())
-    }
-
-    /// Shared format-selection bandit for adaptive tool format decisions.
-    pub fn format_bandit(&self) -> &Arc<dyn roko_core::tool::bandit::FormatBandit> {
-        &self.format_bandit
     }
 }

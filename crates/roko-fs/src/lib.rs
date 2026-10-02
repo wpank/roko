@@ -23,7 +23,6 @@
 pub mod archive;
 /// Shared atomic-write helpers (write-tmp-rename pattern).
 pub mod atomic;
-pub mod bandit;
 /// Classified persistence for transcript records with redaction and versioning.
 pub mod classified_persistence;
 /// Classified JSONL persistence writer.
@@ -56,7 +55,6 @@ pub use atomic::{
     read_json_or_default_strict_bounded, sibling_lock_path, with_locked_json_transaction,
     with_locked_json_transaction_bounded,
 };
-pub use bandit::{ArmSnapshot, BanditStore};
 pub use classified_persistence::{
     ArtifactDescriptor, CLASSIFIED_SCHEMA_VERSION, Classification, ClassifiedRecord,
     PayloadPointer, RedactedField, RedactionMeta, ResultMeta,

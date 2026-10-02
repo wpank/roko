@@ -164,6 +164,11 @@ This finding is an umbrella. Resolve it by giving every lost closure a home, and
     count, so it skipped every row.
   - P4-17: deleted roko-learn's `ToolMetricsStore` (`roko-learn/src/tool_metrics_store.rs`), which nothing used.
     Graph runs keep their tool metrics through roko-fs's `JsonlMetricsSink` (`.roko/metrics/tool_metrics.jsonl`).
+  - P1-22: deleted the format bandit, which nothing selected with or fed: `SharedAgentFactory::format_bandit`,
+    roko-core's `tool::bandit` (`FormatBandit`, `ProfileBandit`, `EpsilonGreedyBandit`, `BanditKey`, `ArmEntry`),
+    roko-learn's `TrackAndStopBandit` and roko-fs's `BanditStore`. Wiring it means choosing each API dispatch's tool
+    format per model and role, which changes what providers are sent and needs live-provider runs to judge. To
+    revive it, start from this commit's parent.
 
 ## Original notes
 

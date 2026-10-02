@@ -8,6 +8,7 @@ severity = "p2"
 goal = "whitepaper"
 rank = 99
 size = "S"
+hold = "paper rewrite in progress (session roko-55, at Will's request, 2026-10-02): no work on docs/whitepaper/* or tmp/cybernetic-harness/paper/* until it reports done"
 subsystem = ["paper"]
 created = 2026-10-02
 updated = 2026-10-02

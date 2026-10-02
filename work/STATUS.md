@@ -31,7 +31,7 @@ Kinds: bug 11, decision 5, finding 9, gap 143, question 4, regression 1, spec 29
 - **P1** [gap-d4a1c1](items/gap-d4a1c1-pk95-papers-freeze-the-audit-s-live.md) PK95 Papers: Freeze the audit's live-run findings (R3, R4) as whitepaper evidence (+10 more) · size L · verified 2026-10-02
 - **P2** [gap-6aaee9](items/gap-6aaee9-pk100-papers-research-paper-6-4-report.md) PK100 Papers: Research paper §6.4: report H3, the spec × model interaction (+9 more) · size L · verified 2026-10-02 · **on hold:** waits on Will's deferred decision(s) 3333, 3346, 3363, 7101, 9524 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)
 - **P2** [gap-ac1aed](items/gap-ac1aed-pk101-papers-research-paper-appendix-e-and.md) PK101 Papers: Research paper Appendix E and the ViabilityBench README: the artefact as released (+5 more) · size L · verified 2026-10-02 · **on hold:** waits on Will's deferred decision(s) 3333, 3346, 3363, 7101, 9524, 9539 (tmp/backlog/2026-10-02-complete-and-wire/DECISIONS.md)
-- **P2** [gap-9b5582](items/gap-9b5582-pk99-papers-research-paper-5-and-appendix.md) PK99 Papers: Research paper §5 and Appendix D: cite the pre-registration lock for every number and… (+1 more) · size S · verified 2026-10-02
+- **P2** [gap-9b5582](items/gap-9b5582-pk99-papers-research-paper-5-and-appendix.md) PK99 Papers: Research paper §5 and Appendix D: cite the pre-registration lock for every number and… (+1 more) · size S · verified 2026-10-02 · **on hold:** paper rewrite in progress (session roko-55, at Will's request, 2026-10-02): no work on docs/whitepaper/* or tmp/cybernetic-harness/paper/* until it reports done
 - **P2** [gap-08d9b2](items/gap-08d9b2-whitepaper-final-matrix-re-pin-right-before.md) Whitepaper: final matrix re-pin right before the whitepaper-v1 tag · size S · verified 2026-09-30
 
 ### self-hosting
@@ -78,7 +78,7 @@ Kinds: bug 11, decision 5, finding 9, gap 143, question 4, regression 1, spec 29
 ### benchmarks/viabilitybench/analysis
 - **P1** [gap-46fd19](items/gap-46fd19-pk22-viabilitybench-proof-analysis-bootstrap-py-the.md) PK22 ViabilityBench proof: analysis/bootstrap.py: the paired bootstrap stratified by family and level (+5 more) · size L · verified 2026-10-02
 - **P1** [gap-5ddf9b](items/gap-5ddf9b-pk27-viabilitybench-proof-confidence-sequences-mcnemar-s.md) PK27 ViabilityBench proof: Confidence sequences, McNemar's test and CUPED in analysis/ (+5 more) · size L · verified 2026-10-02
-- **P1** [gap-2ca903](items/gap-2ca903-pk30-viabilitybench-proof-codex-cli-runner-for.md) PK30 ViabilityBench proof: Codex CLI runner for the fd_codex arm (+7 more) · size L · verified 2026-10-02
+- **P1** [gap-2ca903](items/gap-2ca903-pk30-viabilitybench-proof-codex-cli-runner-for.md) PK30 ViabilityBench proof: Codex CLI runner for the fd_codex arm (+7 more) · size L · verified 2026-10-02 · **on hold:** paper rewrite in progress (session roko-55, at Will's request, 2026-10-02): no work on docs/whitepaper/* or tmp/cybernetic-harness/paper/* until it reports done
 - **P1** [gap-ed1a08](items/gap-ed1a08-pk67-viabilitybench-proof-replay-r-h6-s06.md) PK67 ViabilityBench proof: Replay R-H6: S06's controllers A0-A5 plus A3-gated and A3-mis (+2 more) · size L · verified 2026-10-02
 - **P2** [gap-63fd4c](items/gap-63fd4c-pk50-viabilitybench-proof-replays-r-h4-and.md) PK50 ViabilityBench proof: Replays R-H4 and R-M3 on S04's prequential replay · size S · verified 2026-10-02
 

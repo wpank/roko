@@ -24,6 +24,7 @@
 //! (`reflex_credit`).
 
 use roko_learn::telemetry::records::b3_digest;
+use roko_learn::telemetry::records::{AttemptCost, AttemptUsage, CacheWriteClass};
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord,
     AttemptOrdinals, AttemptTiming, AttemptVerdictRecord, Blame, CostSource, ExecutedModel,
@@ -356,7 +357,8 @@ impl AttemptContext {
         verdict.timing.ttft_source = Some(ttft_source.to_string());
         verdict.timing.settled_at = Some(now_ms());
         verdict.executed = executed_model(model_requested, dispatch, self.failover);
-        verdict.cost.source = cost_source(dispatch);
+        verdict.usage = dispatch.map(attempt_usage).unwrap_or_default();
+        verdict.cost = attempt_cost(dispatch);
         verdict.helpers = self.helpers;
         let agent_failed = verdict.blame == Blame::Agent;
         verdict.ladder = self.ladder.map(|(mut ladder, last_chance)| {
@@ -738,8 +740,66 @@ fn agent_isolation(
         .collect()
 }
 
-/// Where the attempt's priced usage came from (S01 §4.4); gap-ad0d39 prices
-/// it. CLI agents report their own usage.
+/// The attempt's tokens in the verdict's disjoint classes (S01 §4.4), as its
+/// provider reported them; empty when it reported none.
+fn attempt_usage(dispatch: &crate::dispatch_v2::AgentResultDispatch) -> AttemptUsage {
+    let writes = cache_write_class(dispatch.target.provider_kind);
+    dispatch
+        .result
+        .usage_obs
+        .as_ref()
+        .map(|observation| AttemptUsage::from_observation(observation, writes))
+        .unwrap_or_default()
+}
+
+/// Where `kind`'s prompt-cache writes fall among the token classes (S01
+/// §4.4): Claude Code sessions write at the 1-hour TTL, the Anthropic API at
+/// 5 minutes, and OpenAI-style usage counts writes as input.
+const fn cache_write_class(kind: roko_core::ProviderKind) -> CacheWriteClass {
+    use roko_core::ProviderKind;
+    match kind {
+        ProviderKind::ClaudeCli => CacheWriteClass::OneHour,
+        ProviderKind::AnthropicApi => CacheWriteClass::FiveMinutes,
+        ProviderKind::OpenAiCompat
+        | ProviderKind::CerebrasApi
+        | ProviderKind::PerplexityApi
+        | ProviderKind::Hermes
+        | ProviderKind::OpenClaw
+        | ProviderKind::CodexCli => CacheWriteClass::InInput,
+        _ => CacheWriteClass::Unknown,
+    }
+}
+
+/// The attempt's cost amounts (S01 §4.4): where its usage came from, the
+/// CLI's own figure for a CLI agent, and for an API provider the priced cost
+/// the plan budget settled. An unpriced call, or one whose usage is unknown,
+/// leaves `billed_usd` unknown. An API provider's usage cost is roko's own
+/// price, not a vendor figure, so it never fills `vendor_usd`. What a
+/// subscription CLI bills waits for the billing rule (backlog 2113), and the
+/// API-equivalent figures for the price snapshot (backlog 2115).
+fn attempt_cost(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> AttemptCost {
+    let mut cost = AttemptCost {
+        source: cost_source(dispatch),
+        ..AttemptCost::default()
+    };
+    let Some(dispatch) = dispatch else {
+        return cost;
+    };
+    let usage = &dispatch.result.usage;
+    if is_cli_backend(dispatch.target.provider_kind) {
+        cost.vendor_usd = dispatch
+            .result
+            .usage_obs
+            .as_ref()
+            .and_then(|observation| observation.cost_usd);
+    } else if cost.source != CostSource::Unknown && usage.has_known_cost() {
+        cost.billed_usd = Some(f64::from(usage.cost_usd));
+    }
+    cost
+}
+
+/// Where the attempt's priced usage came from (S01 §4.4). CLI agents report
+/// their own usage.
 fn cost_source(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> CostSource {
     let Some(dispatch) = dispatch else {
         return CostSource::Unknown;
@@ -760,12 +820,16 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use roko_core::agent::ProviderKind;
+    use roko_core::config::schema::{ModelProfile, ProviderConfig};
     use roko_learn::telemetry::Blame;
     use tempfile::tempdir;
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_spec, make_task_def, make_test_dispatcher, no_auto_fix, verify_step,
+        FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, VERIFY_PROVIDER, final_turn,
+        make_bare_dispatcher, make_spec, make_task_def, make_test_dispatcher, no_auto_fix,
+        spawn_openai_mock, verify_step,
     };
     use crate::runtime_feedback::EpisodeSink;
 
@@ -1311,5 +1375,123 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         assert_eq!(timing.first_token_at, None);
         assert_eq!(timing.ttft_source.as_deref(), Some("unavailable"));
         assert_eq!(timing.verify_started_at, None);
+    }
+
+    /// `api-model` on an OpenAI-compatible provider the mock at `base_url`
+    /// serves, priced at $1 in and $2 out per million tokens.
+    fn priced_api_config(base_url: String) -> RokoConfig {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "api-model".to_string();
+        config.agent.bare_mode = false;
+        config.gates.cargo_fix_enabled = false;
+        // `PATH` is always set, standing in for the provider's key.
+        config.providers.insert(
+            "mock_api".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(base_url),
+                api_key_env: Some("PATH".to_string()),
+                timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ..ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "api-model".to_string(),
+            ModelProfile {
+                provider: "mock_api".to_string(),
+                slug: "api-model-1".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                cost_input_per_m: Some(1.0),
+                cost_output_per_m: Some(2.0),
+                ..ModelProfile::default()
+            },
+        );
+        // No stall watchdog: the mock answers whether or not the call
+        // streams.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        config
+    }
+
+    /// backlog 2103: settling fills the verdict's token classes and cost
+    /// amounts from what the provider reported. A Claude CLI attempt keeps
+    /// the CLI's own figure as `vendor_usd`; an OpenAI-compatible attempt
+    /// counts its cached input once, and bills what its cost row records.
+    #[tokio::test]
+    async fn settle_fills_usage_and_cost_amounts() {
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        let cli = tempdir().expect("tempdir");
+        let runs_dir = cli.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&cli, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        task.verify = vec![verify_step("structural", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+        let attempts = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+        let verdict = &attempts[1];
+        assert_eq!(verdict["usage"]["tokens_out"], 10, "{verdict}");
+        assert_eq!(verdict["cost"]["source"], "cli_usage", "{verdict}");
+        assert_eq!(verdict["cost"]["vendor_usd"], 0.01, "{verdict}");
+        assert!(verdict["cost"]["billed_usd"].is_null(), "{verdict}");
+
+        let api = tempdir().expect("tempdir");
+        let roko = api.path().join(".roko");
+        let mut answer = final_turn("done");
+        answer["usage"] = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110,
+            "prompt_tokens_details": { "cached_tokens": 40 }
+        });
+        let (base_url, _requests) = spawn_openai_mock(vec![answer.clone(), answer]);
+        let feedback = GraphFeedbackContext {
+            costs_path: Some(roko.join("learn/costs.jsonl")),
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let dispatcher = make_bare_dispatcher(priced_api_config(base_url), api.path())
+            .await
+            .with_feedback(feedback);
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+        let attempts = jsonl_rows(&roko.join("runs").join(RUN).join("attempts.jsonl"), 2).await;
+        let verdict = &attempts[1];
+        let usage = &verdict["usage"];
+        assert_eq!(usage["tokens_in"], 60, "{verdict}");
+        assert_eq!(usage["tokens_cache_read"], 40, "{verdict}");
+        assert_eq!(usage["tokens_out"], 10, "{verdict}");
+        assert_eq!(usage["tokens_cache_write_5m"], 0, "{verdict}");
+        assert_eq!(verdict["cost"]["source"], "provider_usage", "{verdict}");
+        assert!(verdict["cost"]["vendor_usd"].is_null(), "{verdict}");
+        let costs = jsonl_rows(&roko.join("learn/costs.jsonl"), 1).await;
+        let billed = verdict["cost"]["billed_usd"].as_f64().expect("billed_usd");
+        let recorded = costs[0]["cost_usd"].as_f64().expect("cost row");
+        assert!(billed > 0.0, "{verdict}");
+        assert!((billed - recorded).abs() < 1e-12, "{billed} != {recorded}");
     }
 }

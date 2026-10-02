@@ -287,9 +287,6 @@ mod tests {
         // `POST /api/inference/batch` records its own result.
         let producers = [
             ("/api/research/topic", json!({ "topic": "retry policies" })),
-            ("/api/prds/alpha/draft", json!({})),
-            ("/api/prds/alpha/plan", json!({})),
-            ("/api/prd/consolidate", json!({})),
             ("/api/templates/pr-review/deploy", json!({})),
             ("/api/plans/demo/chat", json!({ "message": "split T1" })),
         ];

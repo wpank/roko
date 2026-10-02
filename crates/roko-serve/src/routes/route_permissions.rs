@@ -60,10 +60,6 @@ pub(crate) const ROUTE_PERMISSION_MANIFEST: &[RoutePermission] = &[
         permission: Permission::ConfigEdit,
     },
     RoutePermission {
-        prefix: "/api/prd",
-        permission: Permission::PlanCreate,
-    },
-    RoutePermission {
         prefix: "/api/plans",
         permission: Permission::PlanCreate,
     },

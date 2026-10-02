@@ -1,6 +1,6 @@
 //! Workflow artifact and execution projections.
 //!
-//! These routes expose the end-to-end PRD -> plan -> tasks -> execution
+//! These routes expose the end-to-end plan -> tasks -> execution
 //! workflow as a first-class read model. The read model is built from real
 //! `.roko` artifacts and merged with the live StateHub snapshot, so web
 //! clients do not need to scrape terminals or understand on-disk details.
@@ -64,7 +64,6 @@ struct WorkflowSummary {
     title: String,
     phase: String,
     updated_at_millis: u64,
-    prd_status: Option<String>,
     plan_count: usize,
     task_count: usize,
     active_tasks: usize,
@@ -80,22 +79,8 @@ struct WorkflowSnapshot {
     workdir: String,
     updated_at_millis: u64,
     summary: WorkflowSummary,
-    prd: Option<WorkflowPrd>,
     plans: Vec<WorkflowPlan>,
     live: WorkflowLive,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct WorkflowPrd {
-    slug: String,
-    title: String,
-    path: String,
-    status: String,
-    excerpt: String,
-    requirements: Vec<String>,
-    acceptance: Vec<String>,
-    body_markdown: String,
-    updated_at_millis: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -692,26 +677,18 @@ fn workflow_delta_frame(
 }
 
 fn read_workflow_snapshots(root: &Path, state: &AppState) -> Vec<WorkflowSnapshot> {
-    let prds = discover_prds(root);
     let plans = discover_plans(root);
     let dashboard = dashboard_snapshot_for_workdir(root, state);
     let mut workflows: BTreeMap<String, WorkflowSnapshot> = BTreeMap::new();
 
     for plan in plans {
         let id = plan.id.clone();
-        let prd = find_prd_for_plan(&prds, &id);
         let title = if plan.title.trim().is_empty() {
-            prd.as_ref()
-                .map(|prd| prd.title.clone())
-                .unwrap_or_else(|| title_from_slug(&id))
+            title_from_slug(&id)
         } else {
             plan.title.clone()
         };
-        let updated_at_millis = prd
-            .as_ref()
-            .map(|prd| prd.updated_at_millis)
-            .unwrap_or_default()
-            .max(plan.updated_at_millis);
+        let updated_at_millis = plan.updated_at_millis;
         let mut workflow = WorkflowSnapshot {
             id: id.clone(),
             title,
@@ -719,30 +696,7 @@ fn read_workflow_snapshots(root: &Path, state: &AppState) -> Vec<WorkflowSnapsho
             workdir: root.display().to_string(),
             updated_at_millis,
             summary: empty_summary(&id),
-            prd,
             plans: vec![plan],
-            live: WorkflowLive::default(),
-        };
-        merge_live_state(&mut workflow, &dashboard);
-        workflow.phase = workflow_phase(&workflow);
-        workflow.summary = summarize_workflow(&workflow);
-        workflows.insert(id, workflow);
-    }
-
-    for prd in prds {
-        if workflows.contains_key(&prd.slug) {
-            continue;
-        }
-        let id = prd.slug.clone();
-        let mut workflow = WorkflowSnapshot {
-            id: id.clone(),
-            title: prd.title.clone(),
-            phase: prd.status.clone(),
-            workdir: root.display().to_string(),
-            updated_at_millis: prd.updated_at_millis,
-            summary: empty_summary(&id),
-            prd: Some(prd),
-            plans: Vec::new(),
             live: WorkflowLive::default(),
         };
         merge_live_state(&mut workflow, &dashboard);
@@ -758,112 +712,6 @@ fn read_workflow_snapshots(root: &Path, state: &AppState) -> Vec<WorkflowSnapsho
             .then_with(|| a.id.cmp(&b.id))
     });
     out
-}
-
-fn discover_prds(root: &Path) -> Vec<WorkflowPrd> {
-    let prd_root = root.join(".roko").join("prd");
-    let mut prds = Vec::new();
-
-    for (status, subdir) in [
-        ("idea", "ideas"),
-        ("draft", "drafts"),
-        ("published", "published"),
-    ] {
-        let dir = prd_root.join(subdir);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
-                continue;
-            }
-            if let Some(prd) = parse_prd_file(&path, status) {
-                prds.push(prd);
-            }
-        }
-    }
-
-    if prds.is_empty() {
-        let ideas_path = prd_root.join("ideas.md");
-        if let Some(prd) = parse_legacy_ideas_file(&ideas_path) {
-            prds.push(prd);
-        }
-    }
-
-    dedupe_prds_by_slug(prds)
-}
-
-fn parse_prd_file(path: &Path, status: &str) -> Option<WorkflowPrd> {
-    let body = std::fs::read_to_string(path).ok()?;
-    let slug = path.file_stem()?.to_string_lossy().to_string();
-    Some(WorkflowPrd {
-        slug: slug.clone(),
-        title: extract_title(&body).unwrap_or_else(|| title_from_slug(&slug)),
-        path: path.display().to_string(),
-        status: status.to_string(),
-        excerpt: markdown_excerpt(&body, 620),
-        requirements: section_items(&body, &["requirement", "requirements"]),
-        acceptance: section_items(&body, &["acceptance", "criteria"]),
-        body_markdown: body,
-        updated_at_millis: modified_millis(path),
-    })
-}
-
-fn parse_legacy_ideas_file(path: &Path) -> Option<WorkflowPrd> {
-    let body = std::fs::read_to_string(path).ok()?;
-    let latest = body
-        .lines()
-        .rev()
-        .find_map(|line| line.trim().strip_prefix("- ").map(str::trim))
-        .unwrap_or("Captured ideas");
-    let slug = slugify_title(latest);
-    Some(WorkflowPrd {
-        slug: slug.clone(),
-        title: latest.to_string(),
-        path: path.display().to_string(),
-        status: "idea".to_string(),
-        excerpt: latest.to_string(),
-        requirements: Vec::new(),
-        acceptance: Vec::new(),
-        body_markdown: body,
-        updated_at_millis: modified_millis(path),
-    })
-}
-
-fn dedupe_prds_by_slug(prds: Vec<WorkflowPrd>) -> Vec<WorkflowPrd> {
-    let mut by_slug: BTreeMap<String, WorkflowPrd> = BTreeMap::new();
-    for prd in prds {
-        match by_slug.get(&prd.slug) {
-            Some(existing) if prd_rank(&existing.status) >= prd_rank(&prd.status) => {}
-            _ => {
-                by_slug.insert(prd.slug.clone(), prd);
-            }
-        }
-    }
-    by_slug.into_values().collect()
-}
-
-fn prd_rank(status: &str) -> u8 {
-    match status {
-        "published" => 3,
-        "draft" => 2,
-        "idea" => 1,
-        _ => 0,
-    }
-}
-
-fn find_prd_for_plan(prds: &[WorkflowPrd], plan_id: &str) -> Option<WorkflowPrd> {
-    if let Some(prd) = prds.iter().find(|prd| prd.slug == plan_id) {
-        return Some(prd.clone());
-    }
-    if prds.len() == 1 {
-        return prds.first().cloned();
-    }
-    prds.iter()
-        .filter(|prd| plan_id.contains(&prd.slug) || prd.slug.contains(plan_id))
-        .max_by_key(|prd| prd.updated_at_millis)
-        .cloned()
 }
 
 fn discover_plans(root: &Path) -> Vec<WorkflowPlan> {
@@ -1295,7 +1143,6 @@ fn summarize_workflow(workflow: &WorkflowSnapshot) -> WorkflowSummary {
         title: workflow.title.clone(),
         phase: workflow.phase.clone(),
         updated_at_millis: workflow.updated_at_millis,
-        prd_status: workflow.prd.as_ref().map(|prd| prd.status.clone()),
         plan_count: workflow.plans.len(),
         task_count: tasks.len(),
         active_tasks: tasks.iter().filter(|task| task.status == "active").count(),
@@ -1310,7 +1157,6 @@ fn empty_summary(id: &str) -> WorkflowSummary {
         title: title_from_slug(id),
         phase: "idle".to_string(),
         updated_at_millis: 0,
-        prd_status: None,
         plan_count: 0,
         task_count: 0,
         active_tasks: 0,
@@ -1357,11 +1203,7 @@ fn workflow_phase(workflow: &WorkflowSnapshot) -> String {
     if !workflow.plans.is_empty() {
         return "planning".to_string();
     }
-    workflow
-        .prd
-        .as_ref()
-        .map(|prd| prd.status.clone())
-        .unwrap_or_else(|| "idle".to_string())
+    "idle".to_string()
 }
 
 fn dashboard_event_matches_workflow(event: &DashboardEvent, workflow_id: Option<&str>) -> bool {
@@ -1382,9 +1224,6 @@ fn dashboard_event_matches_workflow(event: &DashboardEvent, workflow_id: Option<
         | DashboardEvent::AgentOutput { agent_id, .. }
         | DashboardEvent::AgentCompleted { agent_id, .. } => {
             agent_id == workflow_id || agent_id.starts_with(&format!("{workflow_id}:"))
-        }
-        DashboardEvent::AtelierPrdsUpdated { prds, tasks } => {
-            prds.iter().any(|prd| prd.slug == workflow_id) || tasks.contains_key(workflow_id)
         }
         _ => false,
     }
@@ -1443,36 +1282,6 @@ fn frontmatter_string(markdown: &str, key: &str) -> Option<String> {
     None
 }
 
-fn section_items(markdown: &str, names: &[&str]) -> Vec<String> {
-    let mut active = false;
-    let mut out = Vec::new();
-    for line in markdown.lines() {
-        let trimmed = line.trim();
-        if let Some(heading) = trimmed.strip_prefix("## ") {
-            let heading = heading.to_ascii_lowercase();
-            active = names.iter().any(|name| heading.contains(name));
-            continue;
-        }
-        if active {
-            if trimmed.starts_with('#') {
-                active = false;
-                continue;
-            }
-            if let Some(item) = trimmed
-                .strip_prefix("- ")
-                .or_else(|| trimmed.strip_prefix("* "))
-                .or_else(|| trimmed.strip_prefix("+ "))
-            {
-                let item = item.trim();
-                if !item.is_empty() && out.len() < 8 {
-                    out.push(item.to_string());
-                }
-            }
-        }
-    }
-    out
-}
-
 fn markdown_excerpt(markdown: &str, limit: usize) -> String {
     let mut out = String::new();
     let mut in_fence = false;
@@ -1517,26 +1326,6 @@ fn title_from_slug(slug: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn slugify_title(title: &str) -> String {
-    let slug = title
-        .split_whitespace()
-        .take(7)
-        .map(|word| {
-            word.chars()
-                .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
-                .collect::<String>()
-                .to_ascii_lowercase()
-        })
-        .filter(|word| !word.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "idea".to_string()
-    } else {
-        slug
-    }
 }
 
 fn modified_millis(path: &Path) -> u64 {

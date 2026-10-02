@@ -36,7 +36,6 @@ mod metrics;
 pub(crate) mod middleware;
 mod neuro;
 mod plans;
-pub(crate) mod prds;
 mod projections;
 mod providers;
 mod rbac_middleware;
@@ -97,7 +96,7 @@ use tokio::sync::broadcast;
 use tower_http::trace::TraceLayer;
 
 /// Global request-body cap. Axum's default is 2 MiB; we raise it to 4 MiB so
-/// reasonably sized JSON payloads (PRDs, agent manifests, plan objects) still
+/// reasonably sized JSON payloads (agent manifests, plan objects, task files) still
 /// fit while keeping the cap small enough to bound memory pressure from a
 /// single hostile client. Webhook routes that accept opaque `Bytes` clamp
 /// further to 1 MiB locally.
@@ -277,7 +276,6 @@ pub(crate) async fn keyed_rate_limit_middleware(
 pub use self::config::reload_config_from_disk;
 pub use self::deployments::load_persisted_deployments;
 pub(crate) use self::middleware::{CorsPolicy, cors_layer};
-pub(crate) use self::prds::start_prd_publish_subscriber;
 pub(crate) use self::ws::apply_ws_size_limits as ws_size_limits;
 
 /// Build the complete API router with all route groups and middleware.
@@ -328,7 +326,6 @@ pub fn build_router(
         .merge(jobs::routes())
         .merge(heartbeats::routes())
         .merge(plans::routes())
-        .merge(prds::routes())
         .merge(run::routes().layer(axum::middleware::from_fn_with_state(
             Arc::clone(&infer_limiter),
             keyed_rate_limit_middleware,
@@ -2480,12 +2477,6 @@ mod tests {
             ("/api/plans/123/chat", "plan:write"),
             ("/api/plans/123/estimate", "plan:write"),
             ("/api/plans/123/tasks/t1/review", "plan:write"),
-            ("/api/prds/ideas", "plan:write"),
-            ("/api/prd/consolidate", "plan:write"),
-            ("/api/prds/consolidate", "plan:write"),
-            ("/api/prds/my-slug/draft", "plan:write"),
-            ("/api/prds/my-slug/promote", "plan:write"),
-            ("/api/prds/my-slug/plan", "plan:write"),
             // terminal:write
             ("/api/terminal/sessions", "terminal:write"),
             ("/ws/terminal/abc-123", "terminal:write"),
@@ -2504,7 +2495,7 @@ mod tests {
             ("/api/deployments/123/task", "write"),
             ("/api/deployments/123/callback", "write"),
             ("/api/research/topic", "write"),
-            ("/api/research/enhance-prd/my-slug", "write"),
+            ("/api/research/enhance-plan/my-plan", "write"),
             ("/api/research/analyze", "write"),
             ("/api/subscriptions", "write"),
             ("/api/subscriptions/123/enable", "write"),

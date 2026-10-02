@@ -1152,14 +1152,6 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         prefix: "/api/plans",
         scope: "plan:write",
     },
-    RouteScopeEntry {
-        prefix: "/api/prd",
-        scope: "plan:write",
-    },
-    RouteScopeEntry {
-        prefix: "/api/prds",
-        scope: "plan:write",
-    },
     // --- terminal:write ------------------------------------------------------
     RouteScopeEntry {
         prefix: "/api/terminal",
@@ -3003,8 +2995,8 @@ mod tests {
             (Method::POST, "/api/relay-tokens", "admin"),
             (Method::POST, "/relay-tokens", "admin"),
             (Method::DELETE, "/relay-tokens/tok-1", "admin"),
-            (Method::POST, "/api/prd/consolidate", "plan:write"),
-            (Method::POST, "/prds/ideas", "plan:write"),
+            (Method::POST, "/api/plans/generate", "plan:write"),
+            (Method::POST, "/plans/generate", "plan:write"),
             (Method::POST, "/api/run", "write"),
             (Method::POST, "/runs/abc/share", "write"),
             (Method::POST, "/api/secretsx", SCOPE_WRITE_UNCLASSIFIED),
@@ -3491,13 +3483,6 @@ mod tests {
         (Method::POST, "/api/plans/123/chat"),
         (Method::POST, "/api/plans/123/estimate"),
         (Method::POST, "/api/plans/generate"),
-        // --- /api/prd (plan:write) ---
-        (Method::POST, "/api/prds/ideas"),
-        (Method::POST, "/api/prd/consolidate"),
-        (Method::POST, "/api/prds/consolidate"),
-        (Method::POST, "/api/prds/my-slug/draft"),
-        (Method::POST, "/api/prds/my-slug/promote"),
-        (Method::POST, "/api/prds/my-slug/plan"),
         // --- /api/workspaces (write) ---
         (Method::POST, "/api/workspaces"),
         // --- /api/jobs (write) ---
@@ -3522,7 +3507,6 @@ mod tests {
         (Method::POST, "/api/deployments/123/callback"),
         // --- /api/research (write) ---
         (Method::POST, "/api/research/topic"),
-        (Method::POST, "/api/research/enhance-prd/my-slug"),
         (Method::POST, "/api/research/enhance-plan/my-plan"),
         (Method::POST, "/api/research/enhance-tasks/my-plan"),
         (Method::POST, "/api/research/analyze"),

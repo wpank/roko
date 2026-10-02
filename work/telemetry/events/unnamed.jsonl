@@ -1,0 +1,1 @@
+{"schema": "roko.work_event/1", "ts": "2026-10-02T19:21:52Z", "event": "closed", "item": "find-8872ad", "executor": null, "via": null, "session": "unnamed", "branch": null, "concurrency": 8, "source": "live", "status": "done", "commit": "54c31ff46", "forced": false}

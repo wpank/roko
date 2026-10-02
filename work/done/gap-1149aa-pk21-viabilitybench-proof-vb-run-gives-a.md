@@ -2,7 +2,7 @@
 id = "gap-1149aa"
 kind = "gap"
 title = "PK21 ViabilityBench proof: vb run gives a multi-model arm one endpoint and one proxy upstream per provider (+5 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -12,6 +12,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "6a5a0a1cb"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK21"
 anchors = ["benchmarks/viabilitybench/analysis/metrics.py", "benchmarks/viabilitybench/driver/planemit.py", "benchmarks/viabilitybench/driver/records.py", "benchmarks/viabilitybench/driver/run_roko.py", "benchmarks/viabilitybench/driver/vb.py", "benchmarks/viabilitybench/experiments/budget.toml"]
 lane = "bench"
@@ -35,6 +36,17 @@ command = "grep -qw 'def test_fr_claude_arm_prices_cli_usage_from_verdicts' benc
 
 [[verify]]
 command = "grep -qw 'def test_roko_plan_runner_records_planner_and_executor_costs' benchmarks/viabilitybench/driver/test_run_roko_plan.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_roko_plan.py -k test_roko_plan_runner_records_planner_and_executor_costs -q"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T19:49:33Z"
+commit = "6a5a0a1cb"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T16:02:40Z"
+forced = true
+evidence = "Gate 4a (merged into main as 6a5a0a1cb, tree identical to work/backlog-batch-4a): all 6 [[verify]] commands pass in the batch worktree's bench venvs; verify 3 needs benchmarks/viabilitybench/.venv-msa, which is a local venv that exists only where run_msa.py set it up, hence --force here. The whole ViabilityBench suite passes, 501 passed and 7 skipped. Gate fix 0a8f7ea69 updates the budget tests to S09 v1.6 (BL14), and S09 4.6 is amended in place."
 +++
 
 ## Problem

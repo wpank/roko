@@ -42,9 +42,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **50/61 closed** · goal `proof` · severity p1
-- open by lane: bench 11
-- next: [gap-b6d6cf](items/gap-b6d6cf-viabilitybench-cost-classes-have-no-audit-spec.md) ViabilityBench cost classes have no audit/spec-refinement/predictor class, so roko_full's G5 $/VS-without-audit can't be computed
+- **50/63 closed** · goal `proof` · severity p1
+- open by lane: bench 13
+- next: [gap-3cfe4f](items/gap-3cfe4f-fd-claude-s-agent-shell-can-read.md) fd_claude's agent shell can read the operator's real Anthropic keychain credential via the security wrapper
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
@@ -100,12 +100,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 54 | 87 | 33 (24) |
+| bench | 55 | 89 | 34 (25) |
 | docs | 17 | 21 | 4 (2) |
 | frontend | 3 | 5 | 2 (2) |
-| none | 326 | 403 | 77 (77) |
+| none | 327 | 404 | 77 (77) |
 | paper | 61 | 73 | 12 (9) |
 | rust-cold | 187 | 235 | 48 (38) |
-| rust-hot | 131 | 161 | 30 (27) |
+| rust-hot | 131 | 163 | 32 (29) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 21 | 24 | 3 (2) |

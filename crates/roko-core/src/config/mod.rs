@@ -20,6 +20,7 @@ pub mod fingerprint;
 pub mod gates;
 pub mod graduation;
 pub mod harness_params;
+pub mod homeostasis;
 pub mod hot_reload;
 pub mod learning;
 pub mod loader;

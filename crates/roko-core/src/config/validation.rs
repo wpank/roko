@@ -207,6 +207,17 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         }
     }
 
+    // M1's section (S06 §5): `on` needs a holdout arm, windows and dwell are
+    // positive, and its fractions lie in [0, 1].
+    for (key, problem) in config.homeostasis.problems() {
+        results.push(invariant(
+            9,
+            InvariantSeverity::Error,
+            format!("homeostasis.{key}"),
+            problem,
+        ));
+    }
+
     results
 }
 

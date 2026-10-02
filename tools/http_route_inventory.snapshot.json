@@ -1,6 +1,6 @@
 {
-  "total_registrations": 456,
-  "canonical_registrations": 405,
+  "total_registrations": 457,
+  "canonical_registrations": 406,
   "alias_count": 51,
   "conflict_count": 0,
   "unparsed_count": 0,
@@ -1830,6 +1830,14 @@
       "handler": "fork_artifact"
     },
     {
+      "source_file": "crates/roko-serve/src/routes/mcp.rs",
+      "line": 36,
+      "router_fn": "routes",
+      "path": "/mcp",
+      "method": "POST",
+      "handler": "mcp"
+    },
+    {
       "source_file": "crates/roko-serve/src/routes/meta.rs",
       "line": 184,
       "router_fn": "routes",
@@ -1887,7 +1895,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 393,
+      "line": 394,
       "router_fn": "build_router",
       "path": "/workflow/events",
       "method": "GET",
@@ -1895,7 +1903,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 477,
+      "line": 502,
       "router_fn": "build_router",
       "path": "/health",
       "method": "GET",
@@ -1903,7 +1911,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 479,
+      "line": 504,
       "router_fn": "build_router",
       "path": "/ready",
       "method": "GET",
@@ -1911,7 +1919,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 481,
+      "line": 506,
       "router_fn": "build_router",
       "path": "/metrics",
       "method": "GET",

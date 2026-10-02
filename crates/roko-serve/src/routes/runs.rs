@@ -202,11 +202,17 @@ async fn get_run_summary(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    ensure_observability_allowed(&state)?;
-    validate_id(&run_id, "run id")?;
-    let in_memory = run_state_in_memory(&state, &run_id).await;
-    let io_state = Arc::clone(&state);
-    let io_run_id = run_id.clone();
+    summarize_run(&state, &run_id).await.map(Json)
+}
+
+/// The summary `GET /api/runs/{run_id}/summary` returns for run `run_id`,
+/// which the MCP `run_status` tool returns too.
+pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result<Value, ApiError> {
+    ensure_observability_allowed(state)?;
+    validate_id(run_id, "run id")?;
+    let in_memory = run_state_in_memory(state, run_id).await;
+    let io_state = Arc::clone(state);
+    let io_run_id = run_id.to_string();
     let page = blocking_io(move || {
         read_for_run(
             &io_state,
@@ -223,7 +229,7 @@ async fn get_run_summary(
         return Err(ApiError::not_found(format!("run '{run_id}' not found")));
     }
     let events = page.map(|page| page.events).unwrap_or_default();
-    Ok(Json(run_summary(&run_id, &events, in_memory)))
+    Ok(run_summary(run_id, &events, in_memory))
 }
 
 /// What this server holds of run `run_id` in memory: the state of its

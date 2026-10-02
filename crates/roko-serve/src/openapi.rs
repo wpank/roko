@@ -2119,9 +2119,10 @@ mod tests {
 
     /// Routers `routes::build_router` mounts at the server root, not under
     /// `/api`: their paths outside `/api/` are not part of this document.
-    const ROOT_ROUTERS: [(&str, &str); 7] = [
+    const ROOT_ROUTERS: [(&str, &str); 8] = [
         ("routes/ws.rs", "routes"),
         ("routes/relay_proxy.rs", "routes"),
+        ("routes/mcp.rs", "routes"),
         ("terminal.rs", "routes"),
         ("routes/shared_runs.rs", "public_routes"),
         ("routes/webhooks.rs", "public_routes"),

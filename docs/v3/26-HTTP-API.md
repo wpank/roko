@@ -1039,6 +1039,30 @@ The defaults are the safe choice, and each opt-out is an explicit `[serve]` key:
 | GET/POST | `/api/workspaces` | Multi-workspace management |
 | GET | `/api/swe-bench/*` | SWE-bench evaluation routes |
 
+### 8.41 MCP for chat hosts
+
+`POST /mcp` (no `/api/` prefix) lets a host such as Hermes or OpenClaw call Roko
+as an MCP tool server. It speaks MCP's Streamable HTTP transport with one JSON
+response per request and no SSE stream: `initialize`, `ping`, `tools/list` and
+`tools/call`; a notification such as `notifications/initialized` gets 202 with no
+body, and protocol errors are JSON-RPC errors. With auth on it takes the API's
+key, scope and RBAC checks (`read` scope, `dashboard:view`), and `tools/call`
+checks each tool's own scope. A request whose `Origin` is not this machine is
+refused with 403, so a web page cannot reach it through DNS rebinding; hosts
+call it from outside a browser and send no `Origin`.
+
+The tools and their arguments are the contract with hosts. Both only read
+(`annotations.readOnlyHint: true`), and each returns its JSON as text and as
+`structuredContent`; a tool's own failure, such as an unknown run, is a result
+with `isError: true`.
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `run_status` | `run_id` (string, required); `wait_secs` (integer, 0 to 30, default 0) | The run's summary, as `GET /api/runs/{run_id}/summary` returns it, once its state changes, it has ended, or `wait_secs` pass |
+| `recall` | `query` (string, required); `limit` (integer, 1 to 50, default 5) | The knowledge store's entries on `query`, most relevant first, as `GET /api/knowledge` returns them |
+
+There is no `remember`: personal memory stays with the host.
+
 ---
 
 ## 9. Removed Routes (Deprecation)

@@ -142,8 +142,19 @@ async fn knowledge_query(
     State(state): State<Arc<AppState>>,
     Query(params): Query<KnowledgeQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
-    if params.q.trim().is_empty() {
-        return Ok(Json(json!({ "results": [], "total": 0 })));
+    query_knowledge(&state, &params.q, params.limit).map(Json)
+}
+
+/// What the knowledge store holds on `query`: at most `limit` entries, most
+/// relevant first, as `{ "results", "total" }`. A blank query finds nothing.
+/// The MCP `recall` tool answers with it too.
+pub(super) fn query_knowledge(
+    state: &AppState,
+    query: &str,
+    limit: usize,
+) -> Result<Value, ApiError> {
+    if query.trim().is_empty() {
+        return Ok(json!({ "results": [], "total": 0 }));
     }
 
     let layout = &state.layout;
@@ -151,14 +162,14 @@ async fn knowledge_query(
 
     let started = Instant::now();
     let results = store
-        .query(&params.q, params.limit)
+        .query(query, limit)
         .map_err(|e| ApiError::internal(format!("knowledge query failed: {e}")))?;
 
     let total = results.len();
     crate::emit_lens_observation(
-        &state,
+        state,
         ObservableEvent::MemoryRetrieved {
-            query: params.q.clone(),
+            query: query.to_string(),
             results: total,
             duration_ms: started.elapsed().as_millis() as u64,
         },
@@ -177,10 +188,10 @@ async fn knowledge_query(
         })
         .collect();
 
-    Ok(Json(json!({
+    Ok(json!({
         "results": entries,
         "total": total,
-    })))
+    }))
 }
 
 // ─── RAG-14: Retrieval stats and query routes ────────────────────────────────

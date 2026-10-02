@@ -81,7 +81,10 @@ use crate::model_router::{
 };
 use crate::pareto::{ModelObservation, compute_pareto_frontier};
 use crate::provider_health::ProviderHealthRegistry;
-use crate::routing_log::{CandidateEntry, RoutingDecisionLog, RoutingDecisionMeta, RoutingLogger};
+use crate::routing_log::{
+    CandidateEntry, ROUTE_DECISION_POINT, RouteProposals, RoutingDecisionLog, RoutingDecisionMeta,
+    RoutingLogger,
+};
 use crate::verdict_scorer::{VerdictHistory, VerdictRecord};
 
 // ─── CascadeRouter ──────────────────────────────────────────────────────────
@@ -2257,11 +2260,13 @@ impl CascadeRouter {
                 explanation
                     .candidates
                     .iter()
-                    .map(|candidate| CandidateEntry {
-                        model: candidate.slug.clone(),
-                        provider: log.provider_for_model(&candidate.slug),
-                        score: candidate.score,
-                        disqualified: log.disqualified_reason(&candidate.slug),
+                    .map(|candidate| {
+                        CandidateEntry::new(
+                            candidate.slug.clone(),
+                            log.provider_for_model(&candidate.slug),
+                            candidate.score,
+                            log.disqualified_reason(&candidate.slug),
+                        )
                     })
                     .collect::<Vec<_>>()
             })
@@ -2273,21 +2278,21 @@ impl CascadeRouter {
         {
             candidates.insert(
                 0,
-                CandidateEntry {
-                    model: selected_model.to_string(),
-                    provider: log.provider_for_model(selected_model),
-                    score: 1.0,
-                    disqualified: log.disqualified_reason(selected_model),
-                },
+                CandidateEntry::new(
+                    selected_model,
+                    log.provider_for_model(selected_model),
+                    1.0,
+                    log.disqualified_reason(selected_model),
+                ),
             );
         }
         if candidates.is_empty() {
-            candidates.push(CandidateEntry {
-                model: selected_model.to_string(),
-                provider: log.provider_for_model(selected_model),
-                score: 1.0,
-                disqualified: log.disqualified_reason(selected_model),
-            });
+            candidates.push(CandidateEntry::new(
+                selected_model,
+                log.provider_for_model(selected_model),
+                1.0,
+                log.disqualified_reason(selected_model),
+            ));
         }
 
         let record = RoutingDecisionLog {
@@ -2310,6 +2315,11 @@ impl CascadeRouter {
             source: None,
             default_model: None,
             propensity: None,
+            decision_point: ROUTE_DECISION_POINT.to_string(),
+            proposals: RouteProposals::default(),
+            fallback_reason: None,
+            influences: Vec::new(),
+            state: None,
         };
         log.append(&record)?;
         Ok(record)

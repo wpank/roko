@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 9 anchor gone · 67 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 9 anchor gone · 63 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -52,7 +52,7 @@ _0 more open · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-10-01
 
-_10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_9 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -83,14 +83,14 @@ _6 more open · 4 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 - **P2** [gap-3d5cce](items/gap-3d5cce-provider-f036-actcell-cognitive-loop-llm-dispatch.md) ActCell (cognitive loop LLM dispatch point) is a stub pass-through · verified 2026-10-01
 - **P2** [gap-666a64](items/gap-666a64-deprecate-all-jsonl-file-i-o-statehub.md) Deprecate All JSONL File I/O — StateHub as Single Source of Truth · verified 2026-10-01
 
-_6 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
+_5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
 
 ## 12. Hermes and ACP integration
 
-- **P1** [bug-f0f108](items/bug-f0f108-refactor-p0-01-acp-bridge-crash-under.md) ACP bridge crash under sustained load (analyzed, not fixed) [bug] · size M · verified 2026-10-01
 - **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
-- **P1** [gap-55eada](items/gap-55eada-provider-f007-agentcontract-tool-policy-not-applied.md) AgentContract tool policy not applied to ACP tool dispatch · size M · verified 2026-10-01
+- **P2** [gap-ac78fb](items/gap-ac78fb-acp-elicitation-notices-and-interactive-ux-primitives.md) ACP Elicitation, Notices, and Interactive UX Primitives · size L · verified 2026-09-29
+- **P2** [gap-31f96f](items/gap-31f96f-acp-registry-publication-and-editor-compatibility-matrix.md) ACP Registry Publication and Editor Compatibility Matrix · verified 2026-09-29
 
-_4 more open · `goal = "hermes"`_
+_2 more open · `goal = "hermes"`_
 
 5 open items have no goal (later); they are listed in `STATUS.md`.

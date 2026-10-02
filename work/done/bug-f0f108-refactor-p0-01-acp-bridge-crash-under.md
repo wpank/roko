@@ -2,16 +2,16 @@
 id = "bug-f0f108"
 kind = "bug"
 title = "ACP bridge crash under sustained load (analyzed, not fixed)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
 goal = "hermes"
 subsystem = ["roko-acp/bridge_events"]
 created = 2026-09-15
-updated = 2026-09-29
-last_verified = 2026-10-01
-last_verified_rev = "a17d9d766"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "2f82da96a"
 source = "tmp/archive/refactoring-audit-2026-09-21/IMPLEMENTATION-CHECKLIST.md#p0-critical-data-loss-crashes-correctness"
 discovered_from = "audit:tmp/archive/refactoring-audit-2026-09-21/IMPLEMENTATION-CHECKLIST.md#p0-critical-data-loss-crashes-correctness"
 anchors = ["crates/roko-acp/src/acp_adapter.rs::AcpAdapter", "crates/roko-acp/src/bridge_events/permissions.rs::request_permission_for_event", "crates/roko-acp/src/bridge_events/protocol.rs::PermissionReplyChannel", "crates/roko-acp/src/bridge_events/mod.rs:345", "crates/roko-acp/src/bridge_events/mod.rs:551"]
@@ -19,6 +19,16 @@ links = { depends_on = [], blocks = [], related = ["bug-c59522", "bug-b2a9de"], 
 
 [[verify]]
 command = "! grep -q 'from_millis(25)' crates/roko-acp/src/bridge_events/permissions.rs && grep -rqw 'fn acp_adapter_delivers_workflow_completed_when_channel_full' crates/roko-acp/ && cargo test -p roko-acp acp_adapter_delivers_workflow_completed_when_channel_full"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:50:28Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-01T17:36:42Z"
+forced = false
+evidence = "implemented by wk-specq (d6f084175, merged through an earlier batch-6 gate): a full channel can't drop Complete, the permission wait no longer polls, a failed experiment task is logged. acp_adapter_delivers_workflow_completed_when_channel_full and the permission tests pass in roko-acp's lib tests (gate 6i at f4347b8eb, merged in f88210c84); plan step 5 (send timeouts, assistant_text cap, concurrent requests) was delivered by bug-c638a4"
 +++
 
 ## Problem

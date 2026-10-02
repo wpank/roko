@@ -2,15 +2,15 @@
 id = "gap-d6fd85"
 kind = "gap"
 title = "Per-Plan Companion Document Generation"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "features"
 subsystem = ["roko-cli/commands"]
 created = 2026-09-21
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "d9e79e9d8"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "2f82da96a"
 source = "tmp/backlog/archive/397-companion-document-generation.md#397 — Per-Plan Companion Document Generation"
 discovered_from = "audit:tmp/backlog/archive/397-companion-document-generation.md#397 — Per-Plan Companion Document Generation"
 anchors = ["crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/main.rs::PlanCmd", "crates/roko-compose/src/templates/implementer.rs"]
@@ -18,6 +18,15 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rq 'brief.md' crates/roko-cli/src"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:50:29Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+claimed_at = "2026-10-01T16:12:31Z"
+forced = false
+evidence = "implemented by wk-specq (phases 1 and 2 of the source spec): roko plan prepare writes brief.md and prd-extract.md, and dispatch renders the brief into the prompt. prepare_writes_the_companion_documents_and_keeps_them and plan_brief_reaches_the_prompt pass in roko-cli's lib tests (gate 6j at b35631307); phase 3 (LLM-written decomposition and rubric) is scoped separately by the source spec"
 +++
 Every agent dispatched by roko receives a flat 9-layer system prompt assembled at dispatch time. That prompt contains the plan content and tasks, but no pre-computed orientation artifacts. In mori, agents reliably received up to 14 companion files alongside their task: a deterministic `brief.md`…
 

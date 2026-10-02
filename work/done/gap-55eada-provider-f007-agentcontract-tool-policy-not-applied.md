@@ -2,16 +2,16 @@
 id = "gap-55eada"
 kind = "gap"
 title = "AgentContract tool policy not applied to ACP tool dispatch"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
 goal = "hermes"
 subsystem = ["roko-acp/bridge_events"]
 created = 2026-09-01
-updated = 2026-09-29
-last_verified = 2026-10-01
-last_verified_rev = "a17d9d766"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "2f82da96a"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F007"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F007"
 anchors = ["crates/roko-acp/src/bridge_events/dispatch.rs::run_openai_compat_mcp_tool_loop", "crates/roko-acp/src/bridge_events/dispatch.rs::run_anthropic_tool_loop", "crates/roko-acp/src/bridge_events/tools.rs::AcpMcpToolHandler", "crates/roko-acp/src/bridge_events/tools.rs::AcpBuiltinToolHandler", "crates/roko-acp/src/bridge_events/cost.rs::acp_role_for_mode", "crates/roko-agent/src/safety/mod.rs::with_role"]
@@ -19,6 +19,16 @@ links = { depends_on = ["bug-bfb8ce"], blocks = [], related = ["gap-da70fd"], su
 
 [[verify]]
 command = "grep -rqw 'fn mcp_tool_loop_denies_tool_outside_role_contract' crates/roko-acp/src/ && grep -rqw 'fn mcp_tool_loop_allows_tool_permitted_by_role_contract' crates/roko-acp/src/ && cargo test -p roko-acp mcp_tool_loop_"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:50:29Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-01T17:36:42Z"
+forced = false
+evidence = "implemented by wk-specq: ACP's Anthropic and OpenAI-compatible MCP tool loops build their dispatcher with a role-scoped safety layer, so a call outside the session's role contract is denied and a permitted one runs. mcp_tool_loop_ tests pass in roko-acp's lib tests (gate 6i at f4347b8eb, merged in f88210c84); plan step 5(b) (remote MCP names against ForbiddenTools) is outside Done-when"
 +++
 
 ## Problem

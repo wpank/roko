@@ -2,15 +2,15 @@
 id = "gap-4e35b0"
 kind = "gap"
 title = "No alerting when provider transitions to Open (tripped) state"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
 subsystem = ["roko-learn/provider_health"]
 created = 2026-09-01
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "2f82da96a"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F030"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F030"
 anchors = ["crates/roko-learn/src/provider_health.rs::ProviderHealth::record_failure", "crates/roko-learn/src/provider_health.rs::ProviderHealthRegistry::record_failure"]
@@ -18,6 +18,15 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "sed -n '/pub fn record_failure(&self, provider_id/,/^    }/p' crates/roko-learn/src/provider_health.rs | grep -q 'warn!'"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:50:30Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+claimed_at = "2026-10-01T16:12:13Z"
+forced = false
+evidence = "implemented by wk-tiers: ProviderHealthRegistry::record_failure logs one warn! naming the provider, error class, failure count and cooldown end when a circuit trips to Open. The verify passes; roko-learn lib tests pass (gate 6i at f4347b8eb). A StateHub or Bus event for the dashboard is not done (roko-learn can't reach it)"
 +++
 When the circuit breaker trips to `Open` state after 3 consecutive failures, no alert, log at warn level, or push notification is emitted. Operators have no way to know a provider has been automatically disabled unless they poll the health endpoint.
 

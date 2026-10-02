@@ -387,6 +387,9 @@ pub async fn collect_stream_to_response(
     // response's usage source stays honest (bug-c65bfe).
     let mut usage_reported = false;
     let mut finish_reason = "stop".to_string();
+    // `unknown` (a stream that ended without naming why) never replaces a
+    // finish reason a chunk did name (backlog 1111).
+    let mut finish_named = false;
     let mut ttft_ms: Option<u64> = None;
     // The model the stream's chunks last named (bug-bfd241).
     let mut model: Option<String> = None;
@@ -463,7 +466,11 @@ pub async fn collect_stream_to_response(
                 usage_reported = true;
             }
             StreamEventKind::Done { finish_reason: fr } => {
-                finish_reason = fr;
+                let named = fr != crate::streaming::UNKNOWN_FINISH_REASON;
+                if named || !finish_named {
+                    finish_reason = fr;
+                    finish_named |= named;
+                }
             }
         }
     }

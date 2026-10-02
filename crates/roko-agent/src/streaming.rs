@@ -193,31 +193,86 @@ impl StreamJsonParser for ClaudeCliParser {
     }
 }
 
-/// Parse one SSE line of an OpenAI-compatible stream into its events.
+/// The finish reason of a stream that ended without naming one. It
+/// normalises to `FinishReason::Error("unknown")`, never to `Stop`, so a
+/// cut connection or a missing finish reason does not read as a normal end
+/// (backlog 1111).
+pub const UNKNOWN_FINISH_REASON: &str = "unknown";
+
+/// One parsed line of an OpenAI-compatible SSE stream.
+#[derive(Debug)]
+pub enum SseLine {
+    /// The events a chunk carries: none for a non-`data:` line, a payload
+    /// that is not JSON, or a chunk with nothing new.
+    Events(Vec<StreamEvent>),
+    /// The `[DONE]` terminator. It names no finish reason.
+    Done,
+    /// A provider `error` object sent in place of a chunk.
+    Error(SseError),
+}
+
+/// A provider `error` object in an SSE stream (`data: {"error": {...}}`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SseError {
+    /// `error.code`, as text: some providers send a number, some a name.
+    pub code: Option<String>,
+    /// `error.type`.
+    pub error_type: Option<String>,
+    /// `error.message`, or the raw error when it has none.
+    pub message: String,
+}
+
+impl SseError {
+    /// `error.code` read as an HTTP status, when it is one.
+    #[must_use]
+    pub fn status(&self) -> Option<u16> {
+        self.code
+            .as_deref()?
+            .parse::<u16>()
+            .ok()
+            .filter(|status| (400..=599).contains(status))
+    }
+}
+
+impl std::fmt::Display for SseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("provider stream error")?;
+        if let Some(error_type) = &self.error_type {
+            write!(f, " type={error_type}")?;
+        }
+        if let Some(code) = &self.code {
+            write!(f, " code={code}")?;
+        }
+        write!(f, ": {}", self.message)
+    }
+}
+
+/// Parse one SSE line of an OpenAI-compatible stream, telling a chunk's
+/// events from the `[DONE]` terminator and from a provider error object.
 ///
-/// A non-`data:` line, or a payload that is not JSON, yields no events. A
-/// chunk yields every event it carries, in order: reasoning, content, one
+/// A chunk yields every event it carries, in order: reasoning, content, one
 /// tool-call start or delta per `tool_calls` element, usage, then the finish
 /// reason (backlog 1110). Every event keeps the model and session ids its
 /// chunk named.
-pub fn parse_sse_line(line: &str) -> Vec<StreamEvent> {
+pub fn parse_sse_frame(line: &str) -> SseLine {
     // Strip "data:" prefix; a non-data: line carries no events.
     let Some(rest) = line.strip_prefix("data:") else {
-        return Vec::new();
+        return SseLine::Events(Vec::new());
     };
     // Strip exactly one leading space per RFC 8895 §9.2.6, matching the
     // shared sse::extract_sse_data / strip_one_space behaviour.
     let value = rest.strip_prefix(' ').unwrap_or(rest);
 
     if value == "[DONE]" {
-        return vec![StreamEvent::now(StreamEventKind::Done {
-            finish_reason: "stop".to_string(),
-        })];
+        return SseLine::Done;
     }
 
     let Ok(json) = serde_json::from_str::<Value>(value) else {
-        return Vec::new();
+        return SseLine::Events(Vec::new());
     };
+    if let Some(error) = sse_error(&json) {
+        return SseLine::Error(error);
+    }
     // Each chunk names the model that serves it (bug-bfd241), and some name
     // the response, session and thread ids.
     let model = json
@@ -227,14 +282,53 @@ pub fn parse_sse_line(line: &str) -> Vec<StreamEvent> {
         .filter(|model| !model.is_empty())
         .map(str::to_string);
     let session = crate::tool_loop::session_ids(&json);
-    parse_sse_chunk(&json)
-        .into_iter()
-        .map(|event| {
-            event
-                .with_model(model.clone())
-                .with_session(session.clone())
-        })
-        .collect()
+    SseLine::Events(
+        parse_sse_chunk(&json)
+            .into_iter()
+            .map(|event| {
+                event
+                    .with_model(model.clone())
+                    .with_session(session.clone())
+            })
+            .collect(),
+    )
+}
+
+/// Parse one SSE line of an OpenAI-compatible stream into its events, for a
+/// caller that keeps no state across lines (see [`parse_sse_frame`]).
+///
+/// `[DONE]` yields `Done` with [`UNKNOWN_FINISH_REASON`]: the terminator
+/// names no reason, and collecting the stream never lets `unknown` replace
+/// a reason a chunk named. An error object yields nothing here; read it with
+/// [`parse_sse_frame`].
+pub fn parse_sse_line(line: &str) -> Vec<StreamEvent> {
+    match parse_sse_frame(line) {
+        SseLine::Events(events) => events,
+        SseLine::Done => vec![StreamEvent::now(StreamEventKind::Done {
+            finish_reason: UNKNOWN_FINISH_REASON.to_string(),
+        })],
+        SseLine::Error(_) => Vec::new(),
+    }
+}
+
+/// The provider error object a chunk carries, if any: a non-null `error`
+/// field, either an object with `message`, `type` and `code`, or a string.
+fn sse_error(json: &Value) -> Option<SseError> {
+    let error = json.get("error").filter(|error| !error.is_null())?;
+    let text = |value: Option<&Value>| match value {
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(Value::Number(number)) => Some(number.to_string()),
+        _ => None,
+    };
+    let message = match error {
+        Value::String(message) => message.clone(),
+        _ => text(error.get("message")).unwrap_or_else(|| error.to_string()),
+    };
+    Some(SseError {
+        code: text(error.get("code")),
+        error_type: text(error.get("type")),
+        message,
+    })
 }
 
 /// The events of an OpenAI-compatible stream chunk, parsed from its JSON.
@@ -454,14 +548,35 @@ mod tests {
         ));
     }
 
+    /// `[DONE]` names no finish reason, so it does not read as `stop`
+    /// (backlog 1111).
     #[test]
     fn sse_parser_reads_done_marker() {
         let event = first_event("data: [DONE]");
 
         assert!(matches!(
             event.map(|e| e.kind),
-            Some(StreamEventKind::Done { finish_reason }) if finish_reason == "stop"
+            Some(StreamEventKind::Done { finish_reason }) if finish_reason == "unknown"
         ));
+        assert!(matches!(
+            super::parse_sse_frame("data: [DONE]"),
+            super::SseLine::Done
+        ));
+    }
+
+    #[test]
+    fn sse_parser_reports_error_objects() {
+        let line = r#"data: {"error":{"message":"Rate limit reached","type":"rate_limit_error","code":429}}"#;
+        let super::SseLine::Error(error) = super::parse_sse_frame(line) else {
+            panic!("an error object is an error");
+        };
+        assert_eq!(error.message, "Rate limit reached");
+        assert_eq!(error.error_type.as_deref(), Some("rate_limit_error"));
+        assert_eq!(error.status(), Some(429));
+        assert!(parse_sse_line(line).is_empty());
+
+        let bare = super::parse_sse_frame(r#"data: {"error":"upstream closed"}"#);
+        assert!(matches!(bare, super::SseLine::Error(error) if error.message == "upstream closed"));
     }
 
     /// backlog 1110: a chunk yields every field it carries, in order, and

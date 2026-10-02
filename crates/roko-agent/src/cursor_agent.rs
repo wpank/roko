@@ -729,11 +729,13 @@ impl LlmBackend for CursorAgent {
                 Self::push_stream_line(&pending, &tx).await;
             }
 
-            // Ensure a Done event is always emitted.
+            // Ensure a Done event is always emitted. It names no reason:
+            // `unknown` never replaces a finish reason a chunk named, and a
+            // stream that named none does not read as `stop` (backlog 1111).
             if !sent_done {
                 let _ = tx
                     .send(Ok(StreamEvent::now(StreamEventKind::Done {
-                        finish_reason: "stop".to_string(),
+                        finish_reason: crate::streaming::UNKNOWN_FINISH_REASON.to_string(),
                     })))
                     .await;
             }

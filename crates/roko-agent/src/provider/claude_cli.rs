@@ -390,7 +390,9 @@ mod tests {
         assert!(
             matches!(
                 refused,
-                Err(AgentCreationError::ToolAllowlistUnsupported(ProviderKind::CodexCli))
+                Err(AgentCreationError::ToolAllowlistUnsupported(
+                    ProviderKind::CodexCli
+                ))
             ),
             "{:?}",
             refused.err()

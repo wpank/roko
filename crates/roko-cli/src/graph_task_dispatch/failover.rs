@@ -342,7 +342,12 @@ impl GraphTaskDispatcher {
             ));
         }
         if let Err(error) = crate::dispatch_v2::validate_contract_support(request, &target) {
-            return Some(refusal("contract_unsupported", error.to_string(), None, true));
+            return Some(refusal(
+                "contract_unsupported",
+                error.to_string(),
+                None,
+                true,
+            ));
         }
         if self
             .config
@@ -1167,7 +1172,9 @@ printf '%s\n' '{"type":"result","session_id":"s","total_cost_usd":0,"usage":{"in
         config.agent.default_model = "claude-sonnet-4-6".to_string();
         config.agent.bare_mode = false;
         let claude_cli = provider(ProviderKind::ClaudeCli, Some(&claude), None);
-        config.providers.insert("claude_cli".to_string(), claude_cli);
+        config
+            .providers
+            .insert("claude_cli".to_string(), claude_cli);
         let codex_cli = provider(ProviderKind::CodexCli, Some(&codex), None);
         config.providers.insert("codex_cli".to_string(), codex_cli);
         for (key, provider_id, slug) in [
@@ -1224,11 +1231,17 @@ printf '%s\n' '{"type":"result","session_id":"s","total_cost_usd":0,"usage":{"in
         .await;
         let executed = &verdicts[0]["executed"];
         assert_eq!(executed["provider"], "claude_cli");
-        assert_eq!(executed["failover_chain"], serde_json::json!(["codex-model"]));
+        assert_eq!(
+            executed["failover_chain"],
+            serde_json::json!(["codex-model"])
+        );
         let reason = executed["failover_reason"]
             .as_str()
             .expect("failover reason");
-        assert!(reason.contains("cannot enforce the resolved agent contract"), "{reason}");
+        assert!(
+            reason.contains("cannot enforce the resolved agent contract"),
+            "{reason}"
+        );
     }
 
     /// `roko init` workspaces configure only `claude_cli` and the default

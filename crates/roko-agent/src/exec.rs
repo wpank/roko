@@ -287,7 +287,9 @@ fn codex_line_violation(
     let outside = file_change_paths(item)
         .into_iter()
         .find(|path| !crate::safety::path::is_within_worktree(root, &root.join(path)))?;
-    Some(format!("file_change outside the worktree denied by policy: {outside}"))
+    Some(format!(
+        "file_change outside the worktree denied by policy: {outside}"
+    ))
 }
 
 /// What a denied operation `item` was, for the violation message.
@@ -1644,7 +1646,10 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_inp
         let deny_all = CodexOperationPolicy::deny_all();
         let search = r#"{"type":"item.started","item":{"type":"web_search","query":"rust"}}"#;
         let violation = codex_line_violation(search, &deny_all, None);
-        assert_eq!(violation.as_deref(), Some("web_search denied by policy: rust"));
+        assert_eq!(
+            violation.as_deref(),
+            Some("web_search denied by policy: rust")
+        );
         let mcp = concat!(
             r#"{"type":"item.started","item":{"type":"mcp_tool_call","#,
             r#""server":"github","tool":"delete_repo"}}"#,
@@ -1678,7 +1683,10 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_inp
         for path in ["../escape.rs", "/etc/passwd"] {
             let violation = codex_line_violation(&change(path), &policy, Some(root));
             let violation = violation.expect(path);
-            assert!(violation.starts_with("file_change outside the worktree"), "{violation}");
+            assert!(
+                violation.starts_with("file_change outside the worktree"),
+                "{violation}"
+            );
         }
         // Without a worktree to hold changes to, only the policy applies.
         let violation = codex_line_violation(&change("/etc/passwd"), &policy, None);

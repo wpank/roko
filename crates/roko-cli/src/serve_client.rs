@@ -20,6 +20,7 @@
 //! - [`WorkspaceServerClient::submit_plan_run`]
 //! - [`WorkspaceServerClient::cancel_plan_run`]
 //! - [`WorkspaceServerClient::pause_plan_run`]
+//! - [`WorkspaceServerClient::resume_plan_run`]
 //! - [`WorkspaceServerClient::plan_run_finished`]
 
 use std::path::Path;
@@ -384,14 +385,34 @@ impl WorkspaceServerClient {
     }
 
     /// `POST /api/plans/{run_id}/pause` — pause an active plan run. The server
-    /// stops it at its checkpoint, and running the plan again resumes it.
+    /// holds it (decision 1206): no new task starts until resume, and running
+    /// attempts finish.
     ///
     /// # Errors
     ///
     /// Returns an error if the request fails or the server returns an error
     /// status.
     pub async fn pause_plan_run(&self, run_id: &str) -> std::result::Result<(), ServeClientError> {
-        let url = format!("{}/api/plans/{run_id}/pause", self.base_url);
+        self.post_run_action(run_id, "pause").await
+    }
+
+    /// `POST /api/plans/{run_id}/resume` — resume a held plan run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the server returns an error
+    /// status.
+    pub async fn resume_plan_run(&self, run_id: &str) -> std::result::Result<(), ServeClientError> {
+        self.post_run_action(run_id, "resume").await
+    }
+
+    /// `POST /api/plans/{run_id}/{action}`, failing on an error status.
+    async fn post_run_action(
+        &self,
+        run_id: &str,
+        action: &str,
+    ) -> std::result::Result<(), ServeClientError> {
+        let url = format!("{}/api/plans/{run_id}/{action}", self.base_url);
         let resp = self
             .client
             .post(&url)
@@ -406,7 +427,7 @@ impl WorkspaceServerClient {
             let status = resp.status().as_u16();
             let body_text = resp.text().await.unwrap_or_default();
             return Err(ServeClientError::Other(anyhow::anyhow!(
-                "POST /api/plans/{run_id}/pause returned {status}: {body_text}"
+                "POST /api/plans/{run_id}/{action} returned {status}: {body_text}"
             )));
         }
 
@@ -694,13 +715,16 @@ pub async fn run_plan_via_server(
 
 /// Follow a server-managed plan run on the TUI, exiting when the run ends or
 /// when Ctrl-C / SIGTERM arrives (in which case the run is cancelled).
-/// A client TUI's pause acknowledgement: the server's pause stops the run.
-const SERVER_PAUSED: &str = "paused on the server; running the plan again resumes it";
+/// A client TUI's pause acknowledgement: the server holds the run.
+const SERVER_PAUSED: &str = "paused: no new task starts until resume; running attempts finish";
 
-/// The command channel of a client TUI following `run_id` (gap-1555ac). Pause
-/// and cancel go to the server that owns the run. It has no resume, retry,
-/// repair, skip or approval endpoint for such a run, so those are rejected,
-/// saying so.
+/// A client TUI's resume acknowledgement.
+const SERVER_RESUMED: &str = "resumed: tasks start again";
+
+/// The command channel of a client TUI following `run_id` (gap-1555ac).
+/// Pause, resume and cancel go to the server that owns the run. It has no
+/// retry, repair, skip or approval endpoint for such a run, so those are
+/// rejected, saying so.
 fn server_command_bridge(
     client: WorkspaceServerClient,
     run_id: &str,
@@ -713,6 +737,9 @@ fn server_command_bridge(
         async move {
             let (result, done) = match command.kind {
                 ExecutionCommandKind::Pause => (client.pause_plan_run(&run).await, SERVER_PAUSED),
+                ExecutionCommandKind::Resume => {
+                    (client.resume_plan_run(&run).await, SERVER_RESUMED)
+                }
                 ExecutionCommandKind::Cancel => (client.cancel_plan_run(&run).await, "cancelled"),
                 other => {
                     let reason = format!("{other} is not available for a server-owned run");

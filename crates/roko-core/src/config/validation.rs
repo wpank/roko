@@ -225,6 +225,18 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         ));
     }
 
+    // M4's section (S05 §5, §4.9): the audit floor is locked at 0.05, rho
+    // lies between it and 0.5, shares lie in [0, 1], and a model glob
+    // belongs to one family.
+    for (key, problem) in config.audit.problems() {
+        results.push(invariant(
+            11,
+            InvariantSeverity::Error,
+            format!("audit.{key}"),
+            problem,
+        ));
+    }
+
     results
 }
 

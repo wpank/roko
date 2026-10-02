@@ -1673,11 +1673,13 @@ impl AgentDispatcherV2 {
             Some(mark) => mark.tool_calls().await,
             None => Vec::new(),
         };
+        let tool_policy = tool_policy_record(&request, &created.target, &result);
         Ok(AgentResultDispatch {
             target: created.target,
             result,
             events,
             tool_calls,
+            tool_policy,
         })
     }
 
@@ -1873,11 +1875,13 @@ impl AgentDispatcherV2 {
             Some(mark) => mark.tool_calls().await,
             None => Vec::new(),
         };
+        let tool_policy = tool_policy_record(&request, &target, &result);
         Ok(AgentResultDispatch {
             target,
             result,
             events,
             tool_calls,
+            tool_policy,
         })
     }
 
@@ -2247,6 +2251,10 @@ pub struct AgentResultDispatch {
     /// no audit is attached, the request names no attempt, or the provider
     /// ran its own tools.
     pub tool_calls: Vec<ToolCallRecord>,
+    /// The tool policy the request's contract asked for and what the
+    /// provider enforced, for a provider that runs its own tools
+    /// (gap-baab0a).
+    pub tool_policy: Option<roko_learn::telemetry::ToolPolicyRecord>,
 }
 
 /// A tool call a dispatch made, as the tool audit (gap-4d5e2d) or the
@@ -2423,6 +2431,40 @@ pub(crate) fn usage_cost_without_cache(
     }
     let pricing = roko_core::config::model_registry::builtin_pricing(model_slug)?;
     Some(usage.cost_without_cache(pricing.input_per_m, pricing.output_per_m))
+}
+
+/// The tool policy `request`'s contract asked for and what `target`'s
+/// provider enforced, for the attempt's record (gap-baab0a). Codex runs its
+/// own tools under roko's operation broker: the record lists the operations
+/// the broker denies, whether its network was switched off, and the denial
+/// that stopped `result`, if any. `None` for other providers and for a
+/// request without a contract.
+fn tool_policy_record(
+    request: &AgentDispatchRequest,
+    target: &ProviderDispatchSpec,
+    result: &AgentResult,
+) -> Option<roko_learn::telemetry::ToolPolicyRecord> {
+    let contract = request.agent_contract.as_ref()?;
+    if target.provider_kind != ProviderKind::CodexCli {
+        return None;
+    }
+    let policy = roko_agent::exec::CodexOperationPolicy::from_contract(contract);
+    let denial = result
+        .output
+        .tag(roko_agent::exec::CODEX_POLICY_DENIAL_TAG)
+        .map(str::to_string);
+    Some(roko_learn::telemetry::ToolPolicyRecord {
+        allowed_tools: contract.allowed_tools.clone(),
+        forbidden_tools: contract.forbidden_tool_names(),
+        enforcement: "broker".to_string(),
+        denied_operations: policy
+            .denied_operations()
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        network_off: !contract.permits_network(),
+        denial,
+    })
 }
 
 fn dispatch_events_from_result(
@@ -3484,14 +3526,10 @@ mod tests {
         ));
     }
 
-    /// gap-baab0a: Codex cannot enforce a tool allowlist, so a contract with
-    /// one is refused for it. Codex with forbidden tools alone passes, and so
-    /// does another provider with the allowlist.
-    #[test]
-    fn codex_cannot_take_a_contract_with_a_tool_allowlist() {
-        use roko_agent::safety::contract::GovernanceRule;
-
-        let target = |kind: ProviderKind| ProviderDispatchSpec {
+    /// A resolved target on a provider of `kind`, for checks that read only
+    /// the kind.
+    fn kind_target(kind: ProviderKind) -> ProviderDispatchSpec {
+        ProviderDispatchSpec {
             provider_id: "p".to_string(),
             provider_kind: kind,
             model_key: "m".to_string(),
@@ -3501,14 +3539,25 @@ mod tests {
             runtime: ProviderRuntime::AgentResultBridge {
                 provider_kind: kind,
             },
-        };
+        }
+    }
+
+    /// gap-baab0a: Codex cannot enforce a tool allowlist, so a contract with
+    /// one is refused for it. Codex with forbidden tools alone passes, and so
+    /// does another provider with the allowlist.
+    #[test]
+    fn codex_cannot_take_a_contract_with_a_tool_allowlist() {
+        use roko_agent::safety::contract::GovernanceRule;
+
         let mut request = fake_claude_request(Path::new("."), 1_000);
         request.agent_contract = Some(AgentContract {
             allowed_tools: Some(vec!["read_file".to_string(), "grep".to_string()]),
             ..AgentContract::default()
         });
 
-        let refused = validate_contract_support(&request, &target(ProviderKind::CodexCli));
+        let codex = kind_target(ProviderKind::CodexCli);
+        let claude = kind_target(ProviderKind::ClaudeCli);
+        let refused = validate_contract_support(&request, &codex);
         assert!(
             matches!(
                 refused,
@@ -3519,13 +3568,48 @@ mod tests {
             ),
             "{refused:?}"
         );
-        assert!(validate_contract_support(&request, &target(ProviderKind::ClaudeCli)).is_ok());
+        assert!(validate_contract_support(&request, &claude).is_ok());
 
         request.agent_contract = Some(AgentContract {
             governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".to_string()])],
             ..AgentContract::default()
         });
-        assert!(validate_contract_support(&request, &target(ProviderKind::CodexCli)).is_ok());
+        assert!(validate_contract_support(&request, &codex).is_ok());
+    }
+
+    /// gap-baab0a: a Codex attempt records the tool policy its contract
+    /// asked for and what the broker enforced, with the denial that stopped
+    /// it. Other providers record none.
+    #[test]
+    fn codex_attempts_record_their_tool_policy() {
+        use roko_agent::safety::contract::GovernanceRule;
+
+        let mut request = fake_claude_request(Path::new("."), 1_000);
+        request.agent_contract = Some(AgentContract {
+            governance: vec![GovernanceRule::ForbiddenTools(vec![
+                "web_fetch".to_string(),
+                "web_search".to_string(),
+            ])],
+            ..AgentContract::default()
+        });
+        let denial = "web_search denied by policy: rust";
+        let output = Signal::builder(Kind::AgentOutput)
+            .body(Body::text(format!("Codex operation policy violation: {denial}")))
+            .tag(roko_agent::exec::CODEX_POLICY_DENIAL_TAG, denial)
+            .build();
+        let result = AgentResult::fail(output);
+
+        let codex = kind_target(ProviderKind::CodexCli);
+        let record = tool_policy_record(&request, &codex, &result).expect("a Codex record");
+        assert_eq!(record.allowed_tools, None);
+        assert_eq!(record.forbidden_tools, ["web_fetch", "web_search"]);
+        assert_eq!(record.enforcement, "broker");
+        assert_eq!(record.denied_operations, ["web_search"]);
+        assert!(record.network_off);
+        assert_eq!(record.denial.as_deref(), Some(denial));
+
+        let claude = kind_target(ProviderKind::ClaudeCli);
+        assert_eq!(tool_policy_record(&request, &claude, &result), None);
     }
 
     #[test]

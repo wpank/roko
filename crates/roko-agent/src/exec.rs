@@ -220,7 +220,21 @@ impl CodexOperationPolicy {
     pub fn has_constraints(&self) -> bool {
         !self.denied.is_empty() || self.allowed.is_some()
     }
+
+    /// The operations this policy denies, by their Codex `item.type` names.
+    #[must_use]
+    pub fn denied_operations(&self) -> Vec<&'static str> {
+        ALL_CODEX_OPERATION_TYPES
+            .iter()
+            .filter(|op| !self.permits(op))
+            .map(CodexOperationType::as_item_type)
+            .collect()
+    }
 }
+
+/// Tag on the output of a run the Codex policy broker stopped, naming the
+/// operation it denied (gap-baab0a).
+pub const CODEX_POLICY_DENIAL_TAG: &str = "codex_policy_denial";
 
 const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] = &[
     CodexOperationType::CommandExecution,
@@ -806,9 +820,9 @@ impl Agent for ExecAgent {
                 );
                 // What the stopped run consumed is still spent (bug-dc4d63).
                 let raw_stdout = drain_killed_output(stdout_handle).await;
-                return self.failure_with_usage(
+                return self.policy_denial(
                     input,
-                    &format!("Codex operation policy violation: {violation}"),
+                    &violation,
                     self.run_usage(&full_stdin, &raw_stdout, started),
                 );
             }
@@ -901,9 +915,9 @@ impl Agent for ExecAgent {
                         %violation,
                         "Codex operation denied by policy broker"
                     );
-                    return self.failure_with_usage(
+                    return self.policy_denial(
                         input,
-                        &format!("Codex operation policy violation: {violation}"),
+                        &violation,
                         self.run_usage(&full_stdin, &raw_stdout, started),
                     );
                 }
@@ -1013,12 +1027,37 @@ impl ExecAgent {
         reason: &str,
         usage: UsageObservation,
     ) -> AgentResult {
-        let output = derived_output(input, Kind::AgentOutput, Body::text(reason))
+        self.failure_with_tags(input, reason, usage, &[])
+    }
+
+    /// A run the Codex policy broker stopped at `violation`, which the
+    /// output names in [`CODEX_POLICY_DENIAL_TAG`] (gap-baab0a).
+    fn policy_denial(
+        &self,
+        input: &Signal,
+        violation: &str,
+        usage: UsageObservation,
+    ) -> AgentResult {
+        let reason = format!("Codex operation policy violation: {violation}");
+        let tags = [(CODEX_POLICY_DENIAL_TAG, violation)];
+        self.failure_with_tags(input, &reason, usage, &tags)
+    }
+
+    fn failure_with_tags(
+        &self,
+        input: &Signal,
+        reason: &str,
+        usage: UsageObservation,
+        tags: &[(&str, &str)],
+    ) -> AgentResult {
+        let mut output = derived_output(input, Kind::AgentOutput, Body::text(reason))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
-            .tag("failed", "true")
-            .build();
-        AgentResult::fail(output).with_usage_obs(usage)
+            .tag("failed", "true");
+        for (key, value) in tags {
+            output = output.tag(*key, *value);
+        }
+        AgentResult::fail(output.build()).with_usage_obs(usage)
     }
 
     /// The usage of a run that was sent `stdin` and wrote `raw_stdout`
@@ -1768,6 +1807,8 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_inp
         let text = result.output.body.as_text().unwrap();
         assert!(text.contains("Codex operation policy violation"), "{text}");
         assert!(text.contains("git fsck"), "{text}");
+        let denial = result.output.tag(CODEX_POLICY_DENIAL_TAG);
+        assert_eq!(denial, Some("command_execution denied by policy: git fsck"));
         assert!(run_started.elapsed() < Duration::from_secs(5));
         let pid = std::fs::read_to_string(&pid_file).expect("pid file");
         let pid: u32 = pid.trim().parse().expect("pid");

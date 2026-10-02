@@ -3,11 +3,12 @@
 use super::*;
 use clap::Parser;
 use commands::config_cmd::{
-    ModelListRow, ProviderHealthRow, ProviderLatencySummary, ProviderListRow, build_model_list_row,
-    build_provider_health_row, format_model_rows, format_provider_health_rows,
-    format_provider_rows, select_provider_test_model,
+    ConfigModelCmd, ConfigProviderCmd, ModelListRow, ProviderHealthRow, ProviderLatencySummary,
+    ProviderListRow, build_model_list_row, build_provider_health_row, format_model_rows,
+    format_provider_health_rows, format_provider_rows, select_provider_test_model,
 };
 use commands::dashboard::dashboard_output;
+use commands::learn::InspectSubsystem;
 use commands::knowledge::{
     NEURO_CONFIRMATIONS_FILE, NEURO_KNOWLEDGE_FILE, backup_neuro_store, neuro_live_files,
     restore_neuro_store,

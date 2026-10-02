@@ -489,9 +489,6 @@ pub struct BudgetConfig {
     /// Maximum USD spend per session (across all plans).
     #[serde(default = "BudgetConfig::default_max_session")]
     pub max_session_usd: f64,
-    /// Warn at this percentage of budget consumed.
-    #[serde(default = "BudgetConfig::default_warn_pct")]
-    pub warn_at_percent: u32,
 }
 
 impl BudgetConfig {
@@ -511,9 +508,6 @@ impl BudgetConfig {
     fn default_max_session() -> f64 {
         Self::default_max_plan()
     }
-    const fn default_warn_pct() -> u32 {
-        80
-    }
 
     /// Take the spend caps from the core `[budget]` section.
     ///
@@ -528,16 +522,6 @@ impl BudgetConfig {
             ..Self::default()
         }
     }
-
-    /// Return the USD spend at which the plan should start warning.
-    #[must_use]
-    pub fn warn_threshold_usd(&self) -> f64 {
-        if self.max_plan_usd <= 0.0 {
-            0.0
-        } else {
-            self.max_plan_usd * f64::from(self.warn_at_percent) / 100.0
-        }
-    }
 }
 
 impl Default for BudgetConfig {
@@ -547,7 +531,6 @@ impl Default for BudgetConfig {
             max_turn_usd: Self::default_max_turn(),
             max_task_usd: Self::default_max_task(),
             max_session_usd: Self::default_max_session(),
-            warn_at_percent: Self::default_warn_pct(),
         }
     }
 }
@@ -2473,7 +2456,7 @@ args = ["run", "llama3"]
 timeout_ms = 30000
 
 [budget]
-warn_at_percent = 90
+max_plan_usd = 12.5
 
 [dreams]
 auto_dream = false
@@ -2510,7 +2493,7 @@ build_system = "cargo"
             vec!["run".to_string(), "llama3".to_string()]
         );
         assert_eq!(cfg.agent.timeout_ms, 30_000);
-        assert_eq!(cfg.budget.warn_at_percent, 90);
+        assert_eq!(cfg.budget.max_plan_usd, 12.5);
         assert!(!cfg.dreams.auto_dream);
         assert_eq!(cfg.dreams.idle_threshold_mins, 30);
         assert_eq!(cfg.dreams.min_episodes_for_dream, 8);
@@ -2686,16 +2669,6 @@ command = "x${ROKO_TEST_MISSING_DEF456:-}y"
 "#;
         let cfg = Config::parse_toml(toml).unwrap();
         assert_eq!(cfg.agent.command, "xy");
-    }
-
-    #[test]
-    fn budget_warn_threshold_defaults_to_eighty_percent() {
-        let budget = BudgetConfig {
-            max_plan_usd: 10.0,
-            ..BudgetConfig::default()
-        };
-        assert_eq!(budget.warn_at_percent, 80);
-        assert!((budget.warn_threshold_usd() - 8.0).abs() < f64::EPSILON);
     }
 
     /// bug-367f33: `roko --config <file>` parses the file into this legacy

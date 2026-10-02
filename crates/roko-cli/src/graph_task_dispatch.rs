@@ -1616,6 +1616,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
             return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
         }
+        // The plan's budget alerts this call's spend crossed (backlog 2116).
+        self.announce_budget_alerts(&spec.plan_id);
 
         // ── TUI streaming output ─────────────────────────────────────────
         //

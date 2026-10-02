@@ -1,5 +1,8 @@
 //! Spend accounting at the Graph dispatch boundary: the per-plan budget ledger
-//! and its reservations, the per-task spend ledger, and the daily ceiling.
+//! and its reservations and alerts, the per-task spend ledger, and the daily
+//! ceiling.
+
+use roko_core::dashboard_snapshot::{InboxCategory, inbox_routing};
 
 use super::*;
 
@@ -95,8 +98,40 @@ struct PlanBudgetState {
     reserved_micro_usd: u64,
     /// Calls of the plan whose cost was never priced (backlog 2111).
     unpriced_calls: usize,
+    /// The spend a resumed run restored from the plan's `costs.json`: an
+    /// earlier process of the run announced the alerts it passed.
+    restored_micro_usd: u64,
+    /// The `budget.alert_at_percent` thresholds announced so far (backlog
+    /// 2116).
+    alerted_percent: Vec<u8>,
     checkpoint: Option<GraphCostLedgerCheckpoint>,
     persistence_error: Option<String>,
+}
+
+/// A `budget.alert_at_percent` threshold of a plan's ceiling that its
+/// settled spend crossed (backlog 2116).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlanBudgetAlert {
+    /// The threshold, in percent of the ceiling.
+    percent: u8,
+    spent_usd: f64,
+    ceiling_usd: f64,
+}
+
+impl PlanBudgetAlert {
+    /// The Inbox item id: one per plan and threshold.
+    fn item_id(self, plan_id: &str) -> String {
+        format!("budget:{plan_id}:{}", self.percent)
+    }
+
+    fn summary(self, plan_id: &str) -> String {
+        let Self {
+            percent,
+            spent_usd,
+            ceiling_usd,
+        } = self;
+        format!("plan {plan_id} has spent ${spent_usd:.4} of ${ceiling_usd:.4} ({percent}%)")
+    }
 }
 
 #[derive(Debug, Default)]
@@ -140,6 +175,7 @@ impl GraphPlanBudgetLedger {
             Entry::Vacant(entry) => {
                 entry.insert(PlanBudgetState {
                     spent_micro_usd: checkpoint.spent_micro_usd(),
+                    restored_micro_usd: checkpoint.spent_micro_usd(),
                     checkpoint: Some(checkpoint),
                     ..PlanBudgetState::default()
                 });
@@ -346,6 +382,52 @@ impl GraphPlanBudgetLedger {
         drop(plans);
         self.capacity.notify_waiters();
         Ok(())
+    }
+
+    /// The thresholds of `alert_at_percent` that `plan_id`'s settled spend
+    /// crossed since the last call, against the policy's ceiling, lowest
+    /// first (backlog 2116). Each threshold is returned once. One that the
+    /// spend a resumed run restored had passed is not returned: the earlier
+    /// process of the run announced it.
+    fn take_threshold_alerts(
+        &self,
+        plan_id: &str,
+        policy: GraphPlanBudgetPolicy,
+        alert_at_percent: &[u8],
+    ) -> Vec<PlanBudgetAlert> {
+        let Some(ceiling) = policy.ceiling_micro_usd else {
+            return Vec::new();
+        };
+        let mut plans = self.plans.lock();
+        let Some(state) = plans.get_mut(plan_id) else {
+            return Vec::new();
+        };
+        let reached = |micro_usd: u64, percent: u8| {
+            u128::from(micro_usd) * 100 >= u128::from(ceiling) * u128::from(percent)
+        };
+        let mut percents = alert_at_percent
+            .iter()
+            .copied()
+            .filter(|percent| *percent > 0)
+            .collect::<Vec<_>>();
+        percents.sort_unstable();
+        percents.dedup();
+        let mut alerts = Vec::new();
+        for percent in percents {
+            let announced = state.alerted_percent.contains(&percent);
+            if announced || !reached(state.spent_micro_usd, percent) {
+                continue;
+            }
+            state.alerted_percent.push(percent);
+            if !reached(state.restored_micro_usd, percent) {
+                alerts.push(PlanBudgetAlert {
+                    percent,
+                    spent_usd: micro_usd_to_usd(state.spent_micro_usd),
+                    ceiling_usd: micro_usd_to_usd(ceiling),
+                });
+            }
+        }
+        alerts
     }
 
     /// Count a call of `plan_id` whose cost was never priced (backlog 2111).
@@ -683,6 +765,38 @@ fn daily_stop(
 }
 
 impl GraphTaskDispatcher {
+    /// Announce each `budget.alert_at_percent` threshold of `plan_id`'s
+    /// ceiling that its settled spend crossed since the last call (backlog
+    /// 2116): one warning line and one `budget_alert` Inbox item per
+    /// threshold, once. Alerts only notify: the plan still stops at its
+    /// ceiling.
+    pub(super) fn announce_budget_alerts(&self, plan_id: &str) {
+        let alerts = self.budget_ledger.take_threshold_alerts(
+            plan_id,
+            self.budget_policy,
+            &self.config.budget.alert_at_percent,
+        );
+        for alert in alerts {
+            let summary = alert.summary(plan_id);
+            tracing::warn!(
+                plan_id,
+                percent = alert.percent,
+                spent_usd = alert.spent_usd,
+                ceiling_usd = alert.ceiling_usd,
+                "budget alert: {summary}"
+            );
+            if let Some(tui) = &self.tui_bridge {
+                let category = InboxCategory::BudgetAlert;
+                tui.inbox_item(
+                    &alert.item_id(plan_id),
+                    category,
+                    inbox_routing(category).urgency,
+                    &summary,
+                );
+            }
+        }
+    }
+
     /// Record a provider call of `plan_id/task_id` toward the task's ceiling,
     /// and keep the task's spend with the run's retry state, so a resumed run
     /// counts it as well (gap-34b2ed).
@@ -822,6 +936,7 @@ pub(super) fn effective_routing_budget(context_remaining: Option<f64>, plan_rema
 
 #[cfg(test)]
 mod tests {
+    use roko_core::dashboard_snapshot::UrgencyLevel;
     use tempfile::tempdir;
 
     use super::*;
@@ -830,6 +945,7 @@ mod tests {
         make_bare_dispatcher, make_batch_dispatcher, make_scripted_batch_dispatcher, make_spec,
         make_task_def,
     };
+    use crate::state_hub::StateHub;
 
     #[test]
     fn plan_budget_blocks_at_ceiling_and_is_isolated_by_plan() {
@@ -938,6 +1054,59 @@ mod tests {
         assert!(ledger.reserve("plan-a", policy).is_err());
     }
 
+    /// backlog 2116: each alert threshold is announced once, lowest first,
+    /// against the ceiling. A resumed run does not announce again the
+    /// thresholds that the spend it restored had passed; no ceiling, or an
+    /// empty list, announces nothing.
+    #[test]
+    fn threshold_alerts_are_announced_once_and_not_again_on_resume() {
+        let policy = GraphPlanBudgetPolicy::from_ceiling(1.0, false);
+        let thresholds = [80, 50, 50, 0];
+        let take = |ledger: &GraphPlanBudgetLedger, policy: GraphPlanBudgetPolicy| -> Vec<u8> {
+            ledger
+                .take_threshold_alerts("plan-a", policy, &thresholds)
+                .into_iter()
+                .map(|alert| alert.percent)
+                .collect()
+        };
+        let ledger = GraphPlanBudgetLedger::default();
+        ledger.record_cost("plan-a", 0.49);
+        assert!(take(&ledger, policy).is_empty());
+        ledger.record_cost("plan-a", 0.40);
+        assert_eq!(take(&ledger, policy), [50, 80]);
+        assert!(take(&ledger, policy).is_empty(), "each is announced once");
+
+        // An earlier process of the run spent $0.60 and announced 50%.
+        let resumed = GraphPlanBudgetLedger::default();
+        let restored = PlanBudgetState {
+            spent_micro_usd: 600_000,
+            restored_micro_usd: 600_000,
+            ..PlanBudgetState::default()
+        };
+        resumed.plans.lock().insert("plan-a".to_string(), restored);
+        assert!(take(&resumed, policy).is_empty());
+        resumed.record_cost("plan-a", 0.25);
+        let alerts = resumed.take_threshold_alerts("plan-a", policy, &thresholds);
+        let crossed = PlanBudgetAlert {
+            percent: 80,
+            spent_usd: 0.85,
+            ceiling_usd: 1.0,
+        };
+        assert_eq!(alerts, [crossed]);
+        assert_eq!(
+            crossed.summary("plan-a"),
+            "plan plan-a has spent $0.8500 of $1.0000 (80%)"
+        );
+
+        let unlimited = GraphPlanBudgetLedger::default();
+        unlimited.record_cost("plan-a", 5.0);
+        assert!(take(&unlimited, GraphPlanBudgetPolicy::unlimited()).is_empty());
+        let off = GraphPlanBudgetLedger::default();
+        off.record_cost("plan-a", 0.90);
+        let alerts = off.take_threshold_alerts("plan-a", policy, &[]);
+        assert!(alerts.is_empty(), "an empty list turns alerts off");
+    }
+
     #[test]
     fn concurrent_admission_never_over_reserves_hard_ceiling() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1010,6 +1179,82 @@ mod tests {
         second.expect("the second waits for the budget, then runs");
         let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
         assert!((spent - 0.20).abs() < 1e-6, "{spent}");
+    }
+
+    /// backlog 2116: the plan budget raises a `budget_alert` Inbox item at
+    /// 50% and at 80% of its ceiling, once each, before the ceiling stops
+    /// the plan. At $0.03 a call under a $0.10 ceiling, the second call
+    /// ($0.06) crosses 50% and the third ($0.09) 80%. The fourth is still
+    /// admitted, takes the plan past its ceiling, and the plan stops.
+    #[tokio::test]
+    async fn plan_budget_emits_threshold_events() {
+        let temp = tempdir().expect("tempdir");
+        let hub = StateHub::new(64);
+        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.03, |_| {}).await;
+        let dispatcher = dispatcher
+            .with_plan_budget(0.10, 0.0, false)
+            .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let ctx = batch_ctx();
+        // The budget alerts in the Inbox, by id.
+        let budget_alerts = || {
+            let mut alerts = hub
+                .current_snapshot()
+                .inbox_items
+                .into_values()
+                .filter(|item| item.category == InboxCategory::BudgetAlert)
+                .map(|item| (item.item_id, item.urgency, item.summary))
+                .collect::<Vec<_>>();
+            alerts.sort_by(|left, right| left.0.cmp(&right.0));
+            alerts
+        };
+        let alert = |percent: u8, spent: &str| {
+            (
+                format!("budget:stream-plan:{percent}"),
+                UrgencyLevel::Question,
+                format!("plan stream-plan has spent {spent} of $0.1000 ({percent}%)"),
+            )
+        };
+
+        let mut seen = Vec::new();
+        for call in 1..=4 {
+            let mut next = task.clone();
+            next.id = format!("T-{call}");
+            let spec = make_spec(&next);
+            assert_eq!(dispatcher.plan_dispatch_stop(&spec.plan_id), None, "{call}");
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .unwrap_or_else(|error| panic!("call {call} is admitted: {error}"));
+            seen.push(budget_alerts());
+        }
+        assert!(seen[0].is_empty(), "$0.03 is 30% of the ceiling");
+        assert_eq!(seen[1], [alert(50, "$0.0600")]);
+        assert_eq!(seen[2], [alert(50, "$0.0600"), alert(80, "$0.0900")]);
+        assert_eq!(seen[3], seen[2], "each threshold is announced once");
+
+        let stop = dispatcher
+            .plan_dispatch_stop("stream-plan")
+            .expect("the plan is spent");
+        assert!(
+            stop.starts_with("plan budget exhausted: $0.1200 spent of $0.1000"),
+            "{stop}"
+        );
+        let mut last = task.clone();
+        last.id = "T-5".to_string();
+        let error = dispatcher
+            .dispatch(&make_spec(&last), Vec::new(), &ctx)
+            .await
+            .expect_err("the spent plan admits no further call");
+        assert!(
+            matches!(
+                error,
+                RokoError::BudgetExceeded {
+                    dimension: "plan_cost_micro_usd",
+                    ..
+                }
+            ),
+            "got {error:?}"
+        );
     }
 
     /// A reservation waiting for capacity fails once settled spend reaches

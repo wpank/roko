@@ -3411,7 +3411,7 @@ mod tests {
     /// The core config loader uses `deny_unknown_fields` on many struct
     /// sections, so we must write a core `RokoConfig` rather than the CLI
     /// `Config` (which has extra fields like `prompt.budgets`,
-    /// `budget.warn_at_percent`, etc.).
+    /// `budget.max_session_usd`, etc.).
     fn write_project_config(workdir: &Path, config: Config) {
         let mut core_config = roko_core::config::RokoConfig::default();
         // Forward the serve auth settings the doctor tests rely on.

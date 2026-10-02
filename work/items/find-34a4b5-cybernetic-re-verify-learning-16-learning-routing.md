@@ -18,7 +18,7 @@ anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispat
 links = { depends_on = [], blocks = [], related = ["gap-5fb9a7", "reg-ff6e1a", "reg-c7ecf6", "q-1faa0c", "find-4b4344"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q 'knowledge_ids: vec!\\[\\],' crates/roko-cli/src/graph_task_dispatch.rs && { ! grep -q 'fn apply_neuro_gate_hints' crates/roko-cli/src/knowledge_helpers.rs || grep -rn 'apply_neuro_gate_hints' crates/roko-cli/src --include='*.rs' | grep -v 'knowledge_helpers.rs' | grep -q .; }"
+command = "! grep -q 'knowledge_ids: vec!\\[\\],' crates/roko-cli/src/graph_task_dispatch.rs && { ! grep -q 'fn apply_neuro_gate_hints' crates/roko-cli/src/knowledge_helpers.rs || grep -rn 'apply_neuro_gate_hints' crates/roko-cli/src --include='*.rs' | grep -v 'knowledge_helpers.rs' | grep -q .; } && ! grep -rqE 'PromptEfficiencyScore|ToolRecommender|ToolMetricsStore|FormatBandit|TrackAndStopBandit' crates --include='*.rs'"
 +++
 
 ## Problem
@@ -100,8 +100,9 @@ This finding is an umbrella. Resolve it by giving every lost closure a home, and
 - Graph episodes carry the injected knowledge ids.
 - `apply_neuro_gate_hints` is called on the Graph path, or it is deleted.
 - Every "Lost" or "Not present" row has an open item, or is re-wired or deleted.
-- Verify:
-  `! grep -q 'knowledge_ids: vec!\[\],' crates/roko-cli/src/graph_task_dispatch.rs && { ! grep -q 'fn apply_neuro_gate_hints' crates/roko-cli/src/knowledge_helpers.rs || grep -rn 'apply_neuro_gate_hints' crates/roko-cli/src --include='*.rs' | grep -v 'knowledge_helpers.rs' | grep -q .; }`
+- `PromptEfficiencyScore`, `ToolRecommender`, `ToolMetricsStore` and the format bandit (`FormatBandit`,
+  `TrackAndStopBandit`) are gone from `crates/`.
+- Verify: the `[[verify]]` command above.
 
 ## Notes
 
@@ -155,7 +156,7 @@ This finding is an umbrella. Resolve it by giving every lost closure a home, and
     leaves filing to them and rules out editing other items.
 
 - 2026-10-02 (wk-learn2): the closures left without an item, on work/gap-14f08e; cargo verification deferred to
-  the batch check. Each is deleted, since none can be wired on the Graph path as it stands:
+  the batch check. None can be wired on the Graph path as it stands, so each is deleted, and P3-17 never existed:
   - P0-13: deleted `PromptEfficiencyScore` and `Grade` (`roko-learn/src/efficiency.rs`). Nothing built a score,
     and its main input, the share of prompt tokens that help, needs the per-section effects nothing on the Graph
     path writes (P0-01).
@@ -168,7 +169,15 @@ This finding is an umbrella. Resolve it by giving every lost closure a home, and
     roko-core's `tool::bandit` (`FormatBandit`, `ProfileBandit`, `EpsilonGreedyBandit`, `BanditKey`, `ArmEntry`),
     roko-learn's `TrackAndStopBandit` and roko-fs's `BanditStore`. Wiring it means choosing each API dispatch's tool
     format per model and role, which changes what providers are sent and needs live-provider runs to judge. To
-    revive it, start from this commit's parent.
+    revive it, start from `310f984b6^`.
+  - P3-17: no affect reward shaping was ever built, so there is nothing to wire or delete. Affect reaches routing
+    only through selection (`RoutingContext::daimon_policy`, read by the cascade router). Shaping the router's
+    reward by affect would be a new learning rule; it needs a decision on what affect should do to a reward
+    before anyone builds it.
+  - P4-04's automatic proposals are the same case: gap-fdd27f re-attached assignment and settlement, but nothing
+    ever proposed experiments on its own, and doing so needs a decision on what to vary and when.
+  - Every closure in the table is now re-attached, deleted, or tracked by a parked item, except P3-17 and P4-04's
+    proposals. Those two have no code and wait on a decision. The verify guards the deletions.
 
 ## Original notes
 

@@ -400,8 +400,8 @@ impl WorktreeManager {
 
     /// `git worktree remove` the checkout at `path`, which this manager does
     /// not track. Like [`WorktreeManager::remove`], it keeps a checkout that
-    /// has changes; unlike it, it passes no `--force`, so git also keeps one
-    /// that a `git worktree lock` holds. The branch stays.
+    /// has changes; unlike it, it passes `--force` only once, so git also
+    /// keeps one that a `git worktree lock` holds. The branch stays.
     async fn remove_leftover(&self, path: &Path) -> Result<(), WorktreeError> {
         let operation = Arc::clone(&self.operations).lock_owned().await;
         let manager = self.clone();
@@ -434,9 +434,13 @@ impl WorktreeManager {
                 paths: String::from_utf8_lossy(&probe.stdout).trim().to_string(),
             });
         }
+        // One `--force`: the probe above already refused a checkout with
+        // changes, and git's own check would run `git status` as a child
+        // process, which git mutations may not start. git still refuses a
+        // locked checkout unless `--force` is given twice.
         let path = path.to_string_lossy().into_owned();
         let output = self
-            .git_mutation_output(&["worktree", "remove", &path], lifecycle)
+            .git_mutation_output(&["worktree", "remove", "--force", &path], lifecycle)
             .await?;
         if !output.status.success() {
             return Err(WorktreeError::GitFailed {

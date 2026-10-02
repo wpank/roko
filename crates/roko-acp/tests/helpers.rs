@@ -282,7 +282,9 @@ fn build_mock_config(base_url: &str, timeout_ms: u64) -> RokoConfig {
         ProviderConfig {
             kind: ProviderKind::OpenAiCompat,
             base_url: Some(base_url.to_string()),
-            api_key_env: None,
+            // Any variable that is always set: prompts pass over a provider
+            // without credentials (gap-28ceb9), and the mock ignores the key.
+            api_key_env: Some("PATH".to_string()),
             command: None,
             args: None,
             timeout_ms: Some(timeout_ms),

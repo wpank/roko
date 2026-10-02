@@ -1,7 +1,7 @@
 //! `VerifyChainGate` — Rung 4 of the 6-rung verification ladder (§10.7).
 //!
 //! Plan-specific `verify.sh` scripts authored by humans (or generated from
-//! PRD acceptance criteria) run the custom oracle pipeline a plan needs.
+//! a spec's acceptance criteria) run the custom oracle pipeline a plan needs.
 //! This gate shells out to `bash <script>`, parses the
 //! `[PASS]`/`[FAIL]` line protocol emitted by the script, and translates
 //! the result into a structured [`Verdict`].

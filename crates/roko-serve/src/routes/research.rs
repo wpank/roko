@@ -1,4 +1,4 @@
-//! Research endpoints — topic research, PRD/plan/task enhancement, analysis.
+//! Research endpoints — topic research, plan/task enhancement, analysis.
 
 use std::fmt::Write as _;
 use std::path::{Path as FsPath, PathBuf};
@@ -22,7 +22,6 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/research", get(list_research))
         .route("/research/topic", post(research_topic))
-        .route("/research/enhance-prd/{slug}", post(enhance_prd))
         .route("/research/enhance-plan/{plan}", post(enhance_plan))
         .route("/research/enhance-tasks/{plan}", post(enhance_tasks))
         .route("/research/analyze", post(analyze))
@@ -116,18 +115,6 @@ fn validate_intent(value: &str) -> Result<(), ValidationError> {
     }
 }
 
-/// `POST /api/research/enhance-prd/:slug` — enhance a PRD with research.
-async fn enhance_prd(
-    State(state): State<Arc<AppState>>,
-    Path(slug): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
-    validate_path_segment(&slug, "slug")?;
-    let (prd_path, prd_status, prd_content) = read_prd_context(&state.workdir, &slug).await?;
-    let prompt =
-        build_enhance_prd_prompt(&state.workdir, &slug, &prd_path, &prd_status, &prd_content);
-    spawn_research_op(&state, ResearchMode::EnhancePrd, slug, prompt).await
-}
-
 /// `POST /api/research/enhance-plan/:plan` — optimize a plan with research.
 async fn enhance_plan(
     State(state): State<Arc<AppState>>,
@@ -168,7 +155,6 @@ async fn analyze(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse
 #[derive(Clone, Copy, Debug)]
 enum ResearchMode {
     Topic,
-    EnhancePrd,
     EnhancePlan,
     EnhanceTasks,
     Analyze,
@@ -178,7 +164,6 @@ impl ResearchMode {
     fn operation_kind(self) -> &'static str {
         match self {
             Self::Topic => "research_topic",
-            Self::EnhancePrd => "research_enhance_prd",
             Self::EnhancePlan => "research_enhance_plan",
             Self::EnhanceTasks => "research_enhance_tasks",
             Self::Analyze => "research_analyze",
@@ -188,7 +173,6 @@ impl ResearchMode {
     fn label(self) -> &'static str {
         match self {
             Self::Topic => "topic research",
-            Self::EnhancePrd => "PRD enhancement",
             Self::EnhancePlan => "plan enhancement",
             Self::EnhanceTasks => "task enhancement",
             Self::Analyze => "execution analysis",
@@ -277,35 +261,6 @@ fn intent_instructions(intent: &str) -> &'static str {
         "audit" => "Checklist of verified claims, unverified gaps, and severity for each gap.",
         _ => "Landscape map, key players, and the most important knowledge gaps.",
     }
-}
-
-fn build_enhance_prd_prompt(
-    workdir: &FsPath,
-    slug: &str,
-    prd_path: &FsPath,
-    prd_status: &str,
-    prd_content: &str,
-) -> String {
-    let research_path = research_artifact_path(workdir, slug);
-    let mut prompt = String::new();
-    let _ = writeln!(
-        prompt,
-        "You are enhancing a PRD with research-backed guidance."
-    );
-    let _ = writeln!(prompt, "Workspace: {}", workdir.display());
-    let _ = writeln!(prompt, "PRD status: {prd_status}");
-    let _ = writeln!(prompt, "PRD path: {}\n", prd_path.display());
-    let _ = writeln!(
-        prompt,
-        "Read the PRD fully, add missing citations, flag unsupported claims, add mermaid diagrams where helpful, and update the file in place."
-    );
-    let _ = writeln!(
-        prompt,
-        "Also save a short research summary to {}.\n",
-        research_path.display()
-    );
-    let _ = writeln!(prompt, "## PRD content\n```md\n{prd_content}\n```");
-    prompt
 }
 
 fn build_enhance_plan_prompt(workdir: &FsPath, plan: &str, context: &str) -> String {
@@ -399,30 +354,6 @@ fn slug(text: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-")
-}
-
-async fn read_prd_context(
-    workdir: &FsPath,
-    slug: &str,
-) -> Result<(PathBuf, String, String), ApiError> {
-    let prd_dir = workdir.join(".roko").join("prd");
-    let published = prd_dir.join("published").join(format!("{slug}.md"));
-    if published.is_file() {
-        let content = tokio::fs::read_to_string(&published)
-            .await
-            .map_err(|e| ApiError::internal(format!("read published prd: {e}")))?;
-        return Ok((published, "published".into(), content));
-    }
-
-    let draft = prd_dir.join("drafts").join(format!("{slug}.md"));
-    if draft.is_file() {
-        let content = tokio::fs::read_to_string(&draft)
-            .await
-            .map_err(|e| ApiError::internal(format!("read draft prd: {e}")))?;
-        return Ok((draft, "draft".into(), content));
-    }
-
-    Err(ApiError::not_found(format!("PRD '{slug}' not found")))
 }
 
 async fn read_plan_context(workdir: &FsPath, plan: &str) -> Result<String, ApiError> {
@@ -699,15 +630,6 @@ mod tests {
     #[tokio::test]
     async fn enhancement_research_prompts_include_workspace_documents() {
         let (dir, state, runtime) = test_state_with_runtime();
-        let prd_dir = dir.path().join(".roko").join("prd").join("published");
-        tokio::fs::create_dir_all(&prd_dir).await.expect("prd dir");
-        tokio::fs::write(
-            prd_dir.join("alpha.md"),
-            "# Alpha\n\nFocus on operator ergonomics.\n",
-        )
-        .await
-        .expect("write prd");
-
         let plan_dir = dir.path().join("plans").join("alpha");
         tokio::fs::create_dir_all(&plan_dir)
             .await
@@ -725,9 +647,6 @@ mod tests {
         .await
         .expect("write tasks");
 
-        enhance_prd(State(Arc::clone(&state)), Path("alpha".into()))
-            .await
-            .expect("enhance prd");
         enhance_plan(State(Arc::clone(&state)), Path("alpha".into()))
             .await
             .expect("enhance plan");
@@ -735,16 +654,13 @@ mod tests {
             .await
             .expect("enhance tasks");
 
-        wait_for_runs(&runtime, 3).await;
+        wait_for_runs(&runtime, 2).await;
         let runs = runtime.runs.lock().expect("lock runs");
-        assert!(runs[0].1.contains("PRD status: published"));
-        assert!(runs[0].1.contains("alpha.md"));
-        assert!(runs[0].1.contains("Focus on operator ergonomics."));
-        assert!(runs[1].1.contains("## Plan context"));
-        assert!(runs[1].1.contains("Plan Alpha"));
-        assert!(runs[2].1.contains("## Task context"));
-        assert!(runs[2].1.contains("tasks.toml"));
-        assert!(runs[2].1.contains("tier and model_hint"));
+        assert!(runs[0].1.contains("## Plan context"));
+        assert!(runs[0].1.contains("Plan Alpha"));
+        assert!(runs[1].1.contains("## Task context"));
+        assert!(runs[1].1.contains("tasks.toml"));
+        assert!(runs[1].1.contains("tier and model_hint"));
     }
 
     #[tokio::test]

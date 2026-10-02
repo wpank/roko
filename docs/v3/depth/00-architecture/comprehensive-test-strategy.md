@@ -10,8 +10,8 @@
 
 ## 1. Purpose
 
-Roko is a self-improving agent system: it reads its own PRDs, generates plans, executes
-them, validates with gates, and persists results. A self-improving system can silently
+Roko is a self-improving agent system: it turns requests (prompts or written specs) into
+plans, executes them, validates with gates, and persists results. A self-improving system can silently
 regress in ways that static software cannot -- an agent that modifies its own prompt
 templates, learning weights, or gate thresholds can degrade capabilities while all unit
 tests still pass. This document specifies the complete testing strategy.
@@ -226,7 +226,7 @@ Each crate's tests verify:
 | Test scenario | Crates involved | Status | Priority |
 |---|---|---|---|
 | **Full self-hosting loop** | cli -> graph -> agent -> gate -> fs -> learn | Wired | P0 |
-| **PRD -> Plan -> Execute** | cli -> agent -> graph -> gate | Wired | P0 |
+| **Prompt -> Plan -> Execute** | cli -> agent -> graph -> gate | Wired | P0 |
 | **Gate pipeline -> Adaptive thresholds** | gate + learn | Wired | P1 |
 | **Agent -> Safety -> Tool dispatch** | agent + std | Wired | P1 |
 | **CascadeRouter -> Model selection** | agent + learn | Wired | P1 |
@@ -246,14 +246,14 @@ Each crate's tests verify:
 #### E2E-1: Minimal Self-Hosting Loop
 
 ```rust
-/// Exercises: init -> prd idea -> prd draft -> prd plan -> plan run -> status
+/// Exercises: init -> plan create -> plan run -> status
 #[tokio::test]
 async fn test_minimal_self_hosting_loop() {
     let dir = tempdir().unwrap();
     Command::cargo_bin("roko").unwrap()
         .args(["init"]).current_dir(&dir).assert().success();
     Command::cargo_bin("roko").unwrap()
-        .args(["prd", "idea", "Add a hello world function"])
+        .args(["plan", "create", "hello-world", "--title", "Add a hello world function"])
         .current_dir(&dir).assert().success();
     assert!(dir.path().join(".roko").exists());
     assert!(dir.path().join("roko.toml").exists());

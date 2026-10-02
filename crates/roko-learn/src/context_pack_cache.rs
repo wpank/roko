@@ -1,7 +1,7 @@
 //! Context pack cache — memoized composed prompts keyed by task fingerprint.
 //!
 //! Building the "context pack" that wraps every agent spawn (workspace map,
-//! prd2 extract, plan content, playbook hits, and research prepass) is
+//! plan content, playbook hits, and research prepass) is
 //! expensive. When two spawns share the same inputs, recomposition wastes
 //! 500ms–2s per attempt. [`ContextPackCache`] memoizes the composed pack in
 //! memory with an LRU eviction policy and writes a JSON snapshot to disk so

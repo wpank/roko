@@ -8,19 +8,18 @@ severity = "p3"
 goal = "tooling"
 rank = 78
 size = "L"
-hold = "workflow-audit migration in progress (session roko-7d, at Will's request, 2026-10-02): it removes the PRD pipeline and folds roko do/develop into roko run; check with roko-7d before starting work that edits PRD code, do_cmd.rs or the Run/Do/Prd parts of main.rs"
 subsystem = ["docs"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
 source = "tmp/backlog/2026-10-02-complete-and-wire PK78"
-anchors = ["CLAUDE.md", "crates/roko-cli/src/commands/backlog.rs", "crates/roko-cli/src/commands/develop.rs", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/commands/prd.rs", "crates/roko-cli/src/commands/setup.rs", "crates/roko-cli/src/commands/util.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/main_tests.rs", "crates/roko-cli/src/orchestrator/merge_queue.rs", "crates/roko-cli/src/orchestrator/mod.rs", "crates/roko-cli/src/orchestrator/runtime_snapshot.rs", "crates/roko-cli/src/resolved_overrides.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/merge.rs", "crates/roko-graph/src/cells/plan_compose.rs", "crates/roko-graph/src/cells/stubs.rs", "crates/roko-graph/src/delivery.rs", "crates/roko-graph/src/engine.rs", "crates/roko-graph/src/lib.rs", "crates/roko-graph/src/topology.rs", "crates/roko-learn/src/cascade/helpers.rs", "crates/roko-learn/src/cascade/tests.rs", "crates/roko-learn/src/cascade_router.rs", "crates/roko-mcp-code/README.md", "crates/roko-serve/src/integrations.rs", "docs/v3/00-INDEX.md", "docs/v3/12-SAFETY.md", "docs/v3/20-GATEWAY.md", "docs/v3/31-SELF-HOSTING.md", "docs/v3/35-ARCHITECTURE.md", "docs/v3/39-ROADMAP.md", "docs/v3/REFERENCES.md", "docs/v3/depth/00-architecture/crate-map-and-dependencies.md", "docs/v3/depth/08-learning/self-improvement-frameworks.md", "docs/v3/depth/19-tools/service-integrations.md", "docs/v3/depth/35-architecture/crate-dependency-graph.md", "docs/v3/depth/39-references/17-process-reward-models.md", "docs/v3/depth/39-references/24-additions-2025-2026.md", "docs/v3/explorer/architecture.md", "docs/v3/explorer/crate-map.md"]
+anchors = ["CLAUDE.md", "crates/roko-cli/src/commands/backlog.rs", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/commands/setup.rs", "crates/roko-cli/src/commands/util.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/main_tests.rs", "crates/roko-cli/src/orchestrator/merge_queue.rs", "crates/roko-cli/src/orchestrator/mod.rs", "crates/roko-cli/src/orchestrator/runtime_snapshot.rs", "crates/roko-cli/src/resolved_overrides.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/merge.rs", "crates/roko-graph/src/cells/plan_compose.rs", "crates/roko-graph/src/cells/stubs.rs", "crates/roko-graph/src/delivery.rs", "crates/roko-graph/src/engine.rs", "crates/roko-graph/src/lib.rs", "crates/roko-graph/src/topology.rs", "crates/roko-learn/src/cascade/helpers.rs", "crates/roko-learn/src/cascade/tests.rs", "crates/roko-learn/src/cascade_router.rs", "crates/roko-mcp-code/README.md", "crates/roko-serve/src/integrations.rs", "docs/v3/00-INDEX.md", "docs/v3/12-SAFETY.md", "docs/v3/20-GATEWAY.md", "docs/v3/31-SELF-HOSTING.md", "docs/v3/35-ARCHITECTURE.md", "docs/v3/39-ROADMAP.md", "docs/v3/REFERENCES.md", "docs/v3/depth/00-architecture/crate-map-and-dependencies.md", "docs/v3/depth/08-learning/self-improvement-frameworks.md", "docs/v3/depth/19-tools/service-integrations.md", "docs/v3/depth/35-architecture/crate-dependency-graph.md", "docs/v3/depth/39-references/17-process-reward-models.md", "docs/v3/depth/39-references/24-additions-2025-2026.md", "docs/v3/explorer/architecture.md", "docs/v3/explorer/crate-map.md"]
 lane = "rust-hot"
 parent = "spec-0b3a32"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q 'roko develop' crates/roko-cli/src/commands/backlog.rs crates/roko-cli/src/commands/util.rs crates/roko-cli/src/commands/prd.rs crates/roko-cli/src/commands/setup.rs"
+command = "! grep -q 'roko develop' crates/roko-cli/src/commands/backlog.rs crates/roko-cli/src/commands/util.rs crates/roko-cli/src/commands/setup.rs"
 
 [[verify]]
 command = "! grep -q 'Develop {' crates/roko-cli/src/main.rs && test ! -e crates/roko-cli/src/commands/develop.rs && ! grep -q 'struct DevelopInput' crates/roko-cli/src/resolved_overrides.rs"
@@ -104,3 +103,4 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: nothing.
 - Suggested model: sonnet.
+- 2026-10-02 (roko-7d): Tasks 9202 and 9203 are done in merge bfd36512f (the workflow-audit migration): no next-step hint names `roko develop` (`commands/prd.rs` is deleted), and the hidden `Develop` variant, `commands/develop.rs` and `DevelopInput` are gone, so the first two verifies pass. Tasks 9204-9213 remain. Hold lifted.

@@ -28,8 +28,6 @@ function emptySnapshot(): DashboardSnapshot {
     cascade_router_json: '',
     gate_thresholds_json: '',
     marketplace_jobs: [],
-    atelier_prds: [],
-    atelier_tasks: {},
     knowledge_entries: [],
     payment_count: 0,
     total_payment_korai: 0,

@@ -744,7 +744,7 @@ How an API request flows through `roko serve`.
   +------+--------+
   | Axum Router    |  crates/roko-serve/src/routes/
   | (roko-serve)   |  REST routes organized by subsystem:
-  |                |   /health, /api/metrics, /api/plans, /api/prd,
+  |                |   /health, /api/metrics, /api/plans, /api/research,
   |                |   /api/agents, /api/knowledge, /api/learn,
   |                |   /api/config, /api/events, /api/feeds, etc.
   +------+--------+
@@ -838,11 +838,6 @@ No global database, no external server dependency.
     |     |     +-- constraints/
     |     |     +-- anti-knowledge/
     |     +-- hdc/                 HDC fingerprint index
-    |
-    +-- prd/
-    |     +-- ideas/               Raw work item ideas
-    |     +-- drafts/              PRD drafts (markdown)
-    |     +-- published/           Published PRDs (ready for planning)
     |
     +-- research/                  Research artifacts and citations
     |

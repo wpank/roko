@@ -583,30 +583,6 @@ pub fn code_implementer_template() -> AgentTemplate {
     }
 }
 
-/// Built-in template: automatic plan generation from PRD.
-pub fn auto_plan_template() -> AgentTemplate {
-    AgentTemplate {
-        name: "auto-plan".into(),
-        description: "Generates an implementation plan with tasks from a PRD document.".into(),
-        model: "sonnet".into(),
-        role: "planner".into(),
-        system_prompt: concat!(
-            "You are a technical planner. ",
-            "Read the PRD at {{prd_path}} and generate an implementation plan. ",
-            "Break the work into concrete, testable tasks with clear acceptance criteria. ",
-            "Order tasks by dependency. Estimate complexity per task.",
-        )
-        .into(),
-        max_turns: 10,
-        output_format: TemplateOutputFormat::Toml,
-        mcp_servers: vec![],
-        allowed_tools: vec![],
-        denied_tools: vec!["write_file".into(), "edit_file".into(), "bash".into()],
-        experiment: None,
-        provider: None,
-    }
-}
-
 /// Built-in template: gate failure remediation.
 pub fn gate_fixer_template() -> AgentTemplate {
     AgentTemplate {
@@ -630,17 +606,17 @@ pub fn gate_fixer_template() -> AgentTemplate {
     }
 }
 
-/// Built-in template: document lifecycle (meeting notes to PRD).
+/// Built-in template: document lifecycle (meeting notes to requirements document).
 pub fn doc_lifecycle_template() -> AgentTemplate {
     AgentTemplate {
         name: "doc-lifecycle".into(),
-        description: "Transforms meeting notes or rough ideas into structured PRD documents."
+        description: "Transforms meeting notes or rough ideas into structured requirements docs."
             .into(),
         model: "sonnet".into(),
         role: "scribe".into(),
         system_prompt: concat!(
             "You are a technical writer. ",
-            "Transform the following notes into a structured PRD document:\n{{notes}}\n\n",
+            "Transform the following notes into a structured requirements document:\n{{notes}}\n\n",
             "Include: problem statement, proposed solution, acceptance criteria, ",
             "non-goals, and open questions. Use clear, concise language.",
         )
@@ -688,7 +664,6 @@ pub fn slack_notify_template() -> AgentTemplate {
 pub const BUILTIN_TEMPLATE_FACTORIES: &[fn() -> AgentTemplate] = &[
     pr_review_template,
     code_implementer_template,
-    auto_plan_template,
     gate_fixer_template,
     doc_lifecycle_template,
     slack_notify_template,
@@ -961,7 +936,7 @@ mcp_servers = ["github", "missing-server"]
 
     #[test]
     fn builtin_templates_count() {
-        assert_eq!(builtin_templates().len(), 6, "expected 6 builtin templates");
+        assert_eq!(builtin_templates().len(), 5, "expected 5 builtin templates");
     }
 
     #[test]

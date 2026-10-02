@@ -48,11 +48,6 @@ pub struct TaskMeta {
     /// contains complete definitions.
     #[serde(default)]
     pub skip_enrichment: bool,
-    /// Optional slug of the originating PRD.  Set by `roko prd plan` so that
-    /// `cmd_status` can link plans back to PRDs even when the directory name
-    /// does not match the slug.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_prd: Option<String>,
     /// What a run of this plan does when a task fails. Overrides
     /// `[conductor] plan_failure_policy`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -739,8 +734,8 @@ impl TaskDef {
 
 /// Roles a plan task may declare in `role`: those with a bundled safety
 /// contract, as a role without one gets no tools at dispatch. Plan
-/// validation, plan generation, PRD planning and `roko run --role` all read
-/// this one list (bug-db607b).
+/// validation, plan generation and `roko run --role` all read this one list
+/// (bug-db607b).
 pub const PLAN_TASK_ROLES: &[&str] = &[
     "implementer",
     "researcher",
@@ -1077,7 +1072,6 @@ pub const META_KEYS: &[&str] = &[
     "max_parallel",
     "estimated_total_minutes",
     "skip_enrichment",
-    "source_prd",
     "failure_policy",
     "workspace_rungs",
     "verify",
@@ -2931,7 +2925,6 @@ depends_on = []
                 max_parallel: Some(1),
                 estimated_total_minutes: 0,
                 skip_enrichment: false,
-                source_prd: None,
                 failure_policy: None,
                 workspace_rungs: None,
                 verify: Vec::new(),
@@ -4008,7 +4001,6 @@ files = ["README.md"]
             max_parallel: Some(1),
             estimated_total_minutes: 5,
             skip_enrichment: true,
-            source_prd: Some("x".into()),
             failure_policy: Some(roko_core::config::PlanFailurePolicy::FailFast),
             workspace_rungs: Some(false),
             verify: vec![step.clone()],

@@ -1,7 +1,7 @@
 //! Startup pre-flight provider readiness checks.
 //!
 //! These checks run before any long-running CLI operation (plan run, chat,
-//! prd pipeline) to detect provider misconfigurations early — before spending
+//! plan generation) to detect provider misconfigurations early — before spending
 //! time on context assembly and prompt building that would fail at dispatch.
 //!
 //! Checks are cheap: PATH lookups and environment variable presence only.

@@ -1,6 +1,6 @@
 //! `DefaultPlanGenerator` and re-exports of the plan-generation value types.
 //!
-//! Production plans come from [`crate::prd::generate_plan`], the one plan
+//! Production plans come from [`crate::plan_generate::generate_plan`], the one plan
 //! generator (gap-2623b2). This module provides:
 //! - Re-exports of the neutral value types in `roko_execution::plan_generator`.
 //! - `DefaultPlanGenerator`: an extract-validate-repair pipeline over
@@ -42,7 +42,7 @@ const DEFAULT_ESCALATION_CHAIN: &[&str] =
 
 /// An extract-validate-repair pipeline over CLI-internal helpers for TOML
 /// parsing and policy validation. Only this module's tests exercise it;
-/// production generation is [`crate::prd::generate_plan`].
+/// production generation is [`crate::plan_generate::generate_plan`].
 pub struct DefaultPlanGenerator {
     /// Configured model profiles (for escalation filtering).
     configured_models: HashSet<String>,

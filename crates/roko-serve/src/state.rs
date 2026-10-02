@@ -310,11 +310,11 @@ impl PlanRunStatus {
     }
 }
 
-/// A tracked generic operation (PRD draft, research, etc.).
+/// A tracked generic operation (plan generation, research, etc.).
 pub struct OperationHandle {
     /// Unique identifier for this operation.
     pub id: String,
-    /// Operation kind (e.g. `"prd_draft"`, `"research"`).
+    /// Operation kind (e.g. `"plan_generate:<slug>"`, `"research"`).
     pub kind: String,
     /// Current execution status.
     pub status: OperationStatus,

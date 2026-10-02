@@ -45,7 +45,7 @@ pub struct RunResult {
     pub gate_results: Vec<RuntimeGateResult>,
 }
 
-/// Result of generating an implementation plan from a PRD.
+/// Result of generating an implementation plan from a prompt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanGenerationResult {
     /// Root directory where plan artifacts were generated.
@@ -378,20 +378,20 @@ pub trait CliRuntime: Send + Sync + 'static {
         anyhow::bail!("runtime does not support prompt plan runs")
     }
 
-    /// Generate implementation plans from a PRD.
+    /// Generate the plan `slug` from a request's text (a prompt, or a
+    /// written spec) with the plan generator.
     ///
     /// Runtime implementations that know the real CLI internals should
     /// override this. The default is explicit so callers can fall back to a
-    /// local synthetic plan without assuming every runtime supports PRD
-    /// planning.
-    async fn generate_plan_from_prd(
+    /// local synthetic plan without assuming every runtime can plan.
+    async fn generate_plan_from_prompt(
         &self,
         workdir: &std::path::Path,
         slug: &str,
-        prd_path: &std::path::Path,
+        prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
-        let _ = (workdir, slug, prd_path);
-        anyhow::bail!("runtime does not support PRD plan generation")
+        let _ = (workdir, slug, prompt);
+        anyhow::bail!("runtime does not support plan generation")
     }
 
     /// Execute a plan target.

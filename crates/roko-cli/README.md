@@ -1,10 +1,9 @@
 # roko-cli
 
 The `roko` binary. Drives every Roko subsystem from the terminal: the
-universal loop (`roko run`), plan execution (`roko plan run`), PRD
-lifecycle (`roko prd …`), research (`roko research …`), HTTP control
-plane (`roko serve`), per-agent chat (`roko chat`), and an interactive
-ratatui dashboard (`roko dashboard`).
+universal loop (`roko run`), plans (`roko plan …`), research
+(`roko research …`), HTTP control plane (`roko serve`), per-agent chat
+(`roko chat`), and an interactive ratatui dashboard (`roko dashboard`).
 
 If it's a Roko feature, `roko-cli` is the way you reach it from a
 command line.
@@ -41,33 +40,28 @@ roko replay <hash>            # walk the lineage DAG rooted at a signal hash
 roko config <cmd>             # manage global + project config (see below)
 ```
 
-### Plan execution (orchestrator)
+### Plans (self-hosting workflow)
+
+A prompt becomes a plan: a `plans/<slug>/` directory with a `tasks.toml`
+and a `plan.md`. Review or edit it, then run it.
 
 ```
-roko plan list                 # list discovered plans
-roko plan show <id>            # show plan details
-roko plan create               # scaffold a new plan
-roko plan run <dir>            # execute plans end-to-end
-roko plan run <dir> --resume .roko/state/executor.json   # resume after interruption
-```
-
-### PRD lifecycle (self-hosting workflow)
-
-```
-roko prd idea "<text>"         # capture an idea
-roko prd list                  # list PRDs
-roko prd status                # coverage report (plans/tasks/done ratio)
-roko prd draft new "<title>"   # agent-assisted draft
-roko prd draft promote         # promote draft to published
-roko prd plan <slug>           # generate implementation plan + tasks.toml
-roko prd consolidate           # consolidate overlapping PRDs
+roko run --plan "<prompt>"             # write a plan, show it, run it once you confirm
+roko run --plan --dry-run "<prompt>"   # write the plan and stop
+roko plan generate "<prompt>"          # write plans/<slug>/ (tasks.toml + plan.md); runs nothing
+roko plan validate plans/<slug>        # lint tasks.toml without running it
+roko run plans/<slug>                  # run a plan directory (same run as `roko plan run`)
+roko plan run <dir>                    # execute plans end-to-end, with every plan-run option
+roko plan run <dir> --resume-plan      # resume after interruption
+roko plan list                         # list discovered plans
+roko plan show <id>                    # show plan details
+roko plan create <id> --title "<t>"    # scaffold a new plan by hand
 ```
 
 ### Research
 
 ```
 roko research topic "<topic>"            # deep research with citations
-roko research enhance-prd <slug>         # enrich a PRD with research
 roko research enhance-plan <plan>        # optimise a plan
 roko research enhance-tasks <plan>       # split / rebalance tasks
 roko research analyze                    # analyse execution data
@@ -85,11 +79,12 @@ roko chat --agent <id> --serve-url http://localhost:6677
 ### Dashboard
 
 ```
-roko dashboard                 # interactive ratatui TUI: 7 tabs, F1–F7
+roko dashboard                 # interactive ratatui TUI: 10 tabs, F1–F10
 ```
 
 Tabs: **F1** Dashboard — **F2** Plans — **F3** Agents — **F4** Git —
-**F5** Logs — **F6** Config — **F7** Inspect. Keys: `q` quit, `?` help,
+**F5** Logs — **F6** Config — **F7** Inspect — **F8** Marketplace —
+**F9** Learning — **F10** Providers. Keys: `q` quit, `?` help,
 `Tab`/`Shift+Tab` cycle panels, `Enter` drill in, `i` inject, `Ctrl-C`
 force-quit (always, even through modals — see T17).
 

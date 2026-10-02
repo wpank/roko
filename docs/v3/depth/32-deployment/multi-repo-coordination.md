@@ -241,7 +241,7 @@ Subscriptions:
     Last:     2h ago (success)
 
   /Users/will/dev/project-b
-    Trigger:  watch (.roko/prd/)
+    Trigger:  watch (plans/)
     Status:   idle
     Last:     15m ago (success)
 

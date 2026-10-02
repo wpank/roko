@@ -215,7 +215,7 @@ roko-cli -> roko-core, roko-agent, roko-agent-server, roko-acp,
             roko-plugin, roko-runtime, roko-serve, roko-std, agent-relay
     Main binary. 85+ CLI subcommands, plan runner (event_loop, plan_dag,
     gate_dispatch, resume, merge), worktree manager, ratatui TUI (10 tabs,
-    F1-F10), chat, PRD lifecycle, research, knowledge, learning inspection,
+    F1-F10), chat, research, knowledge, learning inspection,
     config management, graph/feed/recipe/trigger commands.
     Depends on 22 workspace crates -- the widest fan-out in the workspace.
 

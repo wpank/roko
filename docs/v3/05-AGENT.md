@@ -557,7 +557,7 @@ provides role-specific system prompt content through the 9-layer
 | Role | Description | Default tier |
 |------|-------------|-------------|
 | **Conductor** | Meta-orchestrator; watches agents, intervenes | Premium |
-| **Strategist** | Writes plan briefs, decomposes PRDs into tasks | Standard |
+| **Strategist** | Writes plan briefs, decomposes plans into tasks | Standard |
 | **Implementer** | Writes code (the main coding agent) | Standard |
 | **Architect** | Reviews architecture before implementation | Premium |
 | **Researcher** | Broad research reader (docs, code, external) | Standard |
@@ -573,7 +573,7 @@ provides role-specific system prompt content through the 9-layer
 | **MergeResolver** | Resolves merge conflicts across workstreams | Standard |
 | **TerminalValidator** | Tests CLI/terminal entry points end-to-end | Fast |
 | **LifecycleTester** | Exercises agent lifecycle (spawn/tick/teardown) | Standard |
-| **SpecDriftDetector** | Detects divergence between PRD and implementation | Fast |
+| **SpecDriftDetector** | Detects divergence between spec and implementation | Fast |
 | **RegressionDetector** | Watches for regression in test-pass rate and cost | Fast |
 | **PerformanceSentinel** | Tracks performance metrics across runs | Fast |
 | **CoverageTracker** | Tracks coverage/rung satisfaction | Fast |

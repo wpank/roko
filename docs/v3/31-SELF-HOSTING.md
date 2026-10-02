@@ -1,10 +1,11 @@
 # 31 -- Self-Hosting: Recursive Self-Development
 
-> Roko develops itself. It reads PRDs, generates implementation plans, executes
-> tasks via LLM agents, validates results with each task's verify commands, learns
-> from outcomes, and iterates. This chapter covers both the practical CLI
-> workflow that makes self-hosting operational today and the theoretical
-> foundations that bound what recursive self-improvement can and cannot achieve.
+> Roko develops itself. It turns a request (a prompt or a written spec) into an
+> implementation plan, executes the plan's tasks via LLM agents, validates results
+> with each task's verify commands, learns from outcomes, and iterates. This
+> chapter covers both the practical CLI workflow that makes self-hosting
+> operational today and the theoretical foundations that bound what recursive
+> self-improvement can and cannot achieve.
 
 **Depends on**: [04-EXECUTION](04-EXECUTION.md) (Graph engine, plan pipeline, worktrees),
 [05-AGENT](05-AGENT.md) (provider dispatch, tool loop), [07-GATES](07-GATES.md) (19-gate
@@ -13,27 +14,32 @@ playbook rules, cascade router), [09-MEMORY](09-MEMORY.md) (durable knowledge st
 [10-DREAMS](10-DREAMS.md) (offline consolidation), [12-SAFETY](12-SAFETY.md) (capability
 intersection, corrigibility, immune system)
 
-**Implementation status (2026-09-15; corrected 2026-09-29 at `7c556bc0a`):** The
-self-hosting workflow is **operational**. The 8-step CLI loop (idea -> draft ->
-research -> plan -> execute -> resume -> monitor -> verify) works end-to-end. The
-earlier claim that the 48 epics were accepted using this workflow is withdrawn:
-they were accepted as programme manifests, and most of the code was written outside
-Roko's own runner (section 1). The largest recorded run is the portal build: 16 plans
-and 173 tasks, 168 of them gate-verified, under a supervising operator session
+**Implementation status (2026-09-15; corrected 2026-09-29 at `7c556bc0a`; workflow
+updated 2026-10-02):** The self-hosting workflow is **operational**. Since
+2026-10-02 it starts from a plan: the PRD stages (idea, draft, publish) were
+removed, and a plan is written straight from a prompt. The CLI loop (plan ->
+research -> review -> execute -> resume -> monitor -> verify) runs on the same Graph
+plan runner as before. The earlier claim that the 48 epics were accepted using this
+workflow is withdrawn: they were accepted as programme manifests, and most of the
+code was written outside Roko's own runner (section 1). The largest recorded run is
+the portal build: 16 plans and 173 tasks, 168 of them gate-verified, under a
+supervising operator session
 (`docs/whitepaper/evidence/2026-09-29-b7-real-run-evidence.md`). The first live
 dogfood run (2026-08-13) exposed 4 blockers, all of which have regression fixes. A
 clean full-cycle rerun is pending as separate sign-off. FAST self-development via
-`dev.sh fast` is live. The `roko develop` command has been retired in favor of
-`roko do --plan`. Adaptive thresholds (they set retry budgets) and durable prompt
-experiments are wired; gate-failure replan is not (section 3). The theoretical
-ceiling -- autonomous structural self-modification (Loop 4, ADAS) -- requires
-human approval by design and is not implemented as a closed loop.
+`dev.sh fast` is live. `roko run` is the one entry point: `roko do` and
+`roko develop` were folded into it, and `roko run --plan` writes a plan
+first. Adaptive thresholds (they set retry budgets) and durable prompt experiments
+are wired; gate-failure replan is not (section 3). The theoretical ceiling --
+autonomous structural self-modification (Loop 4, ADAS) -- requires human approval by
+design and is not implemented as a closed loop.
 
 ### Authoritative sources
 
 | Surface | Source file |
 |---|---|
-| CLI commands (plan, prd, research) | `crates/roko-cli/src/main.rs`, `crates/roko-cli/src/commands/plan.rs` |
+| CLI commands (run, plan, research) | `crates/roko-cli/src/main.rs`, `crates/roko-cli/src/commands/plan.rs` |
+| Plan generator (prompt to `tasks.toml`) | `crates/roko-cli/src/plan_generate/` |
 | Plan-to-graph conversion | `crates/roko-graph/src/convert.rs`, `crates/roko-graph/src/topology.rs` |
 | Graph engine | `crates/roko-graph/src/engine.rs` |
 | Gate-failure replan controller | `crates/roko-execution/src/replan_controller.rs` |
@@ -58,32 +64,36 @@ programme (48 epics, ~1M LOC) was written in operator-directed assistant session
 The portal build (section 6.2) is the largest body of work Roko has produced with
 the loop described here.
 
-### 1.1 The Eight-Step CLI Loop
+### 1.1 The CLI Loop
+
+A plan is the unit of work. Each piece of work starts from a request, a prompt or a
+written spec, which an agent turns into a plan directory, `plans/<slug>/`:
 
 ```
-Step 1: roko prd idea "Wire SystemPromptBuilder into runner"
+Step 1: roko plan generate "Wire SystemPromptBuilder into runner"
+                |            writes plans/<slug>/ (tasks.toml + plan.md)
+Step 2: roko research enhance-plan <slug>           (optional)
                 |
-Step 2: roko prd draft new "system-prompt-wiring"
+Step 3: review or edit plans/<slug>/tasks.toml, then roko plan validate plans/<slug>
                 |
-Step 3: roko research enhance-prd system-prompt-wiring
+Step 4: roko run plans/<slug>
                 |
-Step 4: roko prd plan system-prompt-wiring
+Step 5: roko plan run plans/<slug> --resume-plan    (if interrupted)
                 |
-Step 5: roko plan run plans/
+Step 6: roko dashboard
                 |
-Step 6: roko plan run plans/ --resume-plan
-                |
-Step 7: roko dashboard
-                |
-Step 8: roko status
+Step 7: roko status
 ```
+
+`roko run --plan "<prompt>"` covers steps 1 and 4 in one command: it writes the plan,
+shows it, and asks before running it (`--yes` skips the question).
 
 ```mermaid
 graph LR
-    A["prd idea"] --> B["prd draft"]
+    A["prompt"] --> B["plan generate"]
     B --> C["research"]
-    C --> D["prd plan"]
-    D --> E["plan run"]
+    C --> D["review / edit"]
+    D --> E["run"]
     E --> F["gate"]
     F --> G["learn"]
     G --> H["iterate"]
@@ -103,19 +113,18 @@ Each step has a specific role in the pipeline:
 
 | Step | Command | What It Does | Duration |
 |------|---------|-------------|----------|
-| 1. Capture | `roko prd idea "<text>"` | Record a work item as a PRD idea. No LLM call. Instant. | <1s |
-| 2. Draft | `roko prd draft new "<slug>"` | Agent generates a structured PRD from the idea, with requirements, scope, and acceptance criteria. | 30-120s |
-| 3. Research | `roko research enhance-prd <slug>` | Agent researches the topic (web search, codebase analysis, citation gathering) and enriches the PRD with findings. | 60-300s |
-| 4. Plan | `roko prd plan <slug>` | Agent generates a `tasks.toml` with dependencies, crate targets, and verification commands from the enriched PRD. | 30-120s |
-| 5. Execute | `roko plan run plans/` | The Graph engine converts tasks.toml into a DAG of Cells, runs each task as soon as its dependencies finish (up to the plan's `max_parallel`) in the working tree, checks each task with its `verify` commands, and persists results. | minutes-hours |
-| 6. Resume | `roko plan run plans/ --resume-plan` | Restores graph checkpoint from `.roko/state/graph/`, skips completed Activity nodes using recorded outputs, resumes from the first non-complete node. | varies |
-| 7. Monitor | `roko dashboard` | Interactive ratatui TUI with F1-F10 tabs showing live plan progress, agent status, cost tracking, and learning metrics. | real-time |
-| 8. Verify | `roko status` | Query signal counts, episode counts, and plan state. | <1s |
+| 1. Plan | `roko plan generate "<prompt>"` | Agent writes `plans/<slug>/tasks.toml` (tasks with dependencies, crate targets, and verification commands) and `plan.md` (prose context) from the prompt or from a spec file (`--from-file`). Nothing runs. `roko run --plan --dry-run "<prompt>"` does the same. | 30-120s |
+| 2. Research | `roko research enhance-plan <slug>` | Optional. Agent researches task decomposition, context and verification techniques for the plan and updates the plan files in place. | 60-300s |
+| 3. Review | Edit `plans/<slug>/tasks.toml`; `roko plan validate plans/<slug>` | A person reads and adjusts the plan; validation lints it without executing. | minutes |
+| 4. Execute | `roko run plans/<slug>` | The same run as `roko plan run plans/<slug>`. The Graph engine converts tasks.toml into a DAG of Cells, runs each task as soon as its dependencies finish (up to the plan's `max_parallel`) in the working tree, checks each task with its `verify` commands, and persists results. | minutes-hours |
+| 5. Resume | `roko plan run plans/<slug> --resume-plan` | Restores graph checkpoint from `.roko/state/graph/`, skips completed Activity nodes using recorded outputs, resumes from the first non-complete node. | varies |
+| 6. Monitor | `roko dashboard` | Interactive ratatui TUI with F1-F10 tabs showing live plan progress, agent status, cost tracking, and learning metrics. | real-time |
+| 7. Verify | `roko status` | Query signal counts, episode counts, and plan state. | <1s |
 
-### 1.2 What Happens Inside Step 5
+### 1.2 What Happens Inside Step 4
 
-Step 5 is where the self-hosting machinery is densest. A single
-`roko plan run plans/` invocation triggers:
+Step 4 is where the self-hosting machinery is densest. A single
+`roko run plans/<slug>` (or `roko plan run`) invocation triggers:
 
 ```
 tasks.toml
@@ -184,24 +193,31 @@ definition. The evidence bundle is written to `--bundle-root` (default:
 
 **Source:** `dev.sh` function `cmd_fast` (line 126+)
 
-### 1.4 Plan-First Development (roko do --plan)
+### 1.4 One Command: `roko run --plan`
 
-For ad-hoc development tasks that do not start from a PRD:
+For ad-hoc development, `roko run` takes the prompt directly. It sizes the work: a
+small change runs as one checked task, and a larger one gets a plan written first.
+`--plan` always writes the plan first:
 
 ```bash
-cargo run -p roko-cli -- do --plan "add cursor support"
+cargo run -p roko-cli -- run --plan "add cursor support"
 ```
 
-This generates a plan from the prompt, seeks approval, and executes it through
-the same Graph pipeline. The retired `roko develop` command was an alias for
-this workflow.
+This writes `plans/<slug>/` from the prompt, shows the plan, asks for approval, and
+executes it through the same Graph pipeline. `--yes` skips the question, and
+`--dry-run` stops after the plan is written so you can edit it and run it later with
+`roko run plans/<slug>`.
 
-### 1.5 Automatic Plan Generation
+### 1.5 Plans from the Portal and the HTTP API
 
-When `prd.auto_plan = true` in `roko.toml`, publishing a PRD draft automatically
-triggers plan generation via `spawn_prd_publish_subscriber` in `roko-serve`.
-This closes the loop between "write a PRD" and "generate a plan" without manual
-intervention.
+The portal (`apps/portal`) and the HTTP control plane follow the same loop. A prompt
+goes to `POST /api/plans/generate` with `{"prompt": "..."}`, which writes the plan and
+answers 202 with the plan's id. The plan's `tasks.toml` is edited as text through
+`GET` and `PUT /api/plans/{id}/source`; the server validates each save and rejects an
+invalid plan with 422, leaving the file on disk untouched. `POST /api/plans/{id}/revise`
+asks an agent to revise the plan from written feedback, and
+`POST /api/plans/{id}/execute` runs it. No separate publish or auto-plan step sits in
+between: the plan comes straight from the prompt.
 
 ---
 
@@ -654,7 +670,7 @@ passes. A clean live full-cycle rerun is pending as separate sign-off.
 
 | Capability | Evidence |
 |---|---|
-| Generate plans from PRDs | `roko prd plan` writes `tasks.toml` from a PRD (the old "48 epics accepted using this workflow" is withdrawn; section 1) |
+| Generate plans from a request | `roko plan generate` and `roko run --plan` write `tasks.toml` from a prompt or a spec file (the old "48 epics accepted using this workflow" is withdrawn; section 1) |
 | Execute plans end-to-end | Portal build: 16 plans, 173 tasks, 168 gate-verified (`docs/whitepaper/evidence/2026-09-29-b7-real-run-evidence.md`) |
 | Resume after crash | Graph checkpoint + Activity replay proven in dogfood |
 | Learn from failures | Playbook rules + cascade router + adaptive thresholds wired |
@@ -783,20 +799,19 @@ concrete Roko subsystem:
 
 ```bash
 # Run the complete self-hosting workflow
-cargo run -p roko-cli -- prd idea "description"
-cargo run -p roko-cli -- prd draft new "slug"
-cargo run -p roko-cli -- research enhance-prd slug
-cargo run -p roko-cli -- prd plan slug
-cargo run -p roko-cli -- plan run plans/
-cargo run -p roko-cli -- plan run plans/ --resume-plan
+cargo run -p roko-cli -- plan generate "description"     # writes plans/<slug>/
+cargo run -p roko-cli -- research enhance-plan <slug>     # optional
+cargo run -p roko-cli -- plan validate plans/<slug>
+cargo run -p roko-cli -- run plans/<slug>
+cargo run -p roko-cli -- plan run plans/<slug> --resume-plan
 cargo run -p roko-cli -- dashboard
 cargo run -p roko-cli -- status
 
 # FAST self-development (requires prebuilt binary)
 ./dev.sh fast plans/<plan-directory>
 
-# Plan-first development from prompt
-cargo run -p roko-cli -- do --plan "add cursor support"
+# Plan-first development from a prompt, in one command
+cargo run -p roko-cli -- run --plan "add cursor support"
 
 # Inspect learning state
 cargo run -p roko-cli -- learn all

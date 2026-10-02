@@ -31,11 +31,12 @@ Positional `[prompt]` enables one-shot mode without a subcommand.
 ```
 roko init                        Create .roko/ directory and roko.toml
 roko setup                       Interactive setup wizard
-roko run "<prompt>"              Single prompt through graph templates
-roko do "<prompt>"               Execute task via agent dispatch
-  --complexity <band>            trivial/simple/medium/complex
-  --sandbox <level>              Override sandbox level
-roko develop "<prompt>"          Plan-first development
+roko run "<prompt>"              Size the prompt: one checked task, or a plan first
+  --plan                         Always write a plan first; ask before running it
+  --dry-run                      With --plan: write the plan and stop
+  --yes                          Run a written plan without asking
+  --complexity <band>            trivial/simple/standard/complex
+roko run plans/<slug>            Run an existing plan (same run as plan run)
 roko show [subject]              Inspect workspace state
   costs|agents|knowledge|plans|learning|history
 roko status                      Query signals, report counts
@@ -56,16 +57,17 @@ roko cache status|prune          Cache lifecycle
 roko github status               GitHub config and CI state
 ```
 
-### Planning and PRDs
+### Planning
 
 ```
 roko plan list                   List plans
 roko plan show <dir>             Show plan details
 roko plan create                 Create plan interactively
 roko plan run <dir>              Execute via Graph engine
-  --engine legacy                Use Runner-v2 fallback
+  --engine legacy                Rejected with an error (graph is the only engine)
   --resume-plan                  Resume from checkpoint
-roko plan generate <prompt>      Generate plan from prompt
+roko plan generate <prompt>      Write plans/<slug>/ from a prompt; runs nothing
+  --from-backlog <ids>           One plan per tmp/backlog spec
 roko plan regenerate <dir>       Regenerate plan tasks
 roko plan index                  Rebuild plans/INDEX.md
 roko plan pause <dir>            Pause running plan
@@ -76,14 +78,7 @@ roko plan status <dir>           Show execution status
 roko plan queue show|validate|init  Queue manifest operations
 roko plan validate <dir>         Lint tasks.toml without executing
 
-roko prd idea "<text>"           Capture work item idea
-roko prd list                    List PRDs
-roko prd status                  PRD coverage report
-roko prd draft new|edit|promote|list  Draft lifecycle
-roko prd plan <slug>             Generate plan from PRD
-roko prd consolidate             Scan for gaps and duplicates
-
-roko backlog import|list|audit   Backlog spec management
+roko backlog list|audit|mark-done  Backlog spec management
 ```
 
 ### Agents
@@ -104,7 +99,6 @@ roko agent chat --agent X              Interactive chat REPL
 ```
 roko research topic "<topic>"          Deep research with citations
 roko research search "<query>"         Direct web search (Perplexity)
-roko research enhance-prd <slug>       Enhance PRD with research
 roko research enhance-plan <dir>       Enhance plan with research
 roko research enhance-tasks <dir>      Enhance tasks with research
 roko research analyze                  Analyze execution data

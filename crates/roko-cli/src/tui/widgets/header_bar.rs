@@ -615,9 +615,8 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         (" F6", Theme::BONE_DIM, "cfg", Tab::Config),
         (" F7", Theme::BONE_DIM, "inspect", Tab::Inspect),
         (" F8", Theme::SAGE, "market", Tab::Marketplace),
-        (" F9", Theme::DREAM, "atelier", Tab::Atelier),
-        (" F10", Theme::BONE_DIM, "learn", Tab::Learning),
-        ("  - ", Theme::SAGE, "providers", Tab::Providers),
+        (" F9", Theme::BONE_DIM, "learn", Tab::Learning),
+        (" F10", Theme::SAGE, "providers", Tab::Providers),
     ];
 
     // Keep the operational metrics legible instead of reserving a tab strip

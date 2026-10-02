@@ -345,65 +345,129 @@ fn cli_parses_run_subcommand() {
 }
 
 #[test]
-fn cli_parses_do_subcommand() {
+fn cli_parses_run_flags() {
+    let cli = Cli::try_parse_from([
+        "roko",
+        "run",
+        "--plan",
+        "--complexity",
+        "medium",
+        "--dry-run",
+        "--workdir",
+        "/tmp/run-workdir",
+        "--provider",
+        "openai",
+        "--yes",
+        "--no-cascade",
+        "--context",
+        "src/lib.rs",
+        "--max-retries",
+        "2",
+        "add",
+        "login",
+    ])
+    .unwrap();
+    match cli.command {
+        Some(Command::Run {
+            prompt,
+            plan,
+            dry_run,
+            yes,
+            complexity: Some(complexity),
+            context,
+            no_cascade,
+            workdir: Some(workdir),
+            provider: Some(provider),
+            max_retries: Some(max_retries),
+            serve,
+            share,
+            fresh,
+            resume_plan,
+        }) => {
+            assert_eq!(prompt, vec!["add".to_string(), "login".to_string()]);
+            assert!(plan);
+            assert!(dry_run);
+            assert!(yes);
+            assert_eq!(complexity, RunComplexity::Medium);
+            assert_eq!(context, vec![PathBuf::from("src/lib.rs")]);
+            assert!(no_cascade);
+            assert_eq!(workdir, PathBuf::from("/tmp/run-workdir"));
+            assert_eq!(provider, "openai");
+            assert_eq!(max_retries, 2);
+            assert!(!serve && !share && !fresh);
+            assert_eq!(resume_plan, None);
+        }
+        other => panic!("expected run command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_run_of_a_plan_directory() {
+    let cli = Cli::try_parse_from(["roko", "run", "plans/add-login", "--fresh"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Run { ref prompt, fresh: true, .. }) if prompt == &vec!["plans/add-login".to_string()]
+    ));
+    let cli = Cli::try_parse_from(["roko", "run", "plans/add-login", "--resume-plan"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Run {
+            resume_plan: Some(ref path),
+            ..
+        }) if path == &PathBuf::from(".roko/state/state-snapshot.json")
+    ));
+}
+
+#[test]
+fn removed_commands_still_parse_so_they_can_report_the_migration() {
+    // `roko do` keeps its old flags (and its `d` alias), so an old script
+    // reaches the removal error instead of a usage error.
     let cli = Cli::try_parse_from([
         "roko",
         "do",
         "--plan",
         "--complexity",
         "medium",
-        "--dry-run",
-        "--workdir",
-        "/tmp/do-workdir",
-        "--provider",
-        "openai",
-        "--yes",
         "--ghost",
         "--compare",
-        "--no-cascade",
+        "--continue",
+        "work-123",
         "do",
         "something",
     ])
     .unwrap();
-    match cli.command {
-        Some(Command::Do {
-            plan,
-            complexity: Some(complexity),
-            dry_run,
-            workdir: Some(workdir),
-            provider: Some(provider),
-            yes,
-            ghost,
-            compare,
-            no_cascade,
-            prompt,
-            ..
-        }) => {
-            assert!(plan);
-            assert_eq!(complexity, DoComplexity::Medium);
-            assert!(dry_run);
-            assert_eq!(workdir, PathBuf::from("/tmp/do-workdir"));
-            assert_eq!(provider, "openai");
-            assert!(yes);
-            assert!(ghost);
-            assert!(compare);
-            assert!(no_cascade);
-            assert_eq!(prompt, vec!["do".to_string(), "something".to_string()]);
-        }
-        other => panic!("expected do command, got {other:?}"),
+    assert!(matches!(cli.command, Some(Command::Do { .. })));
+    let cli = Cli::try_parse_from(["roko", "d", "fix it"]).unwrap();
+    assert!(matches!(cli.command, Some(Command::Do { .. })));
+    // `develop` printed its migration for a month (since 2026-09-04) and is
+    // now an unknown subcommand.
+    assert!(try_parse_cli(["roko", "develop", "build", "it"]).is_err());
+    for args in [
+        vec!["roko", "prd"],
+        vec!["roko", "prd", "list"],
+        vec!["roko", "prd", "idea", "wire", "the", "runner"],
+        vec!["roko", "prd", "draft", "new", "a", "title"],
+        vec!["roko", "prd", "plan", "my-prd", "--dry-run"],
+    ] {
+        let cli = Cli::try_parse_from(args.clone()).unwrap();
+        assert!(
+            matches!(cli.command, Some(Command::Prd { .. })),
+            "{args:?} should parse as the removed prd command"
+        );
     }
 }
 
 #[test]
-fn cli_parses_do_continue_optional_value() {
-    let cli = Cli::try_parse_from(["roko", "do", "--continue", "work-123"]).unwrap();
-    assert!(matches!(
-        cli.command,
-        Some(Command::Do {
-            r#continue: Some(Some(ref id)),
-            ..
-        }) if id == "work-123"
-    ));
+fn removed_commands_stay_out_of_help() {
+    let mut cmd = Cli::command();
+    cmd.build();
+    for name in ["do", "prd"] {
+        let sub = cmd
+            .get_subcommands()
+            .find(|sub| sub.get_name() == name)
+            .unwrap_or_else(|| panic!("{name} should still parse"));
+        assert!(sub.is_hide_set(), "{name} should be hidden from --help");
+    }
 }
 
 #[test]
@@ -927,55 +991,6 @@ fn mutating_plan_commands_rebuild_indexes_but_dry_runs_do_not() {
 }
 
 #[test]
-fn read_only_prd_commands_do_not_rebuild_indexes() {
-    let commands = [
-        Cli::try_parse_from(["roko", "prd", "list"]).unwrap(),
-        Cli::try_parse_from(["roko", "prd", "status"]).unwrap(),
-        Cli::try_parse_from(["roko", "prd", "draft", "list"]).unwrap(),
-        Cli::try_parse_from(["roko", "prd", "plan", "my-prd", "--dry-run"]).unwrap(),
-    ];
-    for cli in commands {
-        let Some(Command::Prd { cmd }) = cli.command else {
-            panic!("expected a prd command");
-        };
-        assert!(!cmd.should_rebuild_indexes(), "{cmd:?}");
-    }
-}
-
-#[test]
-fn mutating_prd_commands_rebuild_indexes() {
-    let commands = [
-        Cli::try_parse_from(["roko", "prd", "idea", "wire", "the", "runner"]).unwrap(),
-        Cli::try_parse_from(["roko", "prd", "draft", "new", "a", "title"]).unwrap(),
-        Cli::try_parse_from(["roko", "prd", "draft", "edit", "my-prd"]).unwrap(),
-        Cli::try_parse_from(["roko", "prd", "draft", "promote", "my-prd"]).unwrap(),
-        Cli::try_parse_from(["roko", "prd", "plan", "my-prd"]).unwrap(),
-        Cli::try_parse_from(["roko", "prd", "consolidate"]).unwrap(),
-    ];
-    for cli in commands {
-        let Some(Command::Prd { cmd }) = cli.command else {
-            panic!("expected a prd command");
-        };
-        assert!(cmd.should_rebuild_indexes(), "{cmd:?}");
-    }
-}
-
-#[test]
-fn prd_list_leaves_the_index_files_untouched() {
-    let tmp = tempfile::tempdir().unwrap();
-    let cli = Cli::try_parse_from(["roko", "prd", "list"]).unwrap();
-    let Some(Command::Prd { cmd }) = cli.command else {
-        panic!("expected a prd command");
-    };
-
-    let rebuild = cmd.should_rebuild_indexes();
-    let exit_code = finish_with_index_rebuild(Ok(EXIT_SUCCESS), tmp.path(), rebuild).unwrap();
-
-    assert_eq!(exit_code, EXIT_SUCCESS);
-    assert!(!tmp.path().join(".roko").exists());
-}
-
-#[test]
 fn successful_command_propagates_index_rebuild_failure() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join(".roko"), b"not a directory").unwrap();
@@ -1433,10 +1448,10 @@ async fn persist_capture_episode_records_learning_episode() {
         workdir,
         "claude",
         Some("claude-sonnet-4-6"),
-        "prd-draft-new",
-        "prd:draft:new:demo",
-        "draft a PRD",
-        "# demo prd",
+        "plan-generate",
+        "plan:generate:demo",
+        "write a plan",
+        "# demo plan",
         true,
         321,
         Some("resume-123"),
@@ -1452,13 +1467,13 @@ async fn persist_capture_episode_records_learning_episode() {
 
     let episode = &episodes[0];
     assert_eq!(episode.agent_id, "claude");
-    assert_eq!(episode.task_id, "prd:draft:new:demo");
+    assert_eq!(episode.task_id, "plan:generate:demo");
     assert_eq!(episode.kind, "agent_turn");
     assert_eq!(episode.model, "claude-sonnet-4-6");
     assert!(episode.success);
     assert_eq!(
         episode.extra.get("task_kind"),
-        Some(&serde_json::json!("prd-draft-new"))
+        Some(&serde_json::json!("plan-generate"))
     );
     assert_eq!(
         episode.extra.get("provider"),
@@ -1470,7 +1485,7 @@ async fn persist_capture_episode_records_learning_episode() {
     );
     assert_eq!(
         episode.extra.get("task_category"),
-        Some(&serde_json::json!("docs"))
+        Some(&serde_json::json!("scaffolding"))
     );
     assert_eq!(
         episode.extra.get("complexity_band"),
@@ -2255,19 +2270,6 @@ fn cli_daemon_restart_defaults_to_canonical_port() {
         Some(Command::Daemon {
             cmd: DaemonCmd::Restart { port }
         }) if port == roko_cli::DEFAULT_SERVE_PORT
-    ));
-}
-
-#[test]
-fn cli_parses_prd_draft_new_instead_of_top_level_new() {
-    let cli = Cli::try_parse_from(["roko", "prd", "draft", "new", "Ship", "it"]).unwrap();
-    assert!(matches!(
-        cli.command,
-        Some(Command::Prd {
-            cmd: PrdCmd::Draft {
-                cmd: PrdDraftCmd::New { title }
-            }
-        }) if title == vec!["Ship".to_string(), "it".to_string()]
     ));
 }
 
@@ -3596,9 +3598,8 @@ fn cli_parses_trigger_fire_default_payload() {
 // ── #262: CLI flag resolution contract tests ────────────────────
 
 use roko_cli::resolved_overrides::{
-    ApprovalPolicy, CascadePolicy, ConfigEditTarget, ConfigSetInput, DevelopInput, DryRunPolicy,
-    InteractionMode, LearnTuneInput, PlanRunInput, PresentationMode, ResolvedExecutionOverrides,
-    ServePolicy,
+    CascadePolicy, ConfigEditTarget, ConfigSetInput, DryRunPolicy, InteractionMode, LearnTuneInput,
+    PlanRunInput, PresentationMode, ResolvedExecutionOverrides, RunInput, ServePolicy,
 };
 
 #[test]
@@ -3613,7 +3614,7 @@ fn cli_flags_model_alias_equivalence() {
 fn cli_flags_headless_resolves() {
     let cli = Cli::try_parse_from(["roko", "--headless", "status"]).unwrap();
     let flags = global_cli_flags(&cli);
-    let overrides = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
+    let overrides = ResolvedExecutionOverrides::for_run(&flags, &RunInput::default());
     assert_eq!(overrides.interaction_mode, InteractionMode::Headless);
 }
 
@@ -3628,26 +3629,14 @@ fn cli_flags_force_backend_alias_resolves_to_model() {
 }
 
 #[test]
-fn cli_flags_do_ghost_is_dry_run() {
-    let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
-    let flags = global_cli_flags(&cli);
-    let input = DoInput {
-        ghost: true,
-        ..DoInput::default()
-    };
-    let overrides = ResolvedExecutionOverrides::for_do(&flags, &input);
-    assert_eq!(overrides.dry_run, DryRunPolicy::ReadOnlyNoMutation);
-}
-
-#[test]
 fn cli_flags_no_cascade_resolves() {
     let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
     let flags = global_cli_flags(&cli);
-    let input = DoInput {
+    let input = RunInput {
         no_cascade: true,
-        ..DoInput::default()
+        ..RunInput::default()
     };
-    let overrides = ResolvedExecutionOverrides::for_do(&flags, &input);
+    let overrides = ResolvedExecutionOverrides::for_run(&flags, &input);
     assert_eq!(overrides.cascade_policy, CascadePolicy::DisabledByUser);
 }
 
@@ -3655,7 +3644,11 @@ fn cli_flags_no_cascade_resolves() {
 fn cli_flags_serve_required() {
     let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
     let flags = global_cli_flags(&cli);
-    let overrides = ResolvedExecutionOverrides::for_run(&flags, None, true, None);
+    let input = RunInput {
+        serve_required: true,
+        ..RunInput::default()
+    };
+    let overrides = ResolvedExecutionOverrides::for_run(&flags, &input);
     assert_eq!(overrides.serve_policy, ServePolicy::Required);
 }
 
@@ -3663,7 +3656,7 @@ fn cli_flags_serve_required() {
 fn cli_flags_no_serve_disabled() {
     let cli = Cli::try_parse_from(["roko", "--no-serve", "status"]).unwrap();
     let flags = global_cli_flags(&cli);
-    let overrides = ResolvedExecutionOverrides::for_run(&flags, None, false, None);
+    let overrides = ResolvedExecutionOverrides::for_run(&flags, &RunInput::default());
     assert_eq!(overrides.serve_policy, ServePolicy::Disabled);
 }
 
@@ -3754,30 +3747,6 @@ fn cli_flags_global_flags_helper_roundtrip() {
 }
 
 #[test]
-fn cli_flags_develop_resolves_dry_run() {
-    let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
-    let flags = global_cli_flags(&cli);
-    let input = DevelopInput {
-        dry_run: true,
-        ..DevelopInput::default()
-    };
-    let overrides = ResolvedExecutionOverrides::for_develop(&flags, &input);
-    assert_eq!(overrides.dry_run, DryRunPolicy::ReadOnlyNoMutation);
-}
-
-#[test]
-fn cli_flags_develop_resolves_yes() {
-    let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
-    let flags = global_cli_flags(&cli);
-    let input = DevelopInput {
-        yes: true,
-        ..DevelopInput::default()
-    };
-    let overrides = ResolvedExecutionOverrides::for_develop(&flags, &input);
-    assert_eq!(overrides.approval, ApprovalPolicy::AutoApprove);
-}
-
-#[test]
 fn cli_flags_plan_run_fresh_and_force_resume() {
     let cli = Cli::try_parse_from(["roko", "status"]).unwrap();
     let flags = global_cli_flags(&cli);
@@ -3794,9 +3763,9 @@ fn cli_flags_plan_run_fresh_and_force_resume() {
 // ── P2-FLG-1: global --json wires through to subcommands ────────
 
 #[test]
-fn cli_flags_json_parses_globally_for_prd_list() {
-    // `roko --json prd list` must set cli.json = true.
-    let cli = Cli::try_parse_from(["roko", "--json", "prd", "list"]).unwrap();
+fn cli_flags_json_parses_globally_for_plan_list() {
+    // `roko --json plan list` must set cli.json = true.
+    let cli = Cli::try_parse_from(["roko", "--json", "plan", "list"]).unwrap();
     assert!(cli.json, "--json must be set when passed before subcommand");
 }
 
@@ -3809,16 +3778,16 @@ fn cli_flags_json_parses_globally_for_history() {
     );
 }
 
-// ── P2-FLG-2: --role override for prd subcommands ─────────────
+// ── P2-FLG-2: --role override for plan subcommands ────────────
 
 #[test]
-fn cli_flags_role_propagates_to_prd_context() {
-    // Verify that --role appears in cli.role for prd subcommands.
-    let cli = Cli::try_parse_from(["roko", "--role", "custom-writer", "prd", "list"]).unwrap();
+fn cli_flags_role_propagates_to_plan_context() {
+    // Verify that --role appears in cli.role for plan subcommands.
+    let cli = Cli::try_parse_from(["roko", "--role", "custom-writer", "plan", "list"]).unwrap();
     assert_eq!(
         cli.role.as_deref(),
         Some("custom-writer"),
-        "--role must propagate to cli.role for prd subcommands"
+        "--role must propagate to cli.role for plan subcommands"
     );
 }
 

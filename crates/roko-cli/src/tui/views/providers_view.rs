@@ -1,4 +1,4 @@
-//! F11 Providers view -- NERV-style institutional provider monitor.
+//! F10 Providers view -- NERV-style institutional provider monitor.
 //!
 //! Layout (top to bottom):
 //!   1. Header:     fullwidth katakana title + pattern status

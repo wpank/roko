@@ -8,13 +8,12 @@ severity = "p1"
 goal = "golden-path"
 rank = 15
 size = "L"
-hold = "workflow-audit migration in progress (session roko-7d, at Will's request, 2026-10-02): it removes the PRD pipeline and folds roko do/develop into roko run; check with roko-7d before starting work that edits PRD code, do_cmd.rs or the Run/Do/Prd parts of main.rs"
 subsystem = ["roko-cli/tests"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
 source = "tmp/backlog/2026-10-02-complete-and-wire PK15"
-anchors = [".github/workflows/ci.yml", "crates/roko-cli/src/commands/do_cmd.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/graph_execution/batch.rs", "crates/roko-cli/src/prd.rs", "crates/roko-cli/src/run.rs", "crates/roko-cli/src/worker/cloud.rs", "crates/roko-cli/tests/plan_branch_integration.rs"]
+anchors = [".github/workflows/ci.yml", "crates/roko-cli/src/commands/run_cmd.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/graph_execution/batch.rs", "crates/roko-cli/src/run.rs", "crates/roko-cli/src/worker/cloud.rs", "crates/roko-cli/tests/plan_branch_integration.rs"]
 lane = "rust-cold"
 parent = "spec-fef7c5"
 links = { depends_on = ["gap-997366"], blocks = [], related = ["gap-f30b8e"], supersedes = [], duplicate_of = "" }
@@ -26,7 +25,7 @@ command = "! grep -q 'worktree_per_task: false' crates/roko-cli/src/run.rs"
 command = "grep -rqw 'fn roko_run_follows_worktree_per_task' crates/roko-cli/tests/ && cargo test -p roko-cli --test plan_branch_integration roko_run_follows_worktree_per_task"
 
 [[verify]]
-command = "! grep -q 'worktree_per_task: false' crates/roko-cli/src/prd.rs crates/roko-cli/src/commands/do_cmd.rs crates/roko-cli/src/worker/cloud.rs"
+command = "! grep -q 'worktree_per_task: false' crates/roko-cli/src/commands/run_cmd.rs crates/roko-cli/src/worker/cloud.rs"
 
 [[verify]]
 command = "grep -rqw 'fn golden_path_fixture_is_red_on_the_seed' crates/roko-cli/tests/ && cargo test -p roko-cli --test golden_path_acceptance golden_path_fixture_is_red_on_the_seed"
@@ -78,3 +77,4 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK14 (gap-997366).
 - Existing work items this package covers or touches: gap-f30b8e. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
+- 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. Task 3113 now covers `roko run` (`commands/run_cmd.rs::run_plan_execution` still sets `worktree_per_task: false`) and the cloud worker; the PRD auto-execute it also named is gone. The verify and anchors were re-pointed from `do_cmd.rs`/`prd.rs` to `run_cmd.rs`. Hold lifted.

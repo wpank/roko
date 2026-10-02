@@ -8,13 +8,12 @@ severity = "p2"
 goal = "golden-path"
 rank = 19
 size = "L"
-hold = "workflow-audit migration in progress (session roko-7d, at Will's request, 2026-10-02): it removes the PRD pipeline and folds roko do/develop into roko run; check with roko-7d before starting work that edits PRD code, do_cmd.rs or the Run/Do/Prd parts of main.rs"
 subsystem = ["roko-cli/plan_policy"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
 source = "tmp/backlog/2026-10-02-complete-and-wire PK19"
-anchors = ["apps/portal/src/components/stage/PlanView.tsx", "crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/plan_generate.rs", "crates/roko-cli/src/plan_policy.rs", "crates/roko-cli/src/plan_validate.rs", "crates/roko-cli/src/prd.rs", "crates/roko-cli/tests/plan_validate.rs", "crates/roko-gate/src/acceptance_contract.rs", "crates/roko-gate/src/lib.rs"]
+anchors = ["apps/portal/src/components/stage/PlanView.tsx", "crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/plan_generate.rs", "crates/roko-cli/src/plan_policy.rs", "crates/roko-cli/src/plan_validate.rs", "crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/tests/plan_validate.rs", "crates/roko-gate/src/acceptance_contract.rs", "crates/roko-gate/src/lib.rs"]
 lane = "rust-hot"
 parent = "spec-fef7c5"
 links = { depends_on = ["gap-f61823", "gap-cb5133", "gap-e4bfbf"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
@@ -96,3 +95,4 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK10 (gap-f61823), PK17 (gap-cb5133), PK18 (gap-e4bfbf).
 - Suggested model: opus.
+- 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. The generator prompt and its retries moved from `prd.rs` to `crates/roko-cli/src/plan_generate/pipeline.rs` (anchor re-pointed); a task that names `prd.rs` means that file. Hold lifted.

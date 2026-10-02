@@ -1501,7 +1501,7 @@ async fn generation_outcome_partial_success_does_not_seed_learning() {
     };
 
     runtime
-        .record_generation_outcome("prd:plan:test", "claude-sonnet-4-6", &outcome)
+        .record_generation_outcome("plan:generate:test", "claude-sonnet-4-6", &outcome)
         .await
         .unwrap();
 

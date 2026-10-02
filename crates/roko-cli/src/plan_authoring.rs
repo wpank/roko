@@ -497,8 +497,8 @@ pub fn build_revision_prompt(
 /// Extract, repair, validate, and atomically write a revised `tasks.toml`.
 ///
 /// 1. Extracts the TOML from the agent output using
-///    [`crate::prd::extract_fenced_block`], falling back to
-///    [`crate::prd::extract_toml_content_fallback`].
+///    [`crate::plan_generate::extract_fenced_block`], falling back to
+///    [`crate::plan_generate::extract_toml_content_fallback`].
 /// 2. Applies [`repair_toml`] for deterministic fixes only (does **not** run
 ///    `validate_and_fix_generated_plan`, which strips `model_hint` fields).
 /// 3. Requires that `[meta] plan` equals `plan_id`.
@@ -512,9 +512,9 @@ pub fn apply_revision_output(
     models: &IndexMap<String, ModelProfile>,
 ) -> Result<RevisionOutcome> {
     // ── Step 1: Extract TOML block ─────────────────────────────────────────
-    let raw = crate::prd::extract_fenced_block(agent_output, "toml")
-        .or_else(|| crate::prd::extract_fenced_block(agent_output, "tasks.toml"))
-        .or_else(|| crate::prd::extract_toml_content_fallback(agent_output))
+    let raw = crate::plan_generate::extract_fenced_block(agent_output, "toml")
+        .or_else(|| crate::plan_generate::extract_fenced_block(agent_output, "tasks.toml"))
+        .or_else(|| crate::plan_generate::extract_toml_content_fallback(agent_output))
         .ok_or_else(|| anyhow::anyhow!("no TOML block found in agent output"))?;
 
     // ── Step 2: Deterministic repair ──────────────────────────────────────
@@ -726,8 +726,10 @@ pub async fn revise_plan_source(
         }
     };
 
-    let budget =
-        revision_failure_budget(crate::prd::planner_context_window(models, &planner_model));
+    let budget = revision_failure_budget(crate::plan_generate::planner_context_window(
+        models,
+        &planner_model,
+    ));
     let last_failure = last_run_failure_context(workdir, plan_id, budget);
 
     // First attempt.
@@ -789,7 +791,7 @@ const AUTHORING_ROLE: &str = "strategist";
 /// instead: the same three records, attributed to the plan under a pseudo task
 /// id ([`GENERATION_SPEND_TASK_ID`] or [`REVISION_SPEND_TASK_ID`]). Each call
 /// is recorded as it returns, so a retry or a failed operation is counted too.
-/// Research, `roko do` and PRD drafting record through
+/// Research records through
 /// [`AuthoringSpend::operation`]: the same records, with no plan id, under the
 /// operation's own task id and role.
 pub struct AuthoringSpend {
@@ -827,7 +829,7 @@ impl AuthoringSpend {
     }
 
     /// Spend of a one-off agent operation in `workdir` outside any plan, such
-    /// as research, `roko do` or PRD drafting, recorded under `task_id` and
+    /// as research, recorded under `task_id` and
     /// `role` (bug-86ff56).
     #[must_use]
     pub fn operation(workdir: &Path, task_id: &str, role: &str) -> Self {
@@ -1224,7 +1226,6 @@ command = "cargo test -p x parse"
             id: "my-plan".to_string(),
             dir: plan_dir.clone(),
             tasks: TasksFile::parse(&plan_dir.join("tasks.toml")).expect("parse tasks.toml"),
-            prd_excerpt: String::new(),
         };
         let mut checkpoint = start_plan_checkpoint(workdir, &plan).expect("checkpoint");
         checkpoint

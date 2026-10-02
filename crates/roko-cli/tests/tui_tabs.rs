@@ -1,4 +1,4 @@
-//! Verify F8 Marketplace, F9 Atelier, and F10 Learning tabs are fully wired.
+//! Verify F8 Marketplace, F9 Learning, and F10 Providers tabs are fully wired.
 //! Also tests TUI responsiveness invariants (SH06-T03): parallel agents,
 //! gate failure diagnosis, token counters, phase transitions, agent timing,
 //! error ring buffers, and agent completion.
@@ -10,9 +10,9 @@ use roko_core::dashboard_snapshot::{
 };
 
 #[test]
-fn tab_all_has_eleven_entries() {
-    // F1-F10 plus the Providers tab added in 244f564e1.
-    assert_eq!(Tab::ALL.len(), 11);
+fn tab_all_has_ten_entries() {
+    // One tab per function key, F1-F10.
+    assert_eq!(Tab::ALL.len(), 10);
 }
 
 #[test]
@@ -24,17 +24,6 @@ fn marketplace_tab_basics() {
     );
     assert_eq!(Tab::Marketplace.label(), "Marketplace");
     assert_eq!(Tab::Marketplace.index(), 7);
-}
-
-#[test]
-fn atelier_tab_basics() {
-    assert_eq!(Tab::Atelier.fkey(), crossterm::event::KeyCode::F(9));
-    assert_eq!(
-        Tab::from_key(crossterm::event::KeyCode::F(9)),
-        Some(Tab::Atelier)
-    );
-    assert_eq!(Tab::Atelier.label(), "Atelier");
-    assert_eq!(Tab::Atelier.index(), 8);
 }
 
 #[test]
@@ -53,13 +42,24 @@ fn next_prev_cycle_all_tabs() {
 
 #[test]
 fn learning_tab_basics() {
-    assert_eq!(Tab::Learning.fkey(), crossterm::event::KeyCode::F(10));
+    assert_eq!(Tab::Learning.fkey(), crossterm::event::KeyCode::F(9));
     assert_eq!(
-        Tab::from_key(crossterm::event::KeyCode::F(10)),
+        Tab::from_key(crossterm::event::KeyCode::F(9)),
         Some(Tab::Learning)
     );
     assert_eq!(Tab::Learning.label(), "Learning");
-    assert_eq!(Tab::Learning.index(), 9);
+    assert_eq!(Tab::Learning.index(), 8);
+}
+
+#[test]
+fn providers_tab_basics() {
+    assert_eq!(Tab::Providers.fkey(), crossterm::event::KeyCode::F(10));
+    assert_eq!(
+        Tab::from_key(crossterm::event::KeyCode::F(10)),
+        Some(Tab::Providers)
+    );
+    assert_eq!(Tab::Providers.label(), "Providers");
+    assert_eq!(Tab::Providers.index(), 9);
 }
 
 #[test]
@@ -74,13 +74,6 @@ fn marketplace_has_subviews() {
     let subs = SubView::for_tab(Tab::Marketplace);
     assert!(!subs.is_empty());
     assert!(subs.iter().any(|s| s.label() == "Jobs"));
-}
-
-#[test]
-fn atelier_has_subviews() {
-    let subs = SubView::for_tab(Tab::Atelier);
-    assert!(!subs.is_empty());
-    assert!(subs.iter().any(|s| s.label() == "PRDs"));
 }
 
 #[test]
@@ -105,16 +98,6 @@ fn view_state_resolves_marketplace_subview() {
     };
     let sub = vs.active_sub_view(Tab::Marketplace);
     assert_eq!(sub.label(), "Jobs");
-}
-
-#[test]
-fn view_state_resolves_atelier_subview() {
-    let vs = ViewState {
-        sub_tab: 0,
-        ..Default::default()
-    };
-    let sub = vs.active_sub_view(Tab::Atelier);
-    assert_eq!(sub.label(), "PRDs");
 }
 
 // ---------------------------------------------------------------------------

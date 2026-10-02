@@ -39,11 +39,6 @@ pub(crate) enum ResearchCmd {
         #[arg(long, value_enum, default_value_t = ResearchBackend::Auto)]
         backend: ResearchBackend,
     },
-    /// Enhance a PRD with academic citations, diagrams, and research-backed improvements.
-    EnhancePrd {
-        /// PRD slug (filename without .md).
-        slug: String,
-    },
     /// Optimize an implementation plan with research-backed task decomposition techniques.
     EnhancePlan {
         /// Plan directory name under plans/.
@@ -361,66 +356,6 @@ pub(crate) async fn cmd_research(
                 }
             }
         }
-        ResearchCmd::EnhancePrd { slug } => {
-            let prd_path = crate::commands::prd::find_prd(&workdir, &slug)?;
-            let raw_content = std::fs::read_to_string(&prd_path)
-                .with_context(|| format!("read {}", prd_path.display()))?;
-            let (content, truncated, total_bytes) =
-                bounded_context(&raw_content, CONTEXT_MAX_BYTES);
-            println!("🔬 Enhancing PRD: {slug}");
-            if truncated {
-                println!(
-                    "  Note: PRD truncated to {}KB of {}KB for context",
-                    CONTEXT_MAX_BYTES / 1024,
-                    total_bytes / 1024,
-                );
-            }
-            let task_prompt = format!(
-                "Read the PRD at {path} and enhance it: \
-                 (1) Add academic citations [AUTHOR-YEAR] for every design decision. \
-                 (2) Add mermaid diagrams with color styling where architecture would be clearer. \
-                 (3) Identify improvements from recent research. \
-                 (4) Flag claims that contradict recent findings. \
-                 Update the file in place. Also save a research summary to .roko/research/enhance-{slug}.md",
-                path = prd_path.display()
-            );
-            let system = build_research_prompt(&workdir, &slug, content, ResearchMode::EnhancePrd);
-            let started = Instant::now();
-            let task_id = format!("research:enhance-prd:{slug}");
-            let spend = AuthoringSpend::operation(&workdir, &task_id, resolved_role);
-            let (exit_code, output) = run_agent_capture_silent_recorded(
-                AgentExecOpts {
-                    prompt: &task_prompt,
-                    workdir: &workdir,
-                    model: model_ref,
-                    effort: Some(researcher_effort),
-                    system_prompt: Some(&system),
-                    resume_session,
-                    env_vars: &gw.vars,
-                    role: Some(resolved_role),
-                    allowed_tools: Some("Read,Write,Edit"),
-                },
-                &spend,
-            )
-            .await?;
-            if !output.is_empty() {
-                print!("{output}");
-            }
-            let _ = crate::commands::util::persist_capture_episode(
-                &workdir,
-                &agent_command,
-                model_ref,
-                "research-enhance-prd",
-                &task_id,
-                &task_prompt,
-                &output,
-                exit_code == 0,
-                started.elapsed().as_millis() as u64,
-                resume_session,
-            )
-            .await;
-            Ok(exit_code)
-        }
         ResearchCmd::EnhancePlan { plan } => {
             let plan_dir = roko_cli::plan::plans_dir(&workdir).join(&plan);
             if !plan_dir.is_dir() {
@@ -566,7 +501,7 @@ pub(crate) async fn cmd_research(
             if !episodes_path.exists() {
                 println!("No episodes found. Run some tasks first:");
                 println!("  roko plan run plans/<plan-dir>");
-                println!("  roko do \"<prompt>\"");
+                println!("  roko run \"<prompt>\"");
                 return Ok(1);
             }
 
@@ -1322,7 +1257,7 @@ async fn run_agent_fallback(
     let task_prompt = format!(
         "Research the topic: \"{topic}\". \
          Save your findings to .roko/research/{slug}.md with full citations. \
-         Read existing docs in .roko/prd/ and .roko/research/ for context on the project.",
+         Read existing plans in plans/ and docs in .roko/research/ for context on the project.",
     );
     let system = build_research_prompt(workdir, topic, "", ResearchMode::Topic);
     let started = Instant::now();

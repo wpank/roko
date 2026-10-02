@@ -154,13 +154,6 @@ fn print_repo_context(context: &roko_cli::repo_context::RepoContextPack) {
         }
     }
 
-    if !context.related_prds.is_empty() {
-        println!("  related PRDs:");
-        for path in context.related_prds.iter().take(5) {
-            println!("    {}", path.display());
-        }
-    }
-
     if !context.related_plans.is_empty() {
         println!("  related plans:");
         for path in context.related_plans.iter().take(5) {
@@ -170,10 +163,9 @@ fn print_repo_context(context: &roko_cli::repo_context::RepoContextPack) {
 
     if context.key_files.is_empty()
         && context.matching_symbols.is_empty()
-        && context.related_prds.is_empty()
         && context.related_plans.is_empty()
     {
-        println!("  no direct file, symbol, PRD, or plan matches");
+        println!("  no direct file, symbol, or plan matches");
     }
     println!();
 }

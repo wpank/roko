@@ -7,7 +7,7 @@ triage = "unverified"
 severity = "p3"
 subsystem = ["roko-cli/cli"]
 created = 2026-09-15
-updated = 2026-09-28
+updated = 2026-10-02
 source = "docs/v3/39-ROADMAP.md#3.4 CLI Surface Fixes"
 discovered_from = "audit:docs/v3/39-ROADMAP.md#3.4 CLI Surface Fixes"
 anchors = ["crates/roko-cli/src/prd.rs", "roko research"]
@@ -24,3 +24,5 @@ Imported without verification from:
 - `docs/v3/39-ROADMAP.md#3.4 CLI Surface Fixes`
 
 How to verify: grep research/prd command handlers for fixed role strings.
+
+2026-10-02 (roko-7d): The PRD commands were removed (merge bfd36512f); only the research half can still apply. Re-check `crates/roko-cli/src/research.rs` before reviving; still parked.

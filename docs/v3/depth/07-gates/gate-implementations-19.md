@@ -321,7 +321,7 @@ standing up services, databases, or network connections.
 
 The only gate that consults a model rather than a deterministic tool.
 Used when properties are too nuanced for automated checking ("does this
-implementation match the PRD's intent?").
+implementation match the task's intent?").
 
 ---
 

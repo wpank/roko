@@ -664,7 +664,7 @@ Strategy definitions (Fail, Retry, RetryWithEscalation, Decompose, Skip, Compens
 | **Decompose** | LLM generates decomposition; decomposed sub-tasks form a new sub-Graph replacing the failed node. |
 | **Skip** | Continue execution. Downstream nodes receive empty input from skipped node. |
 | **Compensate** | Execute compensation Graph with failed node's partial output + error as input. |
-| **Replan** | Generate new plan from failure context (original task, error, prior attempts). Uses `roko prd plan` pipeline. |
+| **Replan** | Generate new plan from failure context (original task, error, prior attempts). Uses the plan generator (`roko plan generate`). |
 | **HumanResolve** | Publish `human.resolution.requested` Pulse. Pause Flow. Timeout escalates to next strategy. |
 
 ```rust

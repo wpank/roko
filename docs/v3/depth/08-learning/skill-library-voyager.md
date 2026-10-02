@@ -90,7 +90,7 @@ Roko implements an adapted version:
 
 | Voyager Component | Roko Equivalent |
 |-------------------|-----------------|
-| Automatic curriculum | Plan generator (`roko prd plan`) creates tasks from PRDs |
+| Automatic curriculum | Plan generator (`roko plan generate`) creates tasks from a prompt or spec |
 | Skill library | `SkillLibrary` in `roko-learn` with JSON persistence |
 | Iterative prompting | Gate pipeline validates; failed attempts retry with context |
 | Environment feedback | Gate verdicts (compile, test, lint, diff) |

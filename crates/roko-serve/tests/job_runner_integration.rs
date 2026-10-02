@@ -360,12 +360,12 @@ async fn coding_job_execution_persists_artifacts_and_gate_results() {
 }
 
 #[tokio::test]
-async fn coding_job_without_plan_materializes_prd_and_synthetic_plan() {
+async fn coding_job_without_plan_writes_its_spec_and_synthetic_plan() {
     let (dir, state, _app) = test_app_state();
     let job_json = serde_json::json!({
         "id": "coding-no-plan",
         "title": "Implement generated plan path",
-        "description": "Exercise PRD to synthetic plan fallback for coding jobs.",
+        "description": "Exercise the spec to synthetic plan fallback for coding jobs.",
         "job_type": "coding_task",
         "status": "open",
         "created_at": "2026-04-22T00:00:00Z",
@@ -381,9 +381,13 @@ async fn coding_job_without_plan_materializes_prd_and_synthetic_plan() {
     assert_eq!(final_job["status"], "completed");
     assert!(
         dir.path()
-            .join(".roko/prd/published/job-coding-no-plan.md")
+            .join(".roko/jobs/artifacts/coding-no-plan/job-spec.md")
             .exists(),
-        "coding job PRD should be materialized"
+        "the coding job's spec should be written beside its brief"
+    );
+    assert!(
+        !dir.path().join(".roko/prd").exists(),
+        "a coding job writes no PRD"
     );
     assert!(
         dir.path()
@@ -396,8 +400,8 @@ async fn coding_job_without_plan_materializes_prd_and_synthetic_plan() {
         .as_array()
         .expect("artifacts array");
     assert!(
-        artifacts.iter().any(|artifact| artifact["kind"] == "prd"),
-        "PRD artifact missing: {artifacts:?}"
+        artifacts.iter().any(|artifact| artifact["kind"] == "spec"),
+        "spec artifact missing: {artifacts:?}"
     );
     assert!(
         artifacts

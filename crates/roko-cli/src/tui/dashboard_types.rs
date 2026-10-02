@@ -314,7 +314,7 @@ pub struct ExperimentSummary {
     pub total_trials: u64,
 }
 
-/// Playbook summary for the F10 Learning tab (P2-05).
+/// Playbook summary for the F9 Learning tab (P2-05).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlaybookSummary {
     pub id: String,

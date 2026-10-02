@@ -153,7 +153,7 @@ to AI autofill:
 
 | Template ID | Domain | Description |
 |------------|--------|-------------|
-| `rust-coding` | Coding | PRD-to-implementation pipeline with gate validation |
+| `rust-coding` | Coding | Plan-to-implementation pipeline with gate validation |
 | `research` | Research | Deep research with citations and synthesis |
 | `code-review` | Coding | PR review, bug detection, improvement suggestions |
 | `monitoring` | General | Metric watching, anomaly detection, alerting |

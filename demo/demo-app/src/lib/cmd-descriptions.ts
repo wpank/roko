@@ -1,16 +1,14 @@
 export const CMD_DESCRIPTIONS: Record<string, string> = {
-  'prd idea':
-    'Captures a raw work item idea into the PRD backlog. Stored as a one-liner that can be expanded into a full PRD later.',
-  'prd draft new':
-    'Dispatches an agent to expand an idea into a structured PRD document with sections for motivation, design, tasks, and success criteria.',
-  'prd plan':
-    'Generates a concrete implementation plan (tasks.toml) from a published PRD. The plan contains a DAG of tasks with dependencies.',
   'status':
     'Queries the signal store and reports counts across episodes, efficiency metrics, and workspace health.',
   'init':
     'Bootstraps a .roko/ directory with default config, signal store, and learning state. Required once per workspace.',
+  'run --plan':
+    'Writes a plan (tasks.toml) for the request, shows it, then runs it: tasks in dependency order, each checked by gates.',
+  'run plans/':
+    'Runs an existing plan directory, the same run as `roko plan run`.',
   'run':
-    'Executes the universal loop: compose a system prompt, dispatch to an agent, run gate validation (compile/test/clippy), persist results.',
+    'Runs a prompt: a small change as one task checked by gates (compile/test/clippy), a larger one as a plan written first.',
   'doctor':
     'Diagnoses workspace state: checks config, providers, dependencies, and reports any missing or misconfigured components.',
   'learn all':
@@ -31,14 +29,14 @@ export const CMD_DESCRIPTIONS: Record<string, string> = {
     'Creates a new agent from a manifest with a name, domain, and optional tool/model constraints.',
   'bench demo':
     'Runs a simulated benchmark comparing naive single-model execution against cascade-routed optimization.',
-  'prd list':
-    'Lists all PRDs in the workspace with their lifecycle stage (idea/draft/published/planned).',
   'research topic':
     'Dispatches a research agent to investigate a topic using web search and returns structured findings with citations.',
-  'research enhance-prd':
-    'Enriches an existing PRD with research findings, adding context, prior art, and implementation references.',
+  'research enhance-plan':
+    'Improves an existing plan with research findings: context, prior art, and implementation references.',
   'research analyze':
     'Analyzes execution data (episodes, efficiency events) and produces insights about agent performance patterns.',
+  'plan generate':
+    'Writes a plan from a prompt (plans/<slug>/tasks.toml and plan.md) without running it.',
   'plan list':
     'Lists all implementation plans in the workspace with their completion status and task counts.',
   'plan run':
@@ -47,10 +45,6 @@ export const CMD_DESCRIPTIONS: Record<string, string> = {
     'Lints tasks.toml without executing. Checks DAG validity, dependency cycles, and missing fields.',
   'dashboard':
     'Opens the interactive ratatui TUI with F1-F7 tabs for monitoring agents, plans, episodes, and metrics.',
-  'prd status':
-    'Coverage report across all PRDs — shows how many have plans, how many tasks are completed.',
-  'prd consolidate':
-    'Scans PRDs for gaps and duplicates across the entire backlog.',
   'learn tune gates':
     'Adjusts adaptive gate thresholds based on recent pass/fail rates.',
   'learn tune routing':

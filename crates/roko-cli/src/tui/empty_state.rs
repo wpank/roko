@@ -133,7 +133,7 @@ fn empty_content(tab: Tab) -> (&'static str, &'static str, &'static [&'static st
             "No plans loaded",
             &[
                 "Create a plan to get started.",
-                "roko plan create   or   roko prd plan <slug>",
+                "roko plan create   or   roko plan generate \"<prompt>\"",
             ],
         ),
         Tab::Agents => (
@@ -176,14 +176,6 @@ fn empty_content(tab: Tab) -> (&'static str, &'static str, &'static [&'static st
             &[
                 "Jobs appear when agents or operators post work items.",
                 "Press 'n' to create a new job.",
-            ],
-        ),
-        Tab::Atelier => (
-            "\u{270E}",
-            "No PRDs found",
-            &[
-                "Capture ideas and draft PRDs to populate the workshop.",
-                "roko prd idea \"<description>\"",
             ],
         ),
         Tab::Learning => (

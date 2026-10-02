@@ -2,9 +2,6 @@
 # agent, prompt, and provider settings; this file only overrides what
 # the demo needs.
 
-[prd]
-auto_plan = false
-
 [agent]
 command = "echo"
 args = ["demo-stub"]

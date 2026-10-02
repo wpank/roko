@@ -124,11 +124,11 @@ mod tests {
             })
         }
 
-        async fn generate_plan_from_prd(
+        async fn generate_plan_from_prompt(
             &self,
             workdir: &Path,
             slug: &str,
-            _prd_path: &Path,
+            _prompt: &str,
         ) -> anyhow::Result<PlanGenerationResult> {
             let plans_root = workdir.join("plans");
             Ok(PlanGenerationResult {
@@ -287,9 +287,6 @@ mod tests {
         // `POST /api/inference/batch` records its own result.
         let producers = [
             ("/api/research/topic", json!({ "topic": "retry policies" })),
-            ("/api/prds/alpha/draft", json!({})),
-            ("/api/prds/alpha/plan", json!({})),
-            ("/api/prd/consolidate", json!({})),
             ("/api/templates/pr-review/deploy", json!({})),
             ("/api/plans/demo/chat", json!({ "message": "split T1" })),
         ];

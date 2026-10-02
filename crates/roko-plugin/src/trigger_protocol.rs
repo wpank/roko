@@ -485,12 +485,7 @@ mod tests {
     fn evaluate_signal_fires_on_matching_kind() {
         let mut reg = TriggerRegistry::new();
         reg.register(make_signal_match_entry("t1", "github:push", None, None));
-        reg.register(make_signal_match_entry(
-            "t2",
-            "prd.plan_approved",
-            None,
-            None,
-        ));
+        reg.register(make_signal_match_entry("t2", "plan.approved", None, None));
 
         // evaluate_signal returns an evaluation for every enabled SignalMatch trigger,
         // including those that don't fire (so the caller knows why each was skipped).

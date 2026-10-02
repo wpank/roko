@@ -234,12 +234,9 @@ pub(crate) async fn cmd_init(
         .with_context(|| "create .roko layout directories")?;
 
     // Create additional directories used by CLI subsystems but not in
-    // RokoLayout::top_level_dirs() (jobs, prd, task-outputs, etc.).
+    // RokoLayout::top_level_dirs() (jobs, task-outputs, etc.).
     for extra in &[
         roko_dir.join("jobs"),
-        roko_dir.join("prd"),
-        roko_dir.join("prd").join("published"),
-        roko_dir.join("prd").join("drafts"),
         roko_dir.join("task-outputs"),
         roko_dir.join("research"),
         roko_dir.join("subscriptions"),
@@ -312,7 +309,7 @@ pub(crate) async fn cmd_init(
     let domain = if let Some(ref p) = profile {
         p.as_str()
     } else {
-        crate::commands::prd::detect_project_domain(&target)
+        detect_project_domain(&target)
     };
 
     let config_path = target.join("roko.toml");
@@ -337,10 +334,7 @@ pub(crate) async fn cmd_init(
 
     println!("initialized roko workspace at {}", target.display());
     println!("detected project domain: {domain}");
-    println!(
-        "suggested gates: {}",
-        crate::commands::prd::domain_gate_hint(domain)
-    );
+    println!("suggested gates: {}", domain_gate_hint(domain));
 
     if demo {
         let report = roko_cli::demo_seed::seed_demo_workspace(&target, demo_config.as_ref())?;
@@ -381,11 +375,46 @@ pub(crate) async fn cmd_init(
     }
 
     print_next_step_hint(
-        "Next: roko doctor (verify setup) · roko setup (configure providers) · roko develop \"your task\"\n\
+        "Next: roko doctor (verify setup) · roko setup (configure providers) · roko run \"your task\"\n\
          Tip:  roko serve  — prints a portal URL with a one-time token so you can open the UI instantly",
     );
 
     Ok(())
+}
+
+/// Auto-detect the project domain from file patterns in the target directory.
+fn detect_project_domain(target: &Path) -> &'static str {
+    if target.join("Cargo.toml").exists() {
+        "rust"
+    } else if target.join("package.json").exists() {
+        "typescript"
+    } else if target.join("go.mod").exists() {
+        "go"
+    } else if target.join("requirements.txt").exists()
+        || target.join("pyproject.toml").exists()
+        || target.join("setup.py").exists()
+    {
+        "python"
+    } else if target.join("Gemfile").exists() {
+        "ruby"
+    } else if target.join("pom.xml").exists() || target.join("build.gradle").exists() {
+        "java"
+    } else {
+        "general"
+    }
+}
+
+/// Verify configuration hint based on domain profile.
+fn domain_gate_hint(domain: &str) -> &'static str {
+    match domain {
+        "rust" => "compile (cargo check), test (cargo test), clippy (cargo clippy)",
+        "typescript" => "compile (tsc --noEmit), test (npm test), lint (eslint)",
+        "go" => "compile (go build), test (go test), lint (golangci-lint)",
+        "python" => "test (pytest), lint (ruff), typecheck (mypy)",
+        "ruby" => "test (rspec), lint (rubocop)",
+        "java" => "compile (mvn compile), test (mvn test)",
+        _ => "compile, test, lint (configure in roko.toml)",
+    }
 }
 
 pub(crate) async fn cmd_run(
@@ -456,7 +485,7 @@ pub(crate) async fn cmd_run(
     };
 
     // The prompt runs as one task at the tier its classified scope maps to.
-    let tier = crate::commands::do_cmd::workflow_template_for_complexity(
+    let tier = crate::commands::run_cmd::workflow_template_for_complexity(
         roko_cli::scope_resolver::ScopeResolver::classify_prompt_complexity(&prompt),
     );
 
@@ -2040,9 +2069,6 @@ fn resolve_node<'a>(root: &'a CompletionNode, path: &[&str]) -> Option<&'a Compl
 pub(crate) fn dynamic_completion_candidates(path: &[&str]) -> Vec<String> {
     match path {
         ["plan", "run" | "show" | "validate"] | ["plan"] => scan_dir_names("plans"),
-        ["prd", "plan" | "status"] | ["prd", "draft", "edit" | "promote"] | ["prd"] => {
-            scan_dir_names(".roko/prd")
-        }
         ["agent", ..] => scan_dir_names(".roko/agents"),
         _ => Vec::new(),
     }
@@ -2360,13 +2386,10 @@ fn print_fish_completions() {
     // Recursive static subcommands at all depths.
     emit_fish_children(&tree);
     println!();
-    // Dynamic completions for workspace items (plan/prd/agent names).
+    // Dynamic completions for workspace items (plan/agent names).
     println!("# Dynamic completions for workspace values.");
     println!(
         "complete -c roko -f -n '__fish_seen_subcommand_from plan' -a '(__roko_dynamic_complete)'"
-    );
-    println!(
-        "complete -c roko -f -n '__fish_seen_subcommand_from prd' -a '(__roko_dynamic_complete)'"
     );
     println!(
         "complete -c roko -f -n '__fish_seen_subcommand_from agent' -a '(__roko_dynamic_complete)'"
@@ -2444,7 +2467,7 @@ pub(crate) fn capture_role(task_kind: &str) -> &'static str {
 pub(crate) fn capture_task_category(task_kind: &str) -> &'static str {
     if task_kind.starts_with("research-") {
         "research"
-    } else if task_kind.starts_with("prd-plan") {
+    } else if task_kind.starts_with("plan-") {
         "scaffolding"
     } else {
         "docs"

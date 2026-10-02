@@ -82,46 +82,6 @@ pub(crate) async fn run_slash_command(
             require_args!("search", "<query>");
             vec!["research".into(), "search".into(), args.into()]
         }
-        "enhance-prd" => {
-            require_args!("enhance-prd", "<slug>");
-            vec![
-                "research".into(),
-                "enhance-prd".into(),
-                "--model".into(),
-                model_key.clone(),
-                args.into(),
-            ]
-        }
-
-        // ── Specification (PRD lifecycle) ──
-        "prd-idea" => {
-            require_args!("prd-idea", "<idea text>");
-            vec!["prd".into(), "idea".into(), args.into()]
-        }
-        "prd-draft" => {
-            require_args!("prd-draft", "<slug>");
-            vec![
-                "prd".into(),
-                "draft".into(),
-                "new".into(),
-                "--model".into(),
-                model_key.clone(),
-                args.into(),
-            ]
-        }
-        "prd-list" => vec!["prd".into(), "list".into()],
-        "prd-status" => vec!["prd".into(), "status".into()],
-        "prd-plan" => {
-            require_args!("prd-plan", "<slug>");
-            vec![
-                "prd".into(),
-                "plan".into(),
-                "--model".into(),
-                model_key.clone(),
-                args.into(),
-            ]
-        }
-        "prd-consolidate" => vec!["prd".into(), "consolidate".into()],
 
         // ── Planning ──
         "plan-list" => vec!["plan".into(), "list".into()],
@@ -140,6 +100,16 @@ pub(crate) async fn run_slash_command(
             vec![
                 "plan".into(),
                 "regenerate".into(),
+                "--model".into(),
+                model_key.clone(),
+                args.into(),
+            ]
+        }
+        "enhance-plan" => {
+            require_args!("enhance-plan", "<plan name>");
+            vec![
+                "research".into(),
+                "enhance-plan".into(),
                 "--model".into(),
                 model_key.clone(),
                 args.into(),
@@ -167,25 +137,6 @@ pub(crate) async fn run_slash_command(
                 "run".into(),
                 "--model".into(),
                 model_key.clone(),
-                args.into(),
-            ]
-        }
-        "do" => {
-            require_args!("do", "<prompt>");
-            vec![
-                "do".into(),
-                "--model".into(),
-                model_key.clone(),
-                args.into(),
-            ]
-        }
-        "develop" => {
-            require_args!("develop", "<prompt>");
-            vec![
-                "develop".into(),
-                "--model".into(),
-                model_key.clone(),
-                "--yes".into(),
                 args.into(),
             ]
         }
@@ -514,27 +465,18 @@ Available commands (organized by Will's core loop):
   Research (foraging)
     /research <topic>  Deep research with citations (Perplexity)
     /search <query>    Quick web search
-    /enhance-prd <slug> Enrich a PRD with web research
-
-  Specification (PRD lifecycle)
-    /prd-idea <text>   Capture a work item idea
-    /prd-draft <slug>  Draft a new PRD
-    /prd-list          List all PRDs
-    /prd-status        PRD pipeline coverage report
-    /prd-plan <slug>   Generate plan from published PRD
-    /prd-consolidate   Scan PRDs for gaps and duplicates
 
   Planning
     /plan-list         List all plans
     /plan-show <name>  Show a specific plan
     /plan-generate     Generate plan from a prompt
+    /enhance-plan <name> Improve a plan with research
     /plan-validate     Lint tasks.toml without executing
     /plan-run [dir]    Execute a plan (orchestrate→gate→persist)
     /plan-resume [path] Resume an interrupted plan run
 
   Implementation & Execution
-    /run <prompt>      Single prompt → universal loop
-    /develop <prompt>  Full pipeline: scope → plan → execute → gate
+    /run <prompt>      One checked task, or a plan written first and then run
     /agents            List agents and their status
     /agent-chat <name> Interactive chat with a specific agent
     /agent-start <name> Start a named agent
@@ -551,7 +493,6 @@ Available commands (organized by Will's core loop):
   Research & Analysis
     /research <topic>  Deep research with citations (Perplexity)
     /search <query>    Quick web search
-    /enhance-prd <slug> Enrich a PRD with web research
     /analyze           Analyze execution data
 
   Affect / Mood

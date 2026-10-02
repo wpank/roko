@@ -221,7 +221,7 @@ const depth05 = [
 const depth06 = [
   ['system-prompt-builder-9-layer', '9-Layer System Prompt Builder'],
   ['5-stage-assembly-pipeline', '5-Stage Assembly Pipeline'],
-  ['enrichment-pipeline-13-step', '13-Step Enrichment Pipeline'],
+  ['enrichment-pipeline-13-step', '12-Step Enrichment Pipeline'],
   ['composer-trait', 'Composer Trait'],
   ['prompt-composer', 'Prompt Composer'],
   ['role-templates-11', '11 Role Templates'],

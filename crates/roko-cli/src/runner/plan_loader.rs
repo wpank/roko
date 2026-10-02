@@ -24,8 +24,6 @@ pub struct Plan {
     pub dir: PathBuf,
     /// Parsed task definitions.
     pub tasks: TasksFile,
-    /// Short excerpt from the plan's PRD document (empty when no PRD exists).
-    pub prd_excerpt: String,
 }
 
 /// Load a single plan, returning `None` with a warning if it fails.
@@ -109,14 +107,12 @@ pub fn load_plan(dir: &Path) -> Result<Plan> {
             );
         }
     }
-    let prd_excerpt = load_prd_excerpt_for_plan(workdir.as_deref(), &id);
 
     info!(plan_id = %id, task_count = tasks.tasks.len(), "loaded plan");
     Ok(Plan {
         id,
         dir: dir.to_path_buf(),
         tasks,
-        prd_excerpt,
     })
 }
 
@@ -270,45 +266,6 @@ fn find_workspace_root(start: &Path) -> Option<PathBuf> {
             None => return None,
         }
     }
-}
-
-/// Load a PRD excerpt for `plan_id` relative to `workdir`.
-///
-/// Checks:
-/// 1. `{workdir}/.roko/prd/published/{plan_id}.md`
-/// 2. `{workdir}/.roko/prd/drafts/{plan_id}.md`
-///
-/// Returns an empty string when `workdir` is `None` or no PRD file exists.
-fn load_prd_excerpt_for_plan(workdir: Option<&Path>, plan_id: &str) -> String {
-    const PRD_LIMIT: usize = 2_000;
-    let Some(root) = workdir else {
-        return String::new();
-    };
-    let prd_base = RokoLayout::for_project(root).prd_dir();
-    let candidates = [
-        prd_base.join("published").join(format!("{plan_id}.md")),
-        prd_base.join("drafts").join(format!("{plan_id}.md")),
-        prd_base.join("draft").join(format!("{plan_id}.md")),
-    ];
-    for path in &candidates {
-        match std::fs::read_to_string(path) {
-            Ok(content) => {
-                return if content.len() > PRD_LIMIT {
-                    let mut s = content.chars().take(PRD_LIMIT).collect::<String>();
-                    s.push_str("\n[truncated]");
-                    s
-                } else {
-                    content
-                };
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to read PRD file");
-                continue;
-            }
-        }
-    }
-    String::new()
 }
 
 /// Validate that a crate name is safe and follows Rust naming conventions.

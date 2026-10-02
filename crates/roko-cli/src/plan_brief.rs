@@ -2,10 +2,9 @@
 //!
 //! `roko plan prepare <plan>` writes `brief.md` beside the plan's
 //! `tasks.toml`: where the plan's artifacts are, a map of its tasks, and the
-//! risks a reader should know about. When `[meta] source_prd` names a PRD
-//! that exists, it also copies that PRD into `prd-extract.md`. Both are
-//! derived from files alone; no model runs. Dispatch puts the brief into the
-//! prompt of each of the plan's tasks (`dispatch::prompt_builder`).
+//! risks a reader should know about. It is derived from files alone; no
+//! model runs. Dispatch puts the brief into the prompt of each of the plan's
+//! tasks (`dispatch::prompt_builder`).
 //!
 //! With `--full` ([`prepare_full`]), the planner model first writes
 //! `decomposition.md`, the plan as numbered steps with checkpoints, and then
@@ -28,9 +27,6 @@ use crate::task_parser::{TaskDef, TaskMeta, TasksFile};
 
 /// The plan's brief, beside its `tasks.toml`.
 pub const BRIEF_FILE: &str = "brief.md";
-
-/// The plan's source PRD, copied beside its `tasks.toml`.
-pub const PRD_EXTRACT_FILE: &str = "prd-extract.md";
 
 /// The plan as numbered steps with checkpoints, written by a model
 /// (`roko plan prepare --full`).
@@ -98,23 +94,17 @@ pub struct Prepared {
     pub kept: Vec<PathBuf>,
 }
 
-/// Write the companion documents of the plan in `plan_dir`, whose workspace
-/// is `workdir`: `brief.md`, and `prd-extract.md` when the plan names a
-/// source PRD that exists under `workdir/.roko/prd/`. A document that
-/// exists is kept unless `force` is set.
+/// Write the companion document of the plan in `plan_dir`, its `brief.md`.
+/// A brief that exists is kept unless `force` is set. The plan's workspace
+/// (the second argument) does not change the brief.
 ///
 /// # Errors
 ///
 /// Returns an error when the plan's `tasks.toml` cannot be read or parsed,
-/// or a document cannot be written.
-pub fn prepare(plan_dir: &Path, workdir: &Path, force: bool) -> Result<Prepared> {
+/// or the brief cannot be written.
+pub fn prepare(plan_dir: &Path, _workdir: &Path, force: bool) -> Result<Prepared> {
     let tasks = TasksFile::parse(&plan_dir.join("tasks.toml"))?;
     let plan_md = std::fs::read_to_string(plan_dir.join("plan.md")).ok();
-    let prd = tasks
-        .meta
-        .source_prd
-        .as_deref()
-        .and_then(|slug| prd_path(workdir, slug).map(|path| (slug, path)));
 
     let model_documents: Vec<(&str, &str)> = MODEL_DOCUMENTS
         .into_iter()
@@ -124,24 +114,15 @@ pub fn prepare(plan_dir: &Path, workdir: &Path, force: bool) -> Result<Prepared>
         &tasks.meta,
         &tasks.tasks,
         plan_md.as_deref(),
-        prd.is_some(),
         &model_documents,
     );
-    let mut documents = vec![(plan_dir.join(BRIEF_FILE), brief)];
-    if let Some((slug, path)) = prd {
-        let prd = std::fs::read_to_string(&path)
-            .with_context(|| format!("read the source PRD {}", path.display()))?;
-        let extract = prd_extract_md(&tasks.meta.plan, slug, &prd);
-        documents.push((plan_dir.join(PRD_EXTRACT_FILE), extract));
-    }
 
+    let path = plan_dir.join(BRIEF_FILE);
     let mut prepared = Prepared::default();
-    for (path, text) in documents {
-        if path.exists() && !force {
-            prepared.kept.push(path);
-            continue;
-        }
-        std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
+    if path.exists() && !force {
+        prepared.kept.push(path);
+    } else {
+        std::fs::write(&path, brief).with_context(|| format!("write {}", path.display()))?;
         prepared.written.push(path);
     }
     Ok(prepared)
@@ -172,21 +153,7 @@ pub async fn prepare_full(
         .with_context(|| format!("parse {}", tasks_path.display()))?;
     let plan_id = tasks.meta.plan.as_str();
     let plan_md = std::fs::read_to_string(plan_dir.join("plan.md")).ok();
-    let prd = tasks
-        .meta
-        .source_prd
-        .as_deref()
-        .and_then(|slug| prd_path(workdir, slug).map(|path| (slug, path)));
-    let prd = match prd {
-        Some((slug, path)) => {
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("read the source PRD {}", path.display()))?;
-            Some((slug, text))
-        }
-        None => None,
-    };
-    let prd = prd.as_ref().map(|(slug, text)| (*slug, text.as_str()));
-    let sources = plan_sources(plan_md.as_deref(), &tasks_toml, prd);
+    let sources = plan_sources(plan_md.as_deref(), &tasks_toml);
 
     let mut prepared = Prepared::default();
     let decomposition_path = plan_dir.join(DECOMPOSITION_FILE);
@@ -235,17 +202,14 @@ pub async fn prepare_full(
     Ok(prepared)
 }
 
-/// The plan's own files, for a `--full` prompt: its `plan.md`, its
-/// `tasks.toml`, and its source PRD, `(slug, text)`, when it has one.
-fn plan_sources(plan_md: Option<&str>, tasks_toml: &str, prd: Option<(&str, &str)>) -> String {
+/// The plan's own files, for a `--full` prompt: its `plan.md` and its
+/// `tasks.toml`.
+fn plan_sources(plan_md: Option<&str>, tasks_toml: &str) -> String {
     let mut out = String::new();
     if let Some(plan_md) = plan_md {
         let _ = write!(out, "## plan.md\n\n{plan_md}\n\n");
     }
     let _ = write!(out, "## tasks.toml\n\n```toml\n{tasks_toml}\n```\n");
-    if let Some((slug, prd)) = prd {
-        let _ = write!(out, "\n## Source PRD `{slug}`\n\n{prd}\n");
-    }
     out
 }
 
@@ -349,23 +313,8 @@ impl DocumentWriter {
     }
 }
 
-/// The PRD that `slug` names under `workdir/.roko/prd/`, if it exists.
-fn prd_path(workdir: &Path, slug: &str) -> Option<PathBuf> {
-    let prd = workdir.join(".roko").join("prd");
-    let file = format!("{slug}.md");
-    [
-        prd.join("published").join(&file),
-        prd.join("drafts").join(&file),
-        prd.join("draft").join(&file),
-        prd.join(&file),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
-}
-
 /// The plan's `brief.md`: where its artifacts are, its task map, its risk
 /// flags, and the `## Quick Reference` of its `plan_md`, if it has one.
-/// `prd_extract` says whether a `prd-extract.md` goes with it, and
 /// `model_documents` lists, as (artifact, file), the model-written documents
 /// beside it.
 #[must_use]
@@ -373,7 +322,6 @@ pub fn brief_md(
     meta: &TaskMeta,
     tasks: &[TaskDef],
     plan_md: Option<&str>,
-    prd_extract: bool,
     model_documents: &[(&str, &str)],
 ) -> String {
     let mut out = String::new();
@@ -386,9 +334,6 @@ pub fn brief_md(
     out.push_str("## Artifacts\n\n| Artifact | Path |\n|---|---|\n| Tasks | `tasks.toml` |\n");
     if plan_md.is_some() {
         out.push_str("| Plan | `plan.md` |\n");
-    }
-    if prd_extract {
-        let _ = writeln!(out, "| Source PRD | `{PRD_EXTRACT_FILE}` |");
     }
     for (artifact, file) in model_documents {
         let _ = writeln!(out, "| {artifact} | `{file}` |");
@@ -469,16 +414,6 @@ fn cell(text: &str) -> String {
     text.replace('|', "\\|").replace('\n', " ")
 }
 
-/// The plan's `prd-extract.md`: the PRD `slug` names, under a header that
-/// says where it came from.
-#[must_use]
-pub fn prd_extract_md(plan_id: &str, slug: &str, prd: &str) -> String {
-    format!(
-        "<!-- The source PRD of plan `{plan_id}` (PRD `{slug}`), copied from .roko/prd by `roko plan prepare`. \
-         Edit the PRD, not this copy. -->\n\n{prd}"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,7 +421,6 @@ mod tests {
     const TASKS: &str = r#"
 [meta]
 plan = "brief-demo"
-source_prd = "brief-demo"
 skip_enrichment = true
 
 [[task]]
@@ -517,27 +451,19 @@ files = ["a.md", "b.md", "c.md", "d.md"]
         plan_dir
     }
 
-    /// gap-d6fd85: `prepare` writes the brief and the PRD extract once, and
-    /// keeps them on a second run unless forced.
+    /// gap-d6fd85: `prepare` writes the brief once, and keeps it on a second
+    /// run unless forced.
     #[test]
-    fn prepare_writes_the_companion_documents_and_keeps_them() {
+    fn prepare_writes_the_brief_and_keeps_it() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         let plan_dir = plan(root);
-        std::fs::create_dir_all(root.join(".roko/prd/published")).unwrap();
-        std::fs::write(
-            root.join(".roko/prd/published/brief-demo.md"),
-            "# PRD\n\nThe spec.\n",
-        )
-        .unwrap();
         let brief = plan_dir.join(BRIEF_FILE);
-        let extract = plan_dir.join(PRD_EXTRACT_FILE);
 
         let first = prepare(&plan_dir, root, false).unwrap();
-        assert_eq!(first.written, [brief.clone(), extract.clone()]);
+        assert_eq!(first.written, [brief.clone()]);
         let text = std::fs::read_to_string(&brief).unwrap();
         assert!(text.starts_with("# Plan brief: `brief-demo`\n"), "{text}");
-        assert!(text.contains("| Source PRD | `prd-extract.md` |"), "{text}");
         assert!(
             text.contains("| T1 | Parse the config | implementer | focused | — | src/config.rs |"),
             "{text}"
@@ -550,16 +476,14 @@ files = ["a.md", "b.md", "c.md", "d.md"]
         assert!(text.contains("a large change: T2\n"), "{text}");
         assert!(text.contains("\n\nRun T1 first.\n"), "{text}");
         assert!(!text.contains("More."), "{text}");
-        let extract_text = std::fs::read_to_string(&extract).unwrap();
-        assert!(extract_text.ends_with("# PRD\n\nThe spec.\n"));
 
         std::fs::write(&brief, "edited").unwrap();
         let second = prepare(&plan_dir, root, false).unwrap();
-        assert_eq!(second.kept, [brief.clone(), extract.clone()]);
+        assert_eq!(second.kept, [brief.clone()]);
         assert_eq!(std::fs::read_to_string(&brief).unwrap(), "edited");
 
         let forced = prepare(&plan_dir, root, true).unwrap();
-        assert_eq!(forced.written.len(), 2);
+        assert_eq!(forced.written.len(), 1);
         assert_ne!(std::fs::read_to_string(&brief).unwrap(), "edited");
     }
 
@@ -594,18 +518,5 @@ files = ["a.md", "b.md", "c.md", "d.md"]
             Some("# Steps\n\n```sh\ncargo check\n```\n")
         );
         assert_eq!(document_from_reply(" \n"), None);
-    }
-
-    /// Without its source PRD, a plan gets a brief and no extract.
-    #[test]
-    fn prepare_writes_no_extract_without_the_source_prd() {
-        let temp = tempfile::tempdir().unwrap();
-        let plan_dir = plan(temp.path());
-
-        let prepared = prepare(&plan_dir, temp.path(), false).unwrap();
-
-        assert_eq!(prepared.written, [plan_dir.join(BRIEF_FILE)]);
-        let text = std::fs::read_to_string(plan_dir.join(BRIEF_FILE)).unwrap();
-        assert!(!text.contains(PRD_EXTRACT_FILE), "{text}");
     }
 }

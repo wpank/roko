@@ -1,6 +1,6 @@
-//! Agent execution helper for direct CLI flows such as PRD/research/plan generation.
+//! Agent execution helper for direct CLI flows such as research and plan generation.
 //!
-//! Used by `roko prd`, `roko research`, and `roko plan generate` to invoke
+//! Used by `roko research`, `roko plan generate` and `roko run --plan` to invoke
 //! an agent that can read/write files while preserving provider-aware routing,
 //! safety scoping, resume threading, and learning-episode persistence.
 
@@ -472,8 +472,8 @@ mod tests {
             tmp.path(),
             "claude",
             Some("claude-sonnet-4-6"),
-            "prd-plan-generate",
-            "prd:plan:demo",
+            "plan-generate",
+            "plan:generate:demo",
             "prompt body",
             "output body",
             true,
@@ -488,13 +488,13 @@ mod tests {
         assert_eq!(episodes.len(), 1);
         let episode = &episodes[0];
         assert_eq!(episode.agent_id, "claude");
-        assert_eq!(episode.task_id, "prd:plan:demo");
+        assert_eq!(episode.task_id, "plan:generate:demo");
         assert_eq!(episode.kind, "agent_turn");
         assert_eq!(episode.model, "claude-sonnet-4-6");
         assert!(episode.success);
         assert_eq!(
             episode.extra.get("task_kind"),
-            Some(&serde_json::json!("prd-plan-generate"))
+            Some(&serde_json::json!("plan-generate"))
         );
         assert_eq!(
             episode.extra.get("task_category"),
@@ -548,8 +548,8 @@ tool_format = "openai_json"
             tmp.path(),
             "claude",
             Some("glm-mini"),
-            "prd-plan-generate",
-            "prd:plan:glm",
+            "plan-generate",
+            "plan:generate:glm",
             "prompt body",
             "output body",
             true,
@@ -601,24 +601,14 @@ tool_format = "openai_json"
 
     #[test]
     fn dispatch_surfaces_provide_episodes() {
-        let commands_prd =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/prd.rs"))
-                .unwrap();
+        let pipeline = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/plan_generate/pipeline.rs"
+        ))
+        .unwrap();
         assert!(
-            !commands_prd.contains("crate::commands::util::persist_capture_episode"),
-            "PRD commands must use roko_cli::agent_exec::persist_capture_episode"
-        );
-        assert!(
-            commands_prd.matches("persist_capture_episode").count()
-                >= commands_prd.matches("run_agent_capture_silent").count(),
-            "every silent PRD dispatch needs canonical episode persistence"
-        );
-
-        let prd_rs =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/prd.rs")).unwrap();
-        assert!(
-            prd_rs.contains("prd-plan-generate") && prd_rs.contains("persist_capture_episode"),
-            "generate_plan_from_prd_with_model must persist a prd-plan-generate episode"
+            pipeline.contains("\"plan-generate\"") && pipeline.contains("persist_capture_episode"),
+            "generate_plan must persist a plan-generate episode"
         );
     }
 
@@ -831,21 +821,16 @@ mode = "off"
     #[tokio::test]
     async fn plan_generation_writes_one_cost_record() {
         let workspace = fake_planner_workspace();
-        let prd_dir = workspace.path().join(".roko").join("prd").join("published");
-        std::fs::create_dir_all(&prd_dir).expect("create PRD dir");
-        let prd_path = prd_dir.join("demo.md");
-        std::fs::write(
-            &prd_path,
-            "---\nid: demo\ntitle: Demo\nstatus: published\n---\n\n# Demo\n\nPrint hello world.\n",
-        )
-        .expect("write PRD");
 
-        let request = crate::prd::PlanRequest::new(
-            crate::prd::PlanSource::Prd(&prd_path),
+        let request = crate::plan_generate::PlanRequest::new(
+            crate::plan_generate::PlanSource::Text {
+                text: "# Demo\n\nPrint hello world.\n",
+                kind: "prompt",
+            },
             "demo",
             workspace.path(),
         );
-        crate::prd::generate_plan(request)
+        crate::plan_generate::generate_plan(request)
             .await
             .expect("generate plan");
 
@@ -897,9 +882,8 @@ mode = "off"
         assert_eq!(rows[0]["plan_id"], "demo");
     }
 
-    /// bug-86ff56: a one-off call, as `roko research`, `roko do` and the PRD
-    /// drafting commands make them, records the reported cost under the
-    /// operation's task and role, with no plan id.
+    /// bug-86ff56: a one-off call, as `roko research` makes them, records the
+    /// reported cost under the operation's task and role, with no plan id.
     #[tokio::test]
     async fn research_calls_record_spend() {
         let workspace = fake_planner_workspace();

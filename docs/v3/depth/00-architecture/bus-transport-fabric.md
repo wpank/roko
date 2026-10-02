@@ -146,8 +146,8 @@ pub struct PulseBus {
 `EventBus<E>` is the live generic broadcast-channel transport abstraction. It provides
 concurrent publish/subscribe with `tokio::sync::broadcast` semantics internally.
 
-The current live `RokoEvent` transport has production variants including `PlanRevision` and
-`PrdPublished`. All 39 production event variants are wired into the telemetry lens system.
+The current live `RokoEvent` transport has production variants including `PlanRevision`.
+Every production event variant is wired into the telemetry lens system.
 
 ---
 

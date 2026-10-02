@@ -69,7 +69,7 @@ Beyond the primary matrix, several cross-cutting concerns create additional edge
 ### 3.1 Signal Lifecycle
 
 ```
-User input / PRD / CLI command
+User input / plan / CLI command
     │
     ▼
 ┌──────────┐    encode     ┌──────────┐    store     ┌──────────┐

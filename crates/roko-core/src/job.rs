@@ -172,49 +172,6 @@ impl MarketplaceJob {
     }
 }
 
-/// Summary of a PRD for the Atelier TUI view.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PrdSummary {
-    /// URL-safe slug identifier.
-    #[serde(default)]
-    pub slug: String,
-    /// Human-readable title.
-    #[serde(default)]
-    pub title: String,
-    /// Lifecycle status: `idea`, `draft`, `published`, `planned`.
-    #[serde(default)]
-    pub status: String,
-    /// Number of associated plans.
-    #[serde(default)]
-    pub plan_count: usize,
-    /// Total tasks across all plans.
-    #[serde(default)]
-    pub task_total: usize,
-    /// Completed tasks.
-    #[serde(default)]
-    pub task_done: usize,
-    /// Failed tasks.
-    #[serde(default)]
-    pub task_failed: usize,
-}
-
-/// Summary of a task for the Atelier TUI view.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct TaskSummary {
-    /// Task identifier.
-    #[serde(default)]
-    pub id: String,
-    /// Human-readable title.
-    #[serde(default)]
-    pub title: String,
-    /// Current status string.
-    #[serde(default)]
-    pub status: String,
-    /// Agent assigned to this task.
-    #[serde(default)]
-    pub agent: String,
-}
-
 /// Progress entry for a running job (used by TUI).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct JobProgressEntry {
@@ -1326,13 +1283,6 @@ mod tests {
         let parsed: MarketplaceJob = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.id, "test-1");
         assert!(parsed.auto_execute);
-    }
-
-    #[test]
-    fn prd_summary_default() {
-        let prd = PrdSummary::default();
-        assert!(prd.slug.is_empty());
-        assert_eq!(prd.task_total, 0);
     }
 
     // -----------------------------------------------------------------

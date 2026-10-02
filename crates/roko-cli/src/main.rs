@@ -52,7 +52,6 @@ use commands::knowledge::KnowledgeCmd;
 use commands::learn::LearnCmd;
 use commands::mcp::ConfigMcpCmd;
 use commands::plan::PlanCmd;
-use commands::prd::{PrdCmd, PrdDraftCmd};
 use commands::research::{ResearchBackend, ResearchCmd, SearchRecency};
 use commands::run_index::RunIndexCmd;
 use commands::safety::SafetyCmd;
@@ -65,7 +64,7 @@ use octocrab::models::webhook_events::WebhookEventType;
 use roko_agent::process::{cleanup_orphaned_agents, reap_orphaned_children};
 use roko_agent::translate::BackendResponse;
 use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
-use roko_cli::resolved_overrides::{DoInput, GlobalCliFlags, ResolvedExecutionOverrides};
+use roko_cli::resolved_overrides::{GlobalCliFlags, ResolvedExecutionOverrides, RunInput};
 use roko_cli::serve_runtime::RokoCliRuntime;
 use roko_cli::tui::App;
 use roko_cli::{
@@ -134,9 +133,9 @@ pub enum Effort {
     Max,
 }
 
-/// Complexity override for `roko do`.
+/// Size override for `roko run --complexity`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum DoComplexity {
+pub enum RunComplexity {
     /// Mechanical: single-line / derive-only change.
     #[value(alias = "mechanical")]
     Trivial,
@@ -150,7 +149,7 @@ pub enum DoComplexity {
     Complex,
 }
 
-impl DoComplexity {
+impl RunComplexity {
     fn into_plan_complexity(self) -> roko_gate::PlanComplexity {
         match self {
             Self::Trivial => roko_gate::PlanComplexity::Trivial,
@@ -267,11 +266,11 @@ fn long_version() -> &'static str {
     name = "roko",
     version,
     long_version = long_version(),
-    about = "Roko --- agent toolkit\n\nQuick start: roko setup, roko do <task>, roko status\nRun roko help <command> for details.",
+    about = "Roko --- agent toolkit\n\nQuick start: roko setup, roko run \"<task>\", roko status\nRun roko help <command> for details.",
     after_long_help = "\
 COMMAND GROUPS:
-  Core workflow:     init, do, run, status, doctor
-  Planning:          plan, prd
+  Core workflow:     init, run, status, doctor
+  Planning:          plan
   Agents:            agent (create, start, stop, chat, serve)
   Research:          research, think, note
   Knowledge:         knowledge (query, dream, custody, archive)
@@ -521,130 +520,111 @@ Examples:
         #[arg(long)]
         demo: bool,
     },
-    /// Do a task from a natural-language prompt.
+    /// Run a prompt, or a plan directory, through the Graph engine.
     ///
-    /// `roko do` is the recommended entry point for ad-hoc work. It auto-classifies
-    /// the prompt into a complexity band and picks the lightest workflow that can
-    /// complete it safely:
+    /// A prompt is sized first. A trivial or simple prompt runs as a one-task
+    /// plan written to `.roko/runs/<run-id>/tasks.toml`: one implementer agent
+    /// whose verify steps are the workspace gates (`[[gates.rungs]]`, else
+    /// `cargo check` / `go build`), with the dispatch, failover, safety, budget,
+    /// checkpoints, episodes, and cost records of `roko plan run`. A larger
+    /// prompt first gets a plan written to `plans/<slug>/`, which then runs.
     ///
-    ///   Trivial / Simple → one agent: the prompt runs as a one-task plan written to
-    ///                      .roko/runs/<run-id>/, verified by the workspace gates
-    ///   Medium / Complex  → planned workflow: generate tasks.toml, approve, execute
-    ///
-    /// Use `--complexity` to force a specific band, or `--plan` to always use
-    /// the planned workflow regardless of classification.
-    ///
-    /// RELATED COMMANDS
-    ///
-    ///   roko run "<prompt>"     `roko do` for scripts and CI: the same routes, without
-    ///                           the TTY requirement for auto-detected scope.
-    ///
-    ///   roko plan run plans/    Execute a pre-existing plans directory through the
-    ///                           Graph engine. Use this when you already have tasks.toml
-    ///                           files on disk, e.g. from `roko prd plan <slug>`.
-    ///
-    ///   roko develop "<prompt>" Removed — use `roko do --plan <prompt>` instead.
-    #[command(
-        visible_alias = "d",
-        after_help = "\
+    /// `--plan` always writes the plan first; on a terminal roko shows it and
+    /// asks before running it (`--yes` skips the question). `--plan --dry-run`
+    /// writes the plan and stops, so you can review or edit it. A plan
+    /// directory (`roko run plans/<slug>`) runs as `roko plan run` runs it.
+    /// `--serve` and `--share` run the prompt as one task with the control
+    /// plane. Exits non-zero when the run fails; `--json` prints the run report.
+    #[command(after_help = "\
 Examples:
-  roko do \"Fix the login bug\"                         Classify scope and execute
-  roko do \"Add auth flow\" --complexity medium         Force planned workflow
-  roko do \"Refactor API\" --dry-run                    Preview scope and workflow only"
-    )]
-    Do {
-        /// Force a planned workflow instead of the lightest classified scope.
+  roko run \"Fix the login bug\"                   Size the prompt, then run it
+  roko run --plan \"Add OAuth2 login\"             Write a plan, show it, run it
+  roko run --plan --dry-run \"Add OAuth2 login\"   Write the plan and stop
+  roko run --dry-run \"Fix the login bug\"         Show how the prompt would run
+  roko run plans/add-oauth2-login                Run an existing plan
+  roko --json run \"Fix the login bug\"            Print the run report as JSON")]
+    Run {
+        /// The prompt (quote it), or a plan directory such as `plans/<slug>`.
+        #[arg(value_name = "PROMPT_OR_PLAN", required = true, num_args = 1..)]
+        prompt: Vec<String>,
+        /// Write a plan before running, whatever the prompt's size.
         #[arg(long)]
         plan: bool,
-        /// Force a complexity level instead of auto-detecting.
-        #[arg(long, value_enum)]
-        complexity: Option<DoComplexity>,
-        /// Preview classification, workflow, and gates without executing.
+        /// Run nothing: show how the prompt would run, or with `--plan` write
+        /// the plan and stop. With a plan directory, preview the plan.
         #[arg(long)]
         dry_run: bool,
-        /// Working directory (default: cwd or --repo).
-        #[arg(long)]
-        workdir: Option<PathBuf>,
-        /// Override the provider for this run.
-        #[arg(long)]
-        provider: Option<String>,
-        /// Skip approval prompts when the selected workflow would ask.
-        #[arg(long)]
+        /// Run a `--plan` plan without asking first.
+        #[arg(long, short = 'y')]
         yes: bool,
-        /// Alias for --dry-run retained for existing scripts.
-        #[arg(long)]
-        ghost: bool,
-        /// Compare cascade and non-cascade routing as a dry preview.
-        #[arg(long)]
-        compare: bool,
-        /// Continue interrupted work. Optionally pass a work/run id.
-        #[arg(long = "continue", value_name = "WORK_ID", num_args = 0..=1)]
-        r#continue: Option<Option<String>>,
+        /// Force the prompt's size instead of detecting it: trivial and simple
+        /// run one task, standard and complex write a plan first.
+        #[arg(long, value_enum)]
+        complexity: Option<RunComplexity>,
+        /// Additional context files, directories or globs for the planner.
+        #[arg(long = "context", value_name = "PATH")]
+        context: Vec<PathBuf>,
         /// Disable cascade routing for this run.
         #[arg(long)]
         no_cascade: bool,
-        /// Additional context files/dirs/globs to include in the prompt.
-        #[arg(long = "context", value_name = "PATH")]
-        context: Vec<PathBuf>,
-        /// Prompt words. Quoted prompts are recommended.
-        #[arg(value_name = "PROMPT")]
-        prompt: Vec<String>,
-    },
-    /// (Removed) Use `roko do --plan <prompt>` instead.
-    #[command(hide = true)]
-    Develop {
-        /// Preview the generated plan without executing.
-        #[arg(long)]
-        dry_run: bool,
-        /// Skip the approval prompt and execute immediately.
-        #[arg(long)]
-        yes: bool,
-        /// Resume interrupted work from the last snapshot.
-        #[arg(long)]
-        r#continue: bool,
-        /// Working directory (default: cwd or --repo).
-        #[arg(long)]
-        workdir: Option<PathBuf>,
-        /// Override the provider for this run.
-        #[arg(long)]
-        provider: Option<String>,
-        /// Prompt describing what to develop.
-        #[arg(value_name = "PROMPT")]
-        prompt: Vec<String>,
-    },
-    /// Run a prompt through the Graph engine (`roko do`, usable without a TTY).
-    ///
-    /// The prompt's scope is auto-classified. A trivial or simple prompt runs as a
-    /// one-task plan written to `.roko/runs/<run-id>/tasks.toml`: one implementer
-    /// agent whose verify steps are the workspace gates (`[[gates.rungs]]`, else
-    /// `cargo check` / `go build`), with the dispatch, failover, safety, budget,
-    /// checkpoints, episodes, and cost records of `roko plan run`. A standard or
-    /// complex prompt first generates a plan (or a PRD and a plan), then executes it.
-    /// `--serve`, `--share`, and `--max-retries` always run the one-task plan.
-    /// Exits non-zero when the run fails; `--json` prints the run report.
-    #[command(after_help = "\
-Examples:
-  roko run \"Fix the login bug\"      One-task plan through the Graph engine
-  roko run \"Add tests for auth\"     Generate and execute a plan
-  roko --json run \"Fix the login bug\"   Print the run report as JSON")]
-    Run {
-        /// The user prompt text.
-        prompt: String,
         /// Override the working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
-        /// Start the HTTP control plane alongside the run for external observability.
+        /// Start the HTTP control plane alongside the run (one task).
         #[arg(long)]
         serve: bool,
-        /// Generate a shareable URL for this run (starts serve if needed).
+        /// Generate a shareable URL for the run (one task; starts serve if needed).
         #[arg(long)]
         share: bool,
         /// Override the provider for this run (e.g. anthropic, openai, ollama, moonshot).
         #[arg(long)]
         provider: Option<String>,
-        /// Retries after a failed attempt of the prompt's task.
+        /// Retries after a failed attempt of a task.
         #[arg(long)]
         max_retries: Option<u32>,
+        /// With a plan directory: archive old run state and start from scratch.
+        #[arg(long)]
+        fresh: bool,
+        /// With a plan directory: resume from engine state, as `roko plan run
+        /// --resume-plan` does (bare: the Graph checkpoints in `.roko/state/graph/`).
+        #[arg(
+            long = "resume-plan",
+            value_name = "PATH",
+            num_args = 0..=1,
+            default_missing_value = ".roko/state/state-snapshot.json"
+        )]
+        resume_plan: Option<PathBuf>,
+    },
+    /// (Removed) Use `roko run "<prompt>"`, or `roko run --plan "<prompt>"`.
+    ///
+    /// The arguments still parse, so an old script gets the migration error
+    /// instead of a usage error.
+    #[command(hide = true, alias = "d")]
+    Do {
+        #[arg(long)]
+        plan: bool,
+        #[arg(long, value_enum)]
+        complexity: Option<RunComplexity>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        ghost: bool,
+        #[arg(long)]
+        compare: bool,
+        #[arg(long = "continue", value_name = "WORK_ID", num_args = 0..=1)]
+        r#continue: Option<Option<String>>,
+        #[arg(long)]
+        no_cascade: bool,
+        #[arg(long = "context", value_name = "PATH")]
+        context: Vec<PathBuf>,
+        #[arg(value_name = "PROMPT")]
+        prompt: Vec<String>,
     },
     /// Print signal counts, most recent episode, and gate pass/fail.
     #[command(
@@ -800,20 +780,25 @@ Examples:
     #[command(hide = true)]
     LayerCheck,
 
-    // ── Planning & PRDs ─────────────────────────────────────────────
+    // ── Planning ────────────────────────────────────────────────────
     /// Manage plans (list, show, create, validate, run, generate).
     #[command(visible_alias = "p")]
     Plan {
         #[command(subcommand)]
         cmd: PlanCmd,
     },
-    /// Manage product requirements documents (idea, draft, publish, plan).
+    /// (Removed) Plans are the unit of work: `roko run --plan "<prompt>"`, or
+    /// `roko plan generate "<prompt>"` and then `roko run plans/<slug>`.
+    ///
+    /// Any arguments still parse, so an old script gets the migration error
+    /// instead of a usage error.
+    #[command(hide = true)]
     Prd {
-        #[command(subcommand)]
-        cmd: PrdCmd,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
     },
 
-    /// Import backlog specs as PRD ideas.
+    /// List and audit `tmp/backlog` items against the plan runs on record.
     Backlog {
         #[command(subcommand)]
         cmd: BacklogCmd,
@@ -1333,6 +1318,23 @@ impl PlanCmd {
     }
 }
 
+/// Report that `roko <command>` was removed, with its replacement, and return
+/// the failure exit code. With `--json`, stdout also gets the same facts as one
+/// JSON object.
+fn removed_command(cli: &Cli, command: &str, message: &str, migration: &str, since: &str) -> i32 {
+    eprintln!("error: `roko {command}` was removed. {message}");
+    if cli.json {
+        let msg = serde_json::json!({
+            "error": "command_removed",
+            "command": command,
+            "migration": migration,
+            "deprecated_since": since,
+        });
+        println!("{}", serde_json::to_string_pretty(&msg).unwrap_or_default());
+    }
+    EXIT_FAILURE
+}
+
 const fn should_rebuild_plan_indexes(command_can_mutate: bool, exit_code: Option<i32>) -> bool {
     command_can_mutate && matches!(exit_code, Some(EXIT_SUCCESS))
 }
@@ -1348,24 +1350,6 @@ fn finish_with_index_rebuild(
             Ok(EXIT_SUCCESS)
         }
         primary => primary,
-    }
-}
-
-impl PrdCmd {
-    /// Whether dispatching this command can change PRDs or the plans generated from them.
-    ///
-    /// Read-only commands must not rebuild indexes: rebuilding rewrites generated index files,
-    /// including the tracked `plans/INDEX.md`, so `prd list` would dirty the caller's workspace.
-    fn should_rebuild_indexes(&self) -> bool {
-        match self {
-            Self::List
-            | Self::Status
-            | Self::Draft {
-                cmd: PrdDraftCmd::List,
-            } => false,
-            Self::Plan { dry_run, .. } => !dry_run,
-            Self::Idea { .. } | Self::Draft { .. } | Self::Consolidate => true,
-        }
     }
 }
 
@@ -1763,10 +1747,6 @@ fn error_hint(msg: &str) -> Option<&'static str> {
         );
     }
 
-    if lower.contains("prd not found") || lower.contains("no prd") {
-        return Some("run `roko prd list` to see available PRDs, or `roko prd idea` to create one");
-    }
-
     None
 }
 
@@ -1849,113 +1829,77 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         }
         Command::Run {
             prompt,
+            plan,
+            dry_run,
+            yes,
+            complexity,
+            context,
+            no_cascade,
             workdir,
             serve,
             share,
             provider,
             max_retries,
+            fresh,
+            resume_plan,
         } => {
             // Resolve typed overrides before any side effects (#262).
             let _resolved = ResolvedExecutionOverrides::for_run(
                 &global_cli_flags(cli),
-                provider.clone(),
-                serve || share,
-                max_retries,
-            );
-            tracing::debug!(?_resolved, "resolved execution overrides for `run`");
-
-            if !serve && !share && max_retries.is_none() {
-                return commands::do_cmd::cmd_do(
-                    cli,
-                    workdir,
-                    vec![prompt],
-                    false,
-                    None,
-                    false,
-                    false,
-                    false,
-                    false,
-                    None,
-                    false,
-                    provider,
-                    Vec::new(),
-                    true, // explicit `roko run`: auto-route without a TTY
-                )
-                .await;
-            }
-            commands::util::cmd_run(
-                cli,
-                workdir,
-                prompt,
-                serve,
-                share,
-                provider,
-                max_retries,
-                None,
-            )
-            .await
-        }
-        Command::Do {
-            plan,
-            complexity,
-            dry_run,
-            workdir,
-            provider,
-            yes,
-            ghost,
-            compare,
-            r#continue,
-            no_cascade,
-            context,
-            prompt,
-        } => {
-            // Resolve typed overrides before any side effects (#262).
-            let _resolved = ResolvedExecutionOverrides::for_do(
-                &global_cli_flags(cli),
-                &DoInput {
+                &RunInput {
                     dry_run,
-                    ghost,
                     yes,
                     no_cascade,
                     provider: provider.clone(),
                     context: context.clone(),
+                    serve_required: serve || share,
+                    max_retries,
                 },
             );
-            tracing::debug!(?_resolved, "resolved execution overrides for `do`");
+            tracing::debug!(?_resolved, "resolved execution overrides for `run`");
 
-            commands::do_cmd::cmd_do(
+            commands::run_cmd::cmd_run(
                 cli,
-                workdir,
-                prompt,
-                plan,
-                complexity.map(DoComplexity::into_plan_complexity),
-                dry_run,
-                yes,
-                ghost,
-                compare,
-                r#continue,
-                no_cascade,
-                provider,
-                context,
-                false,
+                commands::run_cmd::RunArgs {
+                    input: prompt,
+                    plan,
+                    dry_run,
+                    yes,
+                    complexity: complexity.map(RunComplexity::into_plan_complexity),
+                    context,
+                    no_cascade,
+                    workdir,
+                    serve,
+                    share,
+                    provider,
+                    max_retries,
+                    fresh,
+                    resume_plan,
+                },
             )
             .await
         }
-        Command::Develop { .. } => {
-            // #363: `develop` is removed. Emit a migration error and exit
-            // without executing any provider/server/git effects.
-            eprintln!("error: `roko develop` was removed. Use `roko do --plan <prompt>` instead.");
-            if cli.json {
-                let msg = serde_json::json!({
-                    "error": "command_removed",
-                    "command": "develop",
-                    "migration": "roko do --plan <prompt>",
-                    "deprecated_since": "2026-09-04",
-                });
-                println!("{}", serde_json::to_string_pretty(&msg).unwrap_or_default());
-            }
-            Ok(EXIT_FAILURE)
-        }
+        // `do` and `prd` were folded into `roko run` (tmp/workflow-audit). They
+        // still parse for one release and exit with the migration, without any
+        // provider, server or git effect. (`develop`, an error since 2026-09-04,
+        // is gone: clap reports it as an unknown subcommand.)
+        Command::Do { .. } => Ok(removed_command(
+            cli,
+            "do",
+            "Use `roko run \"<prompt>\"`, which sizes the prompt the same way; \
+             for a plan first, `roko run --plan \"<prompt>\"`.",
+            "roko run \"<prompt>\"",
+            "2026-10-02",
+        )),
+        Command::Prd { .. } => Ok(removed_command(
+            cli,
+            "prd",
+            "Plans are the unit of work: write one from a prompt with \
+             `roko run --plan --dry-run \"<idea>\"` or `roko plan generate \"<idea>\"`, \
+             then run it with `roko run plans/<slug>`.",
+            "roko plan generate \"<idea>\"",
+            "2026-10-02",
+        )),
         Command::Status {
             workdir,
             quick,
@@ -2024,12 +1968,6 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             let should_rebuild =
                 should_rebuild_plan_indexes(command_can_mutate, result.as_ref().ok().copied());
             finish_with_index_rebuild(result, &wd, should_rebuild)
-        }
-        Command::Prd { cmd } => {
-            let wd = resolve_workdir(cli);
-            let command_can_mutate = cmd.should_rebuild_indexes();
-            let result = commands::prd::cmd_prd(cli, cmd).await;
-            finish_with_index_rebuild(result, &wd, command_can_mutate)
         }
         Command::Agent { cmd } => commands::agent::cmd_agent(cli, cmd).await,
         Command::Research { cmd } => {
@@ -2788,7 +2726,7 @@ fn load_env_file(path: &Path) -> Result<Vec<(String, String)>> {
     Ok(entries)
 }
 
-// Re-export for crate-internal callers (e.g. do_cmd.rs uses `crate::resolve_mcp_config_with_autodiscovery`).
+// Re-export for crate-internal callers (e.g. `crate::resolve_mcp_config_with_autodiscovery`).
 pub use commands::mcp::resolve_mcp_config_with_autodiscovery;
 
 // -----------------------------------------------------------------------

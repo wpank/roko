@@ -181,7 +181,7 @@ Roko Daemon Status
 
 Subscriptions:
   ~/dev/project-a    cron: */30 * * * *    last: 2h ago (success)
-  ~/dev/project-b    watch: .roko/prd/     last: 15m ago (running)
+  ~/dev/project-b    watch: plans/         last: 15m ago (running)
 ```
 
 ---

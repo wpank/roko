@@ -282,7 +282,6 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::GateThresholdsUpdated { .. } => "gate_thresholds_updated",
         DashboardEvent::AgentCompleted { .. } => "agent_completed",
         DashboardEvent::MarketplaceJobsUpdated { .. } => "marketplace_jobs_updated",
-        DashboardEvent::AtelierPrdsUpdated { .. } => "atelier_prds_updated",
         DashboardEvent::KnowledgeEntriesUpdated { .. } => "knowledge_entries_updated",
         DashboardEvent::EfficiencyTrendUpdated { .. } => "efficiency_trend_updated",
         DashboardEvent::JobExecutionStarted { .. } => "job_execution_started",

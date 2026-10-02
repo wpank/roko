@@ -174,8 +174,8 @@ mod tests {
         let (episode, _) = crate::agent_episode::build_capture_episode(
             "claude",
             Some("claude-sonnet-4-6"),
-            "prd-plan-generate",
-            "prd:plan:demo",
+            "plan-generate",
+            "plan:generate:demo",
             "prompt body",
             "output body",
             true,
@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(costs[0]["output_tokens"], 40);
         assert_eq!(costs[0]["model"], "fake-distiller");
         assert_eq!(costs[0]["plan_id"], "demo");
-        assert_eq!(costs[0]["task_id"], "prd:plan:demo");
+        assert_eq!(costs[0]["task_id"], "plan:generate:demo");
         let efficiency = distiller_rows(tmp.path(), "efficiency.jsonl");
         assert_eq!(efficiency.len(), 1, "{efficiency:?}");
         assert_eq!(efficiency[0]["cost_usd"], DISTILL_COST_USD);

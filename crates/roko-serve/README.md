@@ -3,7 +3,7 @@
 The Roko HTTP control plane. Single port (6677 by default), a broad REST surface,
 SSE + WebSocket streams, and webhook ingestion. Designed so a dashboard,
 CLI, or external integration can talk to one base URL and reach every agent,
-plan, PRD, metric, and learning signal.
+plan, metric, and learning signal.
 
 ## Start it
 
@@ -47,22 +47,12 @@ server.serve().await?;
 |--------|------|------|
 | `GET` | `/api/plans` | list |
 | `POST` | `/api/plans` | create |
+| `POST` | `/api/plans/generate` | agent-driven plan generation from `{"prompt": "..."}`; poll `/api/operations/{id}` |
 | `GET` | `/api/plans/{id}` | detail |
+| `GET/PUT` | `/api/plans/{id}/source` | read or replace the plan's `tasks.toml` (validated before it is saved) |
+| `POST` | `/api/plans/{id}/validate` | validate the plan, or a `{"toml": "..."}` draft, without saving |
 | `POST` | `/api/plans/{id}/execute` | start execution |
 | `GET` | `/api/plans/{id}/status` | progress |
-| `POST` | `/api/plans/generate` | agent-driven plan generation from a PRD |
-
-### PRDs
-
-| Method | Path | What |
-|--------|------|------|
-| `GET` | `/api/prds` | list |
-| `POST` | `/api/prds/ideas` | capture an idea |
-| `GET` | `/api/prds/status` | coverage report |
-| `GET` | `/api/prds/{slug}` | detail |
-| `POST` | `/api/prds/{slug}/draft` | create/update draft |
-| `POST` | `/api/prds/{slug}/promote` | promote draft → published |
-| `POST` | `/api/prds/{slug}/plan` | generate plan from PRD |
 
 ### Run
 
@@ -77,7 +67,6 @@ server.serve().await?;
 |--------|------|------|
 | `GET` | `/api/research` | list past research runs |
 | `POST` | `/api/research/topic` | deep-research a topic |
-| `POST` | `/api/research/enhance-prd/{slug}` | enhance a PRD with research |
 | `POST` | `/api/research/enhance-plan/{plan}` | enhance a plan |
 | `POST` | `/api/research/enhance-tasks/{plan}` | split / optimize tasks |
 | `POST` | `/api/research/analyze` | analyze execution data |

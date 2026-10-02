@@ -15,7 +15,7 @@ Daemon mode transforms Roko from a CLI tool into a persistent background
 service that:
 
 - Watches repositories for changes (filesystem events, webhooks, cron)
-- Triggers plan execution automatically when PRDs change or on schedule
+- Triggers plan execution automatically when plans change or on schedule
 - Maintains state across reboots (launchd restarts it automatically)
 - Accepts commands via a Unix domain socket IPC interface
 - Streams events to connected clients (TUI, web dashboard, CI hooks)
@@ -156,7 +156,7 @@ Roko Daemon Status
 
 Subscriptions:
   ~/dev/project-a    cron: */30 * * * *    last: 2h ago (success)
-  ~/dev/project-b    watch: .roko/prd/     last: 15m ago (running)
+  ~/dev/project-b    watch: plans/         last: 15m ago (running)
   ~/dev/project-c    webhook: POST /hook   last: never
 ```
 

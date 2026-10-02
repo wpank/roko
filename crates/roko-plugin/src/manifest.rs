@@ -279,7 +279,7 @@ pub enum TriggerDef {
     },
     /// Signal-match trigger — fires when a signal with the given kind is observed.
     SignalMatch {
-        /// Signal kind string to match (e.g. `"github:push"`, `"prd.plan_approved"`).
+        /// Signal kind string to match (e.g. `"github:push"`, `"plan.approved"`).
         signal_kind: String,
         /// Optional JSON-pointer expression applied to the signal body for additional filtering.
         ///
@@ -1588,7 +1588,7 @@ version = "0.1.0"
 
 [[triggers]]
 kind = "signal_match"
-signal_kind = "prd.plan_approved"
+signal_kind = "plan.approved"
 "#;
         let manifest = parse_manifest(toml_str).unwrap();
         let serialized = toml::to_string_pretty(&manifest).unwrap();

@@ -296,52 +296,6 @@ pub fn build_parity_matrix() -> ParityMatrix {
             backend_source: ".roko/jobs/ (write)".into(),
             status: ParityStatus::Incomplete,
         },
-        // -- PRD list --
-        ParityEntry {
-            feature: "PRD list".into(),
-            dashboard_route: Some("GET /api/prds".into()),
-            tui_tab: Some("F9 Atelier".into()),
-            tui_subview: Some("PRD tree".into()),
-            cli_fallback: Some("roko prd list".into()),
-            backend_source: ".roko/prd/**/*.md".into(),
-            status: ParityStatus::Full,
-        },
-        // -- PRD detail --
-        ParityEntry {
-            feature: "PRD detail".into(),
-            dashboard_route: Some("GET /api/prds/{slug}".into()),
-            tui_tab: Some("F9 Atelier".into()),
-            tui_subview: Some("PRD content viewer".into()),
-            cli_fallback: Some("roko prd list (summary only)".into()),
-            backend_source: ".roko/prd/{stage}/{slug}.md".into(),
-            status: ParityStatus::Partial,
-        },
-        // -- PRD transitions --
-        ParityEntry {
-            feature: "PRD transitions (idea/draft/promote/plan)".into(),
-            dashboard_route: Some(
-                "POST /api/prds/ideas, POST /api/prds/{slug}/draft, \
-                 POST /api/prds/{slug}/promote, POST /api/prds/{slug}/plan"
-                    .into(),
-            ),
-            tui_tab: Some("F9 Atelier".into()),
-            tui_subview: Some("PRD action buttons".into()),
-            cli_fallback: Some(
-                "roko prd idea, roko prd draft new, roko prd draft promote, roko prd plan".into(),
-            ),
-            backend_source: "CLI runtime + .roko/prd/ lifecycle".into(),
-            status: ParityStatus::Full,
-        },
-        // -- PRD coverage / status --
-        ParityEntry {
-            feature: "PRD coverage report".into(),
-            dashboard_route: Some("GET /api/prds/status".into()),
-            tui_tab: None,
-            tui_subview: None,
-            cli_fallback: Some("roko prd status".into()),
-            backend_source: ".roko/prd/ scan + plan cross-reference".into(),
-            status: ParityStatus::Partial,
-        },
         // -- Config view --
         ParityEntry {
             feature: "Config view".into(),

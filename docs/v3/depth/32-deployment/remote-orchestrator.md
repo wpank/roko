@@ -137,7 +137,7 @@ headers included in responses.
 One roko-serve instance can manage multiple projects. Each project has:
 
 - Its own `.roko/` state directory
-- PRDs, plans, and context artifacts
+- Plans and context artifacts
 - Provider configuration (inherits server defaults, overridable)
 - Run history, signal and episode logs
 
@@ -170,7 +170,7 @@ All webhooks verify HMAC-SHA256 signature before processing.
 ## 7. The Local-to-Remote Transition
 
 ```
-1. Local:      roko init -> write PRDs -> roko plan run
+1. Local:      roko init -> roko plan generate -> roko run plans/<slug>
                (same tool, same config, same pipeline)
 
 2. Deploy:     roko-serve on Fly.io / Railway

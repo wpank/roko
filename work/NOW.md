@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 15 anchor gone · 66 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 15 anchor gone · 67 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -33,10 +33,10 @@ _11 more open · `goal = "truth"`_
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - **P2** [gap-997366](items/gap-997366-pk14-defaults-that-apply-a-plan-budget.md) PK14 Defaults that apply: A plan budget without max_turn_usd reserves a share per call, and any wait is logged (+8 more) · size L · verified 2026-10-02
-- **P2** [gap-e120a1](items/gap-e120a1-pk24-specs-a-cheap-model-can-execute.md) PK24 Specs a cheap model can execute: Refiner loop against a stub model: additive only, with sources (+3 more) · size M · verified 2026-10-02
-- **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
+- **P1** [gap-c1f4ac](items/gap-c1f4ac-pk15-defaults-that-apply-one-resolver-for.md) PK15 Defaults that apply: One resolver for [runner] worktree_per_task, and roko run follows it (+4 more) · size L · verified 2026-10-02
+- **P2** [gap-de0b87](items/gap-de0b87-pk19-specs-a-cheap-model-can-execute.md) PK19 Specs a cheap model can execute: The generator prompt sizes tasks for their executor tier (+9 more) · size L · verified 2026-10-02
 
-_0 more open · on hold: gap-c013c5, gap-c1f4ac, gap-de0b87, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_2 more open · on hold: gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -50,13 +50,13 @@ _12 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a
 
 - **P2** [gap-f61823](items/gap-f61823-pk10-decision-records-and-census-exposure-and.md) PK10 Decision records and census: Exposure and content-decision record types, and the telemetry report reads them (+9 more) · size L · verified 2026-10-02
 - **P2** [gap-b5caf3](items/gap-b5caf3-pk32-loops-re-closed-retire-the-legacy.md) PK32 Loops re-closed: Retire the legacy holdout from Graph runs: its learning gate gates nothing (+11 more) · size L · verified 2026-10-02
-- **P2** [gap-894977](items/gap-894977-pk38-loops-re-closed-knowledge-and-playbook.md) PK38 Loops re-closed: Knowledge and playbook withhold arms: a withheld source stays out of the prompt and is… (+5 more) · size L · verified 2026-10-02
+- **P2** [gap-943046](items/gap-943046-pk35-loops-re-closed-section-bandit-per.md) PK35 Loops re-closed: Section bandit: per-section posteriors and exclusion probabilities (+7 more) · size L · verified 2026-10-02
 
-_30 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-943046, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_31 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
-- **P1** [gap-af73a8](items/gap-af73a8-fresh-live-dogfood-rerun-of-the-full.md) Fresh live dogfood rerun of the full self-hosting workflow (blocked by SnapshotRebased arm gap) · size M · verified 2026-09-29
+- **P1** [gap-af73a8](items/gap-af73a8-fresh-live-dogfood-rerun-of-the-full.md) Fresh live dogfood rerun of the full self-hosting workflow · size M · verified 2026-09-29
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-10-01
 
@@ -80,11 +80,11 @@ _3 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 
 ## 10. Tooling, CLI polish and code hygiene
 
+- **P3** [gap-2339e2](items/gap-2339e2-pk78-park-and-clean-up-five-next.md) PK78 Park and clean up: Five next-step hints tell users to run the removed `roko develop` (+11 more) · size L · verified 2026-10-02
 - **P2** [gap-425d9e](items/gap-425d9e-pk79-park-and-clean-up-park-the.md) PK79 Park and clean up: Park the chain-family HTTP routes behind the `chain` feature, with one typed 501… (+7 more) · size L · verified 2026-10-02
 - **P3** [gap-7add13](items/gap-7add13-pk80-park-and-clean-up-park-the.md) PK80 Park and clean up: Park the cognitive clock: `CorticalState`, the scheduler types and the theta/delta… (+6 more) · size L · verified 2026-10-02
-- **P2** [spec-0b3a32](items/spec-0b3a32-backlog-phase-9-domains-assistant-held-and.md) Backlog Phase 9 — domains, assistant, held and parked work, cleanup, showcase and deploy [spec] · verified 2026-10-02
 
-_10 more open · on hold: gap-2339e2 · 4 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_11 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
@@ -102,4 +102,4 @@ _7 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 
 _5 more open · `goal = "hermes"`_
 
-4 open items have no goal (later); they are listed in `STATUS.md`.
+11 open items have no goal (later); they are listed in `STATUS.md`.

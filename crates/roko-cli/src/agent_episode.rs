@@ -45,7 +45,7 @@ fn capture_role(task_kind: &str) -> &'static str {
 fn capture_task_category(task_kind: &str) -> &'static str {
     if task_kind.starts_with("research-") {
         "research"
-    } else if task_kind.starts_with("prd-plan") || task_kind.starts_with("plan-") {
+    } else if task_kind.starts_with("plan-") {
         "scaffolding"
     } else {
         "docs"
@@ -168,8 +168,8 @@ mod tests {
         let (episode, provider) = build_capture_episode(
             "claude",
             Some("claude-sonnet-4-6"),
-            "prd-plan-generate",
-            "prd:plan:demo",
+            "plan-generate",
+            "plan:generate:demo",
             "prompt body",
             "output body",
             true,
@@ -195,20 +195,20 @@ mod tests {
         assert!(!episode.cost_known(), "a capture records no usage");
     }
 
-    /// Verify that PRD plan dispatch episodes include all fields required by
+    /// Verify that plan generation episodes include all fields required by
     /// `LearningRuntime::update_cascade_router` (P2-LRN-3).
     ///
     /// The cascade router update path reads `extra["role"]`, `extra["model"]`,
     /// `extra["task_category"]`, `extra["complexity_band"]`, and
     /// `episode.usage.wall_ms`.  All must be present in the episode produced
-    /// by a `prd-plan-generate` dispatch.
+    /// by a `plan-generate` dispatch.
     #[test]
-    fn prd_plan_episode_has_cascade_router_fields() {
+    fn plan_generate_episode_has_cascade_router_fields() {
         let (episode, _provider) = build_capture_episode(
             "claude",
             Some("claude-opus-4-6"),
-            "prd-plan-generate",
-            "prd:plan:my-feature",
+            "plan-generate",
+            "plan:generate:my-feature",
             "generate a plan",
             "```toml\n[[task]]\n```",
             true,
@@ -251,15 +251,16 @@ mod tests {
         );
     }
 
-    /// Verify that PRD draft-new episodes also carry cascade router fields (P2-LRN-3).
+    /// Verify that a capture that is neither research nor planning (a docs
+    /// draft) also carries cascade router fields (P2-LRN-3).
     #[test]
-    fn prd_draft_episode_has_cascade_router_fields() {
+    fn docs_capture_episode_has_cascade_router_fields() {
         let (episode, _provider) = build_capture_episode(
             "claude",
             Some("claude-sonnet-4-6"),
-            "prd-draft-new",
-            "prd:draft:widget",
-            "write a draft PRD",
+            "docs-draft",
+            "docs:draft:widget",
+            "write a draft",
             "# Widget\n\nOverview.",
             true,
             8_500,
@@ -277,7 +278,7 @@ mod tests {
         assert_eq!(
             episode.extra.get("task_category"),
             Some(&serde_json::json!("docs")),
-            "draft-new is a docs task (not scaffolding)"
+            "a docs draft is a docs task (not scaffolding)"
         );
         assert!(episode.usage.wall_ms > 0, "latency must be non-zero");
     }

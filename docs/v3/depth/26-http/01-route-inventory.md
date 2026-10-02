@@ -30,7 +30,6 @@ let api = Router::new()
     .merge(jobs::routes())        // /jobs CRUD + match + execute
     .merge(heartbeats::routes())  // /heartbeats
     .merge(plans::routes())       // /plans CRUD + execute + status
-    .merge(prds::routes())        // /prds CRUD + idea + draft + plan
     .merge(run::routes())         // /run (single prompt execution)
     .merge(runs::routes())        // /runs observability
     .merge(research::routes())    // /research endpoints
@@ -102,7 +101,10 @@ let api = Router::new()
 - `GET /api/plans/:id` -- Get plan detail
 - `POST /api/plans/:id/execute` -- Execute plan
 - `GET /api/plans/:id/status` -- Execution status
-- `POST /api/plans/generate` -- Generate plan from prompt
+- `POST /api/plans/generate` -- Write a plan from `{"prompt"}` (prompt only; `slug` is rejected with 422)
+- `GET /api/plans/:id/source`, `PUT /api/plans/:id/source` -- Read or replace the plan's `tasks.toml` (validated before writing)
+- `POST /api/plans/:id/validate` -- Validate a plan source without saving
+- `POST /api/plans/:id/revise` -- Agent revision from written feedback
 
 #### Run Execution + Observability (~14 routes)
 
@@ -155,15 +157,6 @@ let api = Router::new()
 - `GET /api/learning/experiments` -- Experiment listing
 - `GET /api/learning/adaptive-thresholds` -- Adaptive threshold state
 - `GET /api/learning/gate-thresholds` -- Gate threshold EMA values
-
-#### PRDs (~8 routes)
-
-- `GET /api/prds` -- List PRDs
-- `POST /api/prds/idea` -- Post idea
-- `GET /api/prds/:slug` -- Get PRD
-- `POST /api/prds/:slug/draft` -- Draft PRD
-- `POST /api/prds/:slug/promote` -- Promote PRD
-- `POST /api/prds/:slug/plan` -- Generate plan from PRD
 
 #### Groups (~16 routes)
 
@@ -226,7 +219,7 @@ Each of these modules contributes additional routes:
 
 - **Config** (~6): get, update, reload, validate, export, migrate
 - **Deployments** (~6): list, get, logs, create, proxy, callback
-- **Research** (~6): list, topic, enhance-prd, enhance-plan, enhance-tasks, analyze
+- **Research** (~5): list, topic, enhance-plan, enhance-tasks, analyze
 - **Subscriptions** (~8): list, create, update, delete, enable, disable, relay status
 - **Templates** (~6): list, create, get, delete, deploy
 - **Feeds** (~12): list, create, get, delete, catalog, runtime, status, discover, search, health, start, stop

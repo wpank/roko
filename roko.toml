@@ -6,9 +6,6 @@ name = "roko-project"
 root = "."
 fresh_base_branch = "main"
 
-[prd]
-auto_plan = false
-
 # Frontier plans, cheap models execute (decision 3204, task 3217): plan
 # generation and revision run on Opus through the Claude CLI subscription.
 # Built-in defaults are unchanged; this workspace opts in.

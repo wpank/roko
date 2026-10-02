@@ -6,6 +6,7 @@
 //! plan's `tasks.toml`, and the logs Graph task dispatch appends:
 //! `.roko/learn/costs.jsonl` (one row per provider attempt),
 //! `.roko/learn/gate-failures.jsonl` (failed verify steps),
+//! `.roko/learn/gate-gaming-alerts.jsonl` (gate-gaming alerts),
 //! `.roko/episodes.jsonl` (failure reasons) and the run's
 //! `.roko/runs/<run>/attempts.jsonl` (tool policies). The Runner-v2 snapshot at
 //! `.roko/state/state-snapshot.json` is read only for a plan without a Graph
@@ -25,6 +26,7 @@ use roko_fs::RokoLayout;
 use roko_gate::{FailureClass, GateFailureAction, GateFailureKind, GateFailureRecord};
 use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_learn::costs_db::CostRecord;
+use roko_learn::GamingAlert;
 use roko_learn::episode_logger::Episode;
 use roko_learn::telemetry::{CostSource, ToolPolicyRecord};
 use roko_runtime::{
@@ -91,6 +93,11 @@ pub struct DiagnoseReport {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskDiagnosis>,
     pub gate_results: Vec<GateResultInfo>,
+    /// Gate-gaming alerts from `.roko/learn/gate-gaming-alerts.jsonl` that
+    /// the run wrote for a model the plan's attempts ran on, oldest first
+    /// (backlog 2125). An alert names a model, not a plan.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gate_gaming_alerts: Vec<GamingAlert>,
     pub run_state: Option<RunStateSummary>,
     /// What re-running the plan would do with its Graph checkpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -511,6 +518,30 @@ fn recorded_tool_policies(run_dir: &Path, plan_id: &str) -> Vec<(String, Attempt
         .collect()
 }
 
+/// The gate-gaming alerts in `.roko/learn/gate-gaming-alerts.jsonl` that
+/// the run wrote, at or after `since_ms` (all when `None`), for a model the
+/// plan's attempts in `records` ran on, oldest first (backlog 2125). An
+/// alert names a model, not a plan, so this is as near as the log can say.
+fn run_gaming_alerts(
+    workdir: &Path,
+    records: &RunRecords,
+    since_ms: Option<i64>,
+) -> Vec<GamingAlert> {
+    let models: HashSet<&str> = records
+        .attempts
+        .iter()
+        .map(|record| record.model.as_str())
+        .collect();
+    let path = RokoLayout::for_project(workdir)
+        .learn_dir()
+        .join("gate-gaming-alerts.jsonl");
+    read_jsonl_lossy::<GamingAlert>(&path)
+        .into_iter()
+        .filter(|alert| models.contains(alert.model_slug.as_str()))
+        .filter(|alert| since_ms.is_none_or(|since| alert.timestamp.timestamp_millis() >= since))
+        .collect()
+}
+
 /// Report a plan's Graph run from its checkpoint, its `tasks.toml` and the
 /// logs Graph task dispatch appended during the run.
 fn build_graph_report(
@@ -525,6 +556,7 @@ fn build_graph_report(
         .replaced_at_ms
         .and_then(|ms| i64::try_from(ms).ok());
     let records = RunRecords::load(workdir, plan_id, &checkpoint.manifest.run_id, since_ms);
+    let gate_gaming_alerts = run_gaming_alerts(workdir, &records, since_ms);
     let definition = load_plan_definition(workdir, plan_id, &mut notes);
     let tasks = diagnose_tasks(checkpoint, definition.as_ref(), &records, verbose);
     let resume = definition
@@ -642,6 +674,7 @@ fn build_graph_report(
         failed_task,
         tasks,
         gate_results,
+        gate_gaming_alerts,
         run_state: Some(run_state),
         resume,
         git_state,
@@ -1388,6 +1421,7 @@ fn build_legacy_report(
         failed_task,
         tasks: Vec::new(),
         gate_results,
+        gate_gaming_alerts: Vec::new(),
         run_state,
         resume: None,
         git_state,
@@ -1840,6 +1874,14 @@ pub fn render_text(report: &DiagnoseReport, verbose: bool) -> String {
         }
     }
 
+    if !report.gate_gaming_alerts.is_empty() {
+        let _ = writeln!(out, "\nGate-gaming alerts:");
+        for alert in &report.gate_gaming_alerts {
+            let at = alert.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true);
+            let _ = writeln!(out, "  - {at} {}", alert.summary());
+        }
+    }
+
     for (heading, lines) in [
         ("Next steps", &report.suggested_recovery),
         ("Notes", &report.notes),
@@ -2286,6 +2328,7 @@ warning: unused variable: `x`";
             failed_task: None,
             tasks: Vec::new(),
             gate_results: vec![],
+            gate_gaming_alerts: Vec::new(),
             run_state: None,
             resume: None,
             git_state: None,
@@ -2584,6 +2627,58 @@ title = "Tidy the changelog"
             ],
         );
         workspace
+    }
+
+    /// backlog 2125: the report lists the gate-gaming alerts the run wrote
+    /// for a model the plan's attempts ran on. Another plan's model's alert,
+    /// and one an earlier run wrote, are left out.
+    #[test]
+    fn diagnose_lists_gate_gaming_alerts() {
+        let workspace = failed_run();
+        let learn = workspace.path().join(".roko/learn");
+        let other_plan = CostRecord {
+            plan_id: "other-plan".into(),
+            model: "other-model".into(),
+            ..attempt("T9", "2026-09-29T07:26:00+00:00", true, 0.1)
+        };
+        roko_core::io::append_jsonl(&learn.join("costs.jsonl"), &other_plan).expect("append");
+        let alert = |model: &str, timestamp: &str| GamingAlert {
+            model_slug: model.to_string(),
+            pass_rate_delta: 0.2,
+            quality_delta: -0.15,
+            first_half_pass_rate: 0.6,
+            second_half_pass_rate: 0.8,
+            first_half_quality: 0.7,
+            second_half_quality: 0.55,
+            timestamp: at(timestamp),
+        };
+        write_jsonl(
+            &learn.join("gate-gaming-alerts.jsonl"),
+            &[
+                alert("claude-sonnet-4-6", "2026-09-28T09:05:00Z"),
+                alert("claude-sonnet-4-6", "2026-09-29T07:25:00Z"),
+                alert("other-model", "2026-09-29T07:27:00Z"),
+            ],
+        );
+
+        let report = build_report(workspace.path(), PLAN_ID, false).expect("report");
+
+        let listed: Vec<(&str, DateTime<Utc>)> = report
+            .gate_gaming_alerts
+            .iter()
+            .map(|alert| (alert.model_slug.as_str(), alert.timestamp))
+            .collect();
+        assert_eq!(
+            listed,
+            [("claude-sonnet-4-6", at("2026-09-29T07:25:00Z"))]
+        );
+        let text = render_text(&report, false);
+        assert!(text.contains("\nGate-gaming alerts:\n"), "{text}");
+        let line = "  - 2026-09-29T07:25:00Z gate gaming detected for model `claude-sonnet-4-6`";
+        assert!(text.contains(line), "{text}");
+        assert!(!text.contains("other-model"), "{text}");
+        let json = serde_json::to_value(&report).expect("serialize the report");
+        assert_eq!(json["gate_gaming_alerts"][0]["model_slug"], "claude-sonnet-4-6");
     }
 
     #[test]

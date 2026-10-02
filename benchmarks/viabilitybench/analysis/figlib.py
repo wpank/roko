@@ -6,11 +6,12 @@ draws the whitepaper's Figure 3) or writes a Markdown table, and writes the side
 
     <script>.py INPUT [INPUT ...] --out DIR [--dry-run]
 
-**Input.** `vb.metric_record/1` rows (S08 §5.5) and nothing else: a `metrics.json` from `report.py` (`vb.metrics/1`,
-its `records`), a JSON list of records, or a JSONL file with one record per line. A `vb.metrics/1` document's
-`plan_slice` section is kept for T11's per-feature rows, which its MetricRecords' `run_ids` name. The schema gives a
-record no id, so its id is the `sha256:` digest of its canonical JSON (sorted keys, no whitespace, the digest
-`driver/records.py::canonical_hash` gives run records): anyone holding the record can recompute it.
+**Input.** `vb.metric_record/1` rows (S08 §5.5): a `metrics.json` from `report.py` (`vb.metrics/1`, its `records`),
+a JSON list of records, or a JSONL file with one record per line. Besides the numbers, a script may read the rows its
+MetricRecords' `run_ids` name, and only those: a `vb.metrics/1` document's `plan_slice` section (T11's per-feature
+rows) and the spec-owned rows in `ROW_SCHEMAS` (JSONL rows whose `schema` is, e.g., `loop-audit/1`; T4's states).
+The schema gives a record no id, so its id is the `sha256:` digest of its canonical JSON (sorted keys, no whitespace,
+the digest `driver/records.py::canonical_hash` gives run records): anyone holding the record can recompute it.
 
 **Refusals.** A script writes nothing and exits 1 when
 - a record or document says `simulated` is anything but false (S10 §4.5), outside a dry run;
@@ -63,7 +64,8 @@ API:
     Figure(spec, dry_run, width, height); Figure.grid(...); Figure.panel(...) -> Panel
     Panel: point, whisker_x, whisker_y, line, band, ref, shade, text, hbar, end_labels, note
     Table(spec, dry_run); Table.part(...); Table.cell(...)
-    Output.take / take_row / derive / design / skip; rate_axis, linear_axis, log_axis, category_axis; arm_style
+    Output.take / take_row / derive / design / skip; rate_axis, linear_axis, symmetric_axis, log_axis,
+    category_axis; arm_style
     canonical_id(record) -> str; parse_filter(text) -> clauses; synthetic_record(metric, value, ...) -> dict
 """
 
@@ -105,6 +107,9 @@ PASS5_STREAM = "p1_pass5"  # the 30-task pass^5 subset's stream (FIGURES-TABLES 
 BASE_FIELDS = frozenset({"experiment_id", "arm", "model", "task.family", "task.ladder", "task.is_honeypot",
                          "execution.status", "policy"})
 BASE_STREAMS = (None, "p1_core")
+# Spec-owned row types (FIGURES-TABLES "Data") that MetricRecords name by run id. A row is read only through
+# `Output.take_row`, so a script never shows a row that no record it drew names.
+ROW_SCHEMAS = frozenset({"loop-audit/1", "controller/1", "roko.audit/1"})
 # What report.py emits today (metrics.py), read under these names: `pass_hat_<k>` and the `_unknown_as_1` bounds
 # follow the same pattern.
 REPORT_METRICS = frozenset({
@@ -238,7 +243,7 @@ class Rec:
 class Inputs:
     records: list[Rec]
     sources: list[dict]  # [{"name", "sha256"}] per input file
-    sections: dict[str, list]  # e.g. {"plan_slice": [(path, section), ...]} from vb.metrics/1 documents
+    sections: dict[str, list]  # {"plan_slice" or a ROW_SCHEMAS name: [(path, section or row), ...]}
     dry_run: bool
     paths: list[Path]
 
@@ -266,6 +271,11 @@ class Inputs:
                    for name, want in (clauses or {}).items()):
                 found.append(rec)
         return found
+
+    def rows(self, schema: str, **match: object) -> list[dict]:
+        """The spec-owned rows of `schema` whose fields equal `match` (e.g. kind="loop.health", loop_id="L-know")."""
+        return [row for _, row in self.sections.get(schema, []) if all(row.get(key) == want
+                                                                        for key, want in match.items())]
 
     def one(self, metric: str, **cut: object) -> Rec | None:
         """The one record of `metric` in the cut, or None; two records in one cut are an error."""
@@ -321,6 +331,14 @@ def load(paths: Iterable[Path | str], *, dry_run: bool, p1: bool) -> Inputs:
                 if key == "plan_slice" and section:
                     sections.setdefault(key, []).append((path, section))
         for where, row in rows:
+            if isinstance(row, dict) and row.get("schema") in ROW_SCHEMAS:
+                found = _flag_problem(where, row, dry_run)
+                if not isinstance(row.get("run_id"), str):
+                    found.append(f"{where}: a {row['schema']} row without a run_id, so no record can name it")
+                problems += found
+                if not found:
+                    sections.setdefault(row["schema"], []).append((path, row))
+                continue
             found = _record_problems(where, row, dry_run=dry_run, p1=p1)
             problems += found
             if not found:
@@ -415,14 +433,15 @@ class Output:
         self.rows: list[dict] = []
         self.used: dict[str, Rec] = {}
 
-    def take(self, rec: Rec, *, panel: str, role: str, series: str | None = None,
-             need_ci: bool = False) -> float | None:
-        """The record's value, listed in the sidecar. A null value is listed as not drawn, and None comes back."""
+    def take(self, rec: Rec, *, panel: str, role: str, series: str | None = None, need_ci: bool = False,
+             allow_null: bool = False) -> float | None:
+        """The record's value, listed in the sidecar. A null value is listed as not drawn, and None comes back,
+        unless `allow_null` says the script draws the null itself (F10's "not detected")."""
         series = series or rec.series
-        if need_ci and rec.ci is None:
+        if need_ci and rec.ci is None and not (allow_null and rec.value is None):
             raise FigureError(f"{rec.metric} of {series} has no ci (ci_method {rec.ci_method}; record {rec.id}); "
                               f"{self.spec.id} draws a CI for every mark")
-        if rec.value is None:
+        if rec.value is None and not allow_null:
             why = rec.doc["estimator"].split("null: ", 1)[1] if "null: " in rec.doc["estimator"] else "no value"
             self.skip(panel, f"{rec.metric} of {series} is null ({why}); record {rec.id}")
             return None
@@ -606,6 +625,13 @@ def linear_axis(values: Iterable[float | None], title: str, *, lo: float = 0.0, 
                                                           for i in range(count + 1)))
 
 
+def symmetric_axis(values: Iterable[float | None], title: str) -> Axis:
+    """A linear axis centred on 0, for differences and signed estimates, with 0 among its ticks."""
+    span = linear_axis([abs(value) for value in values if value is not None], title, minimum=1e-9).hi
+    return Axis(-span, span, title, ticks=tuple((value, _num(value)) for value in (-span, -span / 2, 0.0, span / 2,
+                                                                                    span)))
+
+
 def log_axis(values: Iterable[float | None], title: str, *, money: bool = True) -> Axis:
     """A log10 axis from the decade below the smallest positive value to the decade above the largest, with
     labelled ticks at each decade (and at 2 and 5 when it spans two decades or fewer)."""
@@ -706,15 +732,16 @@ class Panel:
         return self.box[1] + (1 - self.y.frac(value)) * self.box[3]
 
     def point(self, x: float, y: float, style: Style, *, label: str | None = None, tip: str | None = None,
-              filled: bool | None = None, dx: float = 8, dy: float = -7) -> None:
-        cx, cy = self.px(x), self.py(y)
+              filled: bool | None = None, dx: float = 8, dy: float = -7, scale: float = 1.0) -> None:
+        """An arm's mark; `scale` sizes it (F6's dot area by bin count)."""
+        cx, cy, d = self.px(x), self.py(y), 6.5 * scale
         fill = style.colour if (style.filled if filled is None else filled) else "#ffffff"
         if style.shape == "diamond":
-            shape = (f'<path d="M{cx:.1f},{cy - 6.5:.1f}L{cx + 6.5:.1f},{cy:.1f}L{cx:.1f},{cy + 6.5:.1f}'
-                     f'L{cx - 6.5:.1f},{cy:.1f}Z"')
+            shape = (f'<path d="M{cx:.1f},{cy - d:.1f}L{cx + d:.1f},{cy:.1f}L{cx:.1f},{cy + d:.1f}'
+                     f'L{cx - d:.1f},{cy:.1f}Z"')
             tag = "path"
         else:
-            shape, tag = f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="4.8"', "circle"
+            shape, tag = f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{4.8 * scale:.1f}"', "circle"
         title = f"<title>{esc(tip)}</title></{tag}>" if tip else "/>"
         self.marks.append(f'    {shape} fill="{fill}" stroke="{style.colour}" stroke-width="1.7"{">" if tip else ""}'
                           f'{title}')

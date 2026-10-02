@@ -2602,9 +2602,18 @@ impl RunConfig {
         // Build the conductor from the project's [conductor.watchers.*] config so
         // that watcher thresholds are live at runtime (not dead config). A shared
         // ConductorRing is created here and later passed into the ConductorRingSink
-        // registered on the feedback facade inside event_loop::run.
-        let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
-        let conductor_ring = super::conductor_adapter::ConductorRing::new();
+        // registered on the feedback facade inside event_loop::run. `[conductor]
+        // supervise = false` builds neither (1210); the stall watchdog needs
+        // neither.
+        let (conductor, conductor_ring) = if roko_config.conductor.supervise {
+            let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
+            (
+                Some(Arc::new(conductor)),
+                Some(super::conductor_adapter::ConductorRing::new()),
+            )
+        } else {
+            (None, None)
+        };
 
         // Construct a MetricRegistry so standard metrics (gate verdicts, agent
         // duration, LLM tokens, etc.) are tracked even when not running under
@@ -2671,8 +2680,8 @@ impl RunConfig {
             metrics: Some(metrics),
             safety_layer,
             obs_sinks: None,
-            conductor: Some(Arc::new(conductor)),
-            conductor_ring: Some(conductor_ring),
+            conductor,
+            conductor_ring,
             github_ops,
             structured_log: super::structured_log::StructuredLogger::noop(),
             screenshots: false,
@@ -3102,6 +3111,29 @@ mod tests {
 
         assert_eq!(config.timeout_secs, 30);
         assert_eq!(config.plan_timeout_secs, 77);
+    }
+
+    /// 1210: a plan run's conductor supervises by default (Will, 2026-10-02);
+    /// `[conductor] supervise = false` builds neither it nor its ring.
+    #[test]
+    fn run_config_builds_a_conductor_unless_supervise_is_off() {
+        let supervised = RunConfig::from_roko_config(
+            PathBuf::from("/tmp/work"),
+            PathBuf::from("/tmp/plan"),
+            RokoConfig::default(),
+        );
+        assert!(supervised.conductor.is_some());
+        assert!(supervised.conductor_ring.is_some());
+
+        let roko_config =
+            RokoConfig::from_toml("[conductor]\nsupervise = false\n").expect("parse roko.toml");
+        let unsupervised = RunConfig::from_roko_config(
+            PathBuf::from("/tmp/work"),
+            PathBuf::from("/tmp/plan"),
+            roko_config,
+        );
+        assert!(unsupervised.conductor.is_none());
+        assert!(unsupervised.conductor_ring.is_none());
     }
 
     /// gap-cd51b7: a run gets the live GitHub adapter only when `[github]`

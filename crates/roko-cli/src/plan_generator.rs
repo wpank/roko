@@ -16,7 +16,7 @@ use roko_core::config::schema::ModelProfile;
 
 use crate::plan_generate::PlanTemplateKind;
 use crate::plan_policy::PlanExecutionPolicy;
-use crate::task_parser::TasksFile;
+use crate::task_parser::{META_KEYS, TASK_KEYS, TasksFile, VERIFY_KEYS};
 
 // ---------------------------------------------------------------------------
 // Re-exports from roko-execution (backward compat)
@@ -247,58 +247,14 @@ impl DefaultPlanGenerator {
 // Internal helpers (extracted from prd.rs for reuse)
 // ---------------------------------------------------------------------------
 
-// Known field sets for validation (used in validate_raw_output / tests).
-#[allow(dead_code)]
-const KNOWN_META_FIELDS: &[&str] = &[
-    "plan",
-    "iteration",
-    "total",
-    "done",
-    "status",
-    "max_parallel",
-    "estimated_total_minutes",
-    "skip_enrichment",
-    "failure_policy",
-    "workspace_rungs",
-    "verify",
-    "approval",
-];
-
+// Required field sets for validation (used in validate_raw_output / tests). The keys a
+// `tasks.toml` may set are the key sets of `crate::task_parser`.
 #[allow(dead_code)]
 const REQUIRED_META_FIELDS: &[&str] = &["plan", "total", "status"];
 
 #[allow(dead_code)]
-const KNOWN_TASK_FIELDS: &[&str] = &[
-    "id",
-    "title",
-    "description",
-    "role",
-    "status",
-    "tier",
-    "max_loc",
-    "files",
-    "allowed_tools",
-    "denied_tools",
-    "mcp_servers",
-    "depends_on",
-    "context",
-    "verify",
-    "model_hint",
-    "frequency",
-    "replan_strategy",
-    "prompt",
-    "acceptance",
-    "accept",
-    "domain",
-    "gate_rung",
-    "rung",
-];
-
-#[allow(dead_code)]
 const REQUIRED_TASK_FIELDS: &[&str] = &["id", "title", "status", "role", "tier"];
 
-#[allow(dead_code)]
-const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms", "scope"];
 #[allow(dead_code)]
 const REQUIRED_VERIFY_FIELDS: &[&str] = &["phase", "command"];
 
@@ -513,8 +469,8 @@ fn validate_and_fix_plan_toml(
         if let Some(meta) = meta_val.as_table_mut() {
             let meta_keys: Vec<String> = meta.keys().cloned().collect();
             for key in &meta_keys {
-                if !KNOWN_META_FIELDS.contains(&key.as_str()) {
-                    if let Some(correction) = suggest_field_correction(key, KNOWN_META_FIELDS) {
+                if !META_KEYS.contains(&key.as_str()) {
+                    if let Some(correction) = suggest_field_correction(key, META_KEYS) {
                         if let Some(value) = meta.remove(key.as_str()) {
                             repairs
                                 .push(format!("[meta] field '{key}' corrected to '{correction}'"));
@@ -563,10 +519,8 @@ fn validate_and_fix_plan_toml(
                     // Flag unknown task fields.
                     let task_keys: Vec<String> = task.keys().cloned().collect();
                     for key in &task_keys {
-                        if !KNOWN_TASK_FIELDS.contains(&key.as_str()) {
-                            if let Some(correction) =
-                                suggest_field_correction(key, KNOWN_TASK_FIELDS)
-                            {
+                        if !TASK_KEYS.contains(&key.as_str()) {
+                            if let Some(correction) = suggest_field_correction(key, TASK_KEYS) {
                                 if let Some(value) = task.remove(key.as_str()) {
                                     repairs.push(format!(
                                         "{task_id_label}: field '{key}' corrected to '{correction}'"
@@ -651,9 +605,9 @@ fn validate_and_fix_plan_toml(
                                 if let Some(step) = step_val.as_table_mut() {
                                     let step_keys: Vec<String> = step.keys().cloned().collect();
                                     for key in &step_keys {
-                                        if !KNOWN_VERIFY_FIELDS.contains(&key.as_str()) {
+                                        if !VERIFY_KEYS.contains(&key.as_str()) {
                                             if let Some(correction) =
-                                                suggest_field_correction(key, KNOWN_VERIFY_FIELDS)
+                                                suggest_field_correction(key, VERIFY_KEYS)
                                             {
                                                 if let Some(value) = step.remove(key.as_str()) {
                                                     repairs.push(format!(
@@ -1488,17 +1442,14 @@ This plan adds a widget.
     #[test]
     fn suggest_correction_finds_typos() {
         assert_eq!(
-            suggest_field_correction("pha", KNOWN_VERIFY_FIELDS),
+            suggest_field_correction("pha", VERIFY_KEYS),
             Some("phase".to_string())
         );
         assert_eq!(
-            suggest_field_correction("stat", KNOWN_TASK_FIELDS),
+            suggest_field_correction("stat", TASK_KEYS),
             Some("status".to_string())
         );
-        assert_eq!(
-            suggest_field_correction("zzzzunknown", KNOWN_TASK_FIELDS),
-            None
-        );
+        assert_eq!(suggest_field_correction("zzzzunknown", TASK_KEYS), None);
     }
 
     // ---- next_tier_model tests ----

@@ -387,6 +387,9 @@ pub async fn collect_stream_to_response(
     // response's usage source stays honest (bug-c65bfe).
     let mut usage_reported = false;
     let mut finish_reason = "stop".to_string();
+    // `unknown` (a stream that ended without naming why) never replaces a
+    // finish reason a chunk did name (backlog 1111).
+    let mut finish_named = false;
     let mut ttft_ms: Option<u64> = None;
     // The model the stream's chunks last named (bug-bfd241).
     let mut model: Option<String> = None;
@@ -463,7 +466,11 @@ pub async fn collect_stream_to_response(
                 usage_reported = true;
             }
             StreamEventKind::Done { finish_reason: fr } => {
-                finish_reason = fr;
+                let named = fr != crate::streaming::UNKNOWN_FINISH_REASON;
+                if named || !finish_named {
+                    finish_reason = fr;
+                    finish_named |= named;
+                }
             }
         }
     }
@@ -1375,22 +1382,42 @@ impl ToolLoop {
                     output_tokens = turn_usage.output_tokens,
                     "tool_loop: stop — no tool calls, returning final text"
                 );
-                if final_text.trim().is_empty() && hit_length_limit {
+                let blank = final_text.trim().is_empty();
+                if blank && hit_length_limit {
                     tracing::error!(
                         iterations,
                         output_tokens = turn_usage.output_tokens,
                         "tool_loop: model hit output token limit (finish_reason=length) \
                          and produced no final text — increase max_output for this model"
                     );
-                } else if final_text.trim().is_empty() {
+                } else if blank && all_calls.is_empty() {
                     tracing::warn!(
                         iterations,
-                        "tool_loop: final text is empty — model may have returned \
-                         content in an unexpected format"
+                        finish_reason = ?finish_reason_raw,
+                        "tool_loop: the model returned no text and no tool call; \
+                         failing the run as empty_response"
+                    );
+                } else if blank {
+                    tracing::info!(
+                        iterations,
+                        tool_calls = all_calls.len(),
+                        "tool_loop: closing text is empty after tool work; \
+                         the verify steps judge the work"
                     );
                 }
 
-                let stop_reason = if hit_length_limit {
+                // A run that made no tool call and wrote no text produced
+                // nothing: it fails as a provider error that retry, failover
+                // and the ladder understand, whatever the finish reason
+                // (backlog 1102). A blank closing turn after tool work stays
+                // `Stop`: the work is in the tree.
+                let stop_reason = if blank && all_calls.is_empty() {
+                    StopReason::BackendError(format!(
+                        "empty_response: the model returned no text and no tool call \
+                         (finish_reason={})",
+                        finish_reason_raw.as_deref().unwrap_or("none")
+                    ))
+                } else if hit_length_limit {
                     StopReason::BackendError(
                         "model hit output token limit (finish_reason=length)".to_string(),
                     )
@@ -2432,6 +2459,132 @@ mod tests {
         assert!(out.tool_calls.is_empty());
         assert_eq!(out.final_text, "done");
         assert!(out.checkpoint.is_none());
+    }
+
+    /// Streams only reasoning and then ends with `stop`: no text and no tool
+    /// call, as GLM-4.7 answered in R3.
+    struct ReasoningOnlyBackend;
+
+    impl ReasoningOnlyBackend {
+        fn events() -> Vec<Result<StreamEvent, LlmError>> {
+            vec![
+                Ok(StreamEvent::now(StreamEventKind::ReasoningDelta(
+                    "The task needs the file first.".to_string(),
+                ))),
+                Ok(StreamEvent::now(StreamEventKind::Done {
+                    finish_reason: "stop".to_string(),
+                })),
+            ]
+        }
+    }
+
+    #[async_trait]
+    impl LlmBackend for ReasoningOnlyBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            let stream = Box::pin(futures::stream::iter(Self::events()));
+            collect_stream_to_response(stream, std::time::Instant::now()).await
+        }
+
+        async fn stream_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+            _config: &TurnConfig,
+        ) -> Result<futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError>
+        {
+            Ok(Box::pin(futures::stream::iter(Self::events())))
+        }
+    }
+
+    /// backlog 1102: a run that made no tool call and wrote no text fails as
+    /// `empty_response`, whatever the finish reason, and the immune boundary
+    /// passes that failure on without isolating the agent.
+    #[tokio::test]
+    async fn reasoning_only_stream_fails_as_empty_response() {
+        use crate::agent::Agent;
+
+        let out = make_tool_loop(Arc::new(ReasoningOnlyBackend), 25)
+            .run(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+            )
+            .await;
+        match &out.stop_reason {
+            StopReason::BackendError(message) => {
+                assert!(message.starts_with("empty_response"), "{message}");
+                assert!(message.contains("finish_reason=stop"), "{message}");
+            }
+            other => panic!("expected empty_response, got {other:?}"),
+        }
+
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let agent = ToolLoopAgent::new(make_tool_loop(Arc::new(ReasoningOnlyBackend), 25));
+        let boundary = crate::immune_boundary::ImmuneScreenedAgent::durable(
+            Box::new(agent),
+            "plan/task#1",
+            workspace.path(),
+        );
+        let input = roko_core::Signal::builder(roko_core::Kind::Prompt)
+            .body(roko_core::Body::text("write the file"))
+            .build();
+        let result = boundary.run(&input, &roko_core::Context::now()).await;
+
+        assert!(!result.success);
+        let text = result.output.body.as_text().expect("text output");
+        assert!(text.starts_with("empty_response"), "{text}");
+        assert!(!crate::immune_evidence::agent_controls_path(workspace.path()).exists());
+    }
+
+    /// A blank closing turn after tool work still ends the run as `Stop`:
+    /// the work is in the tree and the verify steps judge it.
+    #[tokio::test]
+    async fn blank_closing_turn_after_tool_work_is_stop() {
+        struct ToolThenBlankBackend {
+            calls: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl LlmBackend for ToolThenBlankBackend {
+            async fn send_turn(
+                &self,
+                _messages: &[serde_json::Value],
+                _tools: &RenderedTools,
+                _session: &SessionState,
+            ) -> Result<BackendResponse, LlmError> {
+                let response = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    serde_json::json!({
+                        "tool_calls": [{"id": "call-1", "name": "echo", "arguments": {}}]
+                    })
+                } else {
+                    serde_json::json!({"message": {"content": ""}})
+                };
+                Ok(BackendResponse::Json(response))
+            }
+        }
+
+        let backend = Arc::new(ToolThenBlankBackend {
+            calls: AtomicUsize::new(0),
+        });
+        let out = make_tool_loop(backend, 25)
+            .run(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+            )
+            .await;
+
+        assert_eq!(out.stop_reason, StopReason::Stop);
+        assert_eq!(out.tool_calls.len(), 1);
+        assert!(out.final_text.is_empty());
     }
 
     #[tokio::test]

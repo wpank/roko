@@ -796,7 +796,9 @@ roko plan index [--check] [--workdir <path>]
 
 #### `roko plan pause` / `resume` / `cancel`
 
-Control a running plan executor. Writes control signals to `.roko/state/control.json`.
+Control the plan run in this workspace. Each command reaches the run over the socket `roko inject` uses and prints
+the run's answer; it exits non-zero when no run is listening or the run refuses. Pause holds: no new plan, task or
+retry starts until resume, the attempts already running finish, and the plan's deadline keeps running.
 
 ```
 roko plan pause [--workdir <path>]
@@ -818,7 +820,8 @@ roko plan review <plan-id> <task-id> (--approve | --reject) [--note <text>] [--w
 
 #### `roko plan retry`
 
-Retry failed tasks in a plan.
+Run a plan that failed or was cancelled in the running plan run again, from its checkpoint. Prints the run's answer;
+exits non-zero when no run is listening or the run refuses.
 
 ```
 roko plan retry [<task-id>] [--plan-id <id>] [--workdir <path>]
@@ -826,8 +829,8 @@ roko plan retry [<task-id>] [--plan-id <id>] [--workdir <path>]
 
 | Arg/Flag | Description |
 |---|---|
-| `<task-id>` | Specific task ID to retry. If omitted, retries all failed tasks. |
-| `--plan-id <id>` | Plan ID containing the task. If omitted, targets the active plan. |
+| `<task-id>` | Accepted, but a Graph run reruns the whole plan from its checkpoint, so its passed tasks stay done. |
+| `--plan-id <id>` | The plan to run again. |
 
 #### `roko plan status`
 

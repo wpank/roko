@@ -1,0 +1,41 @@
+# The provider_fault rows of Pilot B (S09 E1b; 3308): five roko_fixed runs, one per stream position, each under one
+# of S08 §4.6's provider faults, injected by the metering proxy (`faultproxy.Profile`). The pilot meets each kind of
+# fault once; hangs are left out, since one costs a task's whole wall clock. Each attempt's `fault_injected` and the
+# proxy's log are the ground truth (driver/disturb.py). The proxy's own fault rates are S08 T13's test, over 1,000
+# requests: five runs cannot measure them.
+schema_version = "vb.disturbance/1"
+
+[[disturbance]]
+kind = "provider_fault"
+start_at = 1
+end_at = 1
+seed = 1
+params = { name = "http_5xx", p = 0.3 }
+
+[[disturbance]]
+kind = "provider_fault"
+start_at = 2
+end_at = 2
+seed = 2
+params = { name = "rate_limit", p = 0.3, retry_after = 2 }
+
+[[disturbance]]
+kind = "provider_fault"
+start_at = 3
+end_at = 3
+seed = 3
+params = { name = "truncate", p = 0.3, bytes = 256 }
+
+[[disturbance]]
+kind = "provider_fault"
+start_at = 4
+end_at = 4
+seed = 4
+params = { name = "latency", ms = 2000, jitter = 500 }
+
+[[disturbance]]
+kind = "provider_fault"
+start_at = 5
+end_at = 5
+seed = 5
+params = { name = "schema_drift", p = 0.3 }

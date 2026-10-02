@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import sys
 import time
 from pathlib import Path
@@ -19,6 +20,7 @@ import pytest
 
 import agent_env
 import caps
+import egress
 import harness
 import layout
 import ledger
@@ -29,6 +31,8 @@ import secret
 import validate
 import vb
 from common import canary
+from stub_provider import StubServer
+from test_sandbox_net import Listener, macos_only
 
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 MODEL = "claude-opus-5-5"
@@ -66,12 +70,14 @@ R = 0.2791
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 """A stand-in for `claude -p --output-format stream-json`: note what it was given, then play one scenario."""
+import http.client
 import json
 import os
 import shlex
 import subprocess
 import sys
 import time
+import urllib.parse
 
 with open(__CONFIG__) as handle:
     CONFIG = json.load(handle)
@@ -143,6 +149,22 @@ if scenario == "spend":
     for number in range(1, 1000):
         assistant(number, model, {"type": "text", "text": "Still reading."}, input_tokens=150000, output_tokens=5000)
         time.sleep(0.02)
+if scenario == "egress":  # the CLI's own API call through its proxy, then its Bash tool's attempts at the network
+    proxy = urllib.parse.urlsplit(os.environ["HTTPS_PROXY"])
+    try:
+        api = http.client.HTTPConnection(proxy.hostname, proxy.port, timeout=10)
+        api.set_tunnel(*CONFIG["api"])
+        api.request("POST", "/v1/chat/completions", body=json.dumps({"model": model, "messages": [
+            {"role": "user", "content": "Implement clamp."}]}), headers={"Content-Type": "application/json"})
+        reply = api.getresponse()
+        called = "%d %s" % (reply.status, json.loads(reply.read())["model"])
+    except OSError as err:
+        called = "failed: %s" % err
+    shell = {name: subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=60)
+             for name, command in CONFIG["shell"].items()}
+    with open(CONFIG["log"], "a") as handle:
+        handle.write(json.dumps({"egress": {"api": called, "shell": {
+            name: ran.stdout + ran.stderr for name, ran in shell.items()}}}) + "\n")
 served = "claude-sonnet-5" if scenario == "switch" else model
 for path, text in CONFIG["files"].items():
     if os.path.isdir(os.path.dirname(path) or "."):
@@ -178,23 +200,25 @@ def places(tmp_path: Path, monkeypatch) -> dict[str, Path]:
             "secret": secret_file}
 
 
-def fake_claude(places: dict[str, Path], scenario: str) -> tuple[Path, Path]:
-    """Put the fake `claude` for `scenario` on PATH; returns it and the log of what it was given."""
+def fake_claude(places: dict[str, Path], scenario: str, **extra: object) -> tuple[Path, Path]:
+    """Put the fake `claude` for `scenario` on PATH, with `extra` in its config; returns it and the log of what it
+    was given."""
     log, config = places["tmp"] / f"claude-{scenario}.jsonl", places["tmp"] / f"claude-{scenario}.json"
     needles = [*secret.load(places["secret"]).needles, canary.RELEASE_CANARY, "vb.task/1"]
     config.write_text(json.dumps({"scenario": scenario, "log": str(log), "result": RESULT, "needles": needles,
                                   "files": {"calc/ops.py": CORRECT}, "hidden_url": HIDDEN_URL,
-                                  "visible": "python3 -m unittest discover -s tests/visible"}))
+                                  "visible": "python3 -m unittest discover -s tests/visible", **extra}))
     program = places["bin"] / "claude"
     program.write_text(FAKE_CLAUDE.replace("__CONFIG__", repr(str(config))))
     program.chmod(0o755)
     return program, log
 
 
-def arm_file(places: dict[str, Path], program: Path, **overrides: object) -> str:
-    """arms/fd_claude.toml with the fake as its program and some caps changed, written outside arms/."""
+def arm_file(places: dict[str, Path], program: Path, *, cli: str = "", **overrides: object) -> str:
+    """arms/fd_claude.toml with the fake as its program, `cli` added to its [cli] table and some caps changed, written
+    outside arms/."""
     text = (layout.ARMS_DIR / "fd_claude.toml").read_text()
-    text = text.replace('program = "claude"', f'program = "{program}"', 1)
+    text = text.replace('program = "claude"', f'program = "{program}"\n{cli}'.rstrip("\n"), 1)
     assert f'program = "{program}"' in text
     for name, value in overrides.items():
         text, count = re.subn(rf"(?m)^{name} = \S+", f"{name} = {value}", text)
@@ -592,6 +616,93 @@ def test_flaky_verify_reaches_claude_code_through_its_shell_prefix(places, p, fl
     assert session["env"]["CLAUDE_CODE_SHELL_PREFIX"].endswith("/.vb-bin/vb-verify")
     assert ran["line"].startswith(shlex.quote(session["env"]["CLAUDE_CODE_SHELL_PREFIX"]) + " ")
     assert (ran["returncode"], "Killed" in ran["output"]) == ((137, True) if flaked else (0, False)), ran
+
+
+@macos_only
+def test_cli_arm_shell_cannot_reach_the_network(places):
+    """3305: the session reaches the network only through its egress proxy, which admits the allowlisted API host.
+    The fake claude's own API call to that host passes. Its Bash tool's fetch of a truth suite and a plain-HTTP request
+    through the proxy are refused there and recorded; a fetch that skips the proxy cannot even resolve the host; and a
+    socket to a local listener or straight to the API host's port is denied by the sandbox."""
+    with Listener() as other, StubServer(lambda body: "Hi.") as api:
+        api_port = int(api.url.split(":")[2].split("/")[0])
+        shell = {"fetch_suite": f"curl -sS --max-time 5 {HIDDEN_URL}; echo exit=$?",
+                 "plain_http": "curl -fsS --max-time 5 http://example.com/; echo exit=$?",
+                 "skip_proxy": f"curl -sS --max-time 5 --noproxy '*' {HIDDEN_URL}; echo exit=$?",
+                 "local_port": f"curl -sS --max-time 5 http://127.0.0.1:{other.port}/; echo exit=$?",
+                 "api_socket": "python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", "
+                               f"{api_port}), timeout=5)'; echo exit=$?"}
+        program, log = fake_claude(places, "egress", api=["127.0.0.1", api_port], shell=shell)
+        arm = arm_file(places, program, cli=f'egress_allow = ["127.0.0.1:{api_port}"]')
+        assert run_vb(places, arm, "--transcripts") == 0
+        assert other.connections == 0 and len(api.requests) == 1  # the CLI's one call, through the proxy
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    assert (record["execution"]["status"], record["vs"]["label"]) == ("completed", 1)
+    assert record["provenance"]["canary_places"] == []
+
+    [seen] = [line for line in read_jsonl(log) if "env" in line]
+    [tried] = [line["egress"] for line in read_jsonl(log) if "egress" in line]
+    proxy_url = seen["env"]["HTTPS_PROXY"]
+    egress_port = int(proxy_url.rsplit(":", 1)[1])
+    assert {name: seen["env"][name] for name in agent_env.PROXY_NAMES} == dict.fromkeys(agent_env.PROXY_NAMES,
+                                                                                         proxy_url)
+    assert seen["env"]["NO_PROXY"] == seen["env"]["no_proxy"] == agent_env.NO_PROXY
+    assert tried["api"] == f"200 {MODEL}"
+    outcome = {name: re.search(r"exit=\d+", text)[0] for name, text in tried["shell"].items()}
+    assert outcome == {"fetch_suite": "exit=56", "plain_http": "exit=22", "skip_proxy": "exit=6",
+                       "local_port": "exit=7", "api_socket": "exit=1"}, tried["shell"]
+    assert "403" in tried["shell"]["fetch_suite"] and "PermissionError" in tried["shell"]["api_socket"]
+
+    policy = record["provenance"]["network_policy"]
+    assert (policy["network"], policy["sandbox"]) == (f"loopback:{egress_port},9", "sandbox-exec+net")
+    assert (policy["egress"]["allow"], policy["egress"]["admitted"]) == ([f"127.0.0.1:{api_port}"], 1)
+    assert [(row["method"], row["target"]) for row in policy["egress"]["refused"]] == [
+        ("CONNECT", "raw.githubusercontent.com:443"), ("GET", "example.com:80")]
+    rows = read_jsonl(run_dir(places) / run_cli.EGRESS_LOG)  # every request the proxy saw, with the task's key
+    assert [(row["task"], row["target"], row["admitted"]) for row in rows] == [
+        ("F1-l1-0001.s1", f"127.0.0.1:{api_port}", True), ("F1-l1-0001.s1", "raw.githubusercontent.com:443", False),
+        ("F1-l1-0001.s1", "example.com:80", False)]
+    # The record keeps claude's own argv, without the sandbox's profile.
+    assert record["execution"]["attempts"][0]["cli"]["argv"][0] == str(program)
+    for bad in ("api.anthropic.com", ["api.anthropic.com"], ["api.anthropic.com:0"], ["http://x:443"]):
+        with pytest.raises(run_cli.CliError, match="egress_allow"):
+            run_cli.CliConfig.from_table({"egress_allow": bad})
+    assert run_cli.CliConfig.from_table({}).egress_allow == ("api.anthropic.com:443",)
+
+
+def test_egress_proxy_answers_every_request_and_ends_its_tunnels(tmp_path):
+    """egress.py on any host: an allowlisted target it cannot reach gets a 502, a head that never ends a 400, and
+    `close` ends a tunnel still open. Every request is logged."""
+
+    def ask(port: int, data: bytes) -> bytes:
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as client:
+            client.sendall(data)
+            return client.recv(4096)
+
+    with socket.socket() as spare:  # a port with nothing listening on it
+        spare.bind(("127.0.0.1", 0))
+        closed_port = spare.getsockname()[1]
+    with Listener() as target:
+        proxy = egress.EgressProxy([f"127.0.0.1:{closed_port}", f"127.0.0.1:{target.port}"],
+                                   log_path=tmp_path / "egress.jsonl").start()
+        proxy.configure(task="t1")
+        assert ask(proxy.port, f"CONNECT 127.0.0.1:{closed_port} HTTP/1.1\r\n\r\n".encode()).startswith(
+            b"HTTP/1.1 502")
+        assert ask(proxy.port, b"x" * (egress.HEAD_MAX_BYTES + 4096)).startswith(b"HTTP/1.1 400")
+        tunnel = socket.create_connection(("127.0.0.1", proxy.port), timeout=10)
+        tunnel.sendall(f"CONNECT 127.0.0.1:{target.port} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+        assert tunnel.recv(4096).startswith(b"HTTP/1.1 200")
+        proxy.close()
+        assert tunnel.recv(4096) == b""  # the proxy ended the tunnel when it closed
+        tunnel.close()
+    rows = read_jsonl(tmp_path / "egress.jsonl")
+    assert [(row["task"], row["method"], row["target"], row["admitted"], row.get("error")) for row in rows] == [
+        ("t1", "CONNECT", f"127.0.0.1:{closed_port}", True, "ConnectionRefusedError"), ("t1", "?", "", False, None),
+        ("t1", "CONNECT", f"127.0.0.1:{target.port}", True, None)]
+    assert proxy.summary("t1") == {"allow": [f"127.0.0.1:{closed_port}", f"127.0.0.1:{target.port}"], "admitted": 2,
+                                   "refused": [{"ts": rows[1]["ts"], "method": "?", "target": ""}]}
+    assert egress.parse_allow(["API.Anthropic.com:443", "api.anthropic.com:443"]) == ("api.anthropic.com:443",)
 
 
 def test_a_budget_refusal_starts_no_session(places):

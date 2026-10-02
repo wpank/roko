@@ -2,6 +2,8 @@
 [meta]
 plan = "sq12-hidden-hook"
 total = 3
+# The plan declares hidden suites, so SQ12 counts in its score (sq-3).
+hidden_suites = true
 
 [[task]]
 id = "T1"

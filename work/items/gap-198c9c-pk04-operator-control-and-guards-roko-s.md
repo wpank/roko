@@ -95,3 +95,25 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: nothing.
 - Suggested model: opus.
+
+## Progress
+
+Worker run of 2026-10-02 on `work/gap-198c9c` (base `976220c3e`). No cargo ran; each task is implemented, its
+static verify passes, and cargo verification is deferred to the batch gate.
+
+- 1201: implemented at 2243425d7
+- 1202: implemented at 6b2c93f0f
+- 1203: implemented at ed2abe432
+- 1204: implemented at ad5c477d1
+- 1205: implemented at 256c9ab86
+- 1207: implemented at 90db19560
+- 1208: implemented at 1eed55b82
+- 1209: implemented at 60d16cbb7 (its canaries run under /tmp from 302cb8d10)
+- 1210: implemented at 257f3ff51
+- 1211: implemented at 0ab6fcd11
+
+Notes: 1201 also denies any `git push` behind the same switch (the task's recommended parity), so six existing
+push tests in `safety/git.rs` now use a policy with the switch off. 1208 delivers pause and resume to a server-hosted
+run through `.roko/state/control.json`, which the run still reads, because roko-serve cannot call roko-cli's inject
+client. On macOS the default temp dir makes a run's inject socket path 104 bytes or more (1224), so `pause_canary`
+and `plan_control_ack` root their workspace under `/tmp`.

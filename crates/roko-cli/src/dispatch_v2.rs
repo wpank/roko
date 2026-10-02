@@ -1956,35 +1956,9 @@ pub(crate) fn validate_contract_support(
 /// Classify a provider error from output text into an error kind string
 /// suitable for [`ProviderHealthRegistry::record_provider_failure`].
 pub(crate) fn classify_provider_error(output_text_lower: &str) -> &'static str {
-    use roko_agent::provider::error_classify::{detect_provider_exhaustion, is_billing_message};
-
-    // A usage-window refusal ("you've hit your session limit · resets 4pm")
-    // mentions "limit" and sometimes "quota", so it must win over billing and
-    // rate-limit detection, as in roko-agent's CLI classifier (gap-28ceb9).
-    // Billing/credit errors must be checked before generic rate-limit detection
-    // so that messages containing "quota" + billing indicators are not
-    // misclassified as transient rate limits.
-    if detect_provider_exhaustion(output_text_lower).is_some() {
-        "provider_exhausted"
-    } else if is_billing_message(output_text_lower) {
-        "insufficient_credits"
-    } else if output_text_lower.contains("rate limit")
-        || output_text_lower.contains("rate_limit")
-        || output_text_lower.contains("429")
-        || output_text_lower.contains("too many requests")
-    {
-        "rate_limit"
-    } else if output_text_lower.contains("timeout") || output_text_lower.contains("timed out") {
-        "timeout"
-    } else if output_text_lower.contains("503")
-        || output_text_lower.contains("502")
-        || output_text_lower.contains("server error")
-        || output_text_lower.contains("temporarily unavailable")
-    {
-        "server_error"
-    } else {
-        "unknown"
-    }
+    // One classifier for every provider-health caller (backlog 1113): it
+    // also names auth failures, which this copy used to report as unknown.
+    roko_agent::provider::error_classify::classify_failure_text(output_text_lower)
 }
 
 /// Record one bridge call's model-call feedback: its efficiency row and the
@@ -3744,6 +3718,24 @@ exit 1
         assert_eq!(
             classify_provider_error("insufficient credits"),
             "insufficient_credits"
+        );
+    }
+
+    /// backlog 1113: a CLI that is not logged in is an auth failure, not an
+    /// unknown error that is retried and opens the circuit.
+    #[test]
+    fn not_logged_in_classifies_as_auth_failure() {
+        assert_eq!(
+            classify_provider_error("exit 1: not logged in · please run /login"),
+            "auth_failure"
+        );
+        assert_eq!(
+            classify_provider_error("429 too many requests"),
+            "rate_limit"
+        );
+        assert_eq!(
+            classify_provider_error("provider returned an empty response (empty_response)"),
+            "empty_response"
         );
     }
 

@@ -91,3 +91,21 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: nothing.
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-cb5133`; cargo verification deferred to the batch gate (Python verifies run: 95 passed).
+
+- 3206: implemented at fe0377023
+- 3207: implemented at 4a0e5843d
+- 3208: implemented at 9a54b1a32
+- 3209: implemented at 6fe08a2b0
+- 3210: implemented at d407f4bf6
+- 3211: implemented at fa4b95c8c
+- 3212: implemented at 42fbf09f2
+- 3213: implemented at 50cc85dde
+
+Notes for the gate: the TSS v1 example plan is at `plans/_fixtures/tss-v1-example/` (not `plans/fixtures/`), so plan
+discovery, `plan run plans/` and `plans/INDEX.md` skip it; `[spec_quality] red_on_base` defaults to false, a deviation
+from D14 for Will's decision record; `rust_parity.py --strict plans` needs a built roko and was not run; four plan-run
+canaries swapped `command = "true"` for `test -d .` and the loop-census plan sets `allow_unverified`.

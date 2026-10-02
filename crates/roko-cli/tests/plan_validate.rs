@@ -410,6 +410,143 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
     assert!(stdout.contains("PLAN_007"), "missing PLAN_007: {stdout}");
 }
 
+/// 3206: a key that `plan run` does not read is a PLAN_043 warning naming
+/// its table. A context key at the top level of a task says where it
+/// belongs, and a typo says which key it most likely means. Both are
+/// warnings, so only `--strict` fails.
+#[test]
+fn plan_validate_warns_on_unknown_task_key() {
+    let temp = TempDir::new().unwrap();
+    write_plan(
+        temp.path(),
+        "keys",
+        r#"
+[meta]
+plan = "keys"
+
+[[task]]
+id = "T1"
+title = "Slugify titles"
+role = "implementer"
+files = ["src/slug.py"]
+depends_on = []
+read_files = ["tests/test_slug.py"]
+verify = [{ phase = "test", command = "python3 -m unittest tests.test_slug" }]
+
+[[task]]
+id = "T2"
+title = "Document slugify"
+role = "implementer"
+files = ["docs/slug.md"]
+depends_on = ["T1"]
+verify = [{ phase = "structural", command = "test -f docs/slug.md" }]
+verfy = [{ phase = "structural", command = "grep -q slugify docs/slug.md" }]
+"#,
+    );
+
+    let assert = run_validate(&temp, &["plans"]).success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.matches("PLAN_043").count(), 2, "{stdout}");
+    assert!(
+        stdout.contains(
+            "task 'T1' sets `read_files` at the top level of [[task]], where plan run ignores \
+             it; move it under [task.context]"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "task 'T2' [[task]] has unknown key `verfy`, which plan run ignores; did you mean \
+             `verify`?"
+        ),
+        "{stdout}"
+    );
+    assert!(stdout.contains("2 diagnostics in 1 plan"), "{stdout}");
+
+    let strict = run_validate(&temp, &["plans", "--strict"]).failure();
+    assert_eq!(strict.get_output().status.code(), Some(1));
+}
+
+/// 3207: the TSS v1 example plan sets every field of the task-spec
+/// standard and passes `plan validate --strict` without a PLAN_043. It runs
+/// on a copy, with the context files its task reads, so the test leaves the
+/// checkout alone.
+#[test]
+fn tss_v1_example_passes_strict_validation() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let example = fs::read_to_string(repo.join("plans/_fixtures/tss-v1-example/tasks.toml"))
+        .expect("read the TSS v1 example");
+    let parsed: toml::Value = toml::from_str(&example).expect("parse the example");
+    let task = &parsed["task"][0];
+    for key in [
+        "goal",
+        "non_goals",
+        "assumptions",
+        "open_questions",
+        "hidden",
+        "acceptance",
+    ] {
+        assert!(task.get(key).is_some(), "the example sets `{key}`");
+    }
+    let step = &task["verify"][0];
+    for key in ["covers", "expect"] {
+        assert!(step.get(key).is_some(), "the verify step sets `{key}`");
+    }
+
+    let temp = TempDir::new().unwrap();
+    write_plan(temp.path(), "tss-v1-example", &example);
+    for entry in task["context"]["read_files"].as_array().unwrap() {
+        let path = entry["path"].as_str().unwrap();
+        let copy = temp.path().join(path);
+        fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        fs::copy(repo.join(path), copy).expect("copy a context file");
+    }
+
+    let assert = run_validate(&temp, &["plans", "--strict"]).success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(!stdout.contains("PLAN_043"), "{stdout}");
+    assert!(stdout.contains("0 diagnostics in 1 plan"), "{stdout}");
+}
+
+/// 3212: a task of any role without a verify step can only end unverified,
+/// so it is a PLAN_037 error without `--strict`. A plan that sets `[meta]
+/// allow_unverified = true` says it means that, and passes.
+#[test]
+fn plan_validate_rejects_verify_less_researcher_task() {
+    let temp = TempDir::new().unwrap();
+    let plan = |meta: &str| {
+        format!(
+            r#"
+[meta]
+plan = "survey"
+{meta}
+[[task]]
+id = "T1"
+title = "Survey the retry callers"
+role = "researcher"
+depends_on = []
+"#
+        )
+    };
+
+    write_plan(temp.path(), "survey", &plan(""));
+    let assert = run_validate(&temp, &["plans"]).failure();
+    assert_eq!(assert.get_output().status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("error PLAN_037 task 'T1' has no verify steps"),
+        "{stdout}"
+    );
+
+    write_plan(temp.path(), "survey", &plan("allow_unverified = true\n"));
+    let assert = run_validate(&temp, &["plans"]).success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("warn  PLAN_037 task 'T1' has no verify steps"),
+        "{stdout}"
+    );
+}
+
 #[test]
 fn plan_validate_accepts_typed_acceptance_contract() {
     let temp = TempDir::new().unwrap();
@@ -835,13 +972,13 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
     let stdout = String::from_utf8_lossy(&scored.get_output().stdout);
     assert!(stdout.starts_with(&plain_stdout), "{stdout}");
     assert!(
-        stdout.contains("spec quality (sq-2, static: HF3 and SQ06 not evaluated)\n"),
+        stdout.contains("spec quality (sq-3, static: HF3 and SQ06 not evaluated)\n"),
         "{stdout}"
     );
     assert!(stdout.contains("\nplans/spec/tasks.toml\n"), "{stdout}");
     assert!(
         stdout.contains(
-            "  T1  17.00 D  SQ01=0 SQ02=0 SQ03=0 SQ04=0 SQ05=0 SQ06=0 SQ07=0 SQ08=1 SQ09=0 SQ10=1 \
+            "  T1  21.25 D  SQ01=0 SQ02=0 SQ03=0 SQ04=0 SQ05=0 SQ06=0 SQ07=0 SQ08=1 SQ09=0 SQ10=1 \
              SQ11=1 SQ12=0  hard=HF2\n"
         ),
         "{stdout}"
@@ -850,9 +987,9 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
         stdout.contains("HF2: step 1: the step only runs `echo ok`"),
         "{stdout}"
     );
-    assert!(stdout.contains("  T2  37.00 D  SQ01=0"), "{stdout}");
+    assert!(stdout.contains("  T2  46.25 C  SQ01=0"), "{stdout}");
     assert!(
-        stdout.contains("2 tasks: 0 A, 0 B, 0 C, 2 D; 1 with hard fails"),
+        stdout.contains("2 tasks: 0 A, 0 B, 1 C, 1 D; 1 with hard fails"),
         "{stdout}"
     );
 
@@ -866,13 +1003,13 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
     assert_eq!(json["plans"], plain_json["plans"]);
     assert_eq!(json["totals"], plain_json["totals"]);
     let spec = &json["spec_quality"];
-    assert_eq!(spec["linter"], "sq-2");
+    assert_eq!(spec["linter"], "sq-3");
     let tasks = spec["tasks"].as_array().unwrap();
     assert_eq!(tasks.len(), 2);
     let t1 = &tasks[0];
     assert_eq!(t1["task_id"], "T1");
     assert_eq!(t1["plan_path"], "plans/spec/tasks.toml");
-    assert_eq!(t1["score"], 17.0);
+    assert_eq!(t1["score"], 21.25);
     assert_eq!(t1["band"], "D");
     assert_eq!(t1["hard_fail"], serde_json::json!(["HF2"]));
     assert_eq!(
@@ -884,7 +1021,7 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
     assert_eq!(t1["rules"]["SQ04"], 0.0);
     assert_eq!(t1["verify_classes"], serde_json::json!(["vacuous"]));
     let t2 = &tasks[1];
-    assert_eq!(t2["score"], 37.0);
+    assert_eq!(t2["score"], 46.25);
     assert_eq!(t2["hard_fail"], serde_json::json!([]));
     assert_eq!(t2["rules"]["SQ05"], 1.0);
     assert_eq!(t2["verify_classes"], serde_json::json!(["test"]));

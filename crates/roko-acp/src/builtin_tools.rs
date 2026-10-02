@@ -6,7 +6,9 @@
 //! The tools keep agents away from provider keys as roko-std's tools do: the
 //! file tools, `grep` and `bash` refuse key files such as `.roko/.env`
 //! ([`refuse_key_file`], [`refuse_key_file_in_command`]), and `bash` runs with
-//! the environment verify steps get ([`roko_gate::inherit_gate_env`]).
+//! the environment verify steps get ([`roko_gate::inherit_gate_env`]). `bash`
+//! also refuses the git commands that discard work or move branches
+//! ([`check_git_command`]), as roko's own tool loop does.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -16,6 +18,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use roko_agent::safety::bash::check_command;
+use roko_agent::safety::git::check_git_command;
 use roko_agent::safety::network::check_url;
 use roko_std::tool::builtin::sandbox::{refuse_key_file, refuse_key_file_in_command};
 
@@ -963,10 +966,12 @@ async fn exec_bash(
     let command = require_str(args, "command")?;
     let timeout_ms = opt_u64(args, "timeout").unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
 
-    // Safety gate: run command through the roko-agent bash denylist before
-    // spawning. This ensures ACP sessions honor the same policy as the
-    // agent tool dispatcher (rm -rf /, sudo, curl|sh, fork bombs, etc.).
+    // Safety gate: run command through the roko-agent bash denylist and git
+    // policy before spawning. This ensures ACP sessions honor the same policy
+    // as the agent tool dispatcher (rm -rf /, sudo, curl|sh, fork bombs, and
+    // git stash, clean, checkout, restore or push in the user's checkout).
     check_command(&command).map_err(|e| format!("bash: blocked by safety policy: {e}"))?;
+    check_git_command(&command).map_err(|e| format!("bash: blocked by safety policy: {e}"))?;
     refuse_key_file_in_command(&command, workdir)
         .map_err(|e| format!("bash: blocked by safety policy: {e}"))?;
 
@@ -1303,6 +1308,33 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected echo hello to pass safety check, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn acp_bash_refuses_git_stash() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let run = |command: &str| {
+            let args = serde_json::json!({ "command": command });
+            tokio::runtime::Runtime::new()
+                .expect("runtime")
+                .block_on(exec_bash(&args, repo.path(), &[], None))
+        };
+        run("git init --quiet").expect("git init runs");
+
+        // The commands that discard the user's work are refused...
+        for command in ["git stash", "git clean -fdx", "git -C . checkout -- ."] {
+            let err = run(command).expect_err("the git guard must refuse it");
+            assert!(
+                err.contains("blocked by safety policy"),
+                "expected safety-policy rejection for `{command}`, got: {err}"
+            );
+        }
+        // ...and the others run.
+        let status = run("git status");
+        assert!(
+            status.is_ok(),
+            "expected git status to run, got: {status:?}"
         );
     }
 

@@ -348,7 +348,7 @@ impl ScriptedPlanWorkspace {
     /// such as `agent.env_passthrough = [...]`. `roko init` is not used: its
     /// template depends on this machine's PATH and keys.
     pub fn new(plan: &str, tasks_toml: &str, agent_script: &str, extra_config: &str) -> Self {
-        Self::create(plan, tasks_toml, extra_config, |root| {
+        Self::create(None, plan, tasks_toml, extra_config, |root| {
             let agent = root.join("fixtures").join("fake-claude.sh");
             write_executable(&agent, agent_script);
             agent
@@ -365,8 +365,39 @@ impl ScriptedPlanWorkspace {
         script: &Script,
         extra_config: &str,
     ) -> (Self, ScriptedProvider) {
+        Self::with_provider_under(None, plan, tasks_toml, script, extra_config)
+    }
+
+    /// [`Self::with_provider`], with the workspace under `/tmp` rather than
+    /// the platform's temp dir. On macOS that dir is deep enough that a run's
+    /// inject socket (`.roko/runtime/inject/<pid>.sock`) overflows the 104
+    /// bytes of a Unix socket path, and `roko plan pause` or `roko inject`
+    /// then finds no run listening (1224).
+    pub fn with_provider_at_short_path(
+        plan: &str,
+        tasks_toml: &str,
+        script: &Script,
+        extra_config: &str,
+    ) -> (Self, ScriptedProvider) {
+        Self::with_provider_under(
+            Some(Path::new("/tmp")),
+            plan,
+            tasks_toml,
+            script,
+            extra_config,
+        )
+    }
+
+    /// [`Self::with_provider`], with the workspace under `base` when given.
+    fn with_provider_under(
+        base: Option<&Path>,
+        plan: &str,
+        tasks_toml: &str,
+        script: &Script,
+        extra_config: &str,
+    ) -> (Self, ScriptedProvider) {
         let mut provider = None;
-        let workspace = Self::create(plan, tasks_toml, extra_config, |root| {
+        let workspace = Self::create(base, plan, tasks_toml, extra_config, |root| {
             let installed = ScriptedProvider::install(&root.join("provider"), script);
             let command = installed.command();
             provider = Some(installed);
@@ -375,15 +406,21 @@ impl ScriptedPlanWorkspace {
         (workspace, provider.expect("the provider is installed"))
     }
 
-    /// The workspace, with `install_agent(root)` putting the agent in place
-    /// and returning its command.
+    /// The workspace, under `base` when given, else the platform's temp dir,
+    /// with `install_agent(root)` putting the agent in place and returning
+    /// its command.
     fn create(
+        base: Option<&Path>,
         plan: &str,
         tasks_toml: &str,
         extra_config: &str,
         install_agent: impl FnOnce(&Path) -> PathBuf,
     ) -> Self {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = match base {
+            Some(base) => tempfile::tempdir_in(base),
+            None => tempfile::tempdir(),
+        }
+        .expect("tempdir");
         // Canonical, so paths roko prints and paths the test builds agree.
         let root = temp.path().canonicalize().expect("canonical tempdir");
         let repo = root.join("repo");

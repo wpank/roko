@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "vs.label",
+  "description": "The verified-success label of one attempt (S05 §0.1 and §5), the record S09 scores: one per attempt in census mode (vs_source census, pi 1.0), one per audited attempt in production (vs_source audit, pi the logged pi_i x pi_B). The join key is S01's attempt_key. The top level and cost_usd are closed; other nested objects may carry extra detail. The audit package (audit/__init__.py, label_errors) also checks what this JSON subset cannot: pi in (0, 1] and 1.0 for a census row, and that vs, vs_lenient and unknown follow from the checks under label_rule vs-1.",
+  "type": "object",
+  "required": ["ev", "run_id", "attempt_key", "task_id", "seed", "arm", "prediction_id", "vs_source", "pi", "verdict", "final_commit", "completion", "visible_clean", "hidden", "integrity", "honeypot", "vs", "vs_lenient", "unknown", "cost_usd", "label_rule"],
+  "additionalProperties": false,
+  "properties": {
+    "ev": {"const": "vs.label"},
+    "run_id": {"type": "string"},
+    "attempt_key": {"type": "string", "description": "S01's attempt key: the one join key (S04 joins on it)"},
+    "task_id": {"type": "string", "description": "the task, e.g. F4-l3-0017"},
+    "seed": {"type": ["integer", "null"], "description": "the experiment's seed; null outside an experiment"},
+    "arm": {"type": "string", "description": "the S09 §4.2 registry arm id (roko_full, roko_fixed, fd_claude, fd_codex, ...); prod outside experiments"},
+    "prediction_id": {"type": ["string", "null"], "description": "the M3 forecast made before dispatch (roko.prediction/1); null when none exists (direct and CLI arms, M3 off)"},
+    "vs_source": {"enum": ["census", "audit"], "description": "census: every attempt is labelled (experiments); audit: an attempt the lottery selected (production)"},
+    "pi": {"type": "number", "description": "the probability that this attempt was labelled: 1.0 in census mode, the logged pi_i x pi_B for an audit"},
+    "verdict": {"enum": ["passed", "passed_with_preexisting_failures", "already_satisfied", "unverified", "forced_accept", null], "description": "the green verdict that made the attempt a unit of the audit lottery (S05 §4.1): Roko's final gate verdict (S01's tags), or passed when a direct arm's visible checks passed on its final tree; null for an attempt that reported no pass. unverified and the reserved forced_accept are census strata, drawn at pi 1"},
+    "final_commit": {"type": ["string", "null"], "description": "c_i, the final commit (or result tree) the checks judged; null when the attempt left none"},
+    "completion": {"type": ["boolean", "null"], "description": "(a) the arm declared the task done and left c_i (Roko: verdict passed; direct arms: the agent's own completion)"},
+    "visible_clean": {"type": ["boolean", "null"], "description": "(b) every visible verify command passes on a clean re-run of c_i, visible tests restored from the pristine base (A2); null when it could not run"},
+    "hidden": {
+      "type": ["object", "null"],
+      "description": "(c) the hidden suite on that clean worktree; it passed when failed is 0. In census mode it is the experimenter-held truth suite (S08), never the harness-generated B1 suite. null when it could not run",
+      "required": ["suite", "n", "failed"],
+      "properties": {
+        "suite": {"type": "string", "description": "the suite and its version, e.g. truth:F4@v1"},
+        "n": {"type": "integer", "description": "tests run"},
+        "failed": {"type": "integer", "description": "tests that failed"}
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "description": "(d) no confirmed tamper or gaming finding (A1): g 0 when there is none, 1 with at least one finding, null when the check could not run",
+      "required": ["g", "findings"],
+      "properties": {
+        "g": {"enum": [0, 1, null]},
+        "findings": {"type": "array", "items": {"type": "object", "required": ["kind"], "properties": {"kind": {"type": "string", "description": "the A1 finding kind, e.g. test_edit"}}}}
+      }
+    },
+    "honeypot": {
+      "type": ["object", "null"],
+      "description": "(e) F8 tasks only: the spec-correct behaviour and the conflict flag; null for every other family",
+      "required": ["spec_correct", "conflict_flagged"],
+      "properties": {
+        "spec_correct": {"type": ["boolean", "null"]},
+        "conflict_flagged": {"type": ["boolean", "null"]}
+      }
+    },
+    "vs": {"enum": [0, 1], "description": "strict VS, the headline (decision 7102): 1 only when every check is known and passes, so an unknown label is 0"},
+    "vs_lenient": {"enum": [0, 1], "description": "VS without (d) integrity: a secondary column (S05 §0.1, DECISIONS D13)"},
+    "unknown": {"type": "boolean", "description": "a check VS needs could not run (a battery error or timeout); the bound with an unknown label as 1 is reported beside the headline"},
+    "cost_usd": {
+      "type": "object",
+      "description": "the attempt's attributable spend, for $/VS; an unknown cost is null, never 0",
+      "required": ["impl", "escalation", "spec_refine", "audit"],
+      "additionalProperties": false,
+      "properties": {
+        "impl": {"type": ["number", "null"], "description": "the implementer, retries included"},
+        "escalation": {"type": ["number", "null"]},
+        "spec_refine": {"type": ["number", "null"], "description": "spec refinement (S07)"},
+        "audit": {"type": ["number", "null"], "description": "audit LLM calls"}
+      }
+    },
+    "label_rule": {"type": "string", "description": "the rule that derived vs from the checks; vs-1 is S05 §0.1's"},
+    "gold": {"type": "boolean", "description": "a planted known false green (S05 check G, 7110): it audits the auditor and never enters a P1 table. Absent means false"},
+    "battery": {"type": ["object", "null"], "description": "the audit checks' own results (A1, A2, B1, B2, B3), kept for the per-check confusion table (7108); absent or null when no battery ran"}
+  }
+}

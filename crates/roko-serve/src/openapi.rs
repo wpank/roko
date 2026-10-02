@@ -470,6 +470,8 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         create_share,
         incidents_handler,
         quarantine_handler,
+        safety_controls_handler,
+        release_safety_control_handler,
         get_shared_run,
         prune_signal,
         promote_signal,
@@ -1744,6 +1746,13 @@ doc_get!(rpc_health, "/rpc/health", "rpc_proxy");
 // ── safety (gap-c50b85) ────────────────────────────────────────────────────────────
 doc_get!(incidents_handler, "/safety/incidents", "safety");
 doc_get!(quarantine_handler, "/safety/quarantine", "safety");
+// The provider immune boundary's isolation controls (backlog 1106).
+doc_get!(safety_controls_handler, "/safety/controls", "safety");
+doc_post_value!(
+    release_safety_control_handler,
+    "/safety/controls/{agent_id}/release",
+    "safety"
+);
 
 // ── shared_runs (gap-c50b85) ───────────────────────────────────────────────────────
 doc_post_value!(create_share, "/runs/{id}/share", "shared_runs");

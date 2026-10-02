@@ -50,7 +50,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             });
         }
 
-        // ── Budget reservation ───────────────────────────────────────────
+        // ── Operator pause and budget reservation ────────────────────────
+        // A paused run starts no attempt, a retry included (G10).
+        operator_pause::hold_while_paused(ctx, &spec.plan_id, &spec.title).await?;
         self.admit_daily_budget(spec).await?;
         let budget_reservation = self
             .budget_ledger
@@ -199,10 +201,12 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             workdir: lease.path.clone(),
             // Immune state belongs to the workspace, not the attempt checkout.
             immune_root: Some(self.workdir.clone()),
-            agent_id: format!(
-                "{}/{}",
-                spec.plan_id,
-                ctx.cell_id.as_deref().unwrap_or(&task.id)
+            // One id per attempt (decision 1107); the watchdog and the
+            // dashboard keep the plan/task id below.
+            agent_id: attempt_agent_id(
+                &attempt.key,
+                &spec.plan_id,
+                ctx.cell_id.as_deref().unwrap_or(&task.id),
             ),
             command: None,
             timeout_ms: Some(timeout_ms),
@@ -230,7 +234,11 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
 
         // ── Live output tap and stall watchdog (streaming path) ───────────
         let mut request = request;
-        let agent_id = request.agent_id.clone();
+        let agent_id = format!(
+            "{}/{}",
+            spec.plan_id,
+            ctx.cell_id.as_deref().unwrap_or(&task.id)
+        );
         let watched = WatchedAttempt {
             agent_id: &agent_id,
             plan_id: &spec.plan_id,

@@ -433,7 +433,7 @@ fn timeout_keeps_usage() {
     for timeout_secs in [3, 6, 12] {
         let workspace = ScriptedPlanWorkspace::new(
             PLAN,
-            &tasks_toml(&[Task::new("T1", "true", timeout_secs)]),
+            &tasks_toml(&[Task::new("T1", "test -d .", timeout_secs)]),
             STALLING_AGENT,
             CONFIG,
         );
@@ -566,7 +566,7 @@ impl Ending {
 fn timeout_ending() -> Ending {
     Ending::new(
         "timeout",
-        Task::new("T1", "true", 3),
+        Task::new("T1", "test -d .", 3),
         hang(),
         Projections::expected(1, "failed", "failed", "failed"),
     )
@@ -576,7 +576,7 @@ fn timeout_ending() -> Ending {
 fn sigterm_ending() -> Ending {
     Ending::new(
         "SIGTERM mid-task",
-        Task::new("T1", "true", 60),
+        Task::new("T1", "test -d .", 60),
         hang(),
         Projections::expected(143, "cancelled", "interrupted", "interrupted").stopped_by("SIGTERM"),
     )
@@ -664,7 +664,7 @@ fn terminal_projections_agree() {
     for ending in [
         Ending::new(
             "pass",
-            Task::new("T1", "true", 60),
+            Task::new("T1", "test -d .", 60),
             edit(),
             Projections::expected(0, "succeeded", "succeeded", "complete"),
         ),
@@ -711,7 +711,7 @@ exec sleep 120
 fn interrupt_settles_when_agent_ignores_sigterm() {
     let workspace = ScriptedPlanWorkspace::new(
         PLAN,
-        &tasks_toml(&[Task::new("T1", "true", 120)]),
+        &tasks_toml(&[Task::new("T1", "test -d .", 120)]),
         STUBBORN_AGENT,
         CONFIG,
     );
@@ -768,7 +768,7 @@ fn timeout_retry_continues_from_partial_work() {
         std::fs::write(&hold, "").expect("write the hold file");
         let (workspace, provider) = ScriptedPlanWorkspace::with_provider(
             PLAN,
-            &tasks_toml(&[Task::new("T1", "true", timeout_secs).retries(1)]),
+            &tasks_toml(&[Task::new("T1", "test -d .", timeout_secs).retries(1)]),
             // The first attempt edits, says so, and works on past its
             // timeout; the second finishes.
             &Script::new().task("T1", [edit().hold_while(&hold, &edited, 60), edit()]),
@@ -816,7 +816,7 @@ fn fast_deadline_stops_the_run() {
     for deadline_secs in ["3", "6", "12"] {
         let (workspace, provider) = ScriptedPlanWorkspace::with_provider(
             PLAN,
-            &tasks_toml(&[Task::new("T1", "true", 120)]),
+            &tasks_toml(&[Task::new("T1", "test -d .", 120)]),
             &Script::new().otherwise(hang()),
             CONFIG,
         );
@@ -859,8 +859,8 @@ fn resume_after_timeout_is_idempotent() {
     let (workspace, provider) = ScriptedPlanWorkspace::with_provider(
         PLAN,
         &tasks_toml(&[
-            Task::new("T1", "true", 60),
-            Task::new("T2", "true", 3).after(&["T1"]),
+            Task::new("T1", "test -d .", 60),
+            Task::new("T2", "test -d .", 3).after(&["T1"]),
         ]),
         // T2's first attempt runs past its timeout; its next one finishes.
         &Script::new().task("T2", [hang(), edit()]).otherwise(edit()),

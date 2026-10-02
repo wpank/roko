@@ -383,13 +383,16 @@ impl Drop for ConductorTicker {
 
 impl GraphTaskDispatcher {
     /// Supervise running attempts with the run's `conductor`, which reads the
-    /// signals they feed into `ring`, unless `[conductor]
-    /// silence_timeout_secs` and `task_stall_secs` are both 0, which turns
-    /// Graph supervision off. The plan host ticks it
+    /// signals they feed into `ring`, unless `[conductor] supervise` is off
+    /// (1210), or `silence_timeout_secs` and `task_stall_secs` are both 0,
+    /// which turns Graph supervision off. The stall watchdog does not depend
+    /// on the conductor. The plan host ticks it
     /// ([`Self::spawn_conductor_ticker`]).
     #[must_use]
     pub fn with_conductor(mut self, conductor: Arc<Conductor>, ring: ConductorRing) -> Self {
-        if StallThresholds::from_config(&self.config.conductor).is_enabled() {
+        let supervised = self.config.conductor.supervise
+            && StallThresholds::from_config(&self.config.conductor).is_enabled();
+        if supervised {
             self.conductor = Some(GraphConductor::new(conductor, ring));
         }
         self
@@ -915,6 +918,51 @@ mod tests {
         assert!(
             stop.to_string().contains("the agent said something"),
             "{stop}"
+        );
+    }
+
+    /// 1210: `[conductor] supervise = false` turns the conductor off, and the
+    /// stall watchdog stays on.
+    #[tokio::test]
+    async fn conductor_supervise_false_keeps_stall_watchdog() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.conductor.supervise = false;
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_conductor(Arc::new(Conductor::default()), ConductorRing::new());
+
+        assert!(
+            StallThresholds::from_config(&dispatcher.config.conductor).is_enabled(),
+            "the stall thresholds stay on"
+        );
+        assert!(
+            dispatcher.stall_watch().is_some(),
+            "the stall watchdog runs"
+        );
+        assert!(dispatcher.supervise_attempt(&watched()).is_none());
+        assert!(
+            dispatcher
+                .spawn_conductor_ticker(SUPERVISION_INTERVAL, |_| {})
+                .is_none()
+        );
+    }
+
+    /// 1210: by default the conductor supervises a plan run (Will,
+    /// 2026-10-02), and its ticker runs.
+    #[tokio::test]
+    async fn default_plan_run_keeps_conductor_ticker() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dispatcher = make_bare_dispatcher(RokoConfig::default(), temp.path())
+            .await
+            .with_conductor(Arc::new(Conductor::default()), ConductorRing::new());
+
+        assert!(dispatcher.stall_watch().is_some());
+        assert!(dispatcher.supervise_attempt(&watched()).is_some());
+        assert!(
+            dispatcher
+                .spawn_conductor_ticker(SUPERVISION_INTERVAL, |_| {})
+                .is_some()
         );
     }
 

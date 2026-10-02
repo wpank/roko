@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="608" viewBox="0 0 880 608" role="img" aria-labelledby="title desc" data-pin="41228d7b2">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="586" viewBox="0 0 880 586" role="img" aria-labelledby="title desc" data-pin="a43288b5f">
   <title id="title">Figure 2: the golden path</title>
   <desc id="desc">Eleven steps in four phases, each marked by its status tag. Verify passes to integration or fails to Recover, which loops back to Route or to Size and split; Learn feeds the next plan.</desc>
   <defs>
@@ -47,7 +47,7 @@
     .docs-only .body, .removed .body, .unproven .body { stroke-dasharray: 1.5 2.5; }
     .docs-only .swatch, .missing .swatch, .removed .swatch, .unproven .swatch { stroke: none; }
   </style>
-  <rect width="880" height="608" rx="8" fill="#ffffff"/>
+  <rect width="880" height="586" rx="8" fill="#ffffff"/>
   <!-- Phases -->
   <rect class="panel" x="12.5" y="16.5" width="855" height="141" rx="8"/>
   <text class="title" x="28" y="42">Plan</text>
@@ -96,9 +96,9 @@
       <g class="wired" data-row="IS2" data-tag="WIRED" transform="translate(22,29)"><title>IS2 Merge queue, plan merger and attempt acceptance: WIRED</title><rect class="body" x="0.5" y="0.5" width="173" height="21" rx="4"/><path class="key swatch" d="M4.5,0.5 H10 V21.5 H4.5 A4,4 0 0 1 0.5,17.5 V4.5 A4,4 0 0 1 4.5,0.5 Z"/><text x="16" y="15" font-size="12">batch merge <tspan class="note" font-size="11" letter-spacing="0.3">· WIRED</tspan></text></g>
       <g class="wired" data-row="IS3" data-tag="WIRED" transform="translate(204,29)"><title>IS3 Whole-plan verify on the integrated result: WIRED</title><rect class="body" x="0.5" y="0.5" width="170" height="21" rx="4"/><path class="key swatch" d="M4.5,0.5 H10 V21.5 H4.5 A4,4 0 0 1 0.5,17.5 V4.5 A4,4 0 0 1 4.5,0.5 Z"/><text x="16" y="15" font-size="12">whole-plan gate <tspan class="note" font-size="11" letter-spacing="0.3">· WIRED</tspan></text></g>
     </g>
-    <g class="missing" data-tag="MISSING" transform="translate(210,438)">
+    <g class="partial" data-tag="PARTIAL" transform="translate(210,438)">
       <rect class="body" x="0.5" y="0.5" width="391" height="33" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V33.5 H5.5 A5,5 0 0 1 0.5,28.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
-      <text x="22" y="22" font-size="13.5"><tspan font-weight="bold">10</tspan><tspan x="42">Review</tspan></text><text class="note" x="382" y="21.5" font-size="11" letter-spacing="0.3" text-anchor="end">MISSING</text>
+      <text x="22" y="22" font-size="13.5"><tspan font-weight="bold">10</tspan><tspan x="42">Review</tspan></text><text class="note" x="382" y="21.5" font-size="11" letter-spacing="0.3" text-anchor="end">PARTIAL</text>
     </g>
     <g class="partial" data-tag="PARTIAL" transform="translate(210,500)">
       <rect class="body" x="0.5" y="0.5" width="391" height="33" rx="5"/><path class="key swatch" d="M5.5,0.5 H12 V33.5 H5.5 A5,5 0 0 1 0.5,28.5 V5.5 A5,5 0 0 1 5.5,0.5 Z"/>
@@ -132,7 +132,5 @@
   <text class="note" x="28" y="572" font-size="12">On the production path</text>
   <g class="wired"><rect class="key" x="210.5" y="560.5" width="22" height="14" rx="2"/><text x="240" y="572" font-size="12">WIRED</text></g>
   <g class="partial"><rect class="key" x="302.496" y="560.5" width="22" height="14" rx="2"/><text x="331.996" y="572" font-size="12">PARTIAL</text></g>
-  <text class="note" x="28" y="594" font-size="12">Not on the path</text>
-  <g class="missing"><rect class="key" x="210.5" y="582.5" width="22" height="14" rx="2"/><text x="240" y="594" font-size="12">MISSING</text></g>
-  <text class="note" x="852" y="572" font-size="11" text-anchor="end">Status tags at 41228d7b2, as in the table of §4.12.</text>
+  <text class="note" x="852" y="572" font-size="11" text-anchor="end">Status tags at a43288b5f, as in the table of §4.12.</text>
 </svg>

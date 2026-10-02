@@ -575,6 +575,8 @@ mod tests {
             fail_msg: None,
             timeout_ms: 1_000,
             scope: scope.iter().map(ToString::to_string).collect(),
+            covers: Vec::new(),
+            expect: None,
         };
         let workdir = Path::new("/repo");
         assert_eq!(StepScope::of(&step(&[]), workdir), StepScope::Whole);

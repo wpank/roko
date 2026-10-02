@@ -12,8 +12,8 @@
   },
   "tasks": {
     "T1": {
-      "score": 52,
-      "band": "C",
+      "score": 71.25,
+      "band": "B",
       "hard_fail": [],
       "verify_classes": [
         "test"
@@ -21,7 +21,7 @@
       "rules": {
         "SQ01": 0,
         "SQ02": 1,
-        "SQ03": 0,
+        "SQ03": 1,
         "SQ04": 1,
         "SQ05": 1,
         "SQ06": 0,
@@ -34,8 +34,8 @@
       }
     },
     "T2": {
-      "score": 37,
-      "band": "D",
+      "score": 46.25,
+      "band": "C",
       "hard_fail": [],
       "verify_classes": [
         "test"
@@ -56,8 +56,8 @@
       }
     },
     "T3": {
-      "score": 52,
-      "band": "C",
+      "score": 71.25,
+      "band": "B",
       "hard_fail": [],
       "verify_classes": [
         "compile",
@@ -66,7 +66,7 @@
       "rules": {
         "SQ01": 0,
         "SQ02": 1,
-        "SQ03": 0,
+        "SQ03": 1,
         "SQ04": 1,
         "SQ05": 1,
         "SQ06": 0,
@@ -79,7 +79,7 @@
       }
     },
     "T4": {
-      "score": 17,
+      "score": 21.25,
       "band": "D",
       "hard_fail": [
         "HF1"
@@ -101,8 +101,8 @@
       }
     },
     "T5": {
-      "score": 52,
-      "band": "C",
+      "score": 71.25,
+      "band": "B",
       "hard_fail": [],
       "verify_classes": [
         "compile",
@@ -111,7 +111,7 @@
       "rules": {
         "SQ01": 0,
         "SQ02": 1,
-        "SQ03": 0,
+        "SQ03": 1,
         "SQ04": 1,
         "SQ05": 1,
         "SQ06": 0,
@@ -124,7 +124,7 @@
       }
     },
     "T6": {
-      "score": 29.5,
+      "score": 36.88,
       "band": "D",
       "hard_fail": [],
       "verify_classes": [

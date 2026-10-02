@@ -23,6 +23,16 @@
   required rungs after each task's own `[[task.verify]]` steps, but not a rung whose command a step already runs
   (gap-3506f1), so the visible check, which is both the verify step and the rung, runs once per attempt.
 
+**Ladder mode** (3310; decision 3302, D11). A spec with `rungs` emits the cheap-model ladder instead of one pinned
+model, for the routed Roko arms (`roko_ladder`, `roko_plan`, `roko_full`): one provider table per provider the rungs
+use and one model table per rung (its key is its slug, quoted in TOML), `[routing.ladder] enabled = true` with those
+rungs in order and every tier starting on the arm's start rung, `fallback_models = []`, and no frontier rung
+(`FRONTIER_MODELS`). The task carries no `model_hint`, so `plan validate --strict` has nothing for PLAN_041 to flag;
+the runner must not pass `--model` either, which would pin a model past the ladder. The rest of roko.toml (gates,
+budget, turns, runner, learning) is the pinned mode's. `_check` accepts it only when every rung's model is in the
+arm's allowlist (`allow`) in the allowlist's order, each once, and the start rung is a rung whose model is `model`.
+Without rungs, the files are byte for byte the pinned mode's (`testdata/planemit/`).
+
 Agents see verify commands (A4), so no hidden check goes into either file: every command in them is one of the
 manifest's visible commands, which the spec states, and `emit` refuses to write a file that holds a canary. The
 authoring rules (memory `roko_plan_authoring_constraints.md`) are checked here too: no `depends_on_plan`, no
@@ -34,9 +44,12 @@ run, before the driver exports c_i, so they must be Roko's alone.
 
 API:
     PlanSpec(...)                                   # frozen; see the fields
+    Rung(name, model, provider, base_url, api_key_env, price_row=None, ...)      # one rung of ladder mode
     emit(spec: PlanSpec, workspace: Path) -> Emitted              # raises PlanEmitError
     Emitted(slug, plan_dir, tasks_path, config_path, tasks_text, config_text, visible_command)
-    plan_slug(key: str) -> str; SCAFFOLDING; TASK_ID; TEMPLATE_VERSION; TEMPLATE_SHA256
+    plan_slug(key: str) -> str; SCAFFOLDING; TASK_ID; TIERS; FRONTIER_MODELS
+    TEMPLATE_VERSION, TEMPLATE_SHA256                 # the pinned mode's
+    LADDER_VERSION, LADDER_TEMPLATE_SHA256            # ladder mode's
 """
 
 from __future__ import annotations
@@ -53,6 +66,13 @@ import layout  # noqa: F401 (puts families/ on sys.path for common)
 from common import canary
 
 TEMPLATE_VERSION = "planemit-3"
+LADDER_VERSION = "planemit-ladder-1"
+TIERS = ("mechanical", "focused", "integrative", "architectural")  # Roko's task tiers, each with a start rung
+# The frontier models of S09 §4.2's arms (fd_claude, fd_claude_lite, fd_codex, fd_api, the optional Fable arm) and of
+# roko.toml's `top` rung: a ladder of the cheap pool never holds one (decision 3302).
+FRONTIER_MODELS = frozenset({"claude-opus-5-5", "claude-sonnet-5", "claude-sonnet", "claude-fable-5-1", "gpt-5.4",
+                             "gpt-5.5"})
+BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 TASK_ID = "T01"
 SCAFFOLDING = ("roko.toml", "plans", ".roko")  # what Roko's run adds to the workspace; the runner removes it
 ROLE = "implementer"
@@ -89,7 +109,7 @@ command = {visible}
 fail_msg = "the task's visible check failed"
 """
 
-CONFIG_TEMPLATE = """\
+CONFIG_HEAD = """\
 # Emitted by the ViabilityBench driver ({version}) for one benchmark run: one provider, one pinned model, no
 # fallbacks and no routing ladder, explicit gate rungs that run only the visible check, the task in the shared
 # working tree, and Roko's learning loops held off.
@@ -117,6 +137,9 @@ fallback_models = []
 [routing.ladder]
 enabled = false
 
+"""
+
+CONFIG_TAIL = """\
 [gates]
 cargo_fix_enabled = false
 max_review_cycles = 0
@@ -152,7 +175,53 @@ dream_on_completion = false
 trigger_on_plan_complete = false
 """
 
+CONFIG_TEMPLATE = CONFIG_HEAD + CONFIG_TAIL
+
+LADDER_TASKS_TEMPLATE = TASKS_TEMPLATE.replace("model_hint = {model}\n", "")  # the ladder picks the model
+
+LADDER_HEAD = """\
+# Emitted by the ViabilityBench driver ({version}) for one benchmark run on the cheap-model ladder: a
+# provider table per provider and a model table per rung, the routing ladder on with these rungs alone (no frontier
+# rung) and no fallbacks, explicit gate rungs that run only the visible check, the task in the shared working tree,
+# and Roko's learning loops held off.
+config_version = 2
+schema_version = 2
+
+[agent]
+default_model = {start_model}
+{providers}{models}
+[routing]
+fallback_models = []
+
+[routing.ladder]
+enabled = true
+rungs = [
+{rungs}]
+start = {start}
+
+"""
+
+LADDER_CONFIG_TEMPLATE = LADDER_HEAD + CONFIG_TAIL
+
+PROVIDER_TABLE = """
+[providers.{key}]
+kind = {kind}
+base_url = {base_url}
+api_key_env = {api_key_env}
+"""
+
+MODEL_TABLE = """
+[models.{key}]
+provider = {provider}
+slug = {model}
+context_window = {context_window}
+max_output = {max_output}
+tool_format = "openai_json"
+{rates}"""
+
 TEMPLATE_SHA256 = hashlib.sha256((TASKS_TEMPLATE + "\0" + CONFIG_TEMPLATE).encode()).hexdigest()
+LADDER_TEMPLATE_SHA256 = hashlib.sha256("\0".join(
+    [LADDER_TASKS_TEMPLATE, LADDER_CONFIG_TEMPLATE, PROVIDER_TABLE, MODEL_TABLE]).encode()).hexdigest()
 
 
 class PlanEmitError(ValueError):
@@ -180,6 +249,25 @@ class PlanSpec:
     skip_enrichment: bool = True
     verify_timeout_s: int = 120
     verify_wrapper: str | None = None  # the visible-verify wrapper's path, in a run with flaky_verify (vb_verify)
+    # Ladder mode (module docstring): the rungs, cheapest first; the start rung's name; the arm's models_allow.
+    rungs: tuple[Rung, ...] = ()
+    start: str | None = None
+    allow: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Rung:
+    """One rung of ladder mode: a model, its key and slug in roko.toml, on its provider's endpoint."""
+
+    name: str  # what `start` and escalation refer to, e.g. "cheap"
+    model: str
+    provider: str
+    base_url: str  # the metering proxy's URL for this provider in a proxied run (3311)
+    api_key_env: str
+    price_row: dict | None = None
+    provider_kind: str = "openai_compat"
+    context_window: int = 128_000
+    max_output: int = 8192
 
 
 @dataclass(frozen=True)
@@ -215,15 +303,16 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
     if not (spec.usd_cap > 0 and math.isfinite(spec.usd_cap)):
         raise PlanEmitError(f"the dollar cap must be a finite number above 0, not {spec.usd_cap!r}")
     slug = plan_slug(spec.key)
+    if spec.rungs:
+        tasks_text, config_text = _ladder_texts(spec, slug, files, visible)
+        _check_ladder(tasks_text, config_text, spec, slug, files, visible)
+        return _write(workspace, slug, tasks_text, config_text, visible)
     tasks_text = TASKS_TEMPLATE.format(
         version=TEMPLATE_VERSION, slug=_s(slug), skip_enrichment=_b(spec.skip_enrichment), task_id=_s(TASK_ID),
         title=_s(_title(spec.spec_text)), description=_s(spec.spec_text.strip() + "\n"), role=_s(ROLE),
         tier=_s(spec.tier), files="[" + ", ".join(_s(path) for path in files) + "]", max_retries=spec.max_retries,
         model=_s(spec.model), visible=_s(visible))
-    rates = ""
-    if spec.price_row:  # Roko's budget guard prices with these; the driver re-prices from the snapshot anyway
-        rates = (f"cost_input_per_m = {float(spec.price_row['input'])!r}\n"
-                 f"cost_output_per_m = {float(spec.price_row['output'])!r}\n")
+    rates = _rates(spec.price_row)
     config_text = CONFIG_TEMPLATE.format(
         version=TEMPLATE_VERSION, model=_s(spec.model), model_key=spec.model, provider_key=spec.provider,
         provider=_s(spec.provider), provider_kind=_s(spec.provider_kind), base_url=_s(spec.base_url),
@@ -232,6 +321,10 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
         tier_key=spec.tier, max_turns=spec.max_turns, usd_cap=round(spec.usd_cap, 6),
         turn_usd=max(round(spec.usd_cap / 10, 6), 1e-06))
     _check(tasks_text, config_text, spec, slug, files, visible)
+    return _write(workspace, slug, tasks_text, config_text, visible)
+
+
+def _write(workspace: Path, slug: str, tasks_text: str, config_text: str, visible: str) -> Emitted:
     plan_dir = workspace / "plans" / slug
     plan_dir.mkdir(parents=True)
     tasks_path, config_path = plan_dir / "tasks.toml", workspace / "roko.toml"
@@ -239,6 +332,78 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
     config_path.write_text(config_text, encoding="utf-8")
     return Emitted(slug=slug, plan_dir=plan_dir, tasks_path=tasks_path, config_path=config_path,
                    tasks_text=tasks_text, config_text=config_text, visible_command=visible)
+
+
+def _ladder_texts(spec: PlanSpec, slug: str, files: list[str], visible: str) -> tuple[str, str]:
+    """Ladder mode's tasks.toml and roko.toml (module docstring)."""
+    for rung in spec.rungs:
+        for name, value in (("rung name", rung.name), ("model", rung.model), ("provider", rung.provider)):
+            if not MODEL_KEY.fullmatch(value):
+                raise PlanEmitError(f"{name} {value!r} cannot be a roko.toml key")
+    tasks_text = LADDER_TASKS_TEMPLATE.format(
+        version=LADDER_VERSION, slug=_s(slug), skip_enrichment=_b(spec.skip_enrichment), task_id=_s(TASK_ID),
+        title=_s(_title(spec.spec_text)), description=_s(spec.spec_text.strip() + "\n"), role=_s(ROLE),
+        tier=_s(spec.tier), files="[" + ", ".join(_s(path) for path in files) + "]", max_retries=spec.max_retries,
+        visible=_s(visible))
+    providers = {}
+    for rung in spec.rungs:  # one table per provider, from its first rung
+        providers.setdefault(rung.provider, PROVIDER_TABLE.format(
+            key=_key(rung.provider), kind=_s(rung.provider_kind), base_url=_s(rung.base_url),
+            api_key_env=_s(rung.api_key_env)))
+    models = "".join(MODEL_TABLE.format(
+        key=_key(rung.model), provider=_s(rung.provider), model=_s(rung.model), context_window=rung.context_window,
+        max_output=rung.max_output, rates=_rates(rung.price_row)) for rung in spec.rungs)
+    start = "{ " + ", ".join(f"{tier} = {_s(spec.start or '')}" for tier in TIERS) + " }"
+    config_text = LADDER_CONFIG_TEMPLATE.format(
+        version=LADDER_VERSION, start_model=_s(spec.model), providers="".join(providers.values()), models=models,
+        rungs="".join(f"  {{ name = {_s(rung.name)}, model = {_s(rung.model)} }},\n" for rung in spec.rungs),
+        start=start, max_retries=spec.max_retries, visible=_s(visible), verify_timeout_s=spec.verify_timeout_s,
+        tier_key=spec.tier, max_turns=spec.max_turns, usd_cap=round(spec.usd_cap, 6),
+        turn_usd=max(round(spec.usd_cap / 10, 6), 1e-06))
+    return tasks_text, config_text
+
+
+def _check_ladder(tasks_text: str, config_text: str, spec: PlanSpec, slug: str, files: list[str],
+                  visible: str) -> None:
+    """Ladder mode's rules (module docstring), on the parsed files."""
+    models = [rung.model for rung in spec.rungs]
+    names = [rung.name for rung in spec.rungs]
+    frontier = sorted(set(models) & FRONTIER_MODELS)
+    if frontier:
+        raise PlanEmitError(f"a ladder of the cheap pool holds no frontier model, not {', '.join(frontier)}")
+    if len(set(models)) != len(models) or len(set(names)) != len(names):
+        raise PlanEmitError("each rung needs a model and a name of its own")
+    outside = [model for model in models if model not in spec.allow]
+    if outside:
+        raise PlanEmitError(f"rung model(s) {', '.join(outside)} are not in the arm's models_allow")
+    if models != [model for model in spec.allow if model in models]:
+        raise PlanEmitError(f"the rungs {', '.join(models)} are not in the order of the arm's models_allow, cheapest "
+                            "first")
+    start = next((rung for rung in spec.rungs if rung.name == spec.start), None)
+    if start is None or start.model != spec.model:
+        raise PlanEmitError(f"the start rung {spec.start!r} must be a rung, and its model {spec.model!r}")
+    for text in (tasks_text, config_text):
+        if canary.find(text):
+            raise PlanEmitError("refusing to write a canary into Roko's files")
+    try:
+        plan, config = tomllib.loads(tasks_text), tomllib.loads(config_text)
+    except tomllib.TOMLDecodeError as err:
+        raise PlanEmitError(f"emitted TOML does not parse: {err}") from None
+    [task] = plan["task"]
+    if plan["meta"]["plan"] != slug or "model_hint" in task or (task["role"], task["files"], task["max_retries"]) != (
+            ROLE, files, spec.max_retries):
+        raise PlanEmitError("the emitted ladder task does not round-trip, or it pins a model")
+    commands = [step["command"] for step in task["verify"]] + [rung["command"] for rung in config["gates"]["rungs"]]
+    ladder = config["routing"]["ladder"]
+    if commands != [visible, visible] or list(config["models"]) != models or \
+            list(config["providers"]) != list(dict.fromkeys(rung.provider for rung in spec.rungs)) or \
+            config["routing"]["fallback_models"] or ladder.get("enabled") is not True or \
+            ladder["rungs"] != [{"name": rung.name, "model": rung.model} for rung in spec.rungs] or \
+            ladder["start"] != dict.fromkeys(TIERS, spec.start) or config["agent"]["default_model"] != spec.model:
+        raise PlanEmitError("roko.toml must hold exactly the rungs' providers and models, the ladder on with those "
+                            "rungs in order from the start rung, and no fallbacks")
+    if config["runner"] != {"worktree_per_task": False}:
+        raise PlanEmitError("roko.toml must run the task in the shared working tree, where the driver reads it")
 
 
 def _check(tasks_text: str, config_text: str, spec: PlanSpec, slug: str, files: list[str], visible: str) -> None:
@@ -315,3 +480,16 @@ def _s(value: str) -> str:
 
 def _b(value: bool) -> str:
     return "true" if value else "false"
+
+
+def _rates(price_row: dict | None) -> str:
+    """A model table's rates: Roko's budget guard prices with these; the driver re-prices from the snapshot anyway."""
+    if not price_row:
+        return ""
+    return (f"cost_input_per_m = {float(price_row['input'])!r}\n"
+            f"cost_output_per_m = {float(price_row['output'])!r}\n")
+
+
+def _key(name: str) -> str:
+    """A TOML key: bare when it can be, else quoted, so a slug's dots stay in one key (glm-4.7)."""
+    return name if BARE_KEY.fullmatch(name) else _s(name)

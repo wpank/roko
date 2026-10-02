@@ -39,3 +39,8 @@ max_loc = 10
 files = ["demo/e2e-test/README.md"]
 role = "scribe"
 depends_on = ["T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/e2e-test/README.md && grep -q '^## About' demo/e2e-test/README.md && grep -q 'greeting.txt' demo/e2e-test/README.md"
+fail_msg = "demo/e2e-test/README.md was not created with an ## About heading that names greeting.txt"

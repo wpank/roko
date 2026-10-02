@@ -1632,6 +1632,82 @@ async fn resume_plan_runs_the_plan_directory() {
     assert!(!opts.fresh, "resume must not set fresh: true");
 }
 
+/// 1208 (decision 1206: pause holds): `POST /api/plans/{id}/pause` sends
+/// the run's plan-set driver a pause through its control file and leaves the
+/// run going, uncancelled; `POST /api/plans/{id}/resume` sends the held run a
+/// resume instead of starting the plan again.
+#[tokio::test]
+async fn rest_pause_holds_the_run_without_cancelling() {
+    use crate::state::PlanHandle;
+    use roko_runtime::cancel::CancelToken;
+
+    let runtime = recording_runtime_for_plan("held-plan");
+    let calls = Arc::clone(&runtime.calls);
+    let (_dir, state) = test_state_with_runtime(runtime);
+    let cancel = CancelToken::new();
+    let handle = tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    });
+    let plan_handle = PlanHandle {
+        id: "run-1".to_string(),
+        plan_dir: state.workdir.join("plans").join("held-plan"),
+        members: vec!["held-plan".to_string()],
+        status: crate::state::OperationStatus::Running,
+        handle,
+        cancel: cancel.clone(),
+    };
+    state
+        .active_plans
+        .write()
+        .await
+        .insert("held-plan".to_string(), plan_handle);
+
+    // The run's plan-set driver takes each command written to its control
+    // file, as `forward_control_file` does.
+    let control = roko_fs::RokoLayout::for_project(&state.workdir)
+        .state_dir()
+        .join("control.json");
+    let (taken_tx, mut taken) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let driver = tokio::spawn(async move {
+        loop {
+            if let Ok(text) = tokio::fs::read_to_string(&control).await {
+                let _ = tokio::fs::remove_file(&control).await;
+                let command: Value = serde_json::from_str(&text).expect("a control command");
+                let action = command["command"].as_str().unwrap_or_default();
+                if taken_tx.send(action.to_string()).is_err() {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    });
+
+    let paused = pause_plan(State(Arc::clone(&state)), Path("held-plan".into()))
+        .await
+        .expect("pause the run");
+    assert_eq!(paused.0["paused"], true);
+    assert_eq!(paused.0["run_id"], "run-1");
+    assert_eq!(taken.recv().await.as_deref(), Some("pause"));
+    assert!(!cancel.is_cancelled(), "pause cancelled the run");
+    {
+        let active = state.active_plans.read().await;
+        let run = active.get("held-plan").expect("the run is still active");
+        assert!(!run.handle.is_finished(), "pause stopped the run");
+    }
+
+    let resumed = resume_plan(State(Arc::clone(&state)), Path("held-plan".into()))
+        .await
+        .expect("resume the run");
+    assert_eq!(resumed.status(), axum::http::StatusCode::OK);
+    assert_eq!(taken.recv().await.as_deref(), Some("resume"));
+    assert!(!cancel.is_cancelled(), "resume cancelled the run");
+    assert!(
+        calls.lock().expect("lock calls").is_empty(),
+        "resuming a held run must not start the plan again"
+    );
+    driver.abort();
+}
+
 /// `GET /api/plans/{id}/costs` and `GET /api/plans/{id}/gates` return 200
 /// for a plan the runtime knows about, even when no plan file exists on
 /// disk (directory-layout plan).  An unknown id must answer 404.

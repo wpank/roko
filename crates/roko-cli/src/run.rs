@@ -667,6 +667,8 @@ fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -
             .as_secs()
             .saturating_mul(1_000),
         scope: Vec::new(),
+        covers: Vec::new(),
+        expect: None,
     }]
 }
 
@@ -731,6 +733,7 @@ fn prompt_tasks_file(
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            spec: Default::default(),
             hints: Default::default(),
         }],
     }
@@ -1261,6 +1264,8 @@ sibling_settle_secs = 0
             fail_msg: None,
             timeout_ms: 5_000,
             scope: Vec::new(),
+            covers: Vec::new(),
+            expect: None,
         }];
         prompt_tasks_file(
             "run-1",

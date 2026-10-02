@@ -57,3 +57,12 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: nothing.
 - Suggested model: opus.
+
+## Progress
+
+- 6104: implemented at 0835464d9. Implemented on `work/gap-08120e` at `0835464d9`; cargo verification
+  deferred to the batch gate. The verify's static part (`grep -rqw 'fn pricing_snapshot_reprices_one_row_per_provider'
+  crates/roko-core/`) passes; `cargo test -p roko-core pricing_snapshot` (12 tests) is for the gate. Decision 2113
+  rule 1 (named, else newest `config/prices/*.toml`, else a built-in copy) is `PriceSnapshot::for_workspace`; an
+  unlisted model prices to `None`. Rule 2's new dated snapshot for every routed model and rule 3's per-provider
+  billing are not in this task's files (no task owns the first; 2115 owns `provider.rs`).

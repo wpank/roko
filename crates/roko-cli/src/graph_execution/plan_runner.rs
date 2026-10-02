@@ -1480,8 +1480,8 @@ async fn run_graph_plan_body(
     // the ticker evaluates it every `SUPERVISION_INTERVAL`: a `Restart`
     // cancels that attempt, which retries; a `Fail` stops the run the way
     // SIGTERM does, and the run returns an error naming the watcher. With
-    // `[conductor] silence_timeout_secs` and `task_stall_secs` both 0 there
-    // is no conductor and no ticker.
+    // `[conductor] supervise = false` (1210), or `silence_timeout_secs` and
+    // `task_stall_secs` both 0, there is no conductor and no ticker.
     if let (Some(conductor), Some(ring)) = (
         graph_run_config.conductor.clone(),
         graph_run_config.conductor_ring.clone(),
@@ -1548,10 +1548,11 @@ async fn run_graph_plan_body(
         );
     }
 
-    // Shared pause flag: set/cleared by Pause/Resume commands from the TUI.
-    // Wired into each CellContext so the task executor cell can check it
-    // between agent turns (cells check this flag between turns; a paused
-    // cell waits until the flag is cleared).
+    // Shared pause flag: set and cleared by the Pause and Resume commands of
+    // every control surface. Pause holds (decision 1206): while it is set the
+    // plan-set driver starts no plan and each task's dispatch starts no
+    // attempt, a retry included (`hold_while_paused`); running attempts
+    // finish, and the deadline keeps running.
     let shared_pause_flag: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     // ── Spawn interactive TUI thread ─────────────────────────────────
@@ -1683,6 +1684,7 @@ async fn run_graph_plan_body(
         cell_resources: &cell_resources,
         batch: batch.as_ref(),
         plan_checks: &plan_checks,
+        gate_env_passthrough: &roko_config.gates.env_passthrough,
         worktrees: worktrees.as_ref(),
         delete_attempt_branches: roko_config.runner.delete_attempt_branches,
         quiet,
@@ -1780,7 +1782,13 @@ async fn run_graph_plan_body(
             reran_plans = true;
         }
 
-        let admission = scheduler.admit();
+        // A paused run starts no plan (decision 1206).
+        let paused = shared_pause_flag.load(Ordering::Acquire);
+        let admission = if paused {
+            super::plan_set::Admission::default()
+        } else {
+            scheduler.admit()
+        };
         for (plan_id, reason) in admission.blocked {
             report_blocked_plan(&graph_tui_bridge, &plan_id, &reason);
             plan_outcomes.insert(plan_id, false);
@@ -1817,7 +1825,8 @@ async fn run_graph_plan_body(
             running.push(run_admitted_plan(&run_context, plan, control));
         }
 
-        if running.is_empty() {
+        // A paused run with plans still to start waits for resume.
+        if running.is_empty() && (!paused || scheduler.is_settled()) {
             break;
         }
         tokio::select! {
@@ -1846,10 +1855,8 @@ async fn run_graph_plan_body(
                 plan_outcomes.insert(plan_id.clone(), outcome.succeeded());
                 scheduler.finish(&plan_id, outcome);
                 graph_task_dispatcher.plan_finished(&plan_id);
-                if running.is_empty() {
-                    // Clear any residual pause once no plan is running.
-                    shared_pause_flag.store(false, Ordering::Release);
-                }
+                // A pause outlives the plan that was running: the next plan
+                // waits for resume.
             }
             () = tokio::time::sleep(PLAN_WATCH_INTERVAL) => {}
         }
@@ -2346,12 +2353,17 @@ fn daimon_affect_path(workdir: &Path) -> PathBuf {
 }
 
 /// #144: the daimon state a plan run shares between the feedback facade and
-/// dispatch; `None` unless `[daimon] strategy_space.dimensions` has exactly
-/// 8 entries.
+/// dispatch. `None` unless `[daimon] enabled` turns affect on (it is held,
+/// dec-e70592, so off by default) and `strategy_space.dimensions` has
+/// exactly 8 entries. Without it no attempt is appraised, routing gets the
+/// neutral policy, and `.roko/daimon/affect.json` is neither read nor saved.
 fn graph_daimon_state(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
 ) -> Option<Arc<std::sync::Mutex<roko_daimon::DaimonState>>> {
+    if !config.daimon.enabled {
+        return None;
+    }
     let dims_vec = &config.daimon.strategy_space.dimensions;
     if dims_vec.len() == 8 {
         // SAFETY: len == 8 is checked above, so try_into() is infallible here.
@@ -2510,6 +2522,9 @@ struct PlanRunContext<'a> {
     batch: Option<&'a super::batch::BatchIntegration>,
     /// Each plan's whole-plan check (gap-60233f), by plan id.
     plan_checks: &'a HashMap<String, Vec<crate::task_parser::VerifyStep>>,
+    /// `[gates] env_passthrough`: what the whole-plan check's steps (and the
+    /// delivery regression that runs them) inherit beyond the gate allowlist.
+    gate_env_passthrough: &'a [String],
     /// The attempt checkouts' manager, under `--worktree-per-task`.
     worktrees: Option<&'a crate::orchestrator::worktree::WorktreeManager>,
     /// `[runner] delete_attempt_branches`: a delivered plan's attempt
@@ -2725,7 +2740,8 @@ fn report_blocked_plan(
 /// - Cancel reaches the plan it names when that plan is running, drops it
 ///   when it has not started, and reaches every running plan when it names
 ///   none.
-/// - Pause and resume set the pause flag every plan shares.
+/// - Pause and resume set the pause flag every plan shares. Pause holds: no
+///   plan or attempt starts until resume, and running attempts finish.
 /// - Skip stops the running agent of the task it names (`task_stops`); that
 ///   task fails as stopped by the operator, and its plan runs on.
 /// - Soft retry, repair and reset run again a plan that failed or was
@@ -2768,16 +2784,15 @@ fn route_execution_commands(
             },
             ExecutionCommandKind::Pause => {
                 pause.store(true, Ordering::Release);
-                tracing::info!(
-                    command_id = %cmd.command_id,
-                    "TUI pause: execution paused after current task"
-                );
-                (CommandAckStatus::Completed, None)
+                let note = "paused: no new task starts until resume; running attempts finish";
+                tracing::info!(command_id = %cmd.command_id, "{note}");
+                (CommandAckStatus::Completed, Some(note.to_string()))
             }
             ExecutionCommandKind::Resume => {
                 pause.store(false, Ordering::Release);
-                tracing::info!(command_id = %cmd.command_id, "TUI resume: execution resumed");
-                (CommandAckStatus::Completed, None)
+                let note = "resumed: tasks start again";
+                tracing::info!(command_id = %cmd.command_id, "{note}");
+                (CommandAckStatus::Completed, Some(note.to_string()))
             }
             ExecutionCommandKind::SoftRetry
             | ExecutionCommandKind::Repair { .. }
@@ -3189,8 +3204,8 @@ async fn run_one_plan(
     if let Some(replayer) = checkpoint.take_replayer() {
         engine = engine.with_replayer(replayer);
     }
-    // P2-TUI-3: Wire the shared pause flag into CellContext so cells can
-    // check it between turns and yield when the TUI sends Pause.
+    // The shared pause flag reaches each task's dispatch through its
+    // CellContext: a paused run starts no attempt (decision 1206).
     // Set when a stopping plan's attempts must stop (bug-2b1ddc).
     let stop_attempts = Arc::new(AtomicBool::new(false));
     let cell_ctx = plan_cell_context(
@@ -3262,8 +3277,8 @@ async fn run_one_plan(
     //
     // Every 100 ms while the plan runs: honour a stop request and an
     // operator cancel the plan-set driver routed to this plan. Pause and
-    // resume act through the shared pause flag, which cells check between
-    // turns.
+    // resume act through the shared pause flag, which each task's dispatch
+    // checks before it starts an attempt.
     loop {
         if !flow_handle.is_running() {
             break;
@@ -3426,6 +3441,7 @@ async fn run_one_plan(
                 batch,
                 plan,
                 plan_checks,
+                ctx.gate_env_passthrough,
                 ctx.worktrees,
                 ctx.delete_attempt_branches,
                 &mut checkpoint,
@@ -3438,6 +3454,7 @@ async fn run_one_plan(
                 ctx.workdir,
                 plan,
                 plan_checks,
+                ctx.gate_env_passthrough,
                 &mut checkpoint,
                 graph_tui_bridge,
             )
@@ -3607,6 +3624,7 @@ async fn deliver_plan_to_batch(
     batch: &super::batch::BatchIntegration,
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
+    env_passthrough: &[String],
     worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
     delete_attempt_branches: bool,
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
@@ -3619,9 +3637,11 @@ async fn deliver_plan_to_batch(
         );
         return Ok(PlanOutcome::Succeeded);
     };
-    // The regression check is the plan's whole-plan check (gap-60233f).
+    // The regression check is the plan's whole-plan check (gap-60233f), with
+    // the environment verify steps get.
     let backend = super::delivery::GitDeliveryBackend::new(batch.repo().to_path_buf())
-        .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect());
+        .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect())
+        .with_env_passthrough(env_passthrough.to_vec());
     let service = super::delivery::CliCompletionDeliveryService::with_store(
         batch.store().clone(),
         Arc::new(backend),
@@ -3704,16 +3724,18 @@ async fn deliver_plan_to_batch(
 
 /// Run `plan`'s whole-plan check (gap-60233f) in the shared working tree at
 /// `workdir`, which its tasks edited, and record it in the plan's
-/// checkpoint. The plan succeeds only when the check passes. `Err` only when
-/// the checkpoint cannot record it.
+/// checkpoint. Its steps inherit what the gate policy and `env_passthrough`
+/// admit. The plan succeeds only when the check passes. `Err` only when the
+/// checkpoint cannot record it.
 async fn check_plan_in_place(
     workdir: &Path,
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
+    env_passthrough: &[String],
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
-    let result = super::plan_verify::run_plan_verify(workdir, checks).await;
+    let result = super::plan_verify::run_plan_verify(workdir, checks, env_passthrough).await;
     let commands: Vec<&str> = checks.iter().map(|step| step.command.as_str()).collect();
     checkpoint.record_plan_verify(serde_json::json!({
         "passed": result.is_ok(),
@@ -3971,6 +3993,21 @@ mod tests {
         assert!(!state_dir.path().join("control.json").exists());
         forward_control_file(state_dir.path(), &sender);
         assert!(commands.try_recv().is_err(), "nothing more to route");
+    }
+
+    /// 1211: affect is held (dec-e70592), so a default plan run builds no
+    /// daimon state: it appraises no attempt and shifts no routing tier.
+    /// `[daimon] enabled = true` turns it on.
+    #[test]
+    fn default_config_builds_no_daimon_state() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let mut config = roko_core::config::schema::RokoConfig::default();
+
+        assert!(graph_daimon_state(workdir.path(), &config).is_none());
+        assert!(!daimon_affect_path(workdir.path()).exists());
+
+        config.daimon.enabled = true;
+        assert!(graph_daimon_state(workdir.path(), &config).is_some());
     }
 
     #[test]

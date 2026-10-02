@@ -31,6 +31,7 @@ pub mod retrieval;
 pub mod routing;
 pub mod schema;
 pub mod serve;
+pub mod spec_quality;
 pub mod subscriptions;
 pub mod timeouts;
 pub mod tools;
@@ -83,6 +84,7 @@ pub use schema::{
     WebhooksConfig, WorktreeCountConfig, builtin_profiles, resolve_profile,
 };
 pub use serve::GitHubConfig;
+pub use spec_quality::{SpecQualityConfig, SpecQualityMode};
 
 /// Error returned when loading a `roko.toml` file from disk.
 #[derive(Debug, Error)]

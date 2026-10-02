@@ -328,6 +328,7 @@ mod load_config_tests {
                 max_concurrent: Some(8),
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(

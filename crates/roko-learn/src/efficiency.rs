@@ -499,6 +499,20 @@ pub struct TurnsRow<T> {
     pub turns_unknown: bool,
 }
 
+/// An efficiency row whose time to first token may be unknown.
+/// `ttft_unknown` marks a row whose `time_to_first_token_ms` is 0 because no
+/// stream showed model output, not because the first token came at once;
+/// [`TurnsRow`] marks unknown turns the same way.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TtftRow<T> {
+    /// The row.
+    #[serde(flatten)]
+    pub row: T,
+    /// No stream showed model output, so the time to first token is unknown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ttft_unknown: bool,
+}
+
 // ─── RoleCostProfile ────────────────────────────────────────────────────────
 
 /// Aggregate cost profile for a single agent role, computed from accumulated

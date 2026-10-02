@@ -481,6 +481,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(

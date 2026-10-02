@@ -656,6 +656,48 @@ pub struct AttemptUsage {
     pub tokens_reasoning: Option<u64>,
 }
 
+/// Where a backend's prompt-cache writes fall among the token classes of
+/// [`AttemptUsage`] (S01 §4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheWriteClass {
+    /// `tokens_cache_write_5m`: the Anthropic API's default TTL.
+    FiveMinutes,
+    /// `tokens_cache_write_1h`: the TTL of the Claude CLI's sessions.
+    OneHour,
+    /// Inside `tokens_in`, so both write classes are 0: OpenAI-style usage
+    /// bills cache writes as input.
+    InInput,
+    /// Not known for the backend; both write classes stay `None`.
+    Unknown,
+}
+
+impl AttemptUsage {
+    /// The classes of a backend's usage `observation`, whose input count
+    /// already leaves out cached tokens (bug-b72a37); its cache writes go
+    /// where `writes` says. A class the backend did not report stays `None`.
+    #[must_use]
+    pub fn from_observation(
+        observation: &roko_core::usage::UsageObservation,
+        writes: CacheWriteClass,
+    ) -> Self {
+        let written = observation.cache_creation_tokens;
+        let (tokens_cache_write_5m, tokens_cache_write_1h) = match writes {
+            CacheWriteClass::FiveMinutes => (written, None),
+            CacheWriteClass::OneHour => (None, written),
+            CacheWriteClass::InInput => (Some(0), Some(0)),
+            CacheWriteClass::Unknown => (None, None),
+        };
+        Self {
+            tokens_in: observation.input_tokens,
+            tokens_out: observation.output_tokens,
+            tokens_cache_read: observation.cache_read_tokens,
+            tokens_cache_write_5m,
+            tokens_cache_write_1h,
+            tokens_reasoning: observation.reasoning_tokens,
+        }
+    }
+}
+
 /// Where an attempt's priced token usage came from (`cost.source`,
 /// S01 §4.4).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1542,6 +1584,7 @@ mod tests {
             success: false,
             session_id: String::new(),
             cost_source: CostSource::CliUsage,
+            priced: None,
         };
         let keyed = AttemptKeyed {
             attempt_key: AttemptKey::new(RUN, PLAN, "T2", 2).attempt_key(),

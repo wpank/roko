@@ -362,6 +362,7 @@ mod tests {
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         }
     }
 
@@ -534,6 +535,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let options = AgentOptions {
             safety_layer: None,
@@ -673,6 +675,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(10_000),
@@ -729,6 +732,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"late"}}'
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(100),

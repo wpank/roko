@@ -90,7 +90,7 @@ pub enum LoggerError {
 }
 
 /// Verdict produced by a single gate run on behalf of an agent turn.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EpisodeGateVerdict {
     /// Verify identifier ("compile", "test", "lint", …).
     #[serde(default)]
@@ -101,6 +101,21 @@ pub struct EpisodeGateVerdict {
     /// Optional short diagnostic (hashed, never raw output).
     #[serde(default)]
     pub signature: Option<String>,
+    /// What the step's command exited with, when it ran to an exit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// The step's wall time in milliseconds, when it ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Whether the step ran out of time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub timed_out: bool,
+    /// Whether the step was skipped instead of run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skipped: bool,
+    /// Why the step was skipped, e.g. `fail_fast`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
 }
 
 impl EpisodeGateVerdict {
@@ -110,7 +125,7 @@ impl EpisodeGateVerdict {
         Self {
             gate: gate.into(),
             passed,
-            signature: None,
+            ..Self::default()
         }
     }
 
@@ -137,6 +152,7 @@ impl From<&roko_core::foundation::GateVerdict> for EpisodeGateVerdict {
             gate: v.gate_name.clone(),
             passed: v.passed,
             signature,
+            ..Self::default()
         }
     }
 }

@@ -277,6 +277,7 @@ fn dummy_provider_config(kind: ProviderKind) -> ProviderConfig {
         max_concurrent: None,
         limits: None,
         require_confirmation: false,
+        stream_usage: None,
     }
 }
 
@@ -295,6 +296,7 @@ fn http_provider_config(kind: ProviderKind, base_url: impl Into<String>) -> Prov
         max_concurrent: None,
         limits: None,
         require_confirmation: false,
+        stream_usage: None,
     }
 }
 
@@ -1340,6 +1342,7 @@ async fn live_gemini_api_probe() {
         max_concurrent: None,
         limits: None,
         require_confirmation: false,
+        stream_usage: None,
     };
 
     let model = gemini_model(model_slug, false);

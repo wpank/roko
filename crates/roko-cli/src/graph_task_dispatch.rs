@@ -1740,7 +1740,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // Graph engine can retry or abort; it is never force-accepted.
         let attempt_key = attempt.key.attempt_key();
         let helper_calls = HelperCalls::default();
-        let verification = helper_calls
+        attempt.verify_started();
+        let report = helper_calls
             .scope(self.settle_task_verification(
                 spec,
                 &task,
@@ -1752,6 +1753,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 None,
             ))
             .await;
+        attempt.verify_ended();
+        attempt.record_verify_steps(report.steps);
+        let verification = report.result;
         // The helper model calls verification made count toward this
         // attempt, the background ones included (bug-62e3f4).
         attempt.record_helper_calls(
@@ -1908,6 +1912,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(
@@ -2169,6 +2174,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(
@@ -2356,6 +2362,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(
@@ -2491,6 +2498,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         }
     }
 
@@ -3112,6 +3120,7 @@ sleep 30
                 max_concurrent: None,
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         config.models.insert(

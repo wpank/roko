@@ -61,6 +61,13 @@ pub struct CostRecord {
     /// this field reads `unknown` (gap-288e38).
     #[serde(default)]
     pub cost_source: CostSource,
+    /// Whether roko could price the call: its usage had a known cost, or a
+    /// rate applied to it (a rate of 0 is free, and priced). `false` means
+    /// `cost_usd` is an unknown cost written as 0, not a free call. `None`
+    /// on a row written before this field, or by a writer that cannot tell;
+    /// readers then infer it (backlog 2109).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priced: Option<bool>,
 }
 
 /// One payment entry for a paid feed request or metered session.
@@ -687,6 +694,7 @@ pub fn create_cost_record(
         session_id: session_id.to_string(),
         // A `Usage` does not say where its tokens came from.
         cost_source: CostSource::Unknown,
+        priced: None,
     }
 }
 
@@ -718,6 +726,7 @@ fn make_test_record(
         success,
         session_id: "session-1".into(),
         cost_source: CostSource::Unknown,
+        priced: None,
     }
 }
 

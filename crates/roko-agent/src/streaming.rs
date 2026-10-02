@@ -533,6 +533,33 @@ mod tests {
         ));
     }
 
+    /// backlog 2101: once usage is requested, OpenAI sends `"usage": null` on
+    /// every chunk but the last. A finish chunk keeps its finish reason and
+    /// yields no usage; the last chunk, with no choices, yields the usage.
+    #[test]
+    fn null_usage_chunk_keeps_its_finish_reason() {
+        let finish = parse_sse_line(
+            r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":null}"#,
+        );
+        assert_eq!(finish.len(), 1, "{finish:?}");
+        assert!(matches!(
+            &finish[0].kind,
+            StreamEventKind::Done { finish_reason } if finish_reason == "ToolCalls"
+        ));
+
+        let last = parse_sse_line(
+            r#"data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":40}}}"#,
+        );
+        assert_eq!(last.len(), 1, "{last:?}");
+        assert!(matches!(
+            &last[0].kind,
+            StreamEventKind::Usage(usage)
+                if usage.input_tokens == 60
+                    && usage.output_tokens == 10
+                    && usage.cache_read_tokens == 40
+        ));
+    }
+
     #[test]
     fn sse_parser_reads_finish_reason() {
         let event = first_event(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#);

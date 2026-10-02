@@ -188,6 +188,9 @@ pub struct RunStateSummary {
     pub tasks_completed: usize,
     pub tasks_failed: usize,
     pub total_cost_usd: f64,
+    /// Agent calls whose cost is unknown, which the total leaves out
+    /// (backlog 2109).
+    pub unpriced_calls: usize,
     pub total_tokens_in: u64,
     pub total_tokens_out: u64,
     pub total_agent_calls: usize,
@@ -579,9 +582,21 @@ fn build_graph_report(
         tasks_completed: completed_tasks.len(),
         tasks_failed: failed_tasks.len(),
         total_cost_usd: checkpoint.spent_micro_usd.map_or_else(
-            || records.attempts.iter().map(|record| record.cost_usd).sum(),
+            || {
+                records
+                    .attempts
+                    .iter()
+                    .filter(|record| !roko_learn::costs_log::is_unpriced(record))
+                    .map(|record| record.cost_usd)
+                    .sum()
+            },
             micro_to_usd,
         ),
+        unpriced_calls: records
+            .attempts
+            .iter()
+            .filter(|record| roko_learn::costs_log::is_unpriced(record))
+            .count(),
         total_tokens_in: records
             .attempts
             .iter()
@@ -1332,6 +1347,10 @@ fn build_legacy_report(
                 .get("total_cost_usd")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0),
+            unpriced_calls: rs
+                .get("unpriced_calls")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
             total_tokens_in: rs
                 .get("total_tokens_in")
                 .and_then(Value::as_u64)
@@ -2446,6 +2465,7 @@ title = "Tidy the changelog"
             success,
             session_id: String::new(),
             cost_source: CostSource::CliUsage,
+            priced: None,
         }
     }
 

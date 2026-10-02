@@ -122,3 +122,34 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK01 (gap-625195).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-f548c1`; cargo verification deferred to the batch gate (2026-10-02, claude-agent). The
+static part of all 19 `[[verify]]` entries passes at the branch head.
+
+- 2101: implemented at 89b3237e0
+- 2102: implemented at 1d34a3c6d
+- 2103: implemented at 96cf1a95b
+- 2104: implemented at 24d263679
+- 2105: implemented at 39b795270
+- 2106: implemented at 66f8b03a2
+- 2107: implemented at 685c53311
+- 2108: implemented at 1f8941c30
+- 2109: implemented at 3eed76595
+- 2111: implemented at 4add4f8b0
+- b54d4ab96: hand-formatting pass over new lines of 2102, 2108 and 2109; no behaviour change.
+
+Notes for the gate:
+
+- 2101: the null-usage guard in `parse_sse_chunk` had already landed with backlog 1110; the task added its test.
+  `ProviderConfig.stream_usage` is a new field, so all 131 full literals of `ProviderConfig` across eight crates
+  set `stream_usage: None`. The opt-out is also wired in the Gemini OpenAI-compatible adapter.
+- 2103: `vendor_usd` is filled only for CLI agents. An API provider's usage cost is roko's own price, not a vendor
+  figure (S01 §4.4), so it does not fill `vendor_usd`. `billed_usd` stays null when the usage source is unknown.
+- 2104: the steps reach the verdict through `AttemptContext::record_verify_steps`, beside `record_helper_calls`,
+  so `Settlement::verified` and `reflex_credit.rs` are unchanged.
+- 2107: the unknown time to first token is marked by a `TtftRow` wrapper (`ttft_unknown`), beside `TurnsRow`.
+- 2111: plan-level unpriced calls are counted with `Usage::has_known_cost`, as the daily and task ledgers count
+  them. A model priced at 0/0 therefore still counts as unpriced for both ceilings; using 2109's `priced` flag
+  there would change `record_task_spend`'s six callers.

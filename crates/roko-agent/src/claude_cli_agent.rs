@@ -3621,6 +3621,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 max_concurrent: Some(1),
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
         let semaphores = Arc::new(crate::provider::ProviderSemaphores::new(&configs));

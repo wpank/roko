@@ -1079,6 +1079,7 @@ mod tests {
                 max_concurrent: Some(1),
                 limits: None,
                 require_confirmation: false,
+                stream_usage: None,
             },
         );
 

@@ -79,3 +79,38 @@ fn doctor_network_json_produces_summary_and_checks() {
         .stdout(contains("\"summary\""))
         .stdout(contains("\"checks\""));
 }
+
+#[test]
+fn doctor_disk_fix_reports_leftover_checkouts() {
+    let temp = tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("roko.toml"),
+        "[agent]\ncommand = \"echo\"\n",
+    )
+    .unwrap();
+    bootstrap_layout(temp.path());
+
+    // The exit code follows the disk report, which depends on the machine.
+    Command::cargo_bin("roko")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["doctor", "disk", "--fix", "--workdir"])
+        .arg(temp.path())
+        .assert()
+        .stdout(contains("leftover attempt checkouts: 0 removed, 0 kept"))
+        .stdout(contains("doctor disk"));
+}
+
+#[test]
+fn doctor_fix_is_refused_outside_disk() {
+    let temp = tempdir().unwrap();
+
+    Command::cargo_bin("roko")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["doctor", "network", "--fix", "--workdir"])
+        .arg(temp.path())
+        .assert()
+        .failure()
+        .stderr(contains("--fix applies only to `roko doctor disk`"));
+}

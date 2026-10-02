@@ -724,6 +724,11 @@ Examples:
         /// roko-serve base URL or explicit health endpoint to probe.
         #[arg(long)]
         serve_url: Option<String>,
+        /// With `disk`: remove the leftover attempt checkouts of plans whose
+        /// checkpoint succeeded, failed or was cancelled, once untouched for
+        /// 7 days, unless they have changes. Their branches are kept.
+        #[arg(long)]
+        fix: bool,
     },
     /// Inspect and safely prune workspace-local build/evidence caches.
     #[command(after_help = "\
@@ -1979,7 +1984,8 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             subject,
             workdir,
             serve_url,
-        } => commands::util::cmd_doctor(cli, subject, workdir, serve_url).await,
+            fix,
+        } => commands::util::cmd_doctor(cli, subject, workdir, serve_url, fix).await,
         Command::Cache { cmd } => commands::cache::cmd_cache(cli, cmd).await,
         Command::RunIndex { cmd } => commands::run_index::cmd_run_index(cli, cmd).await,
         Command::Setup {

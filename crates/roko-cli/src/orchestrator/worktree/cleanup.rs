@@ -1,15 +1,20 @@
 //! Worktree cleanup, pruning, stale-lock detection, and health checks.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use serde::Serialize;
+
+use super::acceptance::CHECKOUT_RUN_FILE;
 use super::creation_journal::{OperationLifecycle, retain_lock_if_cleanup_unproved};
 use super::git_ops::{await_owned_operation, is_stale_lock, read_gitdir};
 use super::{
     REPOSITORY_MUTATION_LOCK, STUCK_MUTATION_LOCK_AGE_SECS, WorktreeError, WorktreeHealth,
     WorktreeIsolationStatus, WorktreeManager,
 };
+use crate::graph_checkpoint::{GraphCheckpointStatus, recorded_checkpoint_runs};
 
 impl WorktreeManager {
     /// Probe the health of the worktree tracked under `id` (§15.5).
@@ -342,6 +347,202 @@ impl WorktreeManager {
 
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
+}
+
+/// How long a leftover attempt checkout must sit untouched before
+/// `roko doctor disk --fix` may remove it (gap-f67a72).
+pub const LEFTOVER_CHECKOUT_MIN_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// What [`WorktreeManager::remove_leftover_checkouts`] did with one checkout
+/// under the worktrees root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LeftoverCheckout {
+    /// The checkout directory.
+    pub path: PathBuf,
+    /// Why it was kept; `None` when it was removed.
+    pub kept: Option<String>,
+}
+
+impl WorktreeManager {
+    /// Remove the leftover attempt checkouts under the worktrees root that no
+    /// run will use again, for `roko doctor disk --fix` (gap-f67a72). A
+    /// checkout goes only when all of these hold, and is kept, with the
+    /// reason, otherwise:
+    ///
+    /// - its `roko-run` record names the run that made it, and a plan's Graph
+    ///   checkpoint, current or archived, names that run;
+    /// - the current checkpoint of each such plan succeeded, failed or was
+    ///   cancelled. A running, interrupted or unverified run can resume, and
+    ///   a resumed run re-attaches the checkouts it made;
+    /// - nothing touched it for `min_age`;
+    /// - it has no uncommitted changes, and no `git worktree lock` holds it.
+    ///
+    /// Branches are kept. The caller holds the runner lock, so no run of the
+    /// workspace is live.
+    pub async fn remove_leftover_checkouts(&self, min_age: Duration) -> Vec<LeftoverCheckout> {
+        let runs = CheckpointRuns::read(&self.config.repo_root);
+        let mut outcomes = Vec::new();
+        for path in checkout_dirs(&self.config.worktrees_root) {
+            let mut kept = leftover_retention(&path, &runs, min_age);
+            if kept.is_none() {
+                kept = match self.remove_leftover(&path).await {
+                    Ok(()) => None,
+                    Err(WorktreeError::DirtyWorktree { .. }) => {
+                        Some("it has uncommitted changes".to_string())
+                    }
+                    Err(error) => Some(format!("removing it failed: {error}")),
+                };
+            }
+            outcomes.push(LeftoverCheckout { path, kept });
+        }
+        outcomes
+    }
+
+    /// `git worktree remove` the checkout at `path`, which this manager does
+    /// not track. Like [`WorktreeManager::remove`], it keeps a checkout that
+    /// has changes; unlike it, it passes no `--force`, so git also keeps one
+    /// that a `git worktree lock` holds. The branch stays.
+    async fn remove_leftover(&self, path: &Path) -> Result<(), WorktreeError> {
+        let operation = Arc::clone(&self.operations).lock_owned().await;
+        let manager = self.clone();
+        let path = path.to_path_buf();
+        await_owned_operation(operation, move |lifecycle| async move {
+            let repository_lock = manager.acquire_repository_mutation_lock()?;
+            let result = manager.remove_leftover_locked(&path, &lifecycle).await;
+            retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
+            result
+        })
+        .await
+    }
+
+    async fn remove_leftover_locked(
+        &self,
+        path: &Path,
+        lifecycle: &OperationLifecycle,
+    ) -> Result<(), WorktreeError> {
+        self.validate_git_policy(false).await?;
+        let args = ["status", "--porcelain", "--untracked-files=all"];
+        let probe = self.git_probe_output_at(path, &args).await?;
+        if !probe.status.success() {
+            return Err(WorktreeError::GitFailed {
+                stderr: String::from_utf8_lossy(&probe.stderr).trim().to_string(),
+            });
+        }
+        if !probe.stdout.trim_ascii().is_empty() {
+            return Err(WorktreeError::DirtyWorktree {
+                id: path.display().to_string(),
+                paths: String::from_utf8_lossy(&probe.stdout).trim().to_string(),
+            });
+        }
+        let path = path.to_string_lossy().into_owned();
+        let output = self
+            .git_mutation_output(&["worktree", "remove", &path], lifecycle)
+            .await?;
+        if !output.status.success() {
+            return Err(WorktreeError::GitFailed {
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// What the Graph checkpoints under the workspace's `.roko/state/graph/` say
+/// about each run, for [`WorktreeManager::remove_leftover_checkouts`].
+#[derive(Debug, Default)]
+struct CheckpointRuns {
+    /// The plans whose checkpoints, current or archived, name each run.
+    plans: HashMap<String, Vec<String>>,
+    /// The status of each plan's current checkpoint.
+    current: HashMap<String, GraphCheckpointStatus>,
+}
+
+impl CheckpointRuns {
+    fn read(workdir: &Path) -> Self {
+        let mut runs = Self::default();
+        for recorded in recorded_checkpoint_runs(workdir) {
+            let plan = recorded.plan_dir;
+            if recorded.current {
+                runs.current.insert(plan.clone(), recorded.status);
+            }
+            let plans = runs.plans.entry(recorded.run_id).or_default();
+            if !plans.contains(&plan) {
+                plans.push(plan);
+            }
+        }
+        runs
+    }
+}
+
+/// Why the leftover checkout at `path` must stay, or `None` when it may go,
+/// by the rule of [`WorktreeManager::remove_leftover_checkouts`] save its
+/// last condition, which the removal itself checks.
+fn leftover_retention(path: &Path, runs: &CheckpointRuns, min_age: Duration) -> Option<String> {
+    let Some(admin) = read_gitdir(path) else {
+        return Some("it is not a git checkout".to_string());
+    };
+    let run = std::fs::read_to_string(admin.join(CHECKOUT_RUN_FILE)).unwrap_or_default();
+    let run = run.trim();
+    if run.is_empty() {
+        return Some("no run is recorded for it".to_string());
+    }
+    let Some(plans) = runs.plans.get(run) else {
+        return Some(format!("no plan checkpoint names its run {run}"));
+    };
+    for plan in plans {
+        match runs.current.get(plan) {
+            Some(status) if run_has_ended(*status) => {}
+            Some(status) => {
+                return Some(format!("plan {plan}'s checkpoint is {}", status.as_str()));
+            }
+            None => return Some(format!("plan {plan} has no current checkpoint")),
+        }
+    }
+    let (index, head) = (admin.join("index"), admin.join("HEAD"));
+    let candidates: [&Path; 4] = [path, &admin, &index, &head];
+    let Some(touched) = candidates.into_iter().filter_map(modified).max() else {
+        return Some("when it was last touched is unknown".to_string());
+    };
+    let age = touched.elapsed().unwrap_or_default();
+    if age < min_age {
+        return Some(format!("it was touched {} day(s) ago", age.as_secs() / 86_400));
+    }
+    None
+}
+
+/// Whether a run whose checkpoint reads `status` has ended for good: it
+/// succeeded, failed or was cancelled. A running, interrupted or unverified
+/// run can resume.
+const fn run_has_ended(status: GraphCheckpointStatus) -> bool {
+    matches!(
+        status,
+        GraphCheckpointStatus::Succeeded
+            | GraphCheckpointStatus::Failed
+            | GraphCheckpointStatus::Cancelled
+    )
+}
+
+/// The checkout directories under `root`, sorted: its subdirectories, but
+/// not symlinks, nor the dot-directories in which the manager keeps its own
+/// records, such as its creation markers.
+fn checkout_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+        .map(|entry| entry.path())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// When `path` was last modified, if that can be read.
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
 }
 
 /// Remove a stale `index.lock` from the git directory that serves `workdir`,

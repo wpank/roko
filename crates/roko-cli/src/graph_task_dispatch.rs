@@ -1212,7 +1212,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             routing_context: Some(routing_ctx),
             routing_bias,
             dependency_outputs: upstream_outputs(&input),
-            error_patterns_context: self.factory.format_error_patterns_for_prompt(5),
+            error_patterns_context: self.task_error_patterns(spec, &task).text,
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),

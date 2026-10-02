@@ -143,9 +143,9 @@ pub struct DispatchContext {
     /// Pre-rendered error patterns from the shared in-memory store.
     ///
     /// Populated by `GraphTaskDispatcher` from
-    /// `SharedAgentFactory::format_error_patterns_for_prompt` so that
-    /// agents dispatched later in the same plan run benefit from error
-    /// patterns discovered by earlier agents.
+    /// `SharedAgentFactory::error_patterns_for_task`, the patterns keyed to
+    /// the task (backlog 4210), so that agents dispatched later in the same
+    /// plan run benefit from error patterns discovered by earlier agents.
     pub error_patterns_context: String,
     /// Pre-computed workspace map (indented crate/src tree).
     ///

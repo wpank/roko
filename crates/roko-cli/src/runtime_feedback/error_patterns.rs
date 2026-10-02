@@ -107,7 +107,9 @@ fn failure_class(failure_reason: &str) -> &str {
 /// The error-pattern observation of a failed attempt's class-prefixed
 /// `failure_reason`, when it is a verify failure (`"verify: …"`). Its key is
 /// the class and the failure's digest, so a failure that recurs across
-/// attempts, tasks and plans merges into one pattern.
+/// attempts, tasks and plans merges into one pattern. Its gate is the failing
+/// step's command, so prompts select it for the tasks that run that command
+/// (backlog 4210); a failure that quotes none keeps the class.
 fn observation(
     plan_id: &str,
     task_id: &str,
@@ -127,11 +129,26 @@ fn observation(
         format!("{class}::{digest}"),
         plan_id,
         Some(task_id.to_string()),
-        class,
+        failing_command(detail).unwrap_or(class),
         class,
         digest,
         GateFailureSource::GateClassification,
     ))
+}
+
+/// The command a verify failure's first step line quotes, as in
+/// ``verify[0:test] `cargo test -p app` failed: exit code: 101``, or a
+/// workspace rung's ``rung[clippy] `…` failed: …``.
+fn failing_command(detail: &str) -> Option<&str> {
+    detail.lines().find_map(|line| {
+        let line = line.trim_start();
+        if !(line.starts_with("verify[") || line.starts_with("rung[")) {
+            return None;
+        }
+        let (_, quoted) = line.split_once(" `")?;
+        let (command, _) = quoted.split_once('`')?;
+        (!command.trim().is_empty()).then_some(command)
+    })
 }
 
 /// A failure's digest: the first line after its summary line (a verify
@@ -218,7 +235,8 @@ mod tests {
         assert_eq!(saved.len(), 1, "one recurring failure is one pattern");
         let pattern = saved.top_patterns(1)[0];
         assert_eq!(pattern.occurrences, 2);
-        assert_eq!(pattern.gate.as_deref(), Some("verify"));
+        assert_eq!(pattern.gate.as_deref(), Some("cargo test -p app"));
+        assert_eq!(pattern.category, "verify");
         assert_eq!(pattern.task_ids.len(), 2);
         assert!(
             pattern.digest.contains("cargo test -p app"),

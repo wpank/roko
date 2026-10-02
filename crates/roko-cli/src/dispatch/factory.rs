@@ -34,6 +34,17 @@ use super::{
     Dispatcher, PromptAssembler, PromptCache, ResolvedAgentRuntime, RoutingLadder, WarmPool,
 };
 
+/// The error patterns a task's prompt carries (backlog 4210): the rendered
+/// block, and the keys of the patterns in it, which the attempt's exposure
+/// record can name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ErrorPatternSelection {
+    /// The rendered block; empty when no pattern is keyed to the task.
+    pub text: String,
+    /// The keys of the selected patterns, in display order.
+    pub keys: Vec<String>,
+}
+
 /// Shared, reusable components for agent dispatch.
 ///
 /// Constructed once at the start of a plan run.  The factory owns:
@@ -376,17 +387,36 @@ impl SharedAgentFactory {
         &self.error_pattern_store
     }
 
-    /// Format the top error patterns from the shared store for prompt injection.
-    ///
-    /// Returns an empty string when the store is empty or the lock is
-    /// poisoned (fail-open: missing context is better than a panic).
-    pub fn format_error_patterns_for_prompt(&self, limit: usize) -> String {
-        match self.error_pattern_store.read() {
-            Ok(store) => store.format_for_prompt(limit),
-            Err(_) => {
-                tracing::warn!("error pattern store lock poisoned; skipping prompt injection");
-                String::new()
-            }
+    /// The error patterns keyed to task `task_id` of plan `plan_id`, whose
+    /// verify steps run `verify_commands`: those its own earlier attempts hit
+    /// and those of its verify commands, at most `limit` (backlog 4210).
+    /// Empty when none is keyed to the task, or the lock is poisoned
+    /// (fail-open: missing context is better than a panic).
+    pub fn error_patterns_for_task(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        verify_commands: &[String],
+        limit: usize,
+    ) -> ErrorPatternSelection {
+        let Ok(store) = self.error_pattern_store.read() else {
+            tracing::warn!("error pattern store lock poisoned; skipping prompt injection");
+            return ErrorPatternSelection::default();
+        };
+        let query = roko_learn::error_pattern_store::FailurePatternQuery {
+            plan_id: Some(plan_id),
+            task_id: Some(task_id),
+            verify_commands,
+            ..Default::default()
+        };
+        let summary = store.bounded_summary_keyed(query, limit, 2_000);
+        ErrorPatternSelection {
+            text: summary.format_for_prompt(),
+            keys: summary
+                .patterns
+                .iter()
+                .map(|pattern| pattern.key.clone())
+                .collect(),
         }
     }
 

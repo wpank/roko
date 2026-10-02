@@ -2511,8 +2511,8 @@ struct PlanRunContext<'a> {
     batch: Option<&'a super::batch::BatchIntegration>,
     /// Each plan's whole-plan check (gap-60233f), by plan id.
     plan_checks: &'a HashMap<String, Vec<crate::task_parser::VerifyStep>>,
-    /// `[gates] env_passthrough`: what the whole-plan check's steps inherit
-    /// beyond the gate allowlist.
+    /// `[gates] env_passthrough`: what the whole-plan check's steps (and the
+    /// delivery regression that runs them) inherit beyond the gate allowlist.
     gate_env_passthrough: &'a [String],
     /// The attempt checkouts' manager, under `--worktree-per-task`.
     worktrees: Option<&'a crate::orchestrator::worktree::WorktreeManager>,
@@ -3430,6 +3430,7 @@ async fn run_one_plan(
                 batch,
                 plan,
                 plan_checks,
+                ctx.gate_env_passthrough,
                 ctx.worktrees,
                 ctx.delete_attempt_branches,
                 &mut checkpoint,
@@ -3612,6 +3613,7 @@ async fn deliver_plan_to_batch(
     batch: &super::batch::BatchIntegration,
     plan: &crate::runner::plan_loader::Plan,
     checks: &[crate::task_parser::VerifyStep],
+    env_passthrough: &[String],
     worktrees: Option<&crate::orchestrator::worktree::WorktreeManager>,
     delete_attempt_branches: bool,
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
@@ -3624,9 +3626,11 @@ async fn deliver_plan_to_batch(
         );
         return Ok(PlanOutcome::Succeeded);
     };
-    // The regression check is the plan's whole-plan check (gap-60233f).
+    // The regression check is the plan's whole-plan check (gap-60233f), with
+    // the environment verify steps get.
     let backend = super::delivery::GitDeliveryBackend::new(batch.repo().to_path_buf())
-        .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect());
+        .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect())
+        .with_env_passthrough(env_passthrough.to_vec());
     let service = super::delivery::CliCompletionDeliveryService::with_store(
         batch.store().clone(),
         Arc::new(backend),

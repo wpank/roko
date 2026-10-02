@@ -16,6 +16,7 @@
 //! The adapter never writes the execution terminal state or releases a workspace
 //! lease -- those are outer-controller concerns.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -123,6 +124,12 @@ pub struct GitDeliveryBackend {
     /// checkout, and shared with the gates, so the next delivery starts
     /// warm.
     regression_target_dir: PathBuf,
+    /// What the regression commands inherit beyond the gate allowlist
+    /// (`[gates] env_passthrough`).
+    env_passthrough: Vec<String>,
+    /// The environment the regression commands inherit from in place of
+    /// roko's own, in tests.
+    parent_env: Option<Vec<(String, OsString)>>,
 }
 
 impl GitDeliveryBackend {
@@ -142,6 +149,8 @@ impl GitDeliveryBackend {
                     .into(),
             ],
             regression_target_dir,
+            env_passthrough: Vec::new(),
+            parent_env: None,
         }
     }
 
@@ -172,6 +181,23 @@ impl GitDeliveryBackend {
     #[must_use]
     pub fn with_regression_target_dir(mut self, target_dir: PathBuf) -> Self {
         self.regression_target_dir = shared_target_dir(&self.workdir, Some(target_dir.into()));
+        self
+    }
+
+    /// Let the regression commands inherit `names` (`[gates]
+    /// env_passthrough`) beyond what the gate policy admits.
+    #[must_use]
+    pub fn with_env_passthrough(mut self, names: Vec<String>) -> Self {
+        self.env_passthrough = names;
+        self
+    }
+
+    /// Make the regression commands inherit from `vars` instead of roko's own
+    /// environment. The gate policy filters them just the same.
+    #[cfg(test)]
+    #[must_use]
+    fn with_parent_env(mut self, vars: Vec<(String, OsString)>) -> Self {
+        self.parent_env = Some(vars);
         self
     }
 
@@ -273,7 +299,8 @@ impl GitDeliveryBackend {
     /// regression checkout ([`regression_checkout_path`]) reset to `commit`,
     /// never in `workdir`. Stops at the first command that fails and returns
     /// it, as a command line, with its output; `None` when every command
-    /// passed.
+    /// passed. The commands run the merged code the agents wrote, so they
+    /// start from the environment verify steps get, without provider keys.
     ///
     /// The checkout stays for the next delivery (bug-8cf581): Cargo keys
     /// workspace crates by path, so at a stable path the next build reuses
@@ -288,14 +315,21 @@ impl GitDeliveryBackend {
         let _held = lock_regression_checkout(&checkout).await?;
         self.reset_regression_checkout(&checkout, commit).await?;
 
+        let parent_env = self
+            .parent_env
+            .clone()
+            .unwrap_or_else(roko_core::child_env::process_env);
         let mut failed = Ok(None);
         for command in &self.regression {
             let Some((program, args)) = command.split_first() else {
                 failed = Err("the regression command is empty".to_string());
                 break;
             };
+            let mut regression = tokio::process::Command::new(program);
+            let env = parent_env.iter().cloned();
+            roko_gate::inherit_gate_env_from(&mut regression, env, &self.env_passthrough);
             // Only the build output is shared: the sources are the checkout's.
-            let output = tokio::process::Command::new(program)
+            let output = regression
                 .args(args)
                 .current_dir(&checkout)
                 .env("CARGO_TARGET_DIR", &self.regression_target_dir)
@@ -1591,6 +1625,55 @@ mod tests {
         );
         assert_eq!(git(path, &["symbolic-ref", "HEAD"]), "refs/heads/work");
         assert_eq!(git(path, &["status", "--porcelain"]), status);
+    }
+
+    /// G09: the regression runs the merged code with the environment verify
+    /// steps get, so a provider key in roko's environment does not reach it,
+    /// while a name in `[gates] env_passthrough` does.
+    #[tokio::test]
+    async fn regression_command_sees_no_provider_key() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let record = tempfile::tempdir().unwrap();
+        let env_file = record.path().join("env.txt");
+        let search_path = std::env::var_os("PATH")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "/usr/bin:/bin".into());
+        let parent_env = [
+            ("PATH", search_path),
+            ("HOME", OsString::from("/tmp/regression-home")),
+            ("OPENAI_API_KEY", OsString::from("sk-regression-canary")),
+            ("REGRESSION_PROBE", OsString::from("passed-through")),
+        ]
+        .map(|(name, value)| (name.to_string(), value))
+        .to_vec();
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_steps(vec![format!("env > '{}'", env_file.display())])
+            .with_env_passthrough(vec!["REGRESSION_PROBE".to_string()])
+            .with_parent_env(parent_env);
+        let service = CliCompletionDeliveryService::new(Arc::new(backend));
+
+        let request = CompletionDeliveryRequest {
+            publish: false,
+            ..git_request("d-git-regression-env", path)
+        };
+        let receipt = service.deliver(request).await.unwrap();
+
+        assert_eq!(
+            receipt.state,
+            CompletionDeliveryState::Delivered,
+            "{:?}",
+            receipt.error
+        );
+        let env = std::fs::read_to_string(&env_file).unwrap();
+        assert!(env.lines().any(|line| line.starts_with("PATH=")), "{env}");
+        assert!(env.contains("REGRESSION_PROBE=passed-through"), "{env}");
+        assert!(env.contains("CARGO_TARGET_DIR="), "{env}");
+        assert!(
+            !env.contains("sk-regression-canary"),
+            "a provider key reached the regression:\n{env}"
+        );
     }
 
     /// bug-8cf581: consecutive deliveries run their regression in one

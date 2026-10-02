@@ -181,12 +181,14 @@ impl InterruptedCall {
         self,
         message: &str,
         wall_ms: u64,
+        snapshot: Option<&roko_core::pricing_snapshot::PriceSnapshot>,
     ) -> (crate::dispatch_v2::AgentResultDispatch, FailoverChain) {
         let target = self.call.target;
         let usage_obs = match self.usage {
             Some(mut usage) => {
                 crate::dispatch_v2::fill_usage_cost_from_pricing(
                     &mut usage,
+                    snapshot,
                     target.model_profile.as_ref(),
                     &target.model_slug,
                 );

@@ -6,6 +6,8 @@
 //! both names, its cost is priced by the model that served, and a `--model`
 //! pin makes the substitution the attempt's error.
 
+use roko_core::pricing_snapshot::PriceSnapshot;
+
 use super::*;
 
 /// `RokoError::Gateway` category for a pinned attempt the provider served
@@ -100,6 +102,12 @@ impl ServedModel {
 }
 
 impl GraphTaskDispatcher {
+    /// The dated price snapshot this run prices model calls from (backlog
+    /// 2114): the one decision 2113 picks for the workspace, loaded once.
+    pub(super) fn pricing_snapshot(&self) -> Option<Arc<PriceSnapshot>> {
+        crate::dispatch_v2::pricing_snapshot(&self.config.pricing, &self.workdir)
+    }
+
     /// Check the model the provider reported serving `dispatch` against the
     /// slug the bridge launched. A substitution is logged at WARN and priced
     /// by the model that served ([`Self::price_by_served_model`]). Under a
@@ -144,9 +152,10 @@ impl GraphTaskDispatcher {
     }
 
     /// Price an API provider's usage at the rates of `served`, the model
-    /// that served it: a `[models.*]` profile with that slug, else the
-    /// built-in table. With no price for it the cost is unknown (0), not the
-    /// launched model's. A CLI agent's own reported cost stands.
+    /// that served it: the run's price snapshot, else a `[models.*]` profile
+    /// with that slug, else the built-in table. With no price for it the
+    /// cost is unknown (0), not the launched model's. A CLI agent's own
+    /// reported cost stands.
     pub(super) fn price_by_served_model(
         &self,
         dispatch: &mut crate::dispatch_v2::AgentResultDispatch,
@@ -166,7 +175,13 @@ impl GraphTaskDispatcher {
             });
         let usage = &mut dispatch.result.usage;
         usage.cost_usd = 0.0;
-        crate::dispatch_v2::fill_usage_cost_from_pricing(usage, profile, served);
+        let snapshot = self.pricing_snapshot();
+        crate::dispatch_v2::fill_usage_cost_from_pricing(
+            usage,
+            snapshot.as_deref(),
+            profile,
+            served,
+        );
         let cost_usd = f64::from(usage.cost_usd);
         if let Some(observation) = dispatch.result.usage_obs.as_mut() {
             observation.cost_usd = (cost_usd > 0.0).then_some(cost_usd);

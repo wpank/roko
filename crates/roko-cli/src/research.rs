@@ -470,8 +470,9 @@ const SEARCH_API_MODEL: &str = "perplexity-search";
 
 /// Record what one research agent run cost, against the topic's research
 /// task (bug-86ff56). Perplexity and Gemini report tokens but no dollar
-/// amount, so such a run is priced from its tokens at the model's
-/// configured rates, else the registry's (bug-2dfd23).
+/// amount, so such a run is priced from its tokens at the workspace's price
+/// snapshot, else the model's configured rates, else the registry's
+/// (bug-2dfd23, backlog 2114).
 pub async fn record_run_spend(
     workdir: &Path,
     config: &RokoConfig,
@@ -484,7 +485,13 @@ pub async fn record_run_spend(
 ) {
     let mut usage = result.usage;
     let profile = roko_core::agent::resolve_model(config, model).profile;
-    crate::dispatch_v2::fill_usage_cost_from_pricing(&mut usage, profile.as_ref(), model);
+    let snapshot = crate::dispatch_v2::pricing_snapshot(&config.pricing, workdir);
+    crate::dispatch_v2::fill_usage_cost_from_pricing(
+        &mut usage,
+        snapshot.as_deref(),
+        profile.as_ref(),
+        model,
+    );
     let call = AgentCapture {
         exit_code: i32::from(!result.success),
         output: String::new(),

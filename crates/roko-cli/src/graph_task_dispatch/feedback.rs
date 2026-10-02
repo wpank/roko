@@ -332,6 +332,7 @@ impl GraphTaskDispatcher {
             // row records none; a price list never undercuts the reported cost.
             let eff_cost_without_cache = crate::dispatch_v2::usage_cost_without_cache(
                 &dispatch.result.usage,
+                self.pricing_snapshot().as_deref(),
                 dispatch.target.model_profile.as_ref(),
                 &dispatch.target.model_slug,
             )
@@ -462,6 +463,7 @@ impl GraphTaskDispatcher {
                 // An unknown cost reads as unknown, not as $0 (backlog 2109).
                 priced: Some(crate::dispatch_v2::usage_is_priced(
                     &dispatch.result.usage,
+                    self.pricing_snapshot().as_deref(),
                     dispatch.target.model_profile.as_ref(),
                     &dispatch.target.model_slug,
                 )),
@@ -1509,7 +1511,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             cost_output_per_m: Some(15.0),
             ..ModelProfile::default()
         };
-        let uncached = usage_cost_without_cache(&usage, Some(&profile), "unpriced-model")
+        let uncached = usage_cost_without_cache(&usage, None, Some(&profile), "unpriced-model")
             .expect("the profile prices the model");
         assert!(
             uncached > f64::from(usage.cost_usd),
@@ -1517,7 +1519,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             usage.cost_usd
         );
         assert_eq!(
-            usage_cost_without_cache(&usage, None, "unpriced-model"),
+            usage_cost_without_cache(&usage, None, None, "unpriced-model"),
             None
         );
     }

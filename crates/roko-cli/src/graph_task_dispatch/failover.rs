@@ -317,6 +317,7 @@ impl GraphTaskDispatcher {
                 &SideCall::of(
                     &dispatch,
                     u64::try_from(call_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    self.pricing_snapshot().as_deref(),
                 ),
             )
             .await;

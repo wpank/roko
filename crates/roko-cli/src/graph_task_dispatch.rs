@@ -703,7 +703,7 @@ impl GraphTaskDispatcher {
                 .max(1)
                 .saturating_mul(1_000),
         };
-        Some(HelperAgent::new(agent, target))
+        Some(HelperAgent::new(agent, target, self.pricing_snapshot()))
     }
 
     /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`
@@ -1500,6 +1500,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     let (dispatch, failover) = interrupted.into_dispatch(
                         &error.to_string(),
                         u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
+                        self.pricing_snapshot().as_deref(),
                     );
                     let cost_usd = f64::from(dispatch.result.usage.cost_usd);
                     self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);

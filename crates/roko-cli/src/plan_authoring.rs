@@ -872,9 +872,10 @@ impl AuthoringSpend {
             format!("{}/{}", self.plan_id, self.task_id)
         };
 
-        // The capture names no model profile: a known cost or the model's
-        // built-in rate prices the call (backlog 2109).
-        let priced = crate::dispatch_v2::usage_is_priced(&usage, None, &call.model);
+        // The capture names no model profile: a known cost, which the agent
+        // run priced from the price snapshot, or the model's built-in rate
+        // prices the call (backlog 2109, 2114).
+        let priced = crate::dispatch_v2::usage_is_priced(&usage, None, None, &call.model);
         let cost_record = CostRecord {
             timestamp: timestamp.clone(),
             model: call.model.clone(),

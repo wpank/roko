@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use roko_agent::AgentResult;
 use roko_agent::gemini::{CodeExecutionResultPart, GroundingMetadata};
-use roko_core::agent::AgentRole;
+use roko_core::agent::{AgentRole, ModelTier};
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::{
     BehavioralState, Body, DaimonPolicy, Kind, OperatingFrequency, Signal, Temperament,
@@ -906,20 +906,67 @@ fn cascade_gemini_routes_configured_fast_standard_and_premium_models() {
     );
 }
 
+/// 9207: among several premium models, configuration order decides, not a
+/// built-in vendor preference.
 #[test]
-fn cascade_gemini_prefers_opus_for_premium_when_available() {
-    let cascade = CascadeRouter::new(vec![
+fn cascade_premium_role_takes_the_first_configured_premium_model() {
+    let mut slugs = vec![
         "gemini-2.5-flash-lite".to_string(),
         "gemini-2.5-flash".to_string(),
         "gemini-2.5-pro".to_string(),
         "gemini-3.1-pro-preview".to_string(),
         "claude-opus-4-6".to_string(),
-    ]);
+    ];
     let mut ctx = default_ctx();
     ctx.role = AgentRole::Architect;
 
-    let result = cascade.route(&ctx);
+    let result = CascadeRouter::new(slugs.clone()).route(&ctx);
+    assert_eq!(result.primary.slug, "gemini-3.1-pro-preview");
+
+    slugs.rotate_right(1);
+    let result = CascadeRouter::new(slugs).route(&ctx);
     assert_eq!(result.primary.slug, "claude-opus-4-6");
+}
+
+/// 9207: static routing picks among the configured models by tier and never
+/// names one the workspace did not configure. With no model there is no
+/// pick, and with no model of a role's tier the first configured one runs.
+#[test]
+fn static_route_never_names_an_unconfigured_model() {
+    let no_tiers = HashMap::new();
+    assert_eq!(static_slug_for_tier(&[], ModelTier::Fast, &no_tiers), None);
+    assert!(default_role_model_table(&[], &no_tiers).is_empty());
+
+    // Standard-tier models only: fast and premium roles get the first one.
+    let configured = vec!["glm-4-7".to_string(), "gpt-5-4-mini".to_string()];
+    let table = default_role_model_table(&configured, &no_tiers);
+    assert!(
+        table.values().all(|slug| configured.contains(slug)),
+        "{table:?}"
+    );
+    let cascade = CascadeRouter::new(configured.clone());
+    let mut ctx = default_ctx();
+    for role in [
+        AgentRole::Conductor,
+        AgentRole::Implementer,
+        AgentRole::Architect,
+        AgentRole::Researcher,
+    ] {
+        ctx.role = role;
+        let routed = cascade.route(&ctx).primary.slug;
+        assert!(configured.contains(&routed), "{role:?} routed to {routed}");
+    }
+    assert_eq!(
+        static_slug_for_tier(&configured, ModelTier::Premium, &no_tiers).as_deref(),
+        Some("glm-4-7")
+    );
+
+    // A configured tier map decides the pick.
+    let tiers = HashMap::from([("gpt-5-4-mini".to_string(), ModelTier::Fast)]);
+    assert_eq!(
+        static_slug_for_tier(&configured, ModelTier::Fast, &tiers).as_deref(),
+        Some("gpt-5-4-mini")
+    );
 }
 
 #[test]

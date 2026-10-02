@@ -57,10 +57,11 @@ use crate::cascade::helpers::{
     cost_pressure_factor, default_latency_sla, default_role_model_table, estimate_total_cost_usd,
     fallback_chain_for_model, infer_shadow_routing_context, is_free_tier_gemini_model,
     low_confidence_tier_bonus, model_tier_rank, pareto_adjusted_alpha, pareto_cost_proxy,
-    pareto_latency_proxy, parse_agent_role, pick_available_static_slug, pick_tier_extreme,
-    routing_tier_bias_factor, select_with_hysteresis, shadow_quality_score, slug_to_tier,
-    slugs_match, stage_for_observations, target_tier_rank, temperament_exploration_multiplier,
-    temperament_tier_shift, thinking_filtered_candidates, thinking_preference,
+    pareto_latency_proxy, parse_agent_role, pick_tier_extreme, routing_tier_bias_factor,
+    select_with_hysteresis, shadow_quality_score, slug_to_tier, slugs_match,
+    stage_for_observations, static_slug_for_tier, target_tier_rank,
+    temperament_exploration_multiplier, temperament_tier_shift, thinking_filtered_candidates,
+    thinking_preference,
 };
 use crate::cascade::persistence::{
     CascadeSnapshot, PersistedModelStats, detect_version_changes, merge_learning,
@@ -255,7 +256,9 @@ impl CascadeRouter {
             !model_slugs.is_empty(),
             "CascadeRouter: need at least one model"
         );
-        let role_table = default_role_model_table(&model_slugs);
+        // Tiers come from the slug heuristics until `with_model_tiers` sets
+        // the configured ones and re-picks these defaults.
+        let role_table = default_role_model_table(&model_slugs, &HashMap::new());
         // Nothing is learned yet. The default role table is not a change
         // to persist over the entries other writers saved.
         let baseline = CascadeSnapshot {
@@ -296,6 +299,7 @@ impl CascadeRouter {
             .values()
             .filter_map(|p| p.tier.map(|t| (p.slug.clone(), t)))
             .collect();
+        self.repick_default_roles();
         self
     }
 
@@ -308,6 +312,27 @@ impl CascadeRouter {
             .values()
             .filter_map(|p| p.tier.map(|t| (p.slug.clone(), t)))
             .collect();
+        self.repick_default_roles();
+    }
+
+    /// Re-pick, by the configured tiers, the role-table entries that still
+    /// hold the default [`Self::new`] picked by the slug heuristics; restored
+    /// and overridden entries stay. The baseline moves with them, so a save
+    /// does not take the default for a learned change (9207).
+    fn repick_default_roles(&mut self) {
+        let heuristic = default_role_model_table(&self.model_slugs, &HashMap::new());
+        let configured = default_role_model_table(&self.model_slugs, &self.tier_map);
+        let table = self.role_table.get_mut();
+        let baseline = self.baseline.get_mut();
+        for (role, slug) in configured {
+            if table.get(&role) != heuristic.get(&role) {
+                continue;
+            }
+            if baseline.role_table.get(&role) == table.get(&role) {
+                baseline.role_table.insert(role, slug.clone());
+            }
+            table.insert(role, slug);
+        }
     }
 
     /// Resolve a model's tier, preferring config over heuristic.
@@ -2600,7 +2625,17 @@ impl CascadeRouter {
         if !role_table.is_empty() {
             let mut rt = router.role_table.lock();
             for (role, slug) in role_table {
-                rt.insert(role, remap_role_table_entry(slug, &version_changes));
+                let slug = remap_role_table_entry(slug, &version_changes);
+                // An entry naming a model the workspace does not configure,
+                // such as a default an older roko took from a built-in list,
+                // leaves the role its configured default (9207).
+                if router
+                    .model_slugs
+                    .iter()
+                    .any(|configured| slugs_match(configured, &slug))
+                {
+                    rt.insert(role, slug);
+                }
             }
         }
         {
@@ -2752,11 +2787,10 @@ impl CascadeRouter {
             );
         }
 
-        let default_slug = self
-            .model_slugs
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
+        // `new` asserts a configured model, so the pick always names one.
+        let role_tier = ctx.role.model_tier();
+        let default_slug = static_slug_for_tier(&self.model_slugs, role_tier, &self.tier_map)
+            .unwrap_or_default();
         let slug = if ctx.task_category == TaskCategory::Research {
             self.model_slugs
                 .iter()
@@ -2818,37 +2852,19 @@ impl CascadeRouter {
             };
         }
 
-        let slug = self
+        // The role's table entry when it is a candidate, else the candidates'
+        // pick for the role's tier, else the router's own: a static route
+        // never names a model outside the configured ones (9207).
+        let role_tier = ctx.role.model_tier();
+        let selected_slug = self
             .role_table
             .lock()
             .get(&ctx.role)
+            .filter(|slug| candidates.iter().any(|candidate| slugs_match(candidate, slug)))
             .cloned()
-            .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
-
-        let selected_slug = if candidates
-            .iter()
-            .any(|candidate| slugs_match(candidate, &slug))
-        {
-            slug
-        } else {
-            let tier_candidates: &[&str] = match ctx.role.model_tier() {
-                ModelTier::Fast => &["gemini-2.5-flash-lite", "claude-haiku-4-5"],
-                ModelTier::Premium => &[
-                    "claude-opus-4-6",
-                    "gemini-3.1-pro-preview",
-                    "gemini-2.5-pro",
-                ],
-                _ => &[
-                    "gemini-2.5-flash",
-                    "gemini-2.5-pro",
-                    "kimi-k2.5",
-                    "kimi-k2-thinking",
-                    "claude-sonnet-4-6",
-                    "claude-sonnet-4-5",
-                ],
-            };
-            pick_available_static_slug(candidates, tier_candidates)
-        };
+            .or_else(|| static_slug_for_tier(candidates, role_tier, &self.tier_map))
+            .or_else(|| static_slug_for_tier(&self.model_slugs, role_tier, &self.tier_map))
+            .unwrap_or_default();
         let selected = ModelSpec::from_slug(selected_slug);
         let tier = slug_to_tier(&selected.slug, &self.tier_map);
         let fallback_chain = fallback_chain_for_model(candidates, &selected.slug, &self.tier_map);

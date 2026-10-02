@@ -2160,7 +2160,7 @@ impl PromptSectionSource for WorkdirKnowledgeSource {
             if let Some(section) = collect_neuro_knowledge_cached(task, &cache.neuro_entries) {
                 sections.push(section);
             }
-            if let Some(section) = collect_episode_knowledge_cached(task, ctx, &cache.episodes) {
+            if let Some(section) = collect_episode_knowledge_cached(task, &cache.episodes) {
                 sections.push(section);
             }
         } else {
@@ -2236,91 +2236,36 @@ fn collect_neuro_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<Prompt
 }
 
 fn collect_episode_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
-    let keywords = query_keywords(&task_query_text(task, ctx));
-    if keywords.is_empty() {
-        return None;
-    }
-
-    let mut scored = Vec::new();
+    let mut episodes: Vec<roko_learn::episode_logger::Episode> = Vec::new();
     for path in episode_paths(&ctx.workdir) {
-        let file = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => continue,
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
         };
-        let reader = std::io::BufReader::new(file);
-        for line in std::io::BufRead::lines(reader).map_while(Result::ok) {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let Ok(episode) = serde_json::from_str::<roko_learn::episode_logger::Episode>(trimmed)
-            else {
-                continue;
-            };
-            let haystack = format!(
-                "{} {} {} {} {}",
-                episode.task_id,
-                episode.agent_id,
-                episode.model,
-                episode.reasoning_summary.as_deref().unwrap_or(""),
-                episode.failure_reason.as_deref().unwrap_or("")
-            )
-            .to_ascii_lowercase();
-            let score = keywords
-                .iter()
-                .filter(|keyword| haystack.contains(keyword.as_str()))
-                .count();
-            if score > 0 {
-                scored.push((score, episode));
-            }
-        }
-    }
-    if scored.is_empty() {
-        return None;
-    }
-    scored.sort_by(|a, b| {
-        b.1.success
-            .cmp(&a.1.success)
-            .then_with(|| b.0.cmp(&a.0))
-            .then_with(|| b.1.completed_at.cmp(&a.1.completed_at))
-    });
-    scored.truncate(3);
-
-    let ids = scored
-        .iter()
-        .map(|(_, episode)| cited_episode_id(episode).to_string())
-        .filter(|id| !id.is_empty())
-        .collect::<Vec<_>>();
-    let mut body =
-        String::from("# Learned patterns from prior episodes\nSimilar prior work suggests:\n");
-    let mut items = Vec::new();
-    for (index, (score, episode)) in scored.iter().enumerate() {
-        let outcome = if episode.success { "passed" } else { "failed" };
-        let summary = episode
-            .reasoning_summary
-            .as_deref()
-            .or(episode.reflection.as_deref())
-            .or(episode.failure_reason.as_deref())
-            .unwrap_or("no summary recorded");
-        let line = format!(
-            "- {} ({}, model: {}): {}\n",
-            episode.task_id,
-            outcome,
-            if episode.model.is_empty() {
-                "unknown"
-            } else {
-                &episode.model
-            },
-            truncate_chars(summary, 420)
+        episodes.extend(
+            text.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .filter_map(|line| serde_json::from_str(line).ok()),
         );
-        // The score is the task keywords the episode matched.
-        let (kind, score) = (ExposureItemKind::Episode, Some(*score as f64));
-        let id = cited_episode_id(episode);
-        items.extend(PromptItem::ranked(kind, id, index, score, &line));
-        body.push_str(&line);
     }
-    let section = PromptSection::new("episode_knowledge", body, 7).with_knowledge_ids(ids);
-    Some(section.with_items(items))
+    // The uncached path ranks episodes as a plan run's cache does
+    // (backlog 4213).
+    collect_episode_knowledge_cached(task, &episodes)
+}
+
+/// What an episode says, in order: its reasoning summary, reflection and
+/// failure reason, each when it is not empty (backlog 4213).
+fn episode_statements(
+    episode: &roko_learn::episode_logger::Episode,
+) -> impl Iterator<Item = &str> {
+    [
+        episode.reasoning_summary.as_deref(),
+        episode.reflection.as_deref(),
+        episode.failure_reason.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|text| !text.trim().is_empty())
 }
 
 /// The id a prompt cites an episode by: its id, else its episode id, else
@@ -2430,40 +2375,30 @@ fn collect_neuro_knowledge_cached(
 
 fn collect_episode_knowledge_cached(
     task: &TaskDef,
-    ctx: &PromptContext,
     episodes: &[roko_learn::episode_logger::Episode],
 ) -> Option<PromptSection> {
-    let keywords = query_keywords(&task_query_text(task, ctx));
-    if keywords.is_empty() {
+    let terms = task_topic_terms(task);
+    if terms.is_empty() {
         return None;
     }
 
-    let mut scored: Vec<(usize, &roko_learn::episode_logger::Episode)> = Vec::new();
-    for episode in episodes {
-        let haystack = format!(
-            "{} {} {} {} {}",
-            episode.task_id,
-            episode.agent_id,
-            episode.model,
-            episode.reasoning_summary.as_deref().unwrap_or(""),
-            episode.failure_reason.as_deref().unwrap_or("")
-        )
-        .to_ascii_lowercase();
-        let score = keywords
-            .iter()
-            .filter(|keyword| haystack.contains(keyword.as_str()))
-            .count();
-        if score > 0 {
-            scored.push((score, episode));
-        }
-    }
+    // An episode matches on what it says, never on its task id, its agent
+    // (the role) or its model. One that says nothing is skipped, and one
+    // needs `MIN_TOPIC_OVERLAP` of the task's topic terms as whole words; the
+    // most overlap, then the most recent, rank first (backlog 4213).
+    let mut scored: Vec<(usize, &roko_learn::episode_logger::Episode)> = episodes
+        .iter()
+        .filter_map(|episode| {
+            let said = episode_statements(episode).collect::<Vec<_>>().join(" ");
+            let overlap = terms.intersection(&query_words(&said)).count();
+            (overlap >= MIN_TOPIC_OVERLAP).then_some((overlap, episode))
+        })
+        .collect();
     if scored.is_empty() {
         return None;
     }
     scored.sort_by(|a, b| {
-        b.1.success
-            .cmp(&a.1.success)
-            .then_with(|| b.0.cmp(&a.0))
+        b.0.cmp(&a.0)
             .then_with(|| b.1.completed_at.cmp(&a.1.completed_at))
     });
     scored.truncate(5);
@@ -2478,12 +2413,7 @@ fn collect_episode_knowledge_cached(
     let mut items = Vec::new();
     for (index, (score, episode)) in scored.iter().enumerate() {
         let outcome = if episode.success { "passed" } else { "failed" };
-        let summary = episode
-            .reasoning_summary
-            .as_deref()
-            .or(episode.reflection.as_deref())
-            .or(episode.failure_reason.as_deref())
-            .unwrap_or("no summary recorded");
+        let summary = episode_statements(episode).next().unwrap_or_default();
         let line = format!(
             "- {} ({}, model: {}): {}\n",
             episode.task_id,
@@ -2495,7 +2425,7 @@ fn collect_episode_knowledge_cached(
             },
             truncate_chars(summary, 420)
         );
-        // The score is the task keywords the episode matched.
+        // The score is the task's topic terms the episode holds.
         let (kind, score) = (ExposureItemKind::Episode, Some(*score as f64));
         let id = cited_episode_id(episode);
         items.extend(PromptItem::ranked(kind, id, index, score, &line));
@@ -2571,8 +2501,9 @@ fn collect_playbooks_cached(
     Some(section.with_items(items))
 }
 
-/// Distinct topic terms ([`task_topic_terms`]) a knowledge entry or a
-/// playbook must share with a task to reach its prompt (backlogs 4211, 4212).
+/// Distinct topic terms ([`task_topic_terms`]) a knowledge entry, a playbook
+/// or an episode must share with a task to reach its prompt (backlogs 4211,
+/// 4212, 4213).
 const MIN_TOPIC_OVERLAP: usize = 2;
 
 /// The least confidence of a knowledge entry a prompt shows (backlog 4211).
@@ -3712,6 +3643,50 @@ mod tests {
         let section = collect_playbooks_cached(&task(), &playbooks).expect("a playbooks section");
         assert_eq!(section.playbook_ids, ["pb-wiring"]);
         assert!(!section.body.contains("pb-deploy"), "{}", section.body);
+    }
+
+    /// An episode of `task_id` by the implementer on `model`, saying
+    /// `summary`.
+    fn episode(
+        task_id: &str,
+        model: &str,
+        summary: Option<&str>,
+    ) -> roko_learn::episode_logger::Episode {
+        let mut episode = roko_learn::episode_logger::Episode::new("implementer", task_id);
+        episode.model = model.to_string();
+        episode.success = true;
+        episode.reasoning_summary = summary.map(str::to_string);
+        episode
+    }
+
+    /// backlog 4213: an episode with no summary, reflection or failure reason
+    /// says nothing, so it never fills a line with "no summary recorded".
+    #[test]
+    fn episode_section_skips_episodes_with_nothing_to_say() {
+        let episodes = [
+            episode("wire-quiet", "claude-haiku-4-5", None),
+            episode(
+                "wire-said",
+                "claude-haiku-4-5",
+                Some("Explain the wiring map before editing it"),
+            ),
+        ];
+        let section = collect_episode_knowledge_cached(&task(), &episodes).expect("episodes");
+        assert!(section.body.contains("wire-said"), "{}", section.body);
+        assert!(!section.body.contains("wire-quiet"), "{}", section.body);
+        assert!(!section.body.contains("no summary"), "{}", section.body);
+    }
+
+    /// backlog 4213: an episode's task id, agent (the role) and model never
+    /// match a task, so one that shares only those gives no section.
+    #[test]
+    fn episode_section_ignores_role_and_model_matches() {
+        let episodes = [episode(
+            "wire-and-explain",
+            "wire-explain-7b",
+            Some("Bumped the lockfile"),
+        )];
+        assert!(collect_episode_knowledge_cached(&task(), &episodes).is_none());
     }
 
     /// The item of `kind` and `id` in `prompt`'s diagnostics.

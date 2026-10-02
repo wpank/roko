@@ -160,11 +160,6 @@ pub struct DispatchContext {
     /// calling `generate_workspace_context` (which spawns `git` subprocesses
     /// and reads Cargo.toml files) on the Tokio reactor thread.
     pub cached_workspace_context: String,
-    /// Pre-computed C-Factor policy context.
-    ///
-    /// When non-empty, `PromptContext::from_task` uses this value instead of
-    /// reading `.roko/learn/c-factor.jsonl` on the Tokio reactor thread.
-    pub cached_cfactor_context: String,
     /// The other plans running in the same working tree now, each with the
     /// areas its tasks write (gap-c09fc7). Empty when the plan runs alone.
     pub concurrent_plans: Vec<(String, Vec<String>)>,
@@ -572,7 +567,6 @@ mod tests {
             error_patterns_context: String::new(),
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
-            cached_cfactor_context: String::new(),
             concurrent_plans: Vec::new(),
         }
     }

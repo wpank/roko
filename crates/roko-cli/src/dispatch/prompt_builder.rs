@@ -39,7 +39,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use parking_lot::RwLock;
 use roko_compose::{
@@ -163,9 +162,6 @@ pub struct PromptContext {
     /// Ported from the legacy `workspace_context()` helper; includes
     /// git state (best-effort, bounded) and crate scan from `crates/*/Cargo.toml`.
     pub workspace_context: String,
-    /// C-Factor collective-intelligence policy text.
-    /// Loaded from `.roko/learn/c-factor.jsonl` when history exists.
-    pub cfactor_context: String,
     /// Pre-rendered error patterns from the shared in-memory store.
     ///
     /// Carried from `DispatchContext::error_patterns_context` so the prompt
@@ -181,10 +177,9 @@ pub struct PromptContext {
 impl PromptContext {
     /// Construct a `PromptContext` from runner inputs.
     ///
-    /// When `ctx` carries pre-computed `cached_workspace_map`,
-    /// `cached_workspace_context`, or `cached_cfactor_context` (non-empty),
-    /// those values are used directly — no filesystem I/O is performed for
-    /// those fields.  This avoids blocking the Tokio reactor on repeated
+    /// When `ctx` carries pre-computed `cached_workspace_map` or
+    /// `cached_workspace_context` (non-empty), those values are used
+    /// directly — no filesystem I/O is performed for those fields.  This avoids blocking the Tokio reactor on repeated
     /// directory walks and `git` subprocess spawns.
     ///
     /// `GraphTaskDispatcher` populates the cache fields via a `OnceLock` so
@@ -244,13 +239,6 @@ impl PromptContext {
                 role_limits.workspace_context,
             )
         };
-        let cfactor_context = if bounded_context_only {
-            String::new()
-        } else if !ctx.cached_cfactor_context.is_empty() {
-            ctx.cached_cfactor_context.clone()
-        } else {
-            generate_cfactor_context(&ctx.workdir)
-        };
         let impact_context = declared_impact_context(task, bounded_context_only);
         let plan_brief = if skip_enrichment {
             String::new()
@@ -269,10 +257,8 @@ impl PromptContext {
             workspace_map_bytes = workspace_map.len(),
             tasks_toml_bytes = tasks_toml.len(),
             workspace_context_bytes = workspace_context.len(),
-            cfactor_context_bytes = cfactor_context.len(),
             workspace_map_from_cache = !ctx.cached_workspace_map.is_empty(),
             workspace_context_from_cache = !ctx.cached_workspace_context.is_empty(),
-            cfactor_context_from_cache = !ctx.cached_cfactor_context.is_empty(),
             "PromptContext enrichment sizes (role-scoped)"
         );
         Self {
@@ -294,7 +280,6 @@ impl PromptContext {
             tasks_toml,
             dependency_outputs: ctx.dependency_outputs.clone(),
             workspace_context,
-            cfactor_context,
             error_patterns_context: ctx.error_patterns_context.clone(),
             concurrent_plans: ctx.concurrent_plans.clone(),
             plan_brief,
@@ -799,141 +784,6 @@ fn scan_crate_descriptions(workdir: &Path) -> Vec<(String, String)> {
     crates
 }
 
-// ─── C-Factor context (ported from legacy orchestrator) ────────────────
-
-/// Load C-Factor history and generate policy context for the system prompt.
-///
-/// Reads `.roko/learn/c-factor.jsonl`, computes a summary, and runs the
-/// [`roko_core::CFactorPolicy`] to produce coordination guidance text.
-/// Returns an empty string when no history exists or the episode count
-/// is below the minimum threshold.
-fn generate_cfactor_context(workdir: &Path) -> String {
-    use roko_core::{CFactorPolicy, CFactorSource, Context, React};
-    use roko_learn::cfactor::CFactor;
-    use std::sync::Arc;
-
-    let cfactor_path = roko_fs::RokoLayout::for_project(workdir)
-        .learn_dir()
-        .join("c-factor.jsonl");
-
-    let contents = match std::fs::read_to_string(&cfactor_path) {
-        Ok(c) => c,
-        Err(_) => return String::new(),
-    };
-
-    let mut history: Vec<CFactor> = contents
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
-    history.sort_by(|left, right| left.computed_at.cmp(&right.computed_at));
-
-    let Some(current) = history.last().cloned() else {
-        return String::new();
-    };
-
-    let historical_average = if history.len() > 1 {
-        history[..history.len() - 1]
-            .iter()
-            .map(|snapshot| snapshot.overall)
-            .sum::<f64>()
-            / (history.len() - 1) as f64
-    } else {
-        current.overall
-    };
-    let trend = current.overall - historical_average;
-    let regression = roko_learn::cfactor::detect_cfactor_regression(
-        &history,
-        Duration::from_secs(7 * 24 * 60 * 60),
-        0.08,
-    );
-
-    // Collect top contributors.
-    let mut positive: Vec<_> = current
-        .agent_contributions
-        .iter()
-        .filter(|c| c.contribution_score > 0.0)
-        .cloned()
-        .collect();
-    positive.sort_by(|a, b| {
-        b.contribution_score
-            .total_cmp(&a.contribution_score)
-            .then(a.agent_id.cmp(&b.agent_id))
-    });
-    let mut negative: Vec<_> = current
-        .agent_contributions
-        .iter()
-        .filter(|c| c.contribution_score < 0.0)
-        .cloned()
-        .collect();
-    negative.sort_by(|a, b| {
-        a.contribution_score
-            .total_cmp(&b.contribution_score)
-            .then(a.agent_id.cmp(&b.agent_id))
-    });
-
-    let top_positive: Vec<String> = positive
-        .iter()
-        .take(3)
-        .map(|c| c.agent_id.clone())
-        .collect();
-    let top_negative: Vec<String> = negative
-        .iter()
-        .take(3)
-        .map(|c| c.agent_id.clone())
-        .collect();
-
-    let summary = roko_core::CFactorSummary {
-        overall: current.overall,
-        trend,
-        regression_drop: regression.map_or(0.0, |entry| entry.drop_fraction),
-        gate_pass_rate: current.components.gate_pass_rate,
-        turn_taking_equality: current.components.turn_taking_equality,
-        social_perceptiveness: current.components.social_perceptiveness,
-        citation_reciprocity: current.components.knowledge_integration_rate,
-        delivery_rate: current.components.information_flow_rate,
-        hdc_diversity: current.components.hdc_diversity,
-        episode_count: current.episode_count,
-        top_positive_contributors: top_positive,
-        top_negative_contributors: top_negative,
-    };
-
-    // Use CFactorPolicy to generate signals, then extract their text bodies.
-    #[derive(Clone)]
-    struct StaticSource(Option<roko_core::CFactorSummary>);
-    impl CFactorSource for StaticSource {
-        fn summary(&self) -> Option<roko_core::CFactorSummary> {
-            self.0.clone()
-        }
-    }
-
-    let source: Arc<dyn CFactorSource> = Arc::new(StaticSource(Some(summary)));
-    let policy = CFactorPolicy::new(source).with_min_episode_count(6);
-    let signals = policy.decide(&[], &Context::now());
-
-    if signals.is_empty() {
-        return String::new();
-    }
-
-    let mut out = String::from("# Collective calibration\n");
-    for signal in &signals {
-        if let Ok(text) = signal.body.as_text() {
-            let text = text.trim();
-            if !text.is_empty() {
-                out.push_str(text);
-                out.push('\n');
-            }
-        }
-    }
-
-    if out.trim() == "# Collective calibration" {
-        return String::new();
-    }
-
-    out
-}
-
 // ─── Public adapters for run-scoped caching ───────────────────────────────
 //
 // `GraphTaskDispatcher` computes these once per plan run (via `OnceLock`) and
@@ -948,11 +798,6 @@ pub fn generate_workspace_map_pub(workdir: &Path) -> String {
 /// Public adapter — see [`generate_workspace_context`].
 pub fn generate_workspace_context_pub(workdir: &Path) -> String {
     generate_workspace_context(workdir)
-}
-
-/// Public adapter — see [`generate_cfactor_context`].
-pub fn generate_cfactor_context_pub(workdir: &Path) -> String {
-    generate_cfactor_context(workdir)
 }
 
 /// Structured gate feedback injected into retry prompts.
@@ -1666,10 +1511,6 @@ fn build_runner_context(
 
     if !ctx.workspace_context.is_empty() {
         parts.push(ctx.workspace_context.clone());
-    }
-
-    if !ctx.cfactor_context.is_empty() {
-        parts.push(ctx.cfactor_context.clone());
     }
 
     if !ctx.error_patterns_context.is_empty() {
@@ -3238,7 +3079,6 @@ mod tests {
             error_patterns_context: String::new(),
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
-            cached_cfactor_context: String::new(),
             concurrent_plans: Vec::new(),
         }
     }
@@ -4245,23 +4085,37 @@ covers = ["AC1"]
         assert!(ws_ctx.is_empty());
     }
 
+    /// backlog 4206: plan prompts carry no `# Collective calibration` block,
+    /// even in a workspace whose bench runs left c-factor history.
     #[test]
-    fn cfactor_context_included_when_present() {
-        let assembler = PromptAssembler::minimal();
-        let mut pctx = PromptContext::from_task(&task(), &ctx());
-        pctx.cfactor_context = "# Collective calibration\nC-Factor 0.72\n".to_string();
-        let p = assembler.assemble(&task(), &pctx).unwrap();
-        assert!(
-            p.system_prompt.contains("# Collective calibration"),
-            "cfactor context should appear in system_prompt via context_layer"
-        );
-    }
+    fn plan_prompt_has_no_collective_calibration_block() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let learn_dir = temp.path().join(".roko/learn");
+        std::fs::create_dir_all(&learn_dir).expect("learn dir");
+        let history: String = (0..8)
+            .map(|hours| {
+                let snapshot = roko_learn::cfactor::CFactor {
+                    overall: 0.72,
+                    episode_count: 12,
+                    computed_at: chrono::Utc::now() - chrono::Duration::hours(hours),
+                    ..roko_learn::cfactor::CFactor::default()
+                };
+                serde_json::to_string(&snapshot).expect("snapshot") + "\n"
+            })
+            .collect();
+        std::fs::write(learn_dir.join("c-factor.jsonl"), history).expect("c-factor history");
 
-    #[test]
-    fn cfactor_context_empty_when_no_history() {
-        // /tmp has no .roko/learn/c-factor.jsonl — cfactor_context should be empty.
-        let ctx = generate_cfactor_context(Path::new("/tmp"));
-        assert!(ctx.is_empty());
+        let mut dispatch = ctx();
+        dispatch.workdir = temp.path().to_path_buf();
+        let pctx = PromptContext::from_task(&task(), &dispatch);
+        let prompt = PromptAssembler::minimal()
+            .assemble(&task(), &pctx)
+            .expect("prompt");
+        assert!(
+            !prompt.system_prompt.contains("# Collective calibration"),
+            "{}",
+            prompt.system_prompt
+        );
     }
 
     #[test]
@@ -4314,7 +4168,6 @@ covers = ["AC1"]
             tasks_toml: String::new(),
             dependency_outputs: Vec::new(),
             workspace_context: String::new(),
-            cfactor_context: String::new(),
             error_patterns_context: String::new(),
             concurrent_plans: Vec::new(),
             plan_brief: String::new(),

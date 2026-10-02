@@ -578,8 +578,7 @@ fn sigterm_ending() -> Ending {
         "SIGTERM mid-task",
         Task::new("T1", "true", 60),
         hang(),
-        Projections::expected(143, "cancelled", "interrupted", "interrupted")
-            .stopped_by("SIGTERM"),
+        Projections::expected(143, "cancelled", "interrupted", "interrupted").stopped_by("SIGTERM"),
     )
     .terminated()
 }

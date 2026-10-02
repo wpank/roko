@@ -581,7 +581,11 @@ mod tests {
             .into_iter()
             .map(|writer| {
                 std::process::Command::new(&exe)
-                    .args(["--exact", "custody::tests::custody_append_child", "--ignored"])
+                    .args([
+                        "--exact",
+                        "custody::tests::custody_append_child",
+                        "--ignored",
+                    ])
                     .env("CUSTODY_TEST_LOG", &log)
                     .env("CUSTODY_TEST_WRITER", writer)
                     .stdout(std::process::Stdio::null())

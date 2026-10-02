@@ -317,14 +317,16 @@ type FinishedPrompt = (
 fn poll_finished(
     running: &mut Vec<RunningPrompt>,
     cx: &mut TaskContext<'_>,
-) -> Poll<(RunningPrompt, std::result::Result<FinishedPrompt, JoinError>)> {
-    let finished = running
-        .iter_mut()
-        .enumerate()
-        .find_map(|(index, prompt)| match Pin::new(&mut prompt.task).poll(cx) {
+) -> Poll<(
+    RunningPrompt,
+    std::result::Result<FinishedPrompt, JoinError>,
+)> {
+    let finished = running.iter_mut().enumerate().find_map(|(index, prompt)| {
+        match Pin::new(&mut prompt.task).poll(cx) {
             Poll::Ready(outcome) => Some((index, outcome)),
             Poll::Pending => None,
-        });
+        }
+    });
     match finished {
         Some((index, outcome)) => Poll::Ready((running.swap_remove(index), outcome)),
         None => Poll::Pending,

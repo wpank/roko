@@ -90,7 +90,10 @@ fn workspace() -> (tempfile::TempDir, RokoConfig) {
         true,
     );
     let scripts = [
-        ("limited-cli", fake_claude(dir, "limited-claude", &refusal, 1)),
+        (
+            "limited-cli",
+            fake_claude(dir, "limited-claude", &refusal, 1),
+        ),
         (
             "backup-cli",
             fake_claude(dir, "backup-claude", &answer_output(ANSWER), 0),

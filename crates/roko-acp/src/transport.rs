@@ -442,11 +442,16 @@ mod tests {
             .send_notification("session/update", json!({ "text": "x".repeat(1_024) }))
             .await
             .expect_err("the write must give up");
-        assert!(matches!(error, TransportError::WriteTimeout { after_ms: 50 }));
+        assert!(matches!(
+            error,
+            TransportError::WriteTimeout { after_ms: 50 }
+        ));
         assert!(started.elapsed() < Duration::from_secs(5));
 
         // Later writes fail at once instead of adding to a half-written line.
-        let again = transport.send_notification("session/update", json!({})).await;
+        let again = transport
+            .send_notification("session/update", json!({}))
+            .await;
         assert!(matches!(again, Err(TransportError::WriteTimeout { .. })));
     }
 }

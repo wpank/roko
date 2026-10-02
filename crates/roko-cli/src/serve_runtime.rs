@@ -1312,7 +1312,8 @@ pub(crate) async fn dispatch_bench_prompt(
                 return Err(error).context("ModelCallService bench dispatch failed");
             }
             Err(why) => {
-                return Err(error).context(format!("ModelCallService bench dispatch failed; {why}"));
+                return Err(error)
+                    .context(format!("ModelCallService bench dispatch failed; {why}"));
             }
         }
     }
@@ -2482,9 +2483,7 @@ mod tests_provider_failover {
 
     fn persisted_health(dir: &Path) -> ProviderHealthRegistry {
         ProviderHealthRegistry::load_or_new(
-            &dir.join(".roko")
-                .join("learn")
-                .join("provider-health.json"),
+            &dir.join(".roko").join("learn").join("provider-health.json"),
         )
     }
 

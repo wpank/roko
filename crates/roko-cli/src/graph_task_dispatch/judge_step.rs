@@ -139,7 +139,10 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         score: &str,
     ) -> (Result<Vec<Signal>>, Vec<serde_json::Value>) {
         let temp = tempdir().expect("tempdir");
-        commit_repo(temp.path(), &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")]);
+        commit_repo(
+            temp.path(),
+            &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")],
+        );
         // The judge's answer, and one more for the error diagnosis a failed
         // attempt asks the helper model for.
         let (base_url, requests) = spawn_openai_mock(vec![final_turn(score); 2]);
@@ -213,7 +216,10 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         let prompt = requests[0].to_string();
         assert!(prompt.contains("Score this implementation"), "{prompt}");
         assert!(prompt.contains("Streaming graph task"), "{prompt}");
-        assert!(prompt.contains("fn two"), "the judge sees the diff: {prompt}");
+        assert!(
+            prompt.contains("fn two"),
+            "the judge sees the diff: {prompt}"
+        );
 
         // Blocking: the same score fails the attempt.
         let (result, _) = judged_attempt(

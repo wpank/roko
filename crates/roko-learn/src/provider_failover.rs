@@ -184,8 +184,13 @@ pub fn record_exhaustion(
     text: &str,
 ) -> Option<RecordedExhaustion> {
     let exhaustion = roko_agent::provider::error_classify::detect_provider_exhaustion(text)?;
-    let cooldown_ms = i64::try_from(config.routing.exhaustion_cooldown_secs.saturating_mul(1_000))
-        .unwrap_or(i64::MAX);
+    let cooldown_ms = i64::try_from(
+        config
+            .routing
+            .exhaustion_cooldown_secs
+            .saturating_mul(1_000),
+    )
+    .unwrap_or(i64::MAX);
     let until_ms = exhaustion.resets_at_ms.unwrap_or_else(|| {
         chrono::Utc::now()
             .timestamp_millis()
@@ -616,8 +621,11 @@ mod tests {
         config.routing.fallback_models = vec!["keyless-model".to_string(), "api-model".to_string()];
         // The OpenAI-compatible providers synthesized from keys in the
         // environment never take part.
-        config.routing.disabled_providers =
-            vec!["openai".to_string(), "gemini".to_string(), "perplexity".to_string()];
+        config.routing.disabled_providers = vec![
+            "openai".to_string(),
+            "gemini".to_string(),
+            "perplexity".to_string(),
+        ];
         config
     }
 
@@ -657,7 +665,11 @@ mod tests {
             synthesized.models["claude-sonnet-4-6@anthropic"].provider,
             "anthropic"
         );
-        assert!(candidates[1..].iter().all(|candidate| candidate.config.is_none()));
+        assert!(
+            candidates[1..]
+                .iter()
+                .all(|candidate| candidate.config.is_none())
+        );
     }
 
     /// gap-28ceb9: a session-limit refusal quarantines the provider until its
@@ -667,7 +679,10 @@ mod tests {
     #[test]
     fn an_exhausted_provider_is_quarantined_and_the_call_moves_on() {
         let mut config = config();
-        config.routing.disabled_providers.push("anthropic".to_string());
+        config
+            .routing
+            .disabled_providers
+            .push("anthropic".to_string());
         let registry = ProviderHealthRegistry::new();
         let mut failover = Failover::new(Arc::new(config), false, true);
 
@@ -701,7 +716,10 @@ mod tests {
     #[test]
     fn a_quarantined_planned_model_is_skipped_unless_pinned() {
         let mut config = config();
-        config.routing.disabled_providers.push("anthropic".to_string());
+        config
+            .routing
+            .disabled_providers
+            .push("anthropic".to_string());
         let config = Arc::new(config);
         let registry = ProviderHealthRegistry::new();
         let in_an_hour = chrono::Utc::now().timestamp_millis() + 3_600_000;
@@ -727,7 +745,10 @@ mod tests {
     #[test]
     fn no_usable_candidate_names_every_refusal() {
         let mut config = config();
-        config.routing.disabled_providers.push("anthropic".to_string());
+        config
+            .routing
+            .disabled_providers
+            .push("anthropic".to_string());
         config.routing.fallback_models = vec!["keyless-model".to_string()];
         let registry = ProviderHealthRegistry::new();
         let mut failover = Failover::new(Arc::new(config), false, false);

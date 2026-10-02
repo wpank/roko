@@ -505,7 +505,10 @@ fn leftover_retention(path: &Path, runs: &CheckpointRuns, min_age: Duration) -> 
     };
     let age = touched.elapsed().unwrap_or_default();
     if age < min_age {
-        return Some(format!("it was touched {} day(s) ago", age.as_secs() / 86_400));
+        return Some(format!(
+            "it was touched {} day(s) ago",
+            age.as_secs() / 86_400
+        ));
     }
     None
 }

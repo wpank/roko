@@ -146,6 +146,35 @@ No command may be acked `Accepted` and then dropped.
   conductor is on, and `run_watched` is where an operator stop would end the provider call), then
   `tui_skip_command_skips_the_running_task`; re-admitting a plan that failed earlier in the run for retry,
   repair and reset. Once reset works, `R` can send `Reset` again and cancel needs a key of its own.
+- 2026-10-02 (wk-childenv): Plan steps 2, 3 and 6 on work/gap-1555ac; cargo verification deferred to the batch
+  check.
+  - Skip (step 2, option a): `graph_task_dispatch/operator_stop.rs` adds `OperatorStops`, the attempts whose
+    provider calls run, by plan and task. `run_watched` registers each attempt and ends its call when the
+    operator stops it (`AttemptInterrupted::StoppedByOperator`), as the stall watchdog does. The attempt fails
+    as `Cancelled` ("stopped by the operator"), so it is not retried; the engine skips the task's dependants,
+    and the plan's other tasks run on. `route_execution_commands` sends a skip naming a running task there
+    and acks it `Completed`; a skip of a task with no running agent is rejected with that reason. Only the
+    named attempt's call is dropped, no process group is signalled wholesale.
+  - Re-run (step 3): soft retry and repair that keeps completed work resume the plan's checkpoint, while reset
+    and a clean repair archive it as `--fresh` does (`PlanRerun`). Both apply to a plan that failed or was
+    cancelled earlier in the same run. `PlanSetScheduler::retry` puts it back to pending, with every plan
+    blocked behind it that nothing else blocks now. The command is acked `Accepted`, and the plan starts once
+    a slot is free. A plan that is running, waiting, blocked or did not fail is refused with the reason
+    (`rerun_refusal`). A run with a re-run plan settles by each plan's last run. `roko plan retry`
+    (control.json) takes the same path.
+  - Keys (step 6): cancel has a key of its own, `C` on the Plans tab (`ConfirmAction::CancelPlan`; `Ctrl-d`
+    too, via the renamed `TuiAction::CancelSelectedPlan`). `R` sends `Reset` again. Help, confirm texts and
+    docs/v2 CLI-REFERENCE say so.
+  - Tests: `tui_skip_command_skips_the_running_task`, `tui_retry_and_reset_run_a_failed_plan_again` and the
+    reworked `unsupported_tui_commands_are_rejected_with_a_reason` (plan_runner.rs);
+    `an_operator_stop_ends_the_running_attempt_without_a_retry` (watchdog.rs, a real dispatch against a
+    silent fake provider); `a_stop_reaches_only_the_task_it_names_while_it_runs` (operator_stop.rs);
+    `retry_runs_a_failed_plan_again_and_frees_what_it_blocked` (plan_set.rs);
+    `reset_plan_key_confirms_and_sends_a_reset` and `cancel_plan_key_confirms_and_sends_a_cancel` (TUI).
+  - Every Done-when line is now covered. Two limits remain. A plan can be re-run only while the run is still
+    going: once the last plan ends, the run ends, and late commands are rejected with "the plan run has
+    finished". Re-verifying gates (step 4), approvals (step 5) and force-advance are still rejected with
+    their reasons.
 
 ## Original notes
 

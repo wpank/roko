@@ -119,6 +119,9 @@ impl App {
             ConfirmAction::ResetSelectedPlan(plan_id) if plan_id.is_empty() => {
                 ConfirmAction::ResetSelectedPlan(self.selected_plan_id().unwrap_or_default())
             }
+            ConfirmAction::CancelPlan(plan_id) if plan_id.is_empty() => {
+                ConfirmAction::CancelPlan(self.selected_plan_id().unwrap_or_default())
+            }
             // P3-TUI-4: fill in plan_id/task_id from the selected agent row
             // when the key handler fires with empty fields.
             ConfirmAction::CancelAgent { plan_id, task_id }
@@ -199,14 +202,16 @@ impl App {
                     Some(task_id),
                 )
             }
-            // The reset keys cancel the plan, and their labels say so: a
-            // Graph run cannot reset a plan yet (gap-c002bb).
+            // A Graph run runs a plan that failed or was cancelled earlier in
+            // the run again from scratch (gap-c002bb).
             ConfirmAction::ResetSelectedPlan(plan_id) => {
+                (ExecutionCommandKind::Reset, Some(plan_id.clone()), None)
+            }
+            ConfirmAction::CancelPlan(plan_id) => {
                 (ExecutionCommandKind::Cancel, Some(plan_id.clone()), None)
             }
-            // P3-TUI-4: skip the specific task. A Graph run cannot stop a
-            // single task yet, so it rejects this with its reason
-            // (gap-c002bb).
+            // P3-TUI-4: skip the specific task. A Graph run ends its agent,
+            // and the task fails as stopped by the operator (gap-c002bb).
             ConfirmAction::CancelAgent { plan_id, task_id } => (
                 ExecutionCommandKind::Skip,
                 Some(plan_id.clone()),

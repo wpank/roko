@@ -66,6 +66,7 @@ mod helper_calls;
 mod inert_settings;
 mod ladder;
 mod live_tool_calls;
+mod operator_stop;
 mod prompt_experiment;
 mod red_flags;
 mod reflex_credit;
@@ -87,6 +88,7 @@ mod wiring;
 pub use budget::{GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot};
 pub use feedback::GraphFeedbackContext;
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
+pub use operator_stop::OperatorStops;
 pub(crate) use retry_budget::TaskRetryBudgets;
 pub use streaming::streaming_event_channel_capacity;
 pub use supervision::{ConductorStop, ConductorTicker, SUPERVISION_INTERVAL};
@@ -281,6 +283,9 @@ pub struct GraphTaskDispatcher {
     /// Registry that counts verify verdicts beside the tracing fields
     /// ([`Self::with_metrics`]).
     metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    /// The attempts whose provider calls run now, which the operator can
+    /// stop one task at a time ([`Self::operator_stops`]).
+    operator_stops: OperatorStops,
 }
 
 impl GraphTaskDispatcher {
@@ -334,7 +339,15 @@ impl GraphTaskDispatcher {
             first_output_grace: watchdog::FIRST_OUTPUT_GRACE,
             running_plans: parking_lot::Mutex::default(),
             metrics: None,
+            operator_stops: OperatorStops::default(),
         }
+    }
+
+    /// The running attempts the operator can stop by plan and task: a TUI
+    /// skip that names a running task ends its agent (gap-c002bb).
+    #[must_use]
+    pub fn operator_stops(&self) -> OperatorStops {
+        self.operator_stops.clone()
     }
 
     /// Set the CLI model override (from `--model`).

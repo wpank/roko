@@ -809,13 +809,23 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 | `s` | Soft retry plan |
 | `z` | Diagnose plan |
 | `S` | Repair plan (preserve) |
-| `R` | Cancel plan (with confirmation) |
+| `R` | Reset plan: run it again from scratch (with confirmation) |
+| `C` | Cancel plan (with confirmation) |
 | `c` | Reverify plan |
 | `F` | Force advance |
 | `V` | Reverify plan |
 
-During `roko plan run`, only pause (`p`) and cancel (`R`, `Ctrl+D`) act on the run. The other
-recovery keys are rejected with a reason until the Graph engine supports them.
+During `roko plan run` these keys act on the run:
+
+- pause (`p`) and cancel (`C`, `Ctrl+D`);
+- for a plan that failed or was cancelled earlier in the same run, soft retry (`s`) and repair
+  (`S`), which resume its checkpoint so the tasks that passed stay done, and reset (`R`), which
+  archives its checkpoint and runs every task again. A plan it blocked waits for it again;
+- `X` on the Agents tab, which stops the selected agent: its task fails as stopped by the
+  operator, its dependants are skipped, and the plan's other tasks run on.
+
+Re-verifying gates, force advance and approvals are rejected with a reason. Once the run has
+ended, `roko plan run --resume-plan` re-runs the tasks that did not pass.
 
 </details>
 

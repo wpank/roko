@@ -990,6 +990,55 @@ impl PlanSetScheduler {
         true
     }
 
+    /// Run `plan_id` again (gap-c002bb): a plan that failed or was cancelled
+    /// goes back to pending, and so does each plan blocked behind it that
+    /// nothing else blocks now. Returns whether `plan_id` runs again: not
+    /// when it is pending, running or did not fail, nor once the run has
+    /// stopped.
+    pub fn retry(&mut self, plan_id: &str) -> bool {
+        if self.stopped
+            || !matches!(
+                self.states.get(plan_id),
+                Some(SlotState::Done(PlanOutcome::Failed | PlanOutcome::Cancelled))
+            )
+        {
+            return false;
+        }
+        self.states.insert(plan_id.to_string(), SlotState::Pending);
+        self.failed = self
+            .states
+            .values()
+            .any(|state| *state == SlotState::Done(PlanOutcome::Failed));
+        // Execution order puts prerequisites first, so one pass frees a chain
+        // of blocked plans.
+        for plan in &self.order {
+            if self.states.get(plan) == Some(&SlotState::Done(PlanOutcome::Blocked))
+                && !self.blocked_now(plan)
+            {
+                self.states.insert(plan.clone(), SlotState::Pending);
+            }
+        }
+        true
+    }
+
+    /// Whether `plan_id` would be blocked if it were pending now: a
+    /// prerequisite ended without succeeding, or a plan failed in a
+    /// fail-fast run.
+    fn blocked_now(&self, plan_id: &str) -> bool {
+        let prerequisite_failed = self
+            .dependencies
+            .get(plan_id)
+            .into_iter()
+            .flatten()
+            .any(|prerequisite| {
+                matches!(
+                    self.states.get(prerequisite),
+                    Some(SlotState::Done(outcome)) if !outcome.succeeded()
+                )
+            });
+        prerequisite_failed || (self.failed && self.fail_fast)
+    }
+
     /// Start nothing more; pending plans stay unstarted.
     pub fn stop(&mut self) {
         self.stopped = true;
@@ -1743,6 +1792,41 @@ mod tests {
             )]
         );
         assert_eq!(admission.start, ["c"]);
+    }
+
+    /// gap-c002bb: a plan that failed runs again on the operator's retry,
+    /// and the plan it blocked waits for it again. A plan that is running,
+    /// waiting or succeeded is not retried, nor anything once the run stops.
+    #[test]
+    fn retry_runs_a_failed_plan_again_and_frees_what_it_blocked() {
+        let plans = [
+            plan("a", &[], &["a"], &[]),
+            plan("b", &["a"], &["b"], &[]),
+            plan("c", &[], &["c"], &[]),
+        ];
+        let mut scheduler = scheduler(&plans, PlanConflicts::new(), 2);
+
+        assert_eq!(scheduler.admit().start, ["a", "c"]);
+        assert!(!scheduler.retry("a"), "a is running");
+        scheduler.finish("a", PlanOutcome::Failed);
+        assert_eq!(
+            scheduler.admit().blocked,
+            [(
+                "b".to_string(),
+                BlockReason::Prerequisites(vec!["a".to_string()])
+            )]
+        );
+
+        assert!(scheduler.retry("a"));
+        assert!(!scheduler.retry("b"), "b waits for a again");
+        assert_eq!(scheduler.admit().start, ["a"]);
+        scheduler.finish("a", PlanOutcome::Succeeded);
+        assert_eq!(scheduler.admit().start, ["b"]);
+        assert!(!scheduler.retry("a"), "a succeeded");
+
+        scheduler.stop();
+        scheduler.finish("c", PlanOutcome::Failed);
+        assert!(!scheduler.retry("c"), "the run has stopped");
     }
 
     #[test]

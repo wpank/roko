@@ -256,9 +256,11 @@ impl FocusZone {
 pub enum ConfirmAction {
     RestartAllPlans,
     RestartPhase,
-    /// Cancel the selected plan. A Graph run cannot reset a plan yet, so the
-    /// reset keys (`R`, `Ctrl-d`) cancel it, and say so (gap-c002bb).
+    /// Reset the selected plan (`R`): a Graph run runs a plan that failed or
+    /// was cancelled earlier in the run again from scratch (gap-c002bb).
     ResetSelectedPlan(String),
+    /// Cancel the selected plan (`C`, `Ctrl-d`).
+    CancelPlan(String),
     ForceAdvance(String),
     ReverifyPlan(String),
     DiagnosePlan(String),
@@ -281,9 +283,8 @@ pub enum ConfirmAction {
     MergeAllDone {
         branches: Vec<String>,
     },
-    /// Cancel (skip) a specific running agent's task (P3-TUI-4). A Graph run
-    /// rejects it, with its reason, until it can stop a single task
-    /// (gap-c002bb).
+    /// Stop a specific running agent's task (P3-TUI-4): a Graph run ends the
+    /// agent, and the task fails as stopped by the operator (gap-c002bb).
     ///
     /// `plan_id` and `task_id` are empty when fired from the key handler and
     /// are filled in by `resolve_confirm_action` from the selected agent row.
@@ -298,7 +299,8 @@ impl std::fmt::Display for ConfirmAction {
         match self {
             Self::RestartAllPlans => write!(f, "Restart all plans?"),
             Self::RestartPhase => write!(f, "Restart current phase?"),
-            Self::ResetSelectedPlan(id) => write!(f, "Cancel plan {id}?"),
+            Self::ResetSelectedPlan(id) => write!(f, "Reset plan {id}?"),
+            Self::CancelPlan(id) => write!(f, "Cancel plan {id}?"),
             Self::ForceAdvance(id) => write!(f, "Force-advance plan {id}?"),
             Self::ReverifyPlan(id) => write!(f, "Re-verify plan {id}?"),
             Self::DiagnosePlan(id) => write!(f, "Diagnose plan {id}?"),
@@ -479,9 +481,9 @@ pub enum TuiAction {
     /// Re-parse `roko.toml` into the config editor cache immediately.
     ConfigReload,
 
-    // -- force / reset --
+    // -- force / cancel --
     ForceAdvance,
-    ResetPlanState,
+    CancelSelectedPlan,
     ReverifyPlan,
 
     // -- confirm dialog --
@@ -946,7 +948,7 @@ fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
         }
         // Ctrl-d: cancel selected plan (confirm)
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(TuiAction::ResetPlanState)
+            Some(TuiAction::CancelSelectedPlan)
         }
         // Ctrl-e: toggle full-screen post-processing
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1077,7 +1079,9 @@ fn handle_plans_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Char('S') => TuiAction::RepairWithContext, // repair with error context
         KeyCode::Char('R') => {
             TuiAction::RequestConfirm(ConfirmAction::ResetSelectedPlan(String::new()))
-        } // cancel plan (confirm)
+        } // reset plan (confirm)
+        // cancel plan (confirm)
+        KeyCode::Char('C') => TuiAction::RequestConfirm(ConfirmAction::CancelPlan(String::new())),
         KeyCode::Char('c') => TuiAction::ReverifyGatesOnly, // reverify gates only
         KeyCode::Char('F') => TuiAction::ForceAdvance,
         KeyCode::Char('V') => TuiAction::ReverifyPlan,

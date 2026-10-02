@@ -158,7 +158,8 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("c", "re-verify gates only", theme));
     lines.push(kb("V", "re-verify plan", theme));
     lines.push(kb("F", "force-advance past current task", theme));
-    lines.push(kb("R", "cancel plan (confirm)", theme));
+    lines.push(kb("R", "reset a failed plan: run it again (confirm)", theme));
+    lines.push(kb("C", "cancel plan (confirm)", theme));
     lines.push(kb("m", "merge plan branch (confirm)", theme));
     lines.push(kb("M", "merge all completed (confirm)", theme));
     lines.push(Line::from(""));
@@ -178,7 +179,7 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.push(kb("a", "approve pending command", theme));
     lines.push(kb("A", "approve all pending", theme));
     lines.push(kb("x", "reject pending command", theme));
-    lines.push(kb("X", "cancel selected agent's task (skip)", theme));
+    lines.push(kb("X", "stop selected agent's task (skip)", theme));
     lines.push(kb("i", "inject directive (not available yet)", theme));
     lines.push(kb("g", "toggle agent pane grouping", theme));
     lines.push(kb("t", "toggle agent topology", theme));

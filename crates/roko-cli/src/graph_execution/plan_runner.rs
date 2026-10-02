@@ -1705,6 +1705,12 @@ async fn run_graph_plan_body(
     );
     let mut running = futures::stream::FuturesUnordered::new();
     let mut controls = std::collections::HashMap::<String, PlanControl>::new();
+    // A TUI skip stops one task's running agent (gap-c002bb).
+    let task_stops = graph_task_dispatcher.operator_stops();
+    // Plans the operator asked to run again, until they start, and whether
+    // any was: the run then settles by each plan's last run.
+    let mut pending_reruns = std::collections::HashMap::<String, PlanRerun>::new();
+    let mut reran_plans = false;
     // A checkpoint or budget-ledger error in one plan stops the run once the
     // plans still running have finished.
     let mut first_error: Option<anyhow::Error> = None;
@@ -1724,13 +1730,15 @@ async fn run_graph_plan_body(
             scheduler.stop();
         }
         forward_control_file(&control_state_dir, &control_file_sender);
-        for plan_id in route_execution_commands(
+        let routed = route_execution_commands(
             &mut exec_cmd_rx,
             &tui_ack_tx,
             &controls,
             &mut scheduler,
             &shared_pause_flag,
-        ) {
+            &task_stops,
+        );
+        for plan_id in routed.cancelled_before_start {
             graph_tui_bridge.log_event(
                 "graph.plan_cancelled",
                 &format!("plan '{plan_id}' cancelled before it started"),
@@ -1738,6 +1746,11 @@ async fn run_graph_plan_body(
             graph_tui_bridge.plan_completed(&plan_id, false);
             plan_outcomes.insert(plan_id, false);
             all_succeeded = false;
+        }
+        for (plan_id, rerun) in routed.reruns {
+            graph_tui_bridge.log_event("graph.plan_rerun", &rerun.describe(&plan_id));
+            pending_reruns.insert(plan_id, rerun);
+            reran_plans = true;
         }
 
         let admission = scheduler.admit();
@@ -1765,7 +1778,10 @@ async fn run_graph_plan_body(
                 .ok_or_else(|| {
                     anyhow!("Graph execution order references unloaded plan '{plan_id}'")
                 })?;
-            let control = PlanControl::default();
+            let control = PlanControl {
+                rerun: pending_reruns.remove(&plan_id),
+                ..PlanControl::default()
+            };
             controls.insert(plan_id, control.clone());
             // Agents of the run's other plans hear what this one writes (gap-c09fc7).
             let footprint = super::plan_set::PlanFootprint::of(plan, workdir, cargo.as_ref());
@@ -1812,6 +1828,12 @@ async fn run_graph_plan_body(
         }
     }
     drop(running);
+    // A plan the operator ran again settles by its last run.
+    if reran_plans {
+        all_succeeded = plan_execution_order
+            .iter()
+            .all(|plan_id| plan_outcomes.get(plan_id) == Some(&true));
+    }
 
     // Commands that arrived after the last plan finished have nothing left
     // to act on.
@@ -2545,6 +2567,44 @@ fn close_run_manifest(ctx: &PlanRunContext<'_>, run_id: &str, status: GraphCheck
 struct PlanControl {
     /// Set by a TUI cancel aimed at this plan, or at every running plan.
     cancel: Arc<AtomicBool>,
+    /// Set when the operator runs the plan again after it failed or was
+    /// cancelled earlier in this run (gap-c002bb).
+    rerun: Option<PlanRerun>,
+}
+
+/// How the operator asked to run a plan again ([`route_execution_commands`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanRerun {
+    /// Soft retry, or repair that keeps completed work: resume the plan's
+    /// checkpoint, so the tasks that passed stay done and the rest run again.
+    Resume,
+    /// Reset, or a clean repair: archive the plan's checkpoint, as `--fresh`
+    /// does, and run every task again.
+    Fresh,
+}
+
+impl PlanRerun {
+    /// What the run does, for the TUI's acknowledgement and the event log.
+    fn describe(self, plan_id: &str) -> String {
+        match self {
+            Self::Resume => format!(
+                "plan '{plan_id}' runs again from its checkpoint: the tasks that passed stay done"
+            ),
+            Self::Fresh => format!(
+                "plan '{plan_id}' runs again from scratch: its checkpoint is archived"
+            ),
+        }
+    }
+}
+
+/// What [`route_execution_commands`] changed in the plan set.
+#[derive(Debug, Default)]
+struct RoutedCommands {
+    /// Plans cancelled before they started.
+    cancelled_before_start: Vec<String>,
+    /// Plans the operator runs again, each with how
+    /// ([`PlanSetScheduler::retry`]).
+    reruns: Vec<(String, PlanRerun)>,
 }
 
 /// How one plan's run ended.
@@ -2616,23 +2676,28 @@ fn report_blocked_plan(
     graph_tui_bridge.plan_completed(plan_id, false);
 }
 
-/// Drain pending TUI commands.
+/// Drain pending TUI commands (gap-c002bb).
 ///
-/// Cancel reaches the plan it names when that plan is running, drops it
-/// when it has not started, and reaches every running plan when it names
-/// none. Pause and resume set the pause flag every plan shares. Every other
-/// command, and a cancel naming a plan that is neither running nor waiting,
-/// is rejected with the reason it cannot take effect ([`reject_command`]):
-/// none is acknowledged and then dropped (gap-c002bb). Returns the plans
-/// cancelled before they started.
+/// - Cancel reaches the plan it names when that plan is running, drops it
+///   when it has not started, and reaches every running plan when it names
+///   none.
+/// - Pause and resume set the pause flag every plan shares.
+/// - Skip stops the running agent of the task it names (`task_stops`); that
+///   task fails as stopped by the operator, and its plan runs on.
+/// - Soft retry, repair and reset run again a plan that failed or was
+///   cancelled earlier in this run ([`PlanRerun`]).
+///
+/// Every other command, and one these cannot carry out, is rejected with
+/// the reason ([`reject_command`]): none is acknowledged and then dropped.
 fn route_execution_commands(
     commands: &mut tokio::sync::mpsc::Receiver<crate::execution_control::ExecutionCommand>,
     acks: &tokio::sync::mpsc::Sender<crate::execution_control::CommandAck>,
     controls: &std::collections::HashMap<String, PlanControl>,
     scheduler: &mut PlanSetScheduler,
     pause: &AtomicBool,
-) -> Vec<String> {
-    let mut cancelled_before_start = Vec::new();
+    task_stops: &crate::graph_task_dispatch::OperatorStops,
+) -> RoutedCommands {
+    let mut routed = RoutedCommands::default();
     while let Ok(cmd) = commands.try_recv() {
         let (status, note) = match &cmd.kind {
             ExecutionCommandKind::Cancel => match cmd.plan_id.as_deref() {
@@ -2641,7 +2706,7 @@ fn route_execution_commands(
                         control.cancel.store(true, Ordering::Release);
                         (CommandAckStatus::Completed, None)
                     } else if scheduler.cancel_pending(plan_id) {
-                        cancelled_before_start.push(plan_id.to_string());
+                        routed.cancelled_before_start.push(plan_id.to_string());
                         (CommandAckStatus::Completed, None)
                     } else {
                         reject_command(&cmd, &format!("plan '{plan_id}' is not running"))
@@ -2669,20 +2734,41 @@ fn route_execution_commands(
             }
             ExecutionCommandKind::SoftRetry
             | ExecutionCommandKind::Repair { .. }
-            | ExecutionCommandKind::Reset => reject_command(
-                &cmd,
-                "retry, repair and reset are not available during a Graph run; once it ends, \
-                 `roko plan run --resume-plan` re-runs the tasks that did not pass",
-            ),
+            | ExecutionCommandKind::Reset => {
+                let rerun = match cmd.kind {
+                    ExecutionCommandKind::Reset
+                    | ExecutionCommandKind::Repair {
+                        preserve_completed: false,
+                    } => PlanRerun::Fresh,
+                    _ => PlanRerun::Resume,
+                };
+                match cmd.plan_id.as_deref() {
+                    Some(plan_id) if scheduler.retry(plan_id) => {
+                        routed.reruns.push((plan_id.to_string(), rerun));
+                        (CommandAckStatus::Accepted, Some(rerun.describe(plan_id)))
+                    }
+                    Some(plan_id) => reject_command(&cmd, &rerun_refusal(scheduler, plan_id)),
+                    None => reject_command(&cmd, "name the plan to run again"),
+                }
+            }
             ExecutionCommandKind::ReverifyGates => reject_command(
                 &cmd,
                 "re-verifying gates is not available during a Graph run",
             ),
-            ExecutionCommandKind::Skip => reject_command(
-                &cmd,
-                "stopping or skipping one task is not available during a Graph run; cancel its \
-                 plan instead",
-            ),
+            ExecutionCommandKind::Skip => match (cmd.plan_id.as_deref(), cmd.task_id.as_deref()) {
+                (Some(plan_id), Some(task_id)) if task_stops.stop(plan_id, task_id) => (
+                    CommandAckStatus::Completed,
+                    Some(format!(
+                        "stopped the agent of {plan_id}/{task_id}: the task fails as stopped by \
+                         the operator, and its plan runs on"
+                    )),
+                ),
+                (Some(plan_id), Some(task_id)) => reject_command(
+                    &cmd,
+                    &format!("{plan_id}/{task_id} has no running agent to stop"),
+                ),
+                _ => reject_command(&cmd, "name the plan and task whose agent to stop"),
+            },
             ExecutionCommandKind::Approve { .. } | ExecutionCommandKind::RejectApproval { .. } => {
                 reject_command(
                     &cmd,
@@ -2699,7 +2785,26 @@ fn route_execution_commands(
         }
         let _ = acks.try_send(ack_for(&cmd, status, note));
     }
-    cancelled_before_start
+    routed
+}
+
+/// Why plan `plan_id` cannot run again now ([`PlanSetScheduler::retry`]).
+fn rerun_refusal(scheduler: &PlanSetScheduler, plan_id: &str) -> String {
+    if scheduler.is_running(plan_id) {
+        return format!("plan '{plan_id}' is running; cancel it first");
+    }
+    match scheduler.outcome(plan_id) {
+        Some(PlanOutcome::Succeeded | PlanOutcome::Unverified) => {
+            format!("plan '{plan_id}' did not fail")
+        }
+        Some(PlanOutcome::Blocked) => {
+            format!("plan '{plan_id}' is blocked: a plan it depends on did not succeed")
+        }
+        Some(PlanOutcome::Failed | PlanOutcome::Cancelled | PlanOutcome::Interrupted) => {
+            "the plan run is stopping".to_string()
+        }
+        None => format!("plan '{plan_id}' has not run yet"),
+    }
 }
 
 /// The acknowledgement of a TUI command that takes no effect: rejected with
@@ -2905,13 +3010,20 @@ async fn run_one_plan(
         }
     };
     drop_exclusion_for_worktrees(&mut graph, ctx.worktree_per_task);
+    // A plan the operator runs again resumes its checkpoint, or archives it
+    // to start over, whatever the run's `--fresh` (gap-c002bb).
+    let fresh_checkpoint = match control.rerun {
+        Some(PlanRerun::Resume) => false,
+        Some(PlanRerun::Fresh) => true,
+        None => ctx.fresh,
+    };
     let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint_for_run(
         ctx.workdir,
         ctx.resume_plan,
         &plan.id,
         ctx.plan_count,
         &graph,
-        ctx.fresh,
+        fresh_checkpoint,
         ctx.force_resume,
         ctx.caller_run_id.filter(|_| ctx.plan_count == 1),
     )?;
@@ -5396,74 +5508,117 @@ exec sleep 60
             .expect("TUI thread joined before drop returned");
     }
 
-    /// Route `commands`, each a kind and the plan it names, through
-    /// [`route_execution_commands`] while plan `01-run` runs and `02-wait`
-    /// waits to start. Returns the plans cancelled before they started, the
-    /// acknowledgements, and whether `01-run` was asked to cancel.
+    /// What [`route_tui_commands`] saw.
+    struct RoutedTui {
+        routed: RoutedCommands,
+        acks: Vec<crate::execution_control::CommandAck>,
+        /// Whether `01-run` was asked to cancel.
+        run_cancelled: bool,
+    }
+
+    /// Route `commands`, each a kind, the plan it names and the task, through
+    /// [`route_execution_commands`] while plan `01-run` runs, `02-wait` waits
+    /// for it, and `03-failed` has failed. `task_stops` holds the agents
+    /// that run.
     fn route_tui_commands(
-        commands: Vec<(ExecutionCommandKind, Option<&str>)>,
-    ) -> (Vec<String>, Vec<crate::execution_control::CommandAck>, bool) {
+        commands: Vec<(ExecutionCommandKind, Option<&str>, Option<&str>)>,
+        task_stops: &crate::graph_task_dispatch::OperatorStops,
+    ) -> RoutedTui {
         let (sender, mut receiver, ack_tx, ack_rx) = ExecutionCommandSender::channel("graph");
-        for (kind, plan_id) in commands {
+        for (kind, plan_id, task_id) in commands {
             let command = sender.build_command(
                 kind,
                 plan_id.map(str::to_string),
-                Some("T1".to_string()),
+                task_id.map(str::to_string),
                 None,
             );
             sender.try_send(command).expect("queue the command");
         }
         let order = PlanSetOrder {
-            order: vec!["01-run".to_string(), "02-wait".to_string()],
+            order: vec![
+                "01-run".to_string(),
+                "02-wait".to_string(),
+                "03-failed".to_string(),
+            ],
             ..PlanSetOrder::default()
         };
-        let mut scheduler = PlanSetScheduler::new(&order, PlanConflicts::new(), 2, false);
+        let mut conflicts = PlanConflicts::new();
+        for (plan, other) in [("01-run", "02-wait"), ("02-wait", "01-run")] {
+            conflicts
+                .entry(plan.to_string())
+                .or_default()
+                .insert(other.to_string(), "shared tree".to_string());
+        }
+        let mut scheduler = PlanSetScheduler::new(&order, conflicts, 2, false);
+        assert_eq!(scheduler.admit().start, ["01-run", "03-failed"]);
+        scheduler.finish("03-failed", PlanOutcome::Failed);
         let running = PlanControl::default();
         let controls = HashMap::from([("01-run".to_string(), running.clone())]);
         let pause = AtomicBool::new(false);
-        let cancelled =
-            route_execution_commands(&mut receiver, &ack_tx, &controls, &mut scheduler, &pause);
-        let acks = CommandAckReceiver::new(ack_rx).drain();
-        (cancelled, acks, running.cancel.load(Ordering::Acquire))
+        let routed = route_execution_commands(
+            &mut receiver,
+            &ack_tx,
+            &controls,
+            &mut scheduler,
+            &pause,
+            task_stops,
+        );
+        RoutedTui {
+            routed,
+            acks: CommandAckReceiver::new(ack_rx).drain(),
+            run_cancelled: running.cancel.load(Ordering::Acquire),
+        }
     }
 
-    /// gap-c002bb: a Graph run carries out pause, resume and cancel. Every
-    /// other TUI command, and a cancel naming a plan that is neither running
-    /// nor waiting, is rejected with its reason, never accepted and dropped.
+    /// gap-c002bb: a Graph run rejects, with its reason, every TUI command
+    /// it cannot carry out, and never accepts one and drops it: gate
+    /// re-verification, approvals, a cancel naming a plan that is neither
+    /// running nor waiting, a retry of a plan that is running, waiting or
+    /// unnamed, and a skip of a task with no running agent.
     #[test]
     fn unsupported_tui_commands_are_rejected_with_a_reason() {
-        let unsupported = [
-            ExecutionCommandKind::SoftRetry,
-            ExecutionCommandKind::Repair {
-                preserve_completed: true,
-            },
-            ExecutionCommandKind::Repair {
-                preserve_completed: false,
-            },
-            ExecutionCommandKind::ReverifyGates,
-            ExecutionCommandKind::Skip,
-            ExecutionCommandKind::Approve {
-                approval_id: "ap-1".to_string(),
-            },
-            ExecutionCommandKind::RejectApproval {
-                approval_id: "ap-1".to_string(),
-                reason: "not now".to_string(),
-            },
-            ExecutionCommandKind::Reset,
+        let commands = vec![
+            (ExecutionCommandKind::ReverifyGates, Some("01-run"), None),
+            (
+                ExecutionCommandKind::Approve {
+                    approval_id: "ap-1".to_string(),
+                },
+                Some("01-run"),
+                None,
+            ),
+            (
+                ExecutionCommandKind::RejectApproval {
+                    approval_id: "ap-1".to_string(),
+                    reason: "not now".to_string(),
+                },
+                Some("01-run"),
+                None,
+            ),
+            (ExecutionCommandKind::Cancel, Some("09-gone"), None),
+            (ExecutionCommandKind::SoftRetry, Some("01-run"), None),
+            (ExecutionCommandKind::Reset, Some("02-wait"), None),
+            (
+                ExecutionCommandKind::Repair {
+                    preserve_completed: true,
+                },
+                None,
+                None,
+            ),
+            (ExecutionCommandKind::Skip, Some("01-run"), Some("T9")),
+            (ExecutionCommandKind::Skip, Some("01-run"), None),
         ];
-        let mut commands: Vec<_> = unsupported
-            .into_iter()
-            .map(|kind| (kind, Some("01-run")))
-            .collect();
-        commands.push((ExecutionCommandKind::Cancel, Some("03-gone")));
         let sent = commands.len();
+        let task_stops = crate::graph_task_dispatch::OperatorStops::default();
+        let agent = task_stops.register("01-run", "T1");
 
-        let (cancelled, acks, run_cancelled) = route_tui_commands(commands);
+        let seen = route_tui_commands(commands, &task_stops);
 
-        assert!(cancelled.is_empty());
-        assert!(!run_cancelled);
-        assert_eq!(acks.len(), sent);
-        for ack in &acks {
+        assert!(seen.routed.cancelled_before_start.is_empty());
+        assert!(seen.routed.reruns.is_empty());
+        assert!(!seen.run_cancelled);
+        assert!(!agent.is_stopped());
+        assert_eq!(seen.acks.len(), sent);
+        for ack in &seen.acks {
             assert_eq!(ack.status, CommandAckStatus::Rejected, "{ack:?}");
             assert!(
                 !ack.message.as_deref().unwrap_or_default().is_empty(),
@@ -5476,15 +5631,81 @@ exec sleep 60
     /// before it starts; both are acknowledged as done.
     #[test]
     fn tui_cancel_reaches_a_running_plan_and_drops_a_waiting_one() {
-        let (cancelled, acks, run_cancelled) = route_tui_commands(vec![
-            (ExecutionCommandKind::Cancel, Some("01-run")),
-            (ExecutionCommandKind::Cancel, Some("02-wait")),
-        ]);
+        let seen = route_tui_commands(
+            vec![
+                (ExecutionCommandKind::Cancel, Some("01-run"), None),
+                (ExecutionCommandKind::Cancel, Some("02-wait"), None),
+            ],
+            &crate::graph_task_dispatch::OperatorStops::default(),
+        );
 
-        assert_eq!(cancelled, vec!["02-wait".to_string()]);
-        assert!(run_cancelled);
-        let statuses: Vec<_> = acks.iter().map(|ack| ack.status).collect();
+        assert_eq!(seen.routed.cancelled_before_start, ["02-wait"]);
+        assert!(seen.run_cancelled);
+        let statuses: Vec<_> = seen.acks.iter().map(|ack| ack.status).collect();
         assert_eq!(statuses, vec![CommandAckStatus::Completed; 2]);
+    }
+
+    /// gap-c002bb: a TUI skip naming a running task stops that task's agent,
+    /// not its sibling's, leaves the plan running, and is acknowledged as
+    /// done.
+    #[tokio::test]
+    async fn tui_skip_command_skips_the_running_task() {
+        let task_stops = crate::graph_task_dispatch::OperatorStops::default();
+        let skipped = task_stops.register("01-run", "T1");
+        let sibling = task_stops.register("01-run", "T2");
+
+        let seen = route_tui_commands(
+            vec![(ExecutionCommandKind::Skip, Some("01-run"), Some("T1"))],
+            &task_stops,
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), skipped.stopped())
+            .await
+            .expect("the skipped task's agent is told to stop");
+        assert!(!sibling.is_stopped(), "its sibling runs on");
+        assert!(!seen.run_cancelled, "the plan runs on");
+        let [ack] = seen.acks.as_slice() else {
+            panic!("one acknowledgement, got {:?}", seen.acks);
+        };
+        assert_eq!(ack.status, CommandAckStatus::Completed, "{ack:?}");
+    }
+
+    /// gap-c002bb: soft retry and reset run a plan that failed earlier in the
+    /// run again, resuming its checkpoint or starting over; the run accepts
+    /// both, and starts the plan once a slot is free.
+    #[test]
+    fn tui_retry_and_reset_run_a_failed_plan_again() {
+        for (kind, rerun) in [
+            (ExecutionCommandKind::SoftRetry, PlanRerun::Resume),
+            (
+                ExecutionCommandKind::Repair {
+                    preserve_completed: true,
+                },
+                PlanRerun::Resume,
+            ),
+            (ExecutionCommandKind::Reset, PlanRerun::Fresh),
+            (
+                ExecutionCommandKind::Repair {
+                    preserve_completed: false,
+                },
+                PlanRerun::Fresh,
+            ),
+        ] {
+            let seen = route_tui_commands(
+                vec![(kind.clone(), Some("03-failed"), None)],
+                &crate::graph_task_dispatch::OperatorStops::default(),
+            );
+
+            assert_eq!(
+                seen.routed.reruns,
+                [("03-failed".to_string(), rerun)],
+                "{kind}"
+            );
+            let [ack] = seen.acks.as_slice() else {
+                panic!("one acknowledgement, got {:?}", seen.acks);
+            };
+            assert_eq!(ack.status, CommandAckStatus::Accepted, "{kind}");
+        }
     }
 
     /// gap-19e596: with per-task worktrees no two tasks share a tree, so the

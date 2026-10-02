@@ -2061,6 +2061,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add knowledge");
@@ -2175,6 +2176,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add knowledge");
@@ -2244,6 +2246,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add strategy fragment");
@@ -2284,6 +2287,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add anti-knowledge");
@@ -2324,6 +2328,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add insight");
@@ -2544,6 +2549,7 @@ mod tests {
                     hdc_encoder_version: 0,
                     access_count: 0,
                     last_accessed: None,
+                    contradiction_count: 0,
                     activation_conditions: Vec::new(),
                 })
                 .expect("add anti-knowledge");
@@ -2586,6 +2592,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add strategy");
@@ -2675,6 +2682,7 @@ mod tests {
                     hdc_encoder_version: 0,
                     access_count: 0,
                     last_accessed: None,
+                    contradiction_count: 0,
                     activation_conditions: Vec::new(),
                 })
                 .expect("add heuristic");
@@ -2717,6 +2725,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add warning");

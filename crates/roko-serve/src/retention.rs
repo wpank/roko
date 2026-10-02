@@ -219,13 +219,6 @@ pub fn default_retention_policies() -> Vec<ArtifactRetentionPolicy> {
             max_size_bytes: 50 * 1024 * 1024,
             strategy: CompactionStrategy::Rotate,
         },
-        ArtifactRetentionPolicy {
-            artifact: "run-ledger.jsonl".into(),
-            path: "state/run-ledger.jsonl".into(),
-            max_age_hours: 720, // 30 days
-            max_size_bytes: 20 * 1024 * 1024,
-            strategy: CompactionStrategy::TailKeep { entries: 10_000 },
-        },
         // ── state/*.bak.* backup files ────────────────────────────────────
         // Sentinel: apply_retention calls sweep_bak_files() for this entry
         // instead of acting on the whole state/ directory.
@@ -667,7 +660,7 @@ mod tests {
     #[test]
     fn default_policies_cover_expected_artifacts() {
         let policies = default_retention_policies();
-        assert!(policies.len() >= 13);
+        assert!(policies.len() >= 12);
 
         let names: Vec<&str> = policies.iter().map(|p| p.artifact.as_str()).collect();
         // Previously existing artifacts.
@@ -689,10 +682,8 @@ mod tests {
             names.contains(&"chain-watcher.log"),
             "missing chain-watcher.log policy"
         );
-        assert!(
-            names.contains(&"run-ledger.jsonl"),
-            "missing run-ledger.jsonl policy"
-        );
+        // Runner-v2's run ledger has no writer (backlog 2128).
+        assert!(!names.iter().any(|name| name.contains("ledger")));
         // New: backup file sweep sentinel.
         assert!(names.contains(&"state/bak"), "missing state/bak policy");
     }
@@ -802,12 +793,7 @@ mod tests {
     #[test]
     fn new_log_policies_use_non_manual_strategies() {
         let policies = default_retention_policies();
-        for artifact in &[
-            "events.jsonl",
-            "roko.log",
-            "chain-watcher.log",
-            "run-ledger.jsonl",
-        ] {
+        for artifact in &["events.jsonl", "roko.log", "chain-watcher.log"] {
             let p = policies
                 .iter()
                 .find(|p| p.artifact == *artifact)

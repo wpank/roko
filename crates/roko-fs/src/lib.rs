@@ -44,7 +44,6 @@ pub mod pointer;
 pub mod run_index;
 pub mod target_cleanup;
 pub mod tool_audit;
-pub mod tool_metrics_sink;
 pub mod trace_sink;
 /// Where a workspace keeps its plans: `plans/`, or the legacy `.roko/plans/`.
 pub mod workspace_plans;
@@ -81,5 +80,4 @@ pub use target_cleanup::{
     cleanup_workspace_caches, scan_target_dirs,
 };
 pub use tool_audit::{AuditLine, ScrubAuditAdapter, ToolAuditLog};
-pub use tool_metrics_sink::{JsonlMetricsSink, ToolMetricsRecord};
 pub use trace_sink::{JsonlTraceSink, TraceSinkHealth, default_trace_sink};

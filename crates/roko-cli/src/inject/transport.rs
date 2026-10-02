@@ -14,10 +14,11 @@
 //! [`InjectWireReply`]. `roko plan pause`, `resume`, `cancel` and `retry`
 //! send their commands this way too (1209): for those the session is the
 //! plan the command names as given, or empty for the whole run, and the
-//! driver decides. An accepted request is answered again, not delivered
-//! again, when it is sent a second time. A hello, request or acknowledgement
-//! that does not arrive in time ends the exchange, and no side logs the
-//! payload.
+//! driver decides. So does `roko plan budget raise` (backlog 2118), whose
+//! payload is the plan's new ceiling in USD. An accepted request is answered
+//! again, not delivered again, when it is sent a second time. A hello,
+//! request or acknowledgement that does not arrive in time ends the
+//! exchange, and no side logs the payload.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,9 +49,10 @@ pub struct InjectWireRequest {
     /// plan control kind, the plan as named, or empty for the whole run.
     pub session: String,
     /// `directive`, `context` or `abort`, or a plan control kind: `pause`,
-    /// `resume`, `cancel` or `retry`.
+    /// `resume`, `cancel`, `retry` or `raise_budget`.
     pub kind: String,
-    /// The text to deliver; empty for an abort.
+    /// The text to deliver; empty for an abort. For `raise_budget`, the
+    /// plan's new ceiling in USD.
     pub payload: String,
 }
 
@@ -327,6 +329,28 @@ mod unix {
                 // The driver knows best which plan a control command can
                 // reach: a cancel reaches a plan that has not started, and a
                 // retry one that has ended.
+                let plan_id = Some(request.session.clone()).filter(|plan| !plan.is_empty());
+                (kind, plan_id)
+            } else if request.kind == "raise_budget" {
+                // `roko plan budget raise` (backlog 2118): the driver raises
+                // the ceiling of the running plan the session names.
+                let Some(ceiling_micro_usd) = request
+                    .payload
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(crate::graph_task_dispatch::plan_ceiling_micro_usd)
+                else {
+                    return InjectWireReply::new(
+                        request,
+                        InjectOutcome::Rejected,
+                        "a budget raise needs a positive amount in USD",
+                    );
+                };
+                let kind = ExecutionCommandKind::RaiseBudget {
+                    ceiling_micro_usd,
+                    requested_by: "roko plan budget raise".to_string(),
+                };
                 let plan_id = Some(request.session.clone()).filter(|plan| !plan.is_empty());
                 (kind, plan_id)
             } else {
@@ -650,6 +674,44 @@ mod unix {
             assert_eq!(pause.plan_id, None, "a pause applies to the whole run");
             assert_eq!(cancel.kind, ExecutionCommandKind::Cancel);
             assert_eq!(cancel.plan_id.as_deref(), Some("plan-9"));
+        }
+
+        /// backlog 2118: `roko plan budget raise` reaches the run as a raise
+        /// of the plan it names, carrying the new ceiling in micro-USD. A
+        /// raise that names no positive amount is refused before the run
+        /// sees it.
+        #[tokio::test]
+        async fn a_budget_raise_reaches_the_run_with_its_ceiling() {
+            let workdir = tempdir().expect("tempdir");
+            let (link, mut run) = link(Duration::from_secs(5));
+            let _server = start_inject_server(workdir.path(), link).expect("listen");
+            let raise = |id: &str, payload: &str| InjectWireRequest {
+                request_id: id.to_string(),
+                session: "plan-9".to_string(),
+                kind: "raise_budget".to_string(),
+                payload: payload.to_string(),
+            };
+
+            let refused = deliver(workdir.path(), &raise("req-nan", "ten dollars"))
+                .await
+                .expect("an answer");
+            assert_eq!(refused.outcome, InjectOutcome::Rejected);
+            assert!(run.commands.try_recv().is_err(), "the run never saw it");
+
+            let accepted = tokio::spawn(async move { run.accept_next().await });
+            let raised = deliver(workdir.path(), &raise("req-raise", " 0.25 "))
+                .await
+                .expect("an answer");
+            assert_eq!(raised.outcome, InjectOutcome::Accepted);
+            let command = accepted.await.expect("run");
+            assert_eq!(command.plan_id.as_deref(), Some("plan-9"));
+            assert_eq!(
+                command.kind,
+                ExecutionCommandKind::RaiseBudget {
+                    ceiling_micro_usd: 250_000,
+                    requested_by: "roko plan budget raise".to_string(),
+                }
+            );
         }
 
         /// A client that cannot present the run's token gets no answer, and

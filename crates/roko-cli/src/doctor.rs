@@ -1724,12 +1724,15 @@ fn check_v2_abstractions() -> DoctorCheck {
     }
 }
 
-/// Audit the `.roko/` state layout for version, canonical, and legacy files.
+/// Audit the `.roko/` state layout for version, canonical, legacy and orphan
+/// files.
 ///
-/// Produces up to three checks:
+/// Produces up to four checks:
 /// - `state_layout_version` -- verifies `.roko/VERSION` is current.
 /// - `state_canonical_files` -- lists which E02 canonical files are present.
 /// - `state_legacy_files` -- flags legacy files left over from V1 layouts.
+/// - `state_orphan_files` -- lists files no code writes or reads any more,
+///   with their sizes ([`orphan_state_files`]).
 ///
 /// Returns an empty slice when `.roko/` does not exist (workspace not yet
 /// initialized); the `layout` check already covers that case.
@@ -1818,10 +1821,6 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
     // These are the paths that current writers target.
     let canonical_paths: &[(&str, PathBuf)] = &[
         ("episodes.jsonl", layout.root_episodes_path()),
-        (
-            "gate-verdicts.jsonl",
-            layout.root().join("gate-verdicts.jsonl"),
-        ),
         ("signals.jsonl", layout.signals_path()),
         ("events.jsonl", layout.events_jsonl_path()),
         ("learn/gate-thresholds.json", layout.gate_thresholds_path()),
@@ -1928,7 +1927,101 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
     };
     checks.push(legacy_check);
 
+    // -- 4. Orphan files ------------------------------------------------------
+    // Files no code writes or reads any more (backlog 2128). Roko never
+    // deletes them.
+    let orphans = orphan_state_files(&layout);
+    let orphan_check = if orphans.is_empty() {
+        DoctorCheck {
+            id: "state_orphan_files".to_string(),
+            status: DoctorStatus::Ok,
+            message: "no orphan state files".to_string(),
+            detail: None,
+            path: Some(layout.root().display().to_string()),
+            url: None,
+            fix: None,
+        }
+    } else {
+        let total_bytes: u64 = orphans.iter().map(|(_, bytes)| bytes).sum();
+        let listed: Vec<String> = orphans
+            .iter()
+            .map(|(name, bytes)| format!("{name} ({})", size_label(*bytes)))
+            .collect();
+        DoctorCheck {
+            id: "state_orphan_files".to_string(),
+            status: DoctorStatus::Warn,
+            message: format!(
+                "{} orphan state file(s), {} in all, that no code writes or reads",
+                orphans.len(),
+                size_label(total_bytes)
+            ),
+            detail: Some(listed.join(", ")),
+            path: Some(layout.root().display().to_string()),
+            url: None,
+            fix: Some(
+                "delete them by hand if you do not need them; roko never deletes them"
+                    .to_string(),
+            ),
+        }
+    };
+    checks.push(orphan_check);
+
     checks
+}
+
+/// Files under `.roko/` that no code writes or reads any more, relative to
+/// `.roko/`, each with its size in bytes (backlog 2128): Runner-v2's run
+/// ledger and gate verdict log, the tool metrics and Lens samples nothing
+/// read (backlog 2123, 2124), and files no code names. The per-run taint
+/// graphs under `custody/` count as one entry.
+fn orphan_state_files(layout: &RokoLayout) -> Vec<(String, u64)> {
+    const ORPHANS: &[&str] = &[
+        "state/run-ledger.jsonl",
+        "gate-verdicts.jsonl",
+        "learn/compounding.jsonl",
+        "metrics/tool_metrics.jsonl",
+        "metrics/telemetry-observations.jsonl",
+        "metrics/prometheus.txt",
+        "metrics/registry_snapshot.json",
+    ];
+    let root = layout.root();
+    let mut orphans: Vec<(String, u64)> = ORPHANS
+        .iter()
+        .filter_map(|name| {
+            let metadata = std::fs::metadata(root.join(name)).ok()?;
+            metadata.is_file().then(|| ((*name).to_string(), metadata.len()))
+        })
+        .collect();
+    let taint_graphs: Vec<u64> = std::fs::read_dir(root.join("custody"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("taint-graph-run-") && name.ends_with(".json")
+        })
+        .filter_map(|entry| entry.metadata().ok().map(|metadata| metadata.len()))
+        .collect();
+    if !taint_graphs.is_empty() {
+        orphans.push((
+            format!(
+                "custody/taint-graph-run-*.json, {} files",
+                taint_graphs.len()
+            ),
+            taint_graphs.iter().sum(),
+        ));
+    }
+    orphans
+}
+
+/// `bytes` in KB, or in MB from 1 MB up.
+fn size_label(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{} KB", bytes.div_ceil(1024))
+    }
 }
 
 /// Check for configured harness providers (Hermes, OpenClaw) and verify
@@ -3411,7 +3504,7 @@ mod tests {
     /// The core config loader uses `deny_unknown_fields` on many struct
     /// sections, so we must write a core `RokoConfig` rather than the CLI
     /// `Config` (which has extra fields like `prompt.budgets`,
-    /// `budget.warn_at_percent`, etc.).
+    /// `budget.max_session_usd`, etc.).
     fn write_project_config(workdir: &Path, config: Config) {
         let mut core_config = roko_core::config::RokoConfig::default();
         // Forward the serve auth settings the doctor tests rely on.
@@ -4114,7 +4207,12 @@ mod tests {
             .expect("ensure_dirs");
 
         let checks = check_state_layout_audit(temp.path());
-        assert_eq!(checks.len(), 3, "should produce exactly 3 checks");
+        assert_eq!(checks.len(), 4, "should produce exactly 4 checks");
+        let orphan_check = checks
+            .iter()
+            .find(|c| c.id == "state_orphan_files")
+            .expect("state_orphan_files check");
+        assert_eq!(orphan_check.status, DoctorStatus::Ok);
 
         let version_check = checks
             .iter()
@@ -4135,6 +4233,50 @@ mod tests {
             DoctorStatus::Ok,
             "fresh V3 workspace should have no legacy files"
         );
+    }
+
+    /// backlog 2128: the doctor lists the state files no code writes or reads
+    /// any more, with their sizes, as a warning, and deletes none of them.
+    #[tokio::test]
+    async fn state_layout_audit_lists_orphan_files() {
+        let temp = tempdir().unwrap();
+        let layout = RokoLayout::for_project(temp.path());
+        layout.ensure_dirs().await.expect("ensure dirs");
+        let root = layout.root().to_path_buf();
+        let write = |name: &str, bytes: usize| {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("parent dir");
+            std::fs::write(&path, vec![b'x'; bytes]).expect("write orphan");
+            path
+        };
+        let ledger = write("state/run-ledger.jsonl", 2 * 1024 * 1024);
+        let verdicts = write("gate-verdicts.jsonl", 100);
+        write("custody/taint-graph-run-1.json", 1024);
+        write("custody/taint-graph-run-2.json", 1024);
+        write("custody/other.json", 1024);
+
+        let checks = check_state_layout_audit(temp.path());
+        let orphan_check = checks
+            .iter()
+            .find(|c| c.id == "state_orphan_files")
+            .expect("state_orphan_files check");
+
+        assert_eq!(orphan_check.status, DoctorStatus::Warn);
+        assert!(
+            orphan_check.message.starts_with("3 orphan state file(s)"),
+            "{}",
+            orphan_check.message
+        );
+        let detail = orphan_check.detail.as_deref().unwrap_or_default();
+        for listed in [
+            "state/run-ledger.jsonl (2.0 MB)",
+            "gate-verdicts.jsonl (1 KB)",
+            "custody/taint-graph-run-*.json, 2 files (2 KB)",
+        ] {
+            assert!(detail.contains(listed), "{listed}: {detail}");
+        }
+        assert!(!detail.contains("other.json"), "{detail}");
+        assert!(ledger.exists() && verdicts.exists(), "roko deletes no orphan");
     }
 
     #[tokio::test]

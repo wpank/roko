@@ -4502,8 +4502,10 @@ mod tests {
         drop(rebound);
     }
 
+    /// backlog 2124: the serve lifecycle runs its periodic telemetry
+    /// observer, keeps no Lens sample on disk, and shuts down.
     #[tokio::test(flavor = "multi_thread")]
-    async fn run_server_with_state_emits_periodic_telemetry_and_shuts_down() {
+    async fn run_server_with_state_persists_no_telemetry_and_shuts_down() {
         let dir = tempdir().expect("tempdir");
         let state = Arc::new(
             build_app_state(
@@ -4524,27 +4526,20 @@ mod tests {
 
         let server_state = Arc::clone(&state);
         let server = tokio::spawn(run_server_with_state(server_state, "127.0.0.1", port));
-        let telemetry_path = state.layout.telemetry_observations_path();
-        let observations = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            loop {
-                if let Ok(contents) = tokio::fs::read_to_string(&telemetry_path).await {
-                    let observations = contents
-                        .lines()
-                        .filter_map(|line| {
-                            serde_json::from_str::<roko_core::obs::TelemetryObservation>(line).ok()
-                        })
-                        .collect::<Vec<_>>();
-                    if observations.len() >= 3 {
-                        break observations;
-                    }
-                }
+        let listening = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err()
+            {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
         .await;
+        // The observer samples at once, then every 30 s.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // Always cancel and join the production lifecycle before asserting so
-        // a failed observation cannot strand server background tasks in tests.
+        // a failed check cannot strand server background tasks in tests.
         state.shutdown().await;
         let server_result = tokio::time::timeout(std::time::Duration::from_secs(3), server)
             .await
@@ -4552,12 +4547,9 @@ mod tests {
             .expect("server task panicked");
         server_result.expect("server returned an error");
 
-        let observations = observations.expect("serve lifecycle did not emit telemetry");
-        let names = observations
-            .iter()
-            .map(|observation| observation.lens_name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(names, ["token-usage", "latency", "cost"]);
+        listening.expect("the server never listened");
+        let samples = dir.path().join(".roko/metrics/telemetry-observations.jsonl");
+        assert!(!samples.exists(), "Lens samples are not persisted");
         assert!(state.cancel.is_cancelled());
     }
 

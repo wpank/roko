@@ -622,6 +622,9 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         settled: &SettledAttempt,
     ) {
+        // Spend the attempt settled on any path, its helper calls included,
+        // raises the plan's budget alerts it crossed (backlog 2116).
+        self.announce_budget_alerts(&spec.plan_id);
         self.credit_reflex_rule(spec, task, settled).await;
         self.note_ladder_outcome(spec, task, settled);
         let Some(facade) = &self.feedback.feedback_facade else {

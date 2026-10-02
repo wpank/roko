@@ -42,7 +42,8 @@ What each subsystem is and where it lives. The table makes no maturity or status
 | GitHub integration | `roko github status`; `GitHubOps` trait with no-op and live adapters; `[github]` config | `crates/roko-cli/src/commands/github.rs`, `crates/roko-cli/src/github_ops.rs`, `crates/roko-cli/src/github_ops_impl.rs`, `roko.toml` |
 | Plugins | Plugin manifests, declarative tools, capability policy, dependency resolution | `crates/roko-plugin/` |
 | Chain primitives | Optional chain client plus local registry, marketplace, arena and DeFi state machines | `crates/roko-chain/` |
-| Signal log | Canonical signal log (a legacy `engrams.jsonl` is read only as a fallback) | `.roko/signals.jsonl` (path logic in `crates/roko-fs/src/layout.rs`) |
+| Signal log | The kernel substrate's log (`FileSubstrate`; a legacy `engrams.jsonl` is read only as a fallback). Serve and `roko prd plan` write it; plan runs do not. `roko status` and `roko replay` read it | `.roko/signals.jsonl` (path logic in `crates/roko-fs/src/layout.rs`) |
+| Plan run records | What a plan run writes: per run, an attempt-open line and one settled verdict per attempt (`attempts.jsonl`) and the run manifest (`manifest.json`); for the workspace, the run's dashboard events (`events.jsonl`); per plan, the execution state above | `.roko/runs/<run>/` (`attempts.jsonl`, `manifest.json`), `.roko/events.jsonl` |
 
 ## Critical rules
 
@@ -327,7 +328,8 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | **Graph checkpoints** | `/Users/will/dev/nunchi/roko/roko/.roko/state/graph/` |
 | **Plans** | `/Users/will/dev/nunchi/roko/roko/plans/` |
 | **Research artifacts** | `/Users/will/dev/nunchi/roko/roko/.roko/research/` |
-| **Signal log** | `/Users/will/dev/nunchi/roko/roko/.roko/signals.jsonl` |
+| **Signal log (kernel substrate; plan runs do not write it)** | `/Users/will/dev/nunchi/roko/roko/.roko/signals.jsonl` |
+| **Plan run records** | `/Users/will/dev/nunchi/roko/roko/.roko/runs/<run>/` (`attempts.jsonl`, `manifest.json`), `/Users/will/dev/nunchi/roko/roko/.roko/events.jsonl` |
 | **Episode log** | `/Users/will/dev/nunchi/roko/roko/.roko/episodes.jsonl` |
 
 ## Reference material (read-only, do not modify)

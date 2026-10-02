@@ -1853,16 +1853,14 @@ impl AgentDispatcherV2 {
             // Thread the persistent file audit adapter so every tool call
             // records scrubbed admit/result lines to disk.
             tool_audit: self.tool_audit.clone(),
-            // find-f489db: each tool call also leaves a closed trace and a
-            // metrics record, and all three join back to the attempt.
+            // find-f489db: each tool call also leaves a closed trace, and
+            // both join back to the attempt.
             trace_sink: self
                 .observability
                 .as_ref()
                 .map(roko_fs::FsObservabilitySinks::trace_sink_dyn),
-            metrics_sink: self
-                .observability
-                .as_ref()
-                .map(roko_fs::FsObservabilitySinks::metrics_sink_dyn),
+            // No tool metrics file: nothing read it (backlog 2123).
+            metrics_sink: None,
             tool_correlation: Some(correlation),
             // gap-ff95f5: the run's tool calls leave durable safety provenance.
             provenance_sink,

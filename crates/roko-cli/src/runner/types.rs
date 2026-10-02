@@ -40,6 +40,9 @@ pub struct ControlCommand {
     /// Optional task identifier for task-scoped retry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// The new ceiling, in USD, of a [`ControlAction::RaiseBudget`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
 }
 
 /// Control actions that can be sent to a running plan executor.
@@ -54,6 +57,9 @@ pub enum ControlAction {
     Cancel,
     /// Retry failed tasks in a plan (optionally a specific task).
     Retry,
+    /// Raise the budget ceiling of a running plan (requires `plan_id`) to
+    /// `budget_usd` for the rest of its run (backlog 2118).
+    RaiseBudget,
 }
 
 impl ControlCommand {

@@ -247,6 +247,15 @@ complex = 3.0
 expert = 5.0
 ```
 
+### 2.6 Plan alerts and raising a running plan's ceiling
+
+A plan run raises a `budget_alert` Inbox item and a warning line once as a plan's settled spend crosses each
+`[budget] alert_at_percent` threshold of its ceiling (default `[50, 80]`; an empty list turns alerts off). Alerts only
+notify: the plan still stops at its ceiling. Before it does, the operator can raise the ceiling of the running plan
+with `roko plan budget raise <plan> --to <usd>` (backlog 2118). The run keeps the new ceiling in the plan's
+`costs.json`, so a resume keeps it, records who raised it and to what in its event log and run manifest, and arms the
+plan's alerts again against the new ceiling. A raise never lowers a ceiling.
+
 ---
 
 ## 3. Pricing Tiers

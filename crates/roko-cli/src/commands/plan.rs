@@ -387,6 +387,11 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Act on the budget of a running plan (backlog 2118).
+    Budget {
+        #[command(subcommand)]
+        cmd: PlanBudgetCmd,
+    },
     /// Approve or reject a task held for review (`[meta] approval =
     /// "per_task"`). The plan run holding it merges the task on approval; a
     /// rejection fails the attempt, and the note is the next attempt's
@@ -450,6 +455,25 @@ Examples:
 }
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum PlanBudgetCmd {
+    /// Raise the budget ceiling of a running plan for the rest of its run.
+    /// The run keeps the new ceiling in the plan's costs.json, so a resume
+    /// keeps it, and arms the plan's budget alerts again against it. Refused
+    /// when the amount is not above the plan's ceiling and its spend. Prints
+    /// the run's answer; fails when no run is listening or it refuses.
+    Raise {
+        /// The running plan.
+        plan_id: String,
+        /// The new ceiling, in USD.
+        #[arg(long, value_name = "USD")]
+        to: f64,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub(crate) enum QueueCmd {
     /// Display milestone status and plan assignments.
     Show {
@@ -507,11 +531,79 @@ async fn send_plan_control(
     kind: &str,
     plan_id: Option<String>,
 ) -> Result<i32> {
+    send_plan_control_with(cli, workdir, kind, plan_id, String::new()).await
+}
+
+/// `roko plan budget` (backlog 2118).
+async fn cmd_plan_budget(cli: &Cli, cmd: PlanBudgetCmd) -> Result<i32> {
+    match cmd {
+        PlanBudgetCmd::Raise {
+            plan_id,
+            to,
+            workdir,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            raise_plan_budget(cli, &wd, plan_id, to).await
+        }
+    }
+}
+
+/// `roko plan budget raise` (backlog 2118): refuse a ceiling that is not
+/// above what the plan's checkpoint says it has spent, then send the raise
+/// to the plan run, which also refuses one that is not above the plan's
+/// ceiling, and print its answer.
+async fn raise_plan_budget(
+    cli: &Cli,
+    workdir: &Path,
+    plan_id: String,
+    ceiling_usd: f64,
+) -> Result<i32> {
+    let checkpoint = roko_cli::graph_checkpoint::inspect_canonical_checkpoint(workdir, &plan_id)?;
+    let spent_micro_usd = checkpoint
+        .and_then(|checkpoint| checkpoint.spent_micro_usd)
+        .unwrap_or(0);
+    let refusal = match roko_cli::graph_task_dispatch::plan_ceiling_micro_usd(ceiling_usd) {
+        None => Some(format!("--to {ceiling_usd} is not a ceiling: give a positive amount in USD")),
+        Some(ceiling) if ceiling <= spent_micro_usd => {
+            let spent_usd = spent_micro_usd as f64 / 1_000_000.0;
+            Some(format!("plan {plan_id} has spent ${spent_usd:.4}: raise its ceiling above that"))
+        }
+        Some(_) => None,
+    };
+    if let Some(refusal) = refusal {
+        if cli.json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "code": "plan_control_refused",
+                    "command": "raise_budget",
+                    "plan_id": plan_id,
+                    "message": refusal,
+                })
+            );
+        } else {
+            eprintln!("Error: {refusal}");
+        }
+        return Ok(EXIT_FAILURE);
+    }
+    let payload = ceiling_usd.to_string();
+    send_plan_control_with(cli, workdir, "raise_budget", Some(plan_id), payload).await
+}
+
+/// [`send_plan_control`], with `payload`: for `raise_budget`, the plan's new
+/// ceiling in USD.
+async fn send_plan_control_with(
+    cli: &Cli,
+    workdir: &Path,
+    kind: &str,
+    plan_id: Option<String>,
+    payload: String,
+) -> Result<i32> {
     let request = roko_cli::inject::InjectWireRequest {
         request_id: uuid::Uuid::new_v4().to_string(),
         session: plan_id.clone().unwrap_or_default(),
         kind: kind.to_string(),
-        payload: String::new(),
+        payload,
     };
     let reply = roko_cli::inject::deliver(workdir, &request).await;
     let (code, message) = match &reply {
@@ -1599,6 +1691,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             send_plan_control(cli, &wd, "retry", plan_id).await
         }
+        PlanCmd::Budget { cmd } => cmd_plan_budget(cli, cmd).await,
         PlanCmd::Review {
             plan_id,
             task_id,

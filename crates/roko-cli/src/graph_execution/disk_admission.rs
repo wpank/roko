@@ -10,8 +10,8 @@
 //!   every reservation still held. While a new attempt would not fit,
 //!   admission is serialised: it waits for the running attempts to end, and
 //!   then admits one at a time. Each admission publishes the canonical
-//!   `worktree_count` and `disk_budget_remaining` metrics on the run's
-//!   conductor ring.
+//!   `worktree_count` metric on the run's conductor ring, and logs it with
+//!   the headroom left.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,9 +26,6 @@ use crate::runner::conductor_adapter::ConductorRing;
 /// Space an attempt's worktree is expected to grow by, in MB: a checkout and
 /// its build artifacts. Runner-v2 reserved the same.
 pub const WORKTREE_GROWTH_ESTIMATE_MB: u64 = 3 * 1024;
-
-/// Name of the metric that carries the headroom left for new attempts, in MB.
-pub const DISK_BUDGET_REMAINING_METRIC: &str = "disk_budget_remaining";
 
 /// How often an admission that waits for headroom measures the free space
 /// again, in case space was freed outside the run.
@@ -243,7 +240,9 @@ impl DiskAdmission {
         }
     }
 
-    /// Publish the `worktree_count` and `disk_budget_remaining` metrics.
+    /// Publish the `worktree_count` metric, and log it with the headroom
+    /// left. The headroom stays off the conductor ring: no watcher reads it,
+    /// and admission already acts on it (backlog 2127).
     fn publish(&self, remaining_mb: u64) {
         let worktrees = self
             .worktree_count
@@ -254,22 +253,16 @@ impl DiskAdmission {
             disk_budget_remaining = remaining_mb,
             "attempt disk admission"
         );
-        let Some(ring) = &self.ring else {
+        let (Some(ring), Some(count)) = (&self.ring, worktrees) else {
             return;
         };
-        let metrics = worktrees
-            .map(|count| (WORKTREE_COUNT_METRIC, count))
-            .into_iter()
-            .chain([(DISK_BUDGET_REMAINING_METRIC, remaining_mb)]);
-        for (name, value) in metrics {
-            ring.push(
-                Signal::builder(Kind::Metric)
-                    .body(Body::text(name))
-                    .tag("name", name)
-                    .tag("value", value.to_string())
-                    .build(),
-            );
-        }
+        ring.push(
+            Signal::builder(Kind::Metric)
+                .body(Body::text(WORKTREE_COUNT_METRIC))
+                .tag("name", WORKTREE_COUNT_METRIC)
+                .tag("value", count.to_string())
+                .build(),
+        );
     }
 }
 
@@ -297,7 +290,9 @@ mod tests {
     }
 
     /// Under a low disk budget a second attempt waits until the first one
-    /// ends, and each admission publishes the canonical metrics.
+    /// ends. Each admission, and the wait, publishes the canonical
+    /// `worktree_count` metric; the headroom stays off the ring (backlog
+    /// 2127).
     #[tokio::test]
     async fn disk_admission_blocks_under_low_budget() {
         let ring = ConductorRing::new();
@@ -307,25 +302,17 @@ mod tests {
             .with_worktree_count(|| 1)
             .with_ring(ring.clone());
         let first = admission.admit().await;
-        assert_eq!(
-            metrics(&ring),
-            [
-                ("worktree_count".to_string(), "1".to_string()),
-                (
-                    "disk_budget_remaining".to_string(),
-                    (WORKTREE_GROWTH_ESTIMATE_MB + 10).to_string()
-                ),
-            ]
-        );
+        let worktree_count = ("worktree_count".to_string(), "1".to_string());
+        assert_eq!(metrics(&ring), [worktree_count.clone()]);
 
         let second = admission.admit();
         tokio::pin!(second);
         let waited = tokio::time::timeout(Duration::from_millis(200), &mut second).await;
         assert!(waited.is_err(), "the second attempt must wait for headroom");
         assert_eq!(
-            metrics(&ring).last(),
-            Some(&("disk_budget_remaining".to_string(), "10".to_string())),
-            "the wait publishes the headroom it saw"
+            metrics(&ring),
+            [worktree_count.clone(), worktree_count],
+            "the wait publishes the worktree count, and no headroom"
         );
 
         drop(first);

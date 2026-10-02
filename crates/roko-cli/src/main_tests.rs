@@ -14,7 +14,6 @@ use commands::knowledge::{
 };
 use commands::learn::InspectSubsystem;
 use commands::util::persist_capture_episode;
-use roko_core::ConfigHash;
 use tempfile::tempdir;
 use tokio::fs;
 
@@ -1095,6 +1094,26 @@ fn cli_parses_non_mutating_plan_index_check() {
             }
         })
     ));
+}
+
+/// backlog 2118: `roko plan budget raise <plan> --to <usd>`; the amount is
+/// required.
+#[test]
+fn cli_parses_plan_budget_raise() {
+    use commands::plan::PlanBudgetCmd;
+
+    let cli =
+        Cli::try_parse_from(["roko", "plan", "budget", "raise", "p1", "--to", "0.5"]).unwrap();
+    let Some(Command::Plan {
+        cmd: PlanCmd::Budget { cmd },
+    }) = cli.command
+    else {
+        panic!("expected plan budget");
+    };
+    let PlanBudgetCmd::Raise { plan_id, to, .. } = cmd;
+    assert_eq!((plan_id.as_str(), to), ("p1", 0.5));
+    let missing = Cli::try_parse_from(["roko", "plan", "budget", "raise", "p1"]);
+    assert!(missing.is_err(), "--to is required");
 }
 
 #[test]
@@ -2569,24 +2588,29 @@ async fn seed_dashboard_snapshot(workdir: &Path) {
         + "\n";
     fs::write(&episodes_path, episodes).await.unwrap();
 
-    let config_hash = ConfigHash::from("abcd1234".to_string());
-    let mut metric1 = TaskMetric::new(config_hash.clone(), "plan-a", "task-a");
-    metric1.model = "claude-haiku".to_string();
-    metric1.gate_passed = true;
-    metric1.cost_usd = 1.0;
-    metric1.input_tokens = 100;
-    metric1.iteration = 1;
+    // The headline numbers come from the runs' attempt ledgers (backlog 2126).
+    {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, TelemetryWriter,
+            TelemetryWriterConfig,
+        };
 
-    let mut metric2 = TaskMetric::new(config_hash, "plan-b", "task-b");
-    metric2.model = "claude-sonnet".to_string();
-    metric2.gate_passed = false;
-    metric2.cost_usd = 3.0;
-    metric2.input_tokens = 200;
-    metric2.iteration = 1;
-
-    let task_metrics_path = memory_dir.join("task-metrics.jsonl");
-    let task_metrics = [metric1.to_jsonl().unwrap(), metric2.to_jsonl().unwrap()].join("\n") + "\n";
-    fs::write(&task_metrics_path, task_metrics).await.unwrap();
+        let run_dir = workdir.join(".roko").join("runs").join("run-1");
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default()).unwrap();
+        for (plan, task, model, outcome, cost_usd, tokens_in) in [
+            ("plan-a", "task-a", "claude-haiku", AttemptOutcome::Passed, 1.0, 100),
+            ("plan-b", "task-b", "claude-sonnet", AttemptOutcome::GateFailed, 3.0, 200),
+        ] {
+            let key = AttemptKey::new("run-1", plan, task, 1);
+            let identity = AttemptIdentity::new(&key);
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.executed.model_dispatched = Some(model.to_string());
+            verdict.cost.billed_usd = Some(cost_usd);
+            verdict.usage.tokens_in = Some(tokens_in);
+            assert!(writer.submit(verdict));
+        }
+        assert_eq!(writer.close().written, 2);
+    }
 
     let cfactor_path = learn_dir.join("c-factor.jsonl");
     let mut cf1 = CFactor::default();
@@ -2783,7 +2807,8 @@ fn bootstrap_observability_dirs_creates_expected_paths() {
     bootstrap_observability_dirs(tmp.path()).unwrap();
     let roko = tmp.path().join(".roko");
     assert!(roko.join("traces").is_dir());
-    assert!(roko.join("metrics").is_dir());
+    // Tool calls keep no metrics file (backlog 2123).
+    assert!(!roko.join("metrics").exists());
     assert!(roko.join("runtime").is_dir());
     assert!(roko.join("runs").is_dir());
 }

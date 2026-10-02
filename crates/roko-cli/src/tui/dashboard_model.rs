@@ -12,7 +12,8 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
-use roko_core::metric::{Headlines, TaskMetric, compute_headlines};
+use roko_core::metric::{ConfigHash, Headlines, TaskMetric, compute_headlines};
+use roko_fs::RokoLayout;
 use roko_gate::adaptive_threshold::AdaptiveThresholds;
 use roko_learn::aggregate::EfficiencyBucket;
 use roko_learn::cascade_router::{CascadeStage, StageTransition};
@@ -22,12 +23,14 @@ use roko_learn::pattern_discovery::CrossEpisodeConsolidator;
 use roko_learn::prompt_experiment::ExperimentStore;
 use roko_learn::provider_health::{CircuitState, ProviderHealth};
 use roko_learn::skill_library::Skill;
+use roko_learn::telemetry::report::RunRecords;
+use roko_learn::telemetry::{AttemptOutcome, AttemptVerdictRecord};
 use roko_runtime::load_durable_runner_projection;
 
 use super::dashboard::{
     CASCADE_ROUTER_FILE, EFFICIENCY_FILE, EXPERIMENTS_FILE, FileStamp, GATE_THRESHOLDS_FILE,
-    KNOWLEDGE_CONFIRMATIONS_FILE, KNOWLEDGE_FILE, LATENCY_STATS_FILE, LEARN_DIR, MEMORY_DIR,
-    NEURO_DIR, PROVIDER_HEALTH_FILE, SKILLS_FILE, TASK_METRICS_FILE, bounded_by_gates,
+    KNOWLEDGE_CONFIRMATIONS_FILE, KNOWLEDGE_FILE, LATENCY_STATS_FILE, LEARN_DIR, NEURO_DIR,
+    PROVIDER_HEALTH_FILE, SKILLS_FILE, bounded_by_gates,
     build_agent_activity_snapshot, build_gate_results_page_data, file_stamp, format_duration_ms,
     format_elapsed_ms, load_efficiency_trend, load_gate_signal_summaries, load_recent_signals,
     now_ms, resolve_episodes_path, runner_task_outcomes_for_plan, runner_terminal_task_outcome,
@@ -168,17 +171,15 @@ impl TuiDashboardModel {
     /// Load the learning snapshot from a workspace root.
     pub async fn load(root: impl AsRef<Path>) -> Result<Self, std::io::Error> {
         let root = resolve_snapshot_root(root.as_ref());
-        let memory_dir = root.join(MEMORY_DIR);
         let learn_dir = root.join(LEARN_DIR);
         let episodes_path = resolve_episodes_path(&root);
-        let task_metrics_path = memory_dir.join(TASK_METRICS_FILE);
         let signals_path = root.join(".roko").join("signals.jsonl");
 
         let episodes_logger = EpisodeLogger::new(&episodes_path);
         let episodes = EpisodeLogger::read_all_lossy(episodes_logger.path())
             .await
             .map_err(std::io::Error::other)?;
-        let task_metrics = read_task_metrics(&task_metrics_path).await?;
+        let task_metrics = attempt_ledger_metrics(&root);
 
         // Load learning subsystem data (best-effort).
         let efficiency_path = learn_dir.join(EFFICIENCY_FILE);
@@ -433,7 +434,7 @@ impl TuiDashboardModel {
             let _ = writeln!(out, "haiku share: {}", format_pct(haiku_share));
         }
         if self.task_metric_count > 0 {
-            let _ = writeln!(out, "task metrics: {}", self.task_metric_count);
+            let _ = writeln!(out, "attempts: {}", self.task_metric_count);
         }
         out.push_str("widgets (scaffold):\n");
         for widget in &page.widgets {
@@ -453,11 +454,10 @@ impl TuiDashboardModel {
         let _ = writeln!(out, "intent: {}", page.intent);
         let _ = writeln!(
             out,
-            "source: {}/{}",
-            self.root.join(MEMORY_DIR).display(),
-            TASK_METRICS_FILE
+            "source: {}/<run>/attempts.jsonl",
+            RokoLayout::for_project(&self.root).runs_dir().display()
         );
-        let _ = writeln!(out, "task metrics: {}", self.task_metric_count);
+        let _ = writeln!(out, "attempts: {}", self.task_metric_count);
         let _ = writeln!(
             out,
             "first-attempt pass rate: {}",
@@ -1901,8 +1901,7 @@ pub(super) fn load_snapshot_blocking(root: &Path) -> Result<TuiDashboardModel, s
 pub(super) fn resolve_snapshot_root(start: &Path) -> PathBuf {
     let mut cursor = Some(start);
     while let Some(dir) = cursor {
-        let memory_dir = dir.join(MEMORY_DIR);
-        if resolve_episodes_path(dir).exists() || memory_dir.join(TASK_METRICS_FILE).exists() {
+        if resolve_episodes_path(dir).exists() || RokoLayout::for_project(dir).runs_dir().is_dir() {
             return dir.to_path_buf();
         }
         cursor = dir.parent();
@@ -1970,23 +1969,96 @@ pub(super) fn count_nonempty_lines(path: &Path) -> usize {
         .unwrap_or(0)
 }
 
-pub(super) async fn read_task_metrics(path: &Path) -> Result<Vec<TaskMetric>, std::io::Error> {
-    let text = match tokio::fs::read_to_string(path).await {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(err),
-    };
+/// How many of the newest runs' attempt ledgers the headline numbers read.
+const HEADLINE_RUNS: usize = 20;
 
-    let mut metrics = Vec::new();
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(metric) = TaskMetric::from_jsonl(line) {
-            metrics.push(metric);
-        }
+/// The dashboard's headline records (backlog 2126): one [`TaskMetric`] per
+/// settled attempt in the attempt ledgers of the newest [`HEADLINE_RUNS`]
+/// runs, `.roko/runs/<run>/attempts.jsonl` under the workspace `root`. A run
+/// whose ledger cannot be read is skipped.
+pub fn attempt_ledger_metrics(root: &Path) -> Vec<TaskMetric> {
+    let Ok(entries) = std::fs::read_dir(RokoLayout::for_project(root).runs_dir()) else {
+        return Vec::new();
+    };
+    let mut runs: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter_map(|dir| {
+            let modified = std::fs::metadata(dir.join("attempts.jsonl"))
+                .and_then(|metadata| metadata.modified())
+                .ok()?;
+            Some((modified, dir))
+        })
+        .collect();
+    runs.sort_by(|left, right| right.0.cmp(&left.0));
+    runs.into_iter()
+        .take(HEADLINE_RUNS)
+        .filter_map(|(_, dir)| RunRecords::load(&dir).ok())
+        .flat_map(|run| {
+            let roles: HashMap<String, String> = run
+                .opens
+                .iter()
+                .filter_map(|open| {
+                    let role = open.record.role.clone()?;
+                    Some((open.record.identity.attempt_key.clone(), role))
+                })
+                .collect();
+            run.verdicts
+                .iter()
+                .map(|verdict| {
+                    let role = roles.get(&verdict.record.identity.attempt_key);
+                    verdict_metric(&verdict.record, role.map(String::as_str))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// One attempt verdict as a headline record: a pass when every verify step
+/// passed, with its model, tokens, cost and duration.
+fn verdict_metric(verdict: &AttemptVerdictRecord, role: Option<&str>) -> TaskMetric {
+    let identity = &verdict.identity;
+    let mut metric = TaskMetric::new(
+        ConfigHash::from(String::new()),
+        identity.plan_id.clone(),
+        identity.task_id.clone(),
+    );
+    let timing = &verdict.timing;
+    metric.timestamp = timing
+        .settled_at
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .map(|settled| settled.to_rfc3339())
+        .unwrap_or_default();
+    metric.run_id.clone_from(&identity.run_id);
+    metric.iteration = identity.attempt.max(1);
+    metric.role = role.unwrap_or_default().to_string();
+    metric.backend = verdict.executed.provider.clone().unwrap_or_default();
+    metric.model = verdict
+        .executed
+        .model_dispatched
+        .clone()
+        .or_else(|| verdict.executed.model_requested.clone())
+        .unwrap_or_default();
+    metric.gate = "verify".to_string();
+    metric.gate_passed = verdict.outcome == AttemptOutcome::Passed;
+    metric.wall_time_ms = timing
+        .attempt_started_at
+        .zip(timing.settled_at)
+        .map_or(0, |(started, settled)| u64::try_from(settled - started).unwrap_or(0));
+    let usage = &verdict.usage;
+    metric.cached_tokens = usage.tokens_cache_read.unwrap_or(0);
+    metric.input_tokens = usage.tokens_in.unwrap_or(0) + metric.cached_tokens;
+    metric.output_tokens = usage.tokens_out.unwrap_or(0);
+    if metric.input_tokens > 0 {
+        metric.cache_hit_rate = metric.cached_tokens as f64 / metric.input_tokens as f64;
     }
-    Ok(metrics)
+    let cost = &verdict.cost;
+    metric.cost_usd = cost
+        .api_equiv_usd
+        .or(cost.billed_usd)
+        .or(cost.vendor_usd)
+        .unwrap_or(0.0);
+    metric
 }
 
 pub(super) fn format_pct(value: f64) -> String {

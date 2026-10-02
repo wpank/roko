@@ -815,6 +815,10 @@ struct GraphCostLedgerState {
     run_id: String,
     spent_micro_usd: u64,
     reserved_micro_usd: u64,
+    /// The plan ceiling the operator raised during the run (`roko plan
+    /// budget raise`, backlog 2118), which a resume keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    raised_ceiling_micro_usd: Option<u64>,
 }
 
 /// Durable actual-provider-cost state bound to one Graph checkpoint identity.
@@ -831,6 +835,33 @@ impl GraphCostLedgerCheckpoint {
     #[must_use]
     pub const fn spent_micro_usd(&self) -> u64 {
         self.identity.spent_micro_usd
+    }
+
+    /// The plan ceiling the operator raised during the run, in millionths of
+    /// one USD (backlog 2118).
+    #[must_use]
+    pub const fn raised_ceiling_micro_usd(&self) -> Option<u64> {
+        self.identity.raised_ceiling_micro_usd
+    }
+
+    /// Keep `ceiling_micro_usd`, the plan ceiling the operator raised to,
+    /// with the latest spend, so a resume keeps it (backlog 2118). A raise
+    /// that cannot be persisted is not kept.
+    pub(crate) fn persist_raised_ceiling(
+        &mut self,
+        ceiling_micro_usd: u64,
+        spent_micro_usd: u64,
+        reserved_micro_usd: u64,
+    ) -> Result<()> {
+        let previous = self
+            .identity
+            .raised_ceiling_micro_usd
+            .replace(ceiling_micro_usd);
+        let persisted = self.persist(spent_micro_usd, reserved_micro_usd);
+        if persisted.is_err() {
+            self.identity.raised_ceiling_micro_usd = previous;
+        }
+        persisted
     }
 
     /// Persist the latest actual spend atomically, then commit it as the
@@ -1933,6 +1964,7 @@ fn create_fresh_checkpoint(
             run_id,
             spent_micro_usd: 0,
             reserved_micro_usd: 0,
+            raised_ceiling_micro_usd: None,
         },
         commits: Some(Arc::clone(&commits)),
     };
@@ -3505,6 +3537,29 @@ depends_on = ["T1"]
             .expect("resume checkpoint");
 
         assert_eq!(resumed.take_cost_ledger().spent_micro_usd(), 375_000);
+    }
+
+    /// backlog 2118: the plan ceiling the operator raised during a run is
+    /// kept in its cost ledger, with the spend, and a resume restores it.
+    #[test]
+    fn raised_plan_ceiling_roundtrips_across_resume() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        let mut ledger = fresh.take_cost_ledger();
+        assert_eq!(ledger.raised_ceiling_micro_usd(), None);
+        ledger
+            .persist_raised_ceiling(200_000, 150_000, 0)
+            .expect("persist the raise");
+        ledger.persist(175_000, 0).expect("persist cost");
+        fresh.finish(false).expect("finish");
+
+        let mut resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        let ledger = resumed.take_cost_ledger();
+        assert_eq!(ledger.spent_micro_usd(), 175_000);
+        assert_eq!(ledger.raised_ceiling_micro_usd(), Some(200_000));
     }
 
     #[test]

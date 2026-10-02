@@ -1320,6 +1320,10 @@ pub struct RunProvenanceManifest {
     /// The workspace the run started from.
     #[serde(default)]
     pub workspace: WorkspaceProvenance,
+    /// Raises of a plan's budget ceiling during the run, oldest first
+    /// (`roko plan budget raise`, backlog 2118).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub budget_raises: Vec<BudgetRaise>,
     /// Set when the run closes.
     #[serde(default)]
     pub closed: Option<RunClosed>,
@@ -1340,6 +1344,7 @@ impl RunProvenanceManifest {
             prices: PriceProvenance::default(),
             experiment: ExperimentProvenance::default(),
             workspace: WorkspaceProvenance::default(),
+            budget_raises: Vec::new(),
             closed: None,
         }
     }
@@ -1437,6 +1442,23 @@ pub struct ExperimentProvenance {
 pub struct WorkspaceProvenance {
     /// Commit the run's worktrees branch from.
     pub base_commit: Option<String>,
+}
+
+/// A raise of a plan's budget ceiling while its run ran (backlog 2118).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BudgetRaise {
+    /// ISO-8601 UTC time the run applied it.
+    pub at: String,
+    /// The plan whose ceiling was raised.
+    pub plan_id: String,
+    /// The ceiling before, in USD.
+    pub from_usd: f64,
+    /// The ceiling from then on, in USD.
+    pub to_usd: f64,
+    /// What the plan had spent when it was raised, in USD.
+    pub spent_usd: f64,
+    /// Who raised it: the control surface the raise came through.
+    pub by: String,
 }
 
 /// Terminal counts of a run.

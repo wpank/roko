@@ -921,7 +921,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 file_exts,
             };
 
-            if let Some(reflex_match) = reflex_store.match_observation_with_id(&observation) {
+            // A frozen run reads its reflexes and counts no hit (decision 2218).
+            let reflex_match = if self.learning_frozen() {
+                reflex_store.peek_observation_with_id(&observation)
+            } else {
+                reflex_store.match_observation_with_id(&observation)
+            };
+            if let Some(reflex_match) = reflex_match {
                 let rule_id = reflex_match.rule_id;
                 let cached_output = reflex_match.action.args.clone();
                 tracing::info!(

@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 const KNOWLEDGE_FEEDBACK_FILE: &str = "knowledge-feedback.jsonl";
@@ -95,6 +96,10 @@ pub struct FeedbackService {
     knowledge_scores: Mutex<HashMap<String, i64>>,
     /// Prompt-section effectiveness registry consumed by prompt assembly.
     section_effectiveness: Mutex<SectionEffectivenessRegistry>,
+    /// Whether an outcome changed a knowledge score or a section effect
+    /// since they were loaded or last saved; only then does a flush save
+    /// them.
+    scores_changed: AtomicBool,
 }
 
 impl FeedbackService {
@@ -115,6 +120,7 @@ impl FeedbackService {
             provenance: Mutex::new(HashMap::new()),
             knowledge_scores: Mutex::new(knowledge_scores),
             section_effectiveness: Mutex::new(section_effectiveness),
+            scores_changed: AtomicBool::new(false),
         }
     }
 
@@ -474,6 +480,7 @@ impl FeedbackService {
         {
             let score = scores.entry(knowledge_id.to_string()).or_insert(0);
             *score = score.saturating_add(delta);
+            self.scores_changed.store(true, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -498,6 +505,7 @@ impl FeedbackService {
             .filter(|id| !id.is_empty())
         {
             registry.record_outcome(section_id, role.trim(), true, passed);
+            self.scores_changed.store(true, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -567,7 +575,24 @@ impl FeedbackService {
         Ok(())
     }
 
+    /// Save the knowledge scores and section effects when an outcome changed
+    /// them. A service that recorded none, such as one that only logs a
+    /// provider call, rewrites neither file, so it cannot overwrite what
+    /// another writer saved since this one loaded them, and a run that holds
+    /// learned state fixed (decision 2218) leaves both as it found them.
     fn persist_score_snapshots(&self) -> Result<()> {
+        if !self.scores_changed.swap(false, Ordering::Relaxed) {
+            return Ok(());
+        }
+        let saved = self.save_score_snapshots();
+        if saved.is_err() {
+            // The next flush tries again.
+            self.scores_changed.store(true, Ordering::Relaxed);
+        }
+        saved
+    }
+
+    fn save_score_snapshots(&self) -> Result<()> {
         std::fs::create_dir_all(&self.data_dir)?;
 
         let knowledge_scores = self
@@ -1259,6 +1284,53 @@ mod tests {
         assert!(efficiency_path.exists());
         let content = std::fs::read_to_string(efficiency_path).unwrap();
         assert!(content.contains("model_call"));
+    }
+
+    /// A flush saves the knowledge scores and section effects only when an
+    /// outcome changed them. A provider call logged without prompt sections
+    /// or knowledge, as a provider bridge logs each call, writes neither
+    /// file, flushed or dropped; a knowledge outcome saves the scores.
+    #[tokio::test]
+    async fn flush_saves_scores_only_when_an_outcome_changed_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = FeedbackService::new(dir.path().to_path_buf());
+        svc.record(FeedbackEvent::ModelCall {
+            run_id: None,
+            request_id: Some("dispatch-v2-agent".into()),
+            prompt_section_ids: Vec::new(),
+            knowledge_ids: Vec::new(),
+            model: Some("sonnet".into()),
+            provider: None,
+            token_usage: None,
+            cost: None,
+            role: "dispatch_v2".into(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cost_usd: 0.01,
+            latency_ms: 2000,
+            success: true,
+            error_class: None,
+            model_reported: None,
+            attempt_key: None,
+            cache_hit: false,
+        })
+        .await
+        .unwrap();
+        svc.flush().unwrap();
+        drop(svc);
+
+        assert!(dir.path().join("efficiency.jsonl").exists());
+        let scores = dir.path().join(KNOWLEDGE_SCORES_FILE);
+        assert!(!scores.exists(), "no outcome changed a score");
+        let effects = dir.path().join(SECTION_EFFECTS_FILE);
+        assert!(!effects.exists(), "no outcome changed a section effect");
+
+        let svc = FeedbackService::new(dir.path().to_path_buf());
+        svc.record_knowledge_usage("r1", vec!["knowledge-a".into()], true, "sonnet")
+            .unwrap();
+        svc.flush().unwrap();
+        let reloaded = FeedbackService::new(dir.path().to_path_buf());
+        assert_eq!(reloaded.knowledge_scores().get("knowledge-a"), Some(&1));
     }
 
     #[tokio::test]

@@ -86,7 +86,7 @@ static FROZEN_WRITES_SKIPPED: std::sync::Once = std::sync::Once::new();
 impl GraphTaskDispatcher {
     /// Whether learning is frozen for this run (`[learning] frozen`,
     /// decision 2218): its attempts read learned state and write none, so
-    /// they skip the affect appraisal, the T0 reflex credit, the
+    /// they skip the affect appraisal, the T0 reflex hit and credit, the
     /// knowledge-access count, the gate-threshold update and the post-gate
     /// reflection. The first skip says so in the log.
     pub(super) fn learning_frozen(&self) -> bool {
@@ -95,7 +95,8 @@ impl GraphTaskDispatcher {
             FROZEN_WRITES_SKIPPED.call_once(|| {
                 tracing::info!(
                     "learning is frozen: attempts read learned state and write none (no affect \
-                     appraisal, reflex credit, knowledge access, gate thresholds or reflection)"
+                     appraisal, reflex hit or credit, knowledge access, gate thresholds or \
+                     reflection)"
                 );
             });
         }

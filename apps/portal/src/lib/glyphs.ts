@@ -19,6 +19,7 @@ export type GlyphState =
   | 'unchecked'
   | 'marked'
   | 'failed'
+  | 'interrupted'
   | 'queued'
   | 'pending'
   | 'skipped';
@@ -52,6 +53,9 @@ export interface GlyphDef {
  * with its own glyph and label so it never looks like a clean pass.
  * `marked` is a task its plan file marks done that the run holds no record
  * of: done on paper, with nothing to show it passed, so it stays faint.
+ * `interrupted` is a task still running when its run ended other than by
+ * cancellation: red, since it counts as failed, but with its own glyph and
+ * label, since it did not finish rather than fail.
  */
 export const GLYPHS: Record<GlyphState, GlyphDef> = {
   done:     { glyph: '✓', token: 'var(--state-done)',     label: 'done'     },
@@ -63,6 +67,7 @@ export const GLYPHS: Record<GlyphState, GlyphDef> = {
   unchecked: { glyph: '?', token: 'var(--state-accepted)', label: 'done, not verified' },
   marked:   { glyph: '☑', token: 'var(--state-pending)',  label: 'done without a run record' },
   failed:   { glyph: '✗', token: 'var(--state-failed)',   label: 'failed'   },
+  interrupted: { glyph: '↯', token: 'var(--state-failed)', label: 'interrupted' },
   queued:   { glyph: '◌', token: 'var(--state-queued)',   label: 'queued'   },
   pending:  { glyph: '·', token: 'var(--state-pending)',  label: 'pending'  },
   skipped:  { glyph: '⊘', token: 'var(--state-skipped)',  label: 'skipped'  },
@@ -78,6 +83,7 @@ export const GLYPHS: Record<GlyphState, GlyphDef> = {
  *   passed               → done
  *   passed_with_preexisting_failures → preexisting (green, but not a clean pass)
  *   failed               → failed
+ *   interrupted          → interrupted (red, as failed: the run ended before it finished)
  *   accepted_with_failures → accepted  (NEVER done — amber, not green)
  *   already_satisfied    → satisfied (cyan: its verify steps passed, but it is not a pass)
  *   unverified           → unchecked (NEVER done — amber, not green)
@@ -96,6 +102,8 @@ export function glyphStateForTask(status: TaskStatus | 'pending' | 'marked_done'
       return 'preexisting';
     case 'failed':
       return 'failed';
+    case 'interrupted':
+      return 'interrupted';
     case 'accepted_with_failures':
       // Must map to accepted (amber), not done (green). See tokens.css §1.
       return 'accepted';

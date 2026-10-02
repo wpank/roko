@@ -80,6 +80,10 @@ pub enum StreamRecord {
         /// Whether the tool reported an error. Parsed from optional `"is_error"`
         /// boolean in the JSON payload; defaults to heuristic detection.
         is_error: bool,
+        /// Whether this record is a live preview.
+        live: bool,
+        /// Whether the safety screener has validated this record.
+        screened: bool,
     },
     /// A line that does not carry the stream protocol prefix.
     Plain { content: String },
@@ -166,6 +170,8 @@ pub fn parse_stream_line(line: &str) -> StreamRecord {
                 tool_id: record_str(&value, &["tool_id"]).to_owned(),
                 output,
                 is_error,
+                live,
+                screened,
             }
         }
         // Unknown kind -- treat as plain text so nothing is silently dropped.
@@ -321,6 +327,7 @@ pub fn render_output_lines_styled<'a>(
                 tool_id,
                 output,
                 is_error,
+                ..
             } => {
                 render_tool_result(&mut styled, &tool_id, &output, is_error, opts, theme);
             }
@@ -968,6 +975,8 @@ mod tests {
                 tool_id: "t1".to_owned(),
                 output: "line1\nline2".to_owned(),
                 is_error: false,
+                live: false,
+                screened: true,
             }
         );
     }
@@ -982,6 +991,8 @@ mod tests {
                 tool_id: "t1".to_owned(),
                 output: "some output".to_owned(),
                 is_error: true,
+                live: false,
+                screened: true,
             }
         );
     }

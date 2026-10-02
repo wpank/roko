@@ -58,6 +58,7 @@ benchmarks/viabilitybench/
   analysis/{envelope, holm}.py                              # H1's envelope (E*) and graphical Holm over the primaries
   analysis/simulate.py                                      # synthetic campaigns: coverage, FWER, anytime coverage
   analysis/replay.py                                        # replay IO: run records and S01 copies, in one order
+  analysis/{lock, blind}.py                                 # the pre-registration lock, and blinded arm labels
   analysis/models/{glmm, irt}.py                            # the secondaries on numpy and scipy (decision 3336)
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
@@ -170,6 +171,11 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   without `--dry-run` it runs one `vb run` per unit in the manifest's order (`as_listed`, or S09's
   `daily_interleave`), logs them in `<experiment>/campaign.jsonl`, and on a rerun goes on after the last finished
   unit. Its module docstring has the rules.
+- **The pre-registration lock** (`analysis/lock.py`, S09 SC1, §5). `lock.py build` writes
+  `experiments/prereg.lock.json` from S09, the analysis code, the streams and the price snapshot, and `lock.py
+  --check` recomputes every hash. LOG1, every live `E-` experiment and every manifest with `requires_lock` start,
+  through `vb run` or `vb campaign`, only when the lock is committed and checks clean; taking it is task 3345.
+  `analysis/blind.py` labels arms with a salted HMAC and unblinds them only under that lock.
 - **Gate G0** (`analysis/gates.py G0 --experiment PILOT-A --experiment PILOT-B ...`, S09 §4.7). It computes every
   G0 check from the pilot's runs and the evidence files it is given (the verifier-CI JSON, `vb ledger reconcile
   --json` per provider, the hand-filled SC2 spot check, a synthetic runaway's run), with its value, threshold and run

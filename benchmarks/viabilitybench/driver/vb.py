@@ -18,6 +18,10 @@ files and never edits this one); commits the final tree as c_i without touching 
 `archives/`, `private/` (task manifests and pristine bundles, never an agent's), `errors.jsonl` and, with
 `--transcripts`, `transcripts/`. Stream positions in records are 1-based.
 
+**The pre-registration lock** (S09 SC1, 3341). `vb run` of an experiment that runs only under the lock (LOG1, a live
+`E-` experiment, or one whose manifest says `requires_lock`: `campaign.requires_lock`) stops before anything else,
+with exit 2, unless the lock (`--lock`) exists, is committed and checks clean against S09 (`--prereg-spec`).
+
 **Network admission** (from `scripts/dev_benchmark.py`'s `execute`, W10 rec 14). A provider whose base URL is not a
 loopback address is a network provider. `vb run` calls one only with both `--allow-network` and an explicit
 `--max-cost-usd`, and the check runs before anything else: no directory, no workdir, no request. The budget is then
@@ -333,6 +337,10 @@ def cmd_materialize(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    if campaign.requires_lock(args.experiment):  # before any plan, directory or call (module docstring)
+        refusal = campaign.lock_refusal(args.lock, args.prereg_spec)
+        if refusal:
+            raise DriverError(f"experiment {args.experiment} runs only under the pre-registration lock: {refusal}")
     plan = make_plan(args)
     admit(plan, allow_network=args.allow_network, max_cost_usd=args.max_cost_usd)
     if args.max_cost_usd is not None and (plan.worst_case_usd or 0) > args.max_cost_usd:
@@ -789,6 +797,10 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--work", type=Path, help="default: $VB_WORK, then " + str(DEFAULT_WORK))
     run.add_argument("--transcripts", action="store_true", help="keep transcripts in the run directory")
     run.add_argument("--keep-workdirs", action="store_true", help="keep workdirs and census exports")
+    run.add_argument("--lock", type=Path, default=campaign.DEFAULT_LOCK,
+                     help="the pre-registration lock a locked experiment needs (default: experiments/prereg.lock.json)")
+    run.add_argument("--prereg-spec", type=Path, default=campaign.DEFAULT_SPEC,
+                     help="S09, which the lock pins (default: the untracked spec in tmp/)")
     run.set_defaults(handler=cmd_run)
 
     estimate = commands.add_parser("estimate", help="print the plan and its worst-case cost", allow_abbrev=False)

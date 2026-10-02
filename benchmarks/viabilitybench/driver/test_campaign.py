@@ -203,3 +203,34 @@ def test_daily_interleave_orders_units_by_day_and_includes_optional_blocks_on_re
             campaign.load(manifest(places, block("a"), order=text, name="bad.toml"))
     with pytest.raises(campaign.CampaignError, match="block ids repeat"):
         campaign.load(manifest(places, block("a"), block("a"), name="twice.toml"))
+
+
+def test_log1_refuses_to_start_without_the_lock(places, capsys, tmp_path):
+    """3341 (S09 SC1): LOG1, a live `E-` experiment and a manifest that says requires_lock start only under a
+    pre-registration lock that is committed and checks clean. Without one, `vb run` exits 2 before any directory or
+    request, and the campaign's dry run lists the refusal and its run stops before any unit."""
+    missing = tmp_path / "no-lock" / "prereg.lock.json"
+    loose = tmp_path / "loose" / "prereg.lock.json"  # a lock file no repository tracks
+    loose.parent.mkdir()
+    loose.write_text('{"schema_version": "vb.prereg_lock/1"}\n')
+    assert campaign.requires_lock("LOG1") and campaign.requires_lock("E-H5-live")
+    assert not campaign.requires_lock("PILOT-A") and not campaign.requires_lock(EXPERIMENT)
+    with StubServer(SOLVE) as stub:
+        for experiment, lock, why in (("LOG1", missing, f"no pre-registration lock at {missing}"),
+                                      ("E-P1-live", loose, f"the lock at {loose} is not committed")):
+            code = vb.main(["run", "--experiment", experiment, "--stream", TOY_STREAM, "--arm", "cheap_direct",
+                            "--model", "gpt-oss-120b", "--seeds", "1", "--provider-url", stub.url, "--results",
+                            str(places["results"]), "--work", str(places["work"]), "--secret-file",
+                            str(places["secret"]), "--lock", str(lock)])
+            assert code == 2
+            assert (f"experiment {experiment} runs only under the pre-registration lock: {why}"
+                    in capsys.readouterr().err)
+        assert stub.requests == [] and not places["results"].exists()
+        path = manifest(places, block("locked"))
+        path.write_text(path.read_text().replace("requires_lock = false", "requires_lock = true"))
+        code, summary = dry_run(places, path, stub.url, capsys, "--lock", str(missing))
+        assert code == 2 and summary["requires_lock"] is True
+        assert f"requires_lock: no pre-registration lock at {missing}" in " ".join(summary["problems"])
+        assert run_campaign(places, path, stub.url, "--lock", str(missing)) == 2
+        assert "refused before any run: requires_lock" in capsys.readouterr().err
+        assert stub.requests == [] and not (places["results"] / EXPERIMENT).exists()

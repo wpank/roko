@@ -1335,12 +1335,16 @@ pub(crate) async fn cmd_doctor(
     subject: Option<DoctorSubject>,
     workdir: Option<PathBuf>,
     serve_url: Option<String>,
+    fix: bool,
 ) -> Result<i32> {
+    if fix && !matches!(subject, Some(DoctorSubject::Disk)) {
+        anyhow::bail!("--fix applies only to `roko doctor disk`");
+    }
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
-    // `doctor clean` removes orphaned files (exclusive); all other doctor
-    // variants are read-only and use a shared lock so they can coexist with
-    // an active plan runner.
-    let _lock = if matches!(subject, Some(DoctorSubject::Clean)) {
+    // `doctor clean` removes orphaned files and `doctor disk --fix` leftover
+    // attempt checkouts (exclusive); all other doctor variants are read-only
+    // and use a shared lock so they can coexist with an active plan runner.
+    let _lock = if matches!(subject, Some(DoctorSubject::Clean)) || fix {
         roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?
     } else {
         roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?
@@ -1368,10 +1372,25 @@ pub(crate) async fn cmd_doctor(
         return Ok(0);
     }
     if matches!(subject, Some(DoctorSubject::Disk)) {
+        // `--fix` holds the runner lock too, so no plan run is live while it
+        // removes checkouts, and none can start (gap-f67a72).
+        let leftovers = if fix {
+            let _runner = roko_cli::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
+            Some(roko_cli::doctor::fix_leftover_checkouts(&workdir).await)
+        } else {
+            None
+        };
         let report = roko_cli::doctor::run_disk_doctor(&workdir, cli.config.as_deref()).await;
         if cli.json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            let mut json = serde_json::to_value(&report)?;
+            if let Some(leftovers) = &leftovers {
+                json["leftover_checkouts"] = serde_json::to_value(leftovers)?;
+            }
+            println!("{}", serde_json::to_string_pretty(&json)?);
         } else {
+            if let Some(leftovers) = &leftovers {
+                print!("{}", roko_cli::doctor::render_leftover_checkouts(leftovers));
+            }
             print!("{}", report.render_human());
         }
         return Ok(report.exit_code());

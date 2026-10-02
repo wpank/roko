@@ -9,8 +9,8 @@ goal = "hermes"
 size = "M"
 subsystem = ["roko-acp"]
 created = 2026-10-01
-updated = 2026-10-01
-last_verified = 2026-10-01
+updated = 2026-10-02
+last_verified = 2026-10-02
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-f0f108"
 anchors = ["crates/roko-acp/src/acp_adapter.rs", "crates/roko-acp/src/bridge_events/mod.rs", "crates/roko-acp/src/handler.rs"]
@@ -47,3 +47,19 @@ Do the three parts, each with a test, under the `bridge_under_load_*` prefix.
   - Left open: run `session/prompt` as a task with one stdin reader routing responses, cancels and requests, so
     other requests don't wait. Also left: a write timeout for an editor that stops reading stdout. A stuck write
     still hangs the turn.
+- 2026-10-02 (wk-specq): the remainder is implemented on work/bug-8dbffd; cargo verification deferred to the batch
+  check.
+  - 4a: `run_acp_server_with_transport` is now the only stdin reader. Each `session/prompt` runs as a tokio task
+    (`handler.rs::start_prompt`) that owns its session, which leaves the manager until `finish_prompt` returns it.
+    The loop routes the client's responses (pending map) and `session/cancel` (the prompt's token) to it, and
+    answers other requests at once. Requests for a session whose prompt is running wait in `deferred`.
+    `AcpSession::inbound_routed` keeps the prompt's stream loop and permission wait from reading stdin. While a
+    session is out, `session/list` shows it as it was taken, and a config reload in that time reaches it (with its
+    `config_option_update`) when it comes back (`SessionManager::insert_session`).
+  - Reads: `read_message` keeps a cancelled call's partial line (`read_until` into a persistent buffer).
+    `read_line` dropped those bytes whenever a `select!` cancelled it.
+  - Writes: give up after 60 s (`DEFAULT_WRITE_TIMEOUT`, `TransportError::WriteTimeout`), and later writes refuse.
+    `run_acp_server` then skips its blocking final stdout write.
+  - Tests: `bridge_under_load_answers_requests_while_a_prompt_runs`, `..._read_resumes_after_a_cancelled_read`,
+    `..._write_gives_up_on_a_client_that_stopped_reading`, and
+    `..._taken_session_stays_listed_and_catches_up_with_a_reload`.

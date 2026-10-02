@@ -1885,6 +1885,61 @@ pub fn canonical_checkpoint_plans(workdir: &Path) -> Vec<(String, PathBuf)> {
     plans
 }
 
+/// The run one checkpoint manifest under `.roko/state/graph/` names, as
+/// [`recorded_checkpoint_runs`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedCheckpointRun {
+    /// The plan's directory under `.roko/state/graph/`.
+    pub plan_dir: String,
+    /// The run the manifest names.
+    pub run_id: String,
+    /// The status the manifest records.
+    pub status: GraphCheckpointStatus,
+    /// Whether this is the plan's current checkpoint rather than one a later
+    /// run archived when it replaced it.
+    pub current: bool,
+}
+
+/// The run of every checkpoint manifest under `.roko/state/graph/`: each
+/// plan's current one, and the ones archived when a later run replaced them.
+/// Unreadable manifests are left out. `roko doctor disk --fix` finds with
+/// this which plan an attempt checkout's run belonged to (gap-f67a72).
+#[must_use]
+pub fn recorded_checkpoint_runs(workdir: &Path) -> Vec<RecordedCheckpointRun> {
+    #[derive(Deserialize)]
+    struct RunOnly {
+        run_id: String,
+        status: GraphCheckpointStatus,
+    }
+
+    let mut runs = Vec::new();
+    let plans = std::fs::read_dir(workdir.join(".roko/state/graph"));
+    for plan in plans.into_iter().flatten().flatten() {
+        let plan_dir = plan.file_name().to_string_lossy().into_owned();
+        let manifests = std::fs::read_dir(plan.path());
+        for manifest in manifests.into_iter().flatten().flatten() {
+            let name = manifest.file_name().to_string_lossy().into_owned();
+            let current = name == "checkpoint.json";
+            if !current && !name.starts_with("checkpoint.json.bak.") {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(manifest.path()) else {
+                continue;
+            };
+            let Ok(recorded) = serde_json::from_slice::<RunOnly>(&bytes) else {
+                continue;
+            };
+            runs.push(RecordedCheckpointRun {
+                plan_dir: plan_dir.clone(),
+                run_id: recorded.run_id,
+                status: recorded.status,
+                current,
+            });
+        }
+    }
+    runs
+}
+
 // ---------------------------------------------------------------------------
 // Inspection
 // ---------------------------------------------------------------------------

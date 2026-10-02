@@ -2231,10 +2231,13 @@ default (workflow engine) path is the canonical one.
 
 ## 13. Known Limitations
 
-- **Single transport only.** The ACP server is single-threaded on the stdio
-  channel. Concurrent sessions are supported in memory, but concurrent
-  *transports* (e.g. multiple TCP clients) are not. The `SessionManager` is
-  not wrapped in `Arc<RwLock<_>>`.
+- **Single transport only.** The ACP server serves one stdio channel.
+  Concurrent *transports* (e.g. multiple TCP clients) are not supported. On that
+  channel, one request loop reads stdin: each `session/prompt` runs as its own
+  task while the loop answers other requests and routes the client's responses
+  and `session/cancel` to it. A request for a session whose prompt is running
+  waits for that prompt. A write the client does not read within 60 seconds
+  ends the server, as a closed pipe would.
 
 - **No audio input.** `promptCapabilities.audio = false` and audio blocks are rejected.
   Image input is advertised and accepted only for a vision-capable selected/default model.

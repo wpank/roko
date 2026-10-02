@@ -9,6 +9,7 @@ pub mod context;
 pub mod cost;
 pub mod dispatch;
 pub mod experiments;
+mod failover;
 mod helpers;
 pub mod permissions;
 pub mod protocol;
@@ -120,11 +121,14 @@ where
             Inbound(TransportResult<Option<JsonRpcMessage>>),
         }
 
+        // Under the server's request loop, that loop reads stdin and routes the
+        // client's cancels and responses here; reading it too would race it.
+        let read_inbound = !session.inbound_routed;
         let action = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => StreamAction::Cancelled,
             maybe_event = events.recv() => StreamAction::Event(maybe_event),
-            inbound = transport.read_message() => StreamAction::Inbound(inbound),
+            inbound = transport.read_message(), if read_inbound => StreamAction::Inbound(inbound),
         };
 
         match action {
@@ -293,7 +297,22 @@ where
     if !session.try_begin_prompt() {
         return Err(BridgeEventsError::SessionBusy(session.session_id.clone()));
     }
+    run_begun_prompt(transport, session, params, workdir, roko_config).await
+}
 
+/// Runs a prompt for a session that has already begun it
+/// ([`AcpSession::try_begin_prompt`]), then marks the session idle.
+pub(crate) async fn run_begun_prompt<R, W>(
+    transport: &mut StdioTransport<R, W>,
+    session: &mut AcpSession,
+    params: SessionPromptParams,
+    workdir: &Path,
+    roko_config: &RokoConfig,
+) -> Result<SessionPromptResult>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let outcome =
         handle_session_prompt_inner(transport, session, params, workdir, roko_config).await;
     session.finish_prompt();
@@ -660,6 +679,14 @@ where
     };
 
     let prompt_text_for_title = prompt_text.clone();
+    // An explicit model selection or an experiment's model pins the prompt to
+    // its model, which never fails over (gap-28ceb9).
+    let dispatch_pinned =
+        session.config_state.model_selection_explicit || experiment_model_key.is_some();
+    // The model a failover ran the prompt on instead of the planned one.
+    let failover_model: Arc<std::sync::Mutex<Option<(String, roko_core::agent::ResolvedModel)>>> =
+        Arc::default();
+    let failover_model_for_task = Arc::clone(&failover_model);
 
     let cognitive_task = tokio::spawn(async move {
         if let Some(violation) = pre_dispatch_violation {
@@ -745,62 +772,116 @@ where
             };
         }
 
-        // Default: single-agent dispatch (workflow = "none").
-        let provider_kind = resolved.provider_kind;
-
-        info!(
-            requested_model = %model_key,
-            model_key = %model_key_for_dispatch,
-            slug = %resolved.slug,
-            provider_kind = ?provider_kind,
-            "resolved model for ACP prompt"
+        // Default: single-agent dispatch (workflow = "none"). The planned
+        // model is a preference (gap-28ceb9): a provider that cannot take the
+        // prompt is passed over, and one out of usage hands it to the next
+        // usable model in the same turn.
+        let mut model_failover = roko_learn::provider_failover::Failover::new(
+            Arc::new(failover::failover_config(&roko_config)),
+            dispatch_pinned,
+            session_tools_enabled,
         );
-
-        match provider_kind {
-            // AnthropicApi uses the dedicated Anthropic model caller path.
-            // The provider must be present in explicit RokoConfig; ACP does
-            // not synthesize providers from ANTHROPIC_API_KEY.
-            ProviderKind::AnthropicApi => {
-                run_anthropic_cognitive_task(
-                    &session_id,
-                    &messages,
-                    &model_key_for_dispatch,
-                    &resolved.slug,
-                    &roko_config,
-                    Arc::clone(&provider_health),
-                    Arc::clone(&provider_rate_limiter),
-                    &workdir,
-                    &session_mcp_servers,
-                    &session_effort,
-                    session_tools_enabled,
-                    session_tool_capabilities,
-                    &session_agent_role,
-                    cancel_token,
-                    event_sender,
-                )
-                .await
+        let mut candidate = match model_failover.start(&provider_health, &model_key_for_dispatch) {
+            Ok(candidate) => candidate,
+            Err(why) => {
+                emit_dispatch_failure(&event_sender, format!("Error: {why}")).await;
+                return Err(anyhow::anyhow!("no usable provider for the prompt: {why}").into());
             }
-            // All other providers (ClaudeCli, OpenAiCompat, etc.) go through
-            // ModelCallService which handles each provider kind natively.
-            _ => {
-                run_openai_compat_cognitive_task(
-                    &session_id,
-                    &messages,
-                    &model_key_for_dispatch,
-                    &roko_config,
-                    Arc::clone(&provider_health),
-                    Arc::clone(&provider_rate_limiter),
-                    &workdir,
-                    &session_mcp_servers,
-                    session_mcp_config_path.as_deref(),
-                    &session_effort,
-                    session_tools_enabled,
-                    session_tool_capabilities,
-                    &session_agent_role,
-                    cancel_token,
-                    event_sender,
-                )
-                .await
+        };
+        loop {
+            let config = candidate.config.as_deref().unwrap_or(&roko_config);
+            let resolved = resolve_model(config, &candidate.model_key);
+            info!(
+                requested_model = %model_key,
+                model_key = %candidate.model_key,
+                slug = %resolved.slug,
+                provider_kind = ?resolved.provider_kind,
+                "resolved model for ACP prompt"
+            );
+            let (attempt_sender, attempt_events) = mpsc::channel(256);
+            let attempt = async {
+                match resolved.provider_kind {
+                    // AnthropicApi uses the dedicated Anthropic model caller
+                    // path. The provider must be present in explicit
+                    // RokoConfig; ACP does not synthesize providers from
+                    // ANTHROPIC_API_KEY.
+                    ProviderKind::AnthropicApi => {
+                        run_anthropic_cognitive_task(
+                            &session_id,
+                            &messages,
+                            &candidate.model_key,
+                            &resolved.slug,
+                            config,
+                            Arc::clone(&provider_health),
+                            Arc::clone(&provider_rate_limiter),
+                            &workdir,
+                            &session_mcp_servers,
+                            &session_effort,
+                            session_tools_enabled,
+                            session_tool_capabilities,
+                            &session_agent_role,
+                            cancel_token.clone(),
+                            attempt_sender,
+                        )
+                        .await
+                    }
+                    // All other providers (ClaudeCli, OpenAiCompat, etc.) go
+                    // through ModelCallService which handles each provider
+                    // kind natively.
+                    _ => {
+                        run_openai_compat_cognitive_task(
+                            &session_id,
+                            &messages,
+                            &candidate.model_key,
+                            config,
+                            Arc::clone(&provider_health),
+                            Arc::clone(&provider_rate_limiter),
+                            &workdir,
+                            &session_mcp_servers,
+                            session_mcp_config_path.as_deref(),
+                            &session_effort,
+                            session_tools_enabled,
+                            session_tool_capabilities,
+                            &session_agent_role,
+                            cancel_token.clone(),
+                            attempt_sender,
+                        )
+                        .await
+                    }
+                }
+            };
+            let (result, withheld) = tokio::join!(
+                attempt,
+                failover::forward_attempt_events(attempt_events, &event_sender)
+            );
+            let Some(failure) = withheld else {
+                if !model_failover.refusals().is_empty()
+                    && let Ok(mut ran) = failover_model_for_task.lock()
+                {
+                    *ran = Some((candidate.model_key.clone(), resolved.clone()));
+                }
+                return result;
+            };
+            match model_failover.after_refusal(&provider_health, &candidate, &failure) {
+                Ok(Some(next)) => candidate = next,
+                Ok(None) => {
+                    send_cognitive_event(
+                        &event_sender,
+                        CognitiveEvent::Failure { message: failure },
+                    )
+                    .await;
+                    return result;
+                }
+                Err(why) => {
+                    send_cognitive_event(
+                        &event_sender,
+                        CognitiveEvent::Failure {
+                            message: format!("{failure}\n\n{why}"),
+                        },
+                    )
+                    .await;
+                    return result;
+                }
             }
         }
     });
@@ -848,6 +929,13 @@ where
     }
 
     let task_result = cognitive_task.await;
+    // A failover ran the prompt on another model (gap-28ceb9): the episode,
+    // the efficiency event and the router observation name the one that ran.
+    let ran_instead = failover_model.lock().ok().and_then(|mut ran| ran.take());
+    let (model_key_for_logging, resolved_for_logging) = match ran_instead {
+        Some((model_key, resolved)) => (model_key, resolved),
+        None => (model_key_for_logging, resolved_for_logging),
+    };
     let (task_error, task_join_error) = match task_result {
         Ok(Ok(())) => (None, None),
         Ok(Err(e)) => {

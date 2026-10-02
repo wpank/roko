@@ -1,20 +1,24 @@
 //! Main ACP dispatch loop.
 
 use std::collections::VecDeque;
+use std::future::Future;
 use std::io::Write as _;
 use std::path::Path;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
 
 use anyhow::{Context, Result, anyhow};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::task::{JoinError, JoinHandle};
 use tracing::{debug, error, info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    bridge_events::handle_session_prompt,
+    bridge_events::{BridgeEventsError, run_begun_prompt},
     config::AcpConfig,
     config_watch::ConfigWatcher,
-    session::SessionManager,
+    session::{AcpSession, CancelToken, SessionManager},
     transport::{StdioTransport, TransportError},
     types::{
         ACP_PROTOCOL_VERSION, ACP_SPEC_VERSION, AgentCapabilities, AgentInfo, ConfigUpdateParams,
@@ -34,15 +38,24 @@ pub async fn run_acp_server(config: AcpConfig) -> Result<()> {
         Err(e) => {
             // Send JSON-RPC error on stdout so the editor (e.g. Zed) can display it
             // instead of showing a silent "server shut down unexpectedly" message.
-            let error_response = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": null,
-                "error": {
-                    "code": -32603,
-                    "message": format!("ACP server failed to start: {e:#}")
-                }
+            // Not when stdout stopped taking writes: this write would block forever.
+            let stdout_stalled = e.chain().any(|cause| {
+                matches!(
+                    cause.downcast_ref::<TransportError>(),
+                    Some(TransportError::WriteTimeout { .. })
+                )
             });
-            let _ = writeln!(std::io::stdout(), "{error_response}");
+            if !stdout_stalled {
+                let error_response = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "error": {
+                        "code": -32603,
+                        "message": format!("ACP server failed to start: {e:#}")
+                    }
+                });
+                let _ = writeln!(std::io::stdout(), "{error_response}");
+            }
             Err(e)
         }
     }
@@ -79,13 +92,18 @@ async fn run_acp_server_inner(config: AcpConfig) -> Result<()> {
 }
 
 /// Runs the ACP server against an injected transport.
+///
+/// This loop is the only stdin reader. Each `session/prompt` runs as its own
+/// task while the loop routes the client's responses and cancels to it and
+/// answers other requests; a request for a session whose prompt is running
+/// waits for that prompt.
 pub async fn run_acp_server_with_transport<R, W>(
     config: AcpConfig,
     transport: &mut StdioTransport<R, W>,
 ) -> Result<()>
 where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
 {
     let (roko_config, config_load_warning) = config.load_roko_config_with_warning();
     if let Some(ref warning) = config_load_warning {
@@ -143,19 +161,50 @@ where
     // GC old persisted sessions at startup (7 days).
     sessions.gc_old_sessions(chrono::Duration::days(7));
 
-    // Requests that arrived while a prompt ran, answered in arrival order
-    // before anything new is read.
+    // Requests for a session whose prompt is running, in arrival order.
     let mut deferred: VecDeque<JsonRpcRequest> = VecDeque::new();
+    let mut running: Vec<RunningPrompt> = Vec::new();
     loop {
-        if let Some(request) = deferred.pop_front() {
-            handle_request(transport, &mut sessions, request).await?;
-            deferred.extend(sessions.drain_deferred_requests());
+        let ready = deferred
+            .iter()
+            .position(|request| !is_for_running_prompt(request, &running));
+        if let Some(request) = ready.and_then(|position| deferred.remove(position)) {
+            dispatch_request(
+                transport,
+                &mut sessions,
+                &mut running,
+                &mut deferred,
+                request,
+            )
+            .await?;
             continue;
         }
-        let message = match transport.read_message().await {
+        let inbound = tokio::select! {
+            (prompt, outcome) = std::future::poll_fn(|cx| poll_finished(&mut running, cx)),
+                if !running.is_empty() =>
+            {
+                finish_prompt(transport, &mut sessions, prompt, outcome).await?;
+                deferred.extend(sessions.drain_deferred_requests());
+                continue;
+            }
+            inbound = transport.read_message() => inbound,
+        };
+        let message = match inbound {
             Ok(Some(message)) => message,
             Ok(None) => {
                 info!("stdin reached EOF; shutting down ACP server");
+                // The client is gone: stop its prompts and let them settle.
+                for prompt in &running {
+                    prompt.cancel.cancel();
+                }
+                while !running.is_empty() {
+                    let (prompt, outcome) =
+                        std::future::poll_fn(|cx| poll_finished(&mut running, cx)).await;
+                    let delivered = finish_prompt(transport, &mut sessions, prompt, outcome).await;
+                    if let Err(error) = delivered {
+                        debug!(error = %error, "prompt result not delivered after EOF");
+                    }
+                }
                 return Ok(());
             }
             Err(TransportError::Json(error)) => {
@@ -230,17 +279,233 @@ where
                         }
                     }
                 }
-                handle_request(transport, &mut sessions, request).await?;
-                deferred.extend(sessions.drain_deferred_requests());
+                dispatch_request(
+                    transport,
+                    &mut sessions,
+                    &mut running,
+                    &mut deferred,
+                    request,
+                )
+                .await?;
             }
             JsonRpcMessage::Response(response) => {
                 transport.handle_incoming_response(response);
             }
             JsonRpcMessage::Notification(notification) => {
-                handle_notification(&mut sessions, notification);
+                route_notification(&mut sessions, &running, notification);
             }
         }
     }
+}
+
+/// A `session/prompt` running as its own task. Its session is out of the
+/// manager until the task hands it back.
+struct RunningPrompt {
+    session_id: String,
+    request_id: JsonRpcId,
+    cancel: CancelToken,
+    task: JoinHandle<FinishedPrompt>,
+}
+
+/// What a prompt task hands back: its session and the prompt's outcome.
+type FinishedPrompt = (
+    AcpSession,
+    crate::bridge_events::Result<crate::types::SessionPromptResult>,
+);
+
+/// Polls the running prompt tasks and takes out the first one that finished.
+fn poll_finished(
+    running: &mut Vec<RunningPrompt>,
+    cx: &mut TaskContext<'_>,
+) -> Poll<(
+    RunningPrompt,
+    std::result::Result<FinishedPrompt, JoinError>,
+)> {
+    let finished = running.iter_mut().enumerate().find_map(|(index, prompt)| {
+        match Pin::new(&mut prompt.task).poll(cx) {
+            Poll::Ready(outcome) => Some((index, outcome)),
+            Poll::Pending => None,
+        }
+    });
+    match finished {
+        Some((index, outcome)) => Poll::Ready((running.swap_remove(index), outcome)),
+        None => Poll::Pending,
+    }
+}
+
+/// The session a request or notification names, if any.
+fn session_id_param(params: Option<&serde_json::Value>) -> Option<&str> {
+    params?.get("sessionId")?.as_str()
+}
+
+fn is_for_running_prompt(request: &JsonRpcRequest, running: &[RunningPrompt]) -> bool {
+    session_id_param(request.params.as_ref())
+        .is_some_and(|id| running.iter().any(|prompt| prompt.session_id == id))
+}
+
+/// Handles one request beside the running prompts. A prompt starts as its own
+/// task; a request for a session whose prompt is running waits for it.
+async fn dispatch_request<R, W>(
+    transport: &mut StdioTransport<R, W>,
+    sessions: &mut SessionManager,
+    running: &mut Vec<RunningPrompt>,
+    deferred: &mut VecDeque<JsonRpcRequest>,
+    request: JsonRpcRequest,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    if is_for_running_prompt(&request, running) {
+        debug!(
+            method = %request.method,
+            "holding a request until its session's prompt finishes"
+        );
+        deferred.push_back(request);
+        return Ok(());
+    }
+    if request.method == "session/prompt" {
+        return start_prompt(transport, sessions, running, request).await;
+    }
+    handle_request(transport, sessions, request).await?;
+    deferred.extend(sessions.drain_deferred_requests());
+    Ok(())
+}
+
+/// Starts a `session/prompt` as its own task, which owns the session until it
+/// finishes. The request loop keeps reading stdin and routes the client's
+/// messages to the task.
+async fn start_prompt<R, W>(
+    transport: &mut StdioTransport<R, W>,
+    sessions: &mut SessionManager,
+    running: &mut Vec<RunningPrompt>,
+    request: JsonRpcRequest,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let JsonRpcRequest {
+        id, method, params, ..
+    } = request;
+    let params: SessionPromptParams = match parse_params(params, &method) {
+        Ok(params) => params,
+        Err(error) => return send_error_response(transport, id, error).await,
+    };
+    let Some(mut session) = sessions.take_session(&params.session_id) else {
+        return send_error_response(transport, id, session_not_found_error(&params.session_id))
+            .await;
+    };
+    let workdir = sessions.workdir.clone();
+    let roko_config = sessions.roko_config.clone();
+    session.ensure_provider_runtime(&workdir, &roko_config);
+    if !session.try_begin_prompt() {
+        let busy = BridgeEventsError::SessionBusy(session.session_id.clone());
+        sessions.insert_session(session);
+        let error = busy
+            .rpc_error()
+            .unwrap_or_else(|| json_rpc_error(crate::types::INTERNAL_ERROR, busy.to_string()));
+        return send_error_response(transport, id, error).await;
+    }
+    let session_id = session.session_id.clone();
+    let cancel = session.cancel_token.clone();
+    session.inbound_routed = true;
+    let mut prompt_transport = transport.clone();
+    let task = tokio::spawn(async move {
+        let outcome = run_begun_prompt(
+            &mut prompt_transport,
+            &mut session,
+            params,
+            &workdir,
+            &roko_config,
+        )
+        .await;
+        session.inbound_routed = false;
+        (session, outcome)
+    });
+    running.push(RunningPrompt {
+        session_id,
+        request_id: id,
+        cancel,
+        task,
+    });
+    Ok(())
+}
+
+/// Puts a finished prompt's session back and answers its request.
+async fn finish_prompt<R, W>(
+    transport: &mut StdioTransport<R, W>,
+    sessions: &mut SessionManager,
+    prompt: RunningPrompt,
+    outcome: std::result::Result<FinishedPrompt, JoinError>,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let (session, outcome) = match outcome {
+        Ok(finished) => finished,
+        Err(join_error) => {
+            error!(
+                session_id = %prompt.session_id,
+                error = %join_error,
+                "prompt task failed; its session is lost"
+            );
+            sessions.forget_taken_session(&prompt.session_id);
+            let error = json_rpc_error(
+                crate::types::INTERNAL_ERROR,
+                format!("prompt task failed: {join_error}"),
+            );
+            return send_error_response(transport, prompt.request_id, error).await;
+        }
+    };
+    let reloaded = sessions.insert_session(session);
+    // Persist even when a post-dispatch transport/task error occurs: a
+    // completed provider call may already have accrued billable cost.
+    sessions.persist_session(&prompt.session_id);
+    // A config reload while the prompt ran could not notify this session.
+    if reloaded {
+        let options = sessions
+            .get_session(&prompt.session_id)
+            .map(AcpSession::config_options)
+            .unwrap_or_default();
+        let options = serde_json::to_value(options).unwrap_or_else(|_| serde_json::json!([]));
+        if let Err(e) =
+            send_config_options_notification(transport, &prompt.session_id, options).await
+        {
+            warn!(
+                session_id = %prompt.session_id,
+                error = %e,
+                "failed to push config reload notification to IDE"
+            );
+        }
+    }
+    match outcome {
+        Ok(result) => send_success(transport, prompt.request_id, result).await,
+        Err(error) => {
+            if let Some(rpc_error) = error.rpc_error() {
+                return send_error_response(transport, prompt.request_id, rpc_error).await;
+            }
+            Err(error).context("failed to handle ACP session prompt")
+        }
+    }
+}
+
+/// Routes a notification: a cancel for a session whose prompt is running goes
+/// to that prompt, and the rest to the session manager.
+fn route_notification(
+    sessions: &mut SessionManager,
+    running: &[RunningPrompt],
+    notification: JsonRpcNotification,
+) {
+    if notification.method == "session/cancel"
+        && let Some(id) = session_id_param(notification.params.as_ref())
+        && let Some(prompt) = running.iter().find(|prompt| prompt.session_id == id)
+    {
+        prompt.cancel.cancel();
+        return;
+    }
+    handle_notification(sessions, notification);
 }
 
 /// Returns a human-readable warning string if no configured provider has credentials,
@@ -362,35 +627,6 @@ async fn handle_request(
                         session_not_found_error(&params.session_id),
                     )
                     .await;
-                }
-            };
-            send_success(transport, id, result).await
-        }
-        "session/prompt" => {
-            let params: SessionPromptParams = match parse_params(params, &method) {
-                Ok(params) => params,
-                Err(error) => return send_error_response(transport, id, error).await,
-            };
-            let workdir = sessions.workdir.clone();
-            let roko_config = sessions.roko_config.clone();
-            let session_id_for_persist = params.session_id.clone();
-            let prompt_outcome = {
-                let session = match get_session_mut(sessions, &params.session_id) {
-                    Ok(session) => session,
-                    Err(error) => return send_error_response(transport, id, error).await,
-                };
-                handle_session_prompt(transport, session, params, &workdir, &roko_config).await
-            };
-            // Persist even when a post-dispatch transport/task error occurs: a
-            // completed provider call may already have accrued billable cost.
-            sessions.persist_session(&session_id_for_persist);
-            let result = match prompt_outcome {
-                Ok(result) => result,
-                Err(error) => {
-                    if let Some(rpc_error) = error.rpc_error() {
-                        return send_error_response(transport, id, rpc_error).await;
-                    }
-                    return Err(error).context("failed to handle ACP session prompt");
                 }
             };
             send_success(transport, id, result).await
@@ -667,6 +903,8 @@ fn setup_file_logging(log_file: &Path) -> Result<WorkerGuard> {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncBufReadExt, BufReader, DuplexStream, duplex};
+
     use super::*;
 
     #[test]
@@ -679,5 +917,141 @@ mod tests {
 
         assert_eq!(error.0, crate::types::INVALID_PARAMS);
         assert!(error.1.contains("initialize"));
+    }
+
+    async fn read_json_line(reader: &mut BufReader<DuplexStream>) -> serde_json::Value {
+        let mut line = String::new();
+        reader.read_line(&mut line).await.expect("read line");
+        serde_json::from_str(&line).expect("parse line")
+    }
+
+    #[tokio::test]
+    async fn bridge_under_load_answers_requests_while_a_prompt_runs() {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let mut sessions = SessionManager::new(
+            tmp.path().to_path_buf(),
+            roko_core::config::schema::RokoConfig::default(),
+        );
+        let new_session = |name: &str| SessionNewParams {
+            session_name: Some(name.to_owned()),
+            client_capabilities: None,
+            model: None,
+            provider: None,
+            effort: None,
+            mcp_servers: Vec::new(),
+        };
+        let busy = sessions.create_session(new_session("busy")).session_id;
+        let idle = sessions.create_session(new_session("idle")).session_id;
+        let (client, server) = duplex(64 * 1024);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let mut transport = StdioTransport::from_io(server_reader, server_writer);
+        let mut reader = BufReader::new(client);
+
+        // `busy` has a prompt running, which ends once it is cancelled.
+        let busy_session = sessions.take_session(&busy).expect("busy session");
+        let cancel = CancelToken::new();
+        let prompt_cancel = cancel.clone();
+        let task: JoinHandle<FinishedPrompt> = tokio::spawn(async move {
+            prompt_cancel.cancelled().await;
+            let result = crate::types::SessionPromptResult {
+                stop_reason: crate::types::StopReason::Cancelled,
+            };
+            (busy_session, Ok(result))
+        });
+        let mut running = vec![RunningPrompt {
+            session_id: busy.clone(),
+            request_id: JsonRpcId::Number(1),
+            cancel,
+            task,
+        }];
+        let mut deferred = VecDeque::new();
+        let request = |id: u64, method: &str, params: serde_json::Value| -> JsonRpcRequest {
+            serde_json::from_value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+                "params": params
+            }))
+            .expect("parse request")
+        };
+        let set_mode =
+            |session_id: &str| serde_json::json!({ "sessionId": session_id, "modeId": "plan" });
+
+        // A request for another session is answered while the prompt runs.
+        let set_idle = request(2, "session/set_mode", set_mode(&idle));
+        dispatch_request(
+            &mut transport,
+            &mut sessions,
+            &mut running,
+            &mut deferred,
+            set_idle,
+        )
+        .await
+        .expect("handle request");
+        let response = read_json_line(&mut reader).await;
+        assert_eq!(response["id"], serde_json::json!(2));
+        assert!(response.get("error").is_none(), "got {response}");
+
+        // So is a listing, which still shows the busy session.
+        let list = request(3, "session/list", serde_json::json!({}));
+        dispatch_request(
+            &mut transport,
+            &mut sessions,
+            &mut running,
+            &mut deferred,
+            list,
+        )
+        .await
+        .expect("handle list");
+        let response = read_json_line(&mut reader).await;
+        assert_eq!(response["id"], serde_json::json!(3));
+        let listed = response["result"]["sessions"].as_array().expect("sessions");
+        assert_eq!(listed.len(), 2, "got {response}");
+
+        // A request for the busy session waits for its prompt.
+        let set_busy = request(4, "session/set_mode", set_mode(&busy));
+        dispatch_request(
+            &mut transport,
+            &mut sessions,
+            &mut running,
+            &mut deferred,
+            set_busy,
+        )
+        .await
+        .expect("hold request");
+        assert_eq!(deferred.len(), 1);
+
+        // The client's cancel reaches the prompt, which then finishes.
+        let cancel_busy: JsonRpcNotification = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/cancel",
+            "params": { "sessionId": busy }
+        }))
+        .expect("parse notification");
+        route_notification(&mut sessions, &running, cancel_busy);
+        let (prompt, outcome) = std::future::poll_fn(|cx| poll_finished(&mut running, cx)).await;
+        finish_prompt(&mut transport, &mut sessions, prompt, outcome)
+            .await
+            .expect("finish prompt");
+        let response = read_json_line(&mut reader).await;
+        assert_eq!(response["id"], serde_json::json!(1));
+        assert_eq!(response["result"]["stopReason"], "cancelled");
+        assert!(sessions.get_session(&busy).is_some());
+
+        // The held request goes next.
+        let held = deferred.pop_front().expect("held request");
+        assert!(!is_for_running_prompt(&held, &running));
+        dispatch_request(
+            &mut transport,
+            &mut sessions,
+            &mut running,
+            &mut deferred,
+            held,
+        )
+        .await
+        .expect("handle held request");
+        let response = read_json_line(&mut reader).await;
+        assert_eq!(response["id"], serde_json::json!(4));
+        assert!(response.get("error").is_none(), "got {response}");
     }
 }

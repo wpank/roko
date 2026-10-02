@@ -1218,24 +1218,23 @@ fn simulate_bench_result(prompt: &str) -> RunResult {
 /// Dispatch a bench prompt via the `ModelCallService` path.
 ///
 /// Uses the same ModelCallService that `WorkflowEngine` uses, preserving
-/// routing, budget, and feedback behavior.
+/// routing, budget, and feedback behavior. The planned model is a preference,
+/// as on Graph runs (gap-28ceb9): a provider that is disabled, has no
+/// credentials, is held out by the persisted health registry, or refuses
+/// with a usage exhaustion hands the prompt to the next usable model of
+/// `roko_learn::provider_failover`. An exhausted provider is quarantined
+/// until its reset. `model_override` pins the model, which never fails over.
 pub(crate) async fn dispatch_bench_prompt(
     workdir: &Path,
     config: &Config,
     prompt: &str,
     model_override: Option<&str>,
 ) -> anyhow::Result<BenchDispatchResult> {
-    use crate::learning_helpers::{
-        capture_runtime_model_slugs, provider_id_for_model, record_persisted_provider_health,
-    };
-    use roko_agent::model_call_service::ModelCallService;
+    use crate::learning_helpers::provider_id_for_model;
     use roko_core::agent::resolve_model;
     use roko_core::config::schema::RokoConfig;
-    use roko_core::foundation::{
-        ChatMessage, FeedbackSink, MessageRole, ModelCallRequest, ModelCaller, caller,
-    };
-    use roko_learn::feedback_service::FeedbackService;
-    use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
+    use roko_learn::provider_failover::Failover;
+    use roko_learn::provider_health::{ErrorClass, ProviderHealthRegistry};
 
     // Build a RokoConfig from CLI config (same pattern as dispatch_v2.rs).
     let mut model_config = RokoConfig::default();
@@ -1255,19 +1254,95 @@ pub(crate) async fn dispatch_bench_prompt(
     {
         model_config.agent.default_model = model.clone();
     }
+    // `[routing]` names the fallback models, the disabled providers and the
+    // exhaustion cooldown the failover follows.
+    model_config.routing = roko_core::config::loader::load_config_unified(workdir)
+        .unwrap_or_default()
+        .routing;
 
     let model_key = model_override
         .map(ToString::to_string)
         .or_else(|| config.agent.model.clone())
         .unwrap_or_else(|| model_config.agent.default_model.clone());
-    let model = resolve_model(&model_config, &model_key).slug;
+    let model_config = Arc::new(model_config);
+
+    // One registry for the prompt: it holds providers out, takes each
+    // outcome, and persists them when it drops.
+    let health = ProviderHealthRegistry::load_or_new(
+        &workdir
+            .join(".roko")
+            .join("learn")
+            .join("provider-health.json"),
+    );
+    let mut failover = Failover::new(Arc::clone(&model_config), model_override.is_some(), false);
+    let mut candidate = failover
+        .start(&health, &model_key)
+        .map_err(|error| anyhow::anyhow!("ModelCallService bench dispatch failed: {error}"))?;
+    loop {
+        let call_config = candidate
+            .config
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&model_config));
+        // A candidate with a config of its own serves a slug on another
+        // provider, which only its key names.
+        let model = if candidate.config.is_some() {
+            candidate.model_key.clone()
+        } else {
+            resolve_model(&call_config, &candidate.model_key).slug
+        };
+        let error = match call_bench_model(workdir, config, &call_config, &model, prompt).await {
+            Ok(response) => {
+                if let Some(provider) = provider_id_for_model(&call_config, &response.model) {
+                    health.record_success(&provider);
+                }
+                return Ok(BenchDispatchResult {
+                    text: response.content,
+                    input_tokens: response.usage.input_tokens,
+                    output_tokens: response.usage.output_tokens,
+                });
+            }
+            Err(error) => error,
+        };
+        match failover.after_refusal(&health, &candidate, &format!("{error:#}")) {
+            Ok(Some(next)) => candidate = next,
+            Ok(None) => {
+                if let Some(provider) = provider_id_for_model(&call_config, &model) {
+                    health.record_failure(&provider, ErrorClass::Unknown);
+                }
+                return Err(error).context("ModelCallService bench dispatch failed");
+            }
+            Err(why) => {
+                return Err(error)
+                    .context(format!("ModelCallService bench dispatch failed; {why}"));
+            }
+        }
+    }
+}
+
+/// One `ModelCallService` call of `prompt` on `model` under `model_config`,
+/// with the cascade router and feedback of a bench dispatch. Provider health
+/// is the caller's to record.
+async fn call_bench_model(
+    workdir: &Path,
+    config: &Config,
+    model_config: &roko_core::config::schema::RokoConfig,
+    model: &str,
+    prompt: &str,
+) -> anyhow::Result<roko_core::foundation::ModelCallResponse> {
+    use crate::learning_helpers::capture_runtime_model_slugs;
+    use roko_agent::model_call_service::ModelCallService;
+    use roko_core::foundation::{
+        ChatMessage, FeedbackSink, MessageRole, ModelCallRequest, ModelCaller, caller,
+    };
+    use roko_learn::feedback_service::FeedbackService;
+    use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
 
     // Set up cascade router for learning.
     let cascade_path = workdir
         .join(".roko")
         .join("learn")
         .join("cascade-router.json");
-    let cascade_model_slugs = capture_runtime_model_slugs(&model_config, &model);
+    let cascade_model_slugs = capture_runtime_model_slugs(model_config, model);
     // The snapshot first takes what a crashed writer journaled and never
     // saved (bug-8a78e1).
     let cascade_router = (!cascade_model_slugs.is_empty())
@@ -1289,7 +1364,7 @@ pub(crate) async fn dispatch_bench_prompt(
 
     // Build and call ModelCallService.
     let cost_table = roko_agent::CostTable::from_config_with_defaults(&model_config.models);
-    let mut service = ModelCallService::new(model.clone())
+    let mut service = ModelCallService::new(model.to_string())
         .with_config(model_config.clone())
         .with_working_dir(workdir)
         .with_immune_root(workdir)
@@ -1304,7 +1379,7 @@ pub(crate) async fn dispatch_bench_prompt(
     }
 
     let request = ModelCallRequest {
-        model: model.clone(),
+        model: model.to_string(),
         system: None,
         messages: vec![ChatMessage {
             role: MessageRole::User,
@@ -1328,26 +1403,7 @@ pub(crate) async fn dispatch_bench_prompt(
         );
     }
 
-    let response = match call_result {
-        Ok(response) => {
-            if let Some(provider) = provider_id_for_model(&model_config, &response.model) {
-                let _ = record_persisted_provider_health(workdir, &provider, true);
-            }
-            response
-        }
-        Err(err) => {
-            if let Some(provider) = provider_id_for_model(&model_config, &model) {
-                let _ = record_persisted_provider_health(workdir, &provider, false);
-            }
-            return Err(err).context("ModelCallService bench dispatch failed");
-        }
-    };
-
-    Ok(BenchDispatchResult {
-        text: response.content,
-        input_tokens: response.usage.input_tokens,
-        output_tokens: response.usage.output_tokens,
-    })
+    call_result.map_err(anyhow::Error::from)
 }
 
 /// Result from dispatching a bench prompt via `ModelCallService`.
@@ -2322,5 +2378,151 @@ planner_model = "fake-planner"
             logged_models(workspace.path(), "revise"),
             vec!["claude-opus-4-6"]
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests_provider_failover {
+    use std::os::unix::fs::PermissionsExt;
+
+    use roko_core::agent::ProviderKind;
+    use roko_core::config::schema::{ModelProfile, ProviderConfig};
+    use roko_learn::provider_health::ProviderHealthRegistry;
+
+    use super::*;
+
+    /// A fake Claude CLI `dir/name` that appends a line to `dir/name.calls`,
+    /// prints `output` and exits with `status`.
+    fn fake_claude(dir: &Path, name: &str, output: &str, status: i32) -> PathBuf {
+        let script = dir.join(name);
+        let calls = dir.join(format!("{name}.calls"));
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\necho call >> '{}'\ncat <<'JSON'\n{output}\nJSON\n\
+                 exit {status}\n",
+                calls.display()
+            ),
+        )
+        .expect("write fake provider");
+        let mut permissions = std::fs::metadata(&script)
+            .expect("fake provider metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make fake provider executable");
+        script
+    }
+
+    fn calls(dir: &Path, name: &str) -> usize {
+        std::fs::read_to_string(dir.join(format!("{name}.calls")))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    /// The answer of the backup provider.
+    const ANSWER: &str = "answered by the backup provider";
+
+    /// A workspace with model `primary` on `limited-cli`, a fake Claude CLI out
+    /// of usage, and a second Claude CLI provider, `backup-cli`, that answers
+    /// with [`ANSWER`]. A key in the environment would synthesize an
+    /// `anthropic` provider of the same family, so `[routing]` disables it.
+    fn failover_workspace() -> (tempfile::TempDir, Config) {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let dir = workspace.path();
+        let refusal = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": true,
+            "total_cost_usd": 0,
+            "result": "You’ve hit your session limit · resets 4pm (Europe/Berlin)",
+        });
+        let assistant = serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": ANSWER}]},
+        });
+        let result = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "result": ANSWER,
+            "model": "claude-sonnet-4-6",
+            "total_cost_usd": 0.0,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        });
+        let limited = fake_claude(dir, "limited-claude", &refusal.to_string(), 1);
+        let backup = fake_claude(dir, "backup-claude", &format!("{assistant}\n{result}"), 0);
+        std::fs::write(
+            dir.join("roko.toml"),
+            "[routing]\ndisabled_providers = [\"anthropic\"]\n",
+        )
+        .expect("write roko.toml");
+        let mut config = Config::default();
+        for (id, script) in [("limited-cli", &limited), ("backup-cli", &backup)] {
+            config.providers.insert(
+                id.to_string(),
+                ProviderConfig {
+                    kind: ProviderKind::ClaudeCli,
+                    command: Some(script.display().to_string()),
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+        config.models.insert(
+            "primary".to_string(),
+            ModelProfile {
+                provider: "limited-cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                context_window: 200_000,
+                ..ModelProfile::default()
+            },
+        );
+        config.agent.model = Some("primary".to_string());
+        (workspace, config)
+    }
+
+    fn persisted_health(dir: &Path) -> ProviderHealthRegistry {
+        ProviderHealthRegistry::load_or_new(
+            &dir.join(".roko").join("learn").join("provider-health.json"),
+        )
+    }
+
+    /// gap-28ceb9: a serve prompt whose planned model's provider is out of
+    /// usage runs on the same slug on another provider of its family in the
+    /// same call, as Graph runs fail over, and the refusing provider stays
+    /// quarantined in the persisted health registry until its reset.
+    #[tokio::test]
+    async fn a_one_shot_prompt_fails_over_from_an_exhausted_provider() {
+        let (workspace, config) = failover_workspace();
+        let dir = workspace.path();
+
+        let dispatched = dispatch_bench_prompt(dir, &config, "Say hello.", None)
+            .await
+            .expect("the backup provider answers");
+
+        assert!(dispatched.text.contains(ANSWER), "{}", dispatched.text);
+        assert_eq!(calls(dir, "limited-claude"), 1);
+        assert!(calls(dir, "backup-claude") >= 1);
+        let health = persisted_health(dir);
+        assert!(!health.is_available("limited-cli"));
+        assert!(health.is_available("backup-cli"));
+    }
+
+    /// An explicit model pins the prompt: its provider's exhaustion fails it,
+    /// says so, and still quarantines the provider.
+    #[tokio::test]
+    async fn a_pinned_one_shot_prompt_does_not_fail_over() {
+        let (workspace, config) = failover_workspace();
+        let dir = workspace.path();
+
+        let error = dispatch_bench_prompt(dir, &config, "Say hello.", Some("primary"))
+            .await
+            .err()
+            .expect("the pinned model is out of usage");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("pinned"), "{message}");
+        assert_eq!(calls(dir, "backup-claude"), 0);
+        assert!(!persisted_health(dir).is_available("limited-cli"));
     }
 }

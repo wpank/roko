@@ -27,7 +27,7 @@
 mod acceptance;
 pub use acceptance::{ReviewDiff, attempt_review_diff};
 mod cleanup;
-pub use cleanup::clear_stale_index_lock;
+pub use cleanup::{LEFTOVER_CHECKOUT_MIN_AGE, LeftoverCheckout, clear_stale_index_lock};
 mod creation_journal;
 mod git_ops;
 #[cfg(test)]

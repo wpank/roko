@@ -41,7 +41,7 @@
 | PELT offline | `crates/roko-gate/src/pelt.rs` | Offline change-point detection |
 | Process rewards | `crates/roko-gate/src/process_reward.rs` | `ProcessRewardModel`, `StepVerdict`, `TurnSnapshot` |
 | Verdict publisher | `crates/roko-gate/src/verdict_publisher.rs` | `VerdictPublisher` |
-| Production service | `crates/roko-gate/src/production_service.rs` | `ProductionGateService`, `DefaultGateService` |
+| Production service | `crates/roko-gate/src/production_service.rs` | `ProductionGateService`, `ProductionGateRunner` |
 | Graph cell | `crates/roko-gate/src/graph_cell.rs` | `GatePipelineCell` (#250) |
 | Runner gate dispatch | `crates/roko-cli/src/runner/gate_dispatch.rs` | `GateTaskContext`, rung inputs, verify-step wiring |
 
@@ -706,10 +706,10 @@ Sub-modules:
 - `gate_report` -- output rendering and failure classification
 - `gate_adapter` -- `RunnerProductionGateAdapter` and artifact store
 
-The production gate service (`ProductionGateService`, `DefaultGateService`)
-provides the trait interface that the Runner-v2 event loop used and that the
-Graph engine's `GatePipelineCell` (#250) calls. Nothing outside `roko-gate`
-constructs `GatePipelineCell`, so plan runs never reach it.
+The production gate service (`ProductionGateService`) provides the trait
+interface that the Runner-v2 event loop used and that the Graph engine's
+`GatePipelineCell` (#250) calls. Nothing outside `roko-gate` constructs
+`GatePipelineCell`, so plan runs never reach it.
 
 ---
 

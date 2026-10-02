@@ -330,8 +330,7 @@ pub struct RunnerProductionGateAdapter {
 The adapter implements the trait interface expected by both the Runner-v2
 event loop and the Graph engine's `GatePipelineCell`. It holds:
 
-- A `ProductionGateService` (or `DefaultGateService`) that constructs and
-  runs gate pipelines
+- A `ProductionGateService` that constructs and runs gate pipelines
 - An `FsGeneratedArtifactStore` for persisting generated test artifacts to
   the filesystem
 - An optional `VerdictPublisher` for broadcasting verdicts as Pulse events

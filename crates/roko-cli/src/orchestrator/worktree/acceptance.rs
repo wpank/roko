@@ -30,7 +30,7 @@ const RUN_TRAILER: &str = "Roko-Run: ";
 
 /// File in an attempt checkout's administrative directory naming the run
 /// that made the checkout.
-const CHECKOUT_RUN_FILE: &str = "roko-run";
+pub(super) const CHECKOUT_RUN_FILE: &str = "roko-run";
 
 impl WorktreeManager {
     /// Body of [`WorktreeManager::accept_attempt`], run while holding the

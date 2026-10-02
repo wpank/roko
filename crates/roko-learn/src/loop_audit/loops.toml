@@ -1,0 +1,25 @@
+# The loop registry (S03 §4.2): one contract per learning loop, read by
+# `roko_learn::loop_audit::spec::Registry`. A workspace overrides entries by
+# `id` in `.roko/learn/loop-registry.toml`.
+#
+# Each static finding is a code-review fact the census prints as `declared`
+# evidence, with a `path::symbol` pointer and the commit it was checked at.
+# `verified_at` rots by design: the census marks a finding `declared_stale`
+# when it differs from the harness sha.
+
+schema = "roko.loop_registry/1"
+
+[[loop]]
+id = "L-route"
+name = "cascade model router"
+decision_point = "dispatch::model_routing::ModelRouter::route"
+layer = "route"
+opportunity = "no pin (model_hint, force_backend) and at least two eligible models"
+default_policy = "default_slug"
+receipt = "executed_model"
+
+[[loop.static_findings]]
+claim = "The three default_slug fallbacks (unconfigured model, disabled provider, no tool support) return ModelChoiceSource::Router, so a guard's pick carries the router's label (G55)."
+pointer = "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route"
+verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+reason = "dormant:mask"

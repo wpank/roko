@@ -83,3 +83,15 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK73 (gap-5e9292).
 - Suggested model: opus.
+
+## Progress
+
+- 9115: implemented at ae0c9fa02
+- 9116: implemented at 9e3d31bd1
+- 9117: implemented at 80110ed6f (test layout follow-up 31fdfbff4)
+- 9118: blocked: decision 9106 says to confirm, before 9118, whether OpenClaw is an MCP client and whether Hermes can post to live sessions; neither answer is recorded
+- 9119: implemented at 224bb3067
+- 9120: implemented at ee8b14918
+- 9121: implemented at 8e278e092
+
+The Rust tasks were checked statically (verify greps, hand formatting); cargo verification is left to the batch gate.

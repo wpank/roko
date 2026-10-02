@@ -36,7 +36,7 @@ use self::run_control::*;
 
 // The MCP run tools (9115) start, generate and cancel what these routes do.
 pub(super) use self::authoring::start_plan_generation;
-pub(super) use self::run_control::{cancel_plan_run, start_plan_run};
+pub(super) use self::run_control::{cancel_plan_run, start_plan_run_with};
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()

@@ -38,7 +38,7 @@ use serde_json::{Value, json};
 
 use super::middleware::{AuthContext, is_scope_sufficient};
 use crate::error::ApiError;
-use crate::runtime::PromptPlanOptions;
+use crate::runtime::{PromptPlanOptions, RunOrigin};
 use crate::state::{AppState, OperationStatus, RunState};
 use roko_core::TaskDomain;
 
@@ -402,7 +402,8 @@ async fn call_tool(
             let prompt = required_str(&arguments, name, "prompt")?.to_string();
             let options = PromptPlanOptions {
                 domain: optional_domain(&arguments)?,
-                max_usd: optional_usd(&arguments)?,
+                max_usd: Some(run_cap(state, &arguments)?),
+                origin: mcp_origin(auth),
                 ..PromptPlanOptions::default()
             };
             start_prompt_run(state, prompt, options).await
@@ -410,9 +411,9 @@ async fn call_tool(
         "plan_run" => {
             let plan_id = required_str(&arguments, name, "plan_id")?.to_string();
             let resume = optional_bool(&arguments, "resume")?;
-            // Checked here; the run takes the cap from 9116 on.
-            optional_usd(&arguments)?;
-            start_plan(state, plan_id, resume).await
+            let max_usd = run_cap(state, &arguments)?;
+            let origin = mcp_origin(auth);
+            start_plan(state, plan_id, resume, origin, max_usd).await
         }
         "plan_generate" => {
             let prompt = required_str(&arguments, name, "prompt")?.to_string();
@@ -499,6 +500,32 @@ fn optional_usd(arguments: &Value) -> Result<Option<f64>, JsonRpcError> {
     }
 }
 
+/// The spending cap a `run_prompt` or `plan_run` call names (9116): it must
+/// name one, above 0 and at most `[serve.mcp] max_run_usd`, and it becomes
+/// the run's budget ceiling.
+fn run_cap(state: &AppState, arguments: &Value) -> Result<f64, JsonRpcError> {
+    let most = state.load_roko_config().serve.mcp.max_run_usd;
+    match optional_usd(arguments)? {
+        None => Err(JsonRpcError::invalid_params(format!(
+            "max_usd is required: name the most this run may spend, at most {most:.2} USD"
+        ))),
+        Some(cap) if cap > most => Err(JsonRpcError::invalid_params(format!(
+            "max_usd {cap:.2} is above the {most:.2} USD a run started over /mcp may spend \
+             ([serve.mcp] max_run_usd)"
+        ))),
+        Some(cap) => Ok(cap),
+    }
+}
+
+/// The origin of a run a chat host starts over `/mcp` (9116): the calling
+/// credential's name, or `local` when auth is off.
+fn mcp_origin(auth: Option<&AuthContext>) -> RunOrigin {
+    let client = auth
+        .and_then(|context| context.user_id.clone())
+        .unwrap_or_else(|| "local".to_string());
+    RunOrigin::Mcp { client }
+}
+
 /// The optional `domain` argument, as the task domain its label names.
 fn optional_domain(arguments: &Value) -> Result<Option<TaskDomain>, JsonRpcError> {
     match arguments.get("domain") {
@@ -581,14 +608,18 @@ async fn start_prompt_run(
     }))
 }
 
-/// The `plan_run` tool: run plan `plan_id`, or queue it behind the live run,
-/// as `POST /api/plans/{id}/execute` does, and answer at once.
+/// The `plan_run` tool: run plan `plan_id` from `origin`, capped at
+/// `max_usd`, or queue it behind the live run, as `POST
+/// /api/plans/{id}/execute` does, and answer at once.
 async fn start_plan(
     state: &Arc<AppState>,
     plan_id: String,
     resume: bool,
+    origin: RunOrigin,
+    max_usd: f64,
 ) -> Result<Value, ApiError> {
-    let started = super::plans::start_plan_run(state, plan_id, resume).await?;
+    let started =
+        super::plans::start_plan_run_with(state, plan_id, resume, origin, Some(max_usd)).await?;
     let run_id = started.run_id;
     let run_state = if started.queued.is_some() {
         RunState::Queued
@@ -840,19 +871,28 @@ mod tests {
         assert!(body["error"]["message"].is_string(), "{body}");
     }
 
-    /// A plan runtime whose runs record the run id they run under, then wait
-    /// for a permit from `gate` before they end.
+    /// A runtime whose plan runs record their options, then wait for a
+    /// permit from `gate` before they end, and whose prompt runs record their
+    /// options and succeed at once.
     struct HeldPlans {
-        run_ids: std::sync::Mutex<Vec<Option<String>>>,
+        plans: std::sync::Mutex<Vec<crate::runtime::PlanRunOptions>>,
+        prompts: std::sync::Mutex<Vec<PromptPlanOptions>>,
         gate: tokio::sync::Semaphore,
     }
 
     impl HeldPlans {
         fn new() -> Self {
             Self {
-                run_ids: std::sync::Mutex::default(),
+                plans: std::sync::Mutex::default(),
+                prompts: std::sync::Mutex::default(),
                 gate: tokio::sync::Semaphore::new(0),
             }
+        }
+
+        /// The run ids the plan runs ran under, in the order they started.
+        fn run_ids(&self) -> Vec<Option<String>> {
+            let plans = self.plans.lock().expect("lock plan runs");
+            plans.iter().map(|options| options.run_id.clone()).collect()
         }
     }
 
@@ -887,16 +927,30 @@ mod tests {
             }))
         }
 
+        async fn run_prompt_plan(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+            options: PromptPlanOptions,
+        ) -> anyhow::Result<crate::runtime::PromptPlanResult> {
+            let run_id = options.run_id.clone().unwrap_or_default();
+            self.prompts.lock().expect("lock prompt runs").push(options);
+            Ok(crate::runtime::PromptPlanResult {
+                run_id,
+                verdict: RunState::Succeeded,
+                success: true,
+                output_text: None,
+                cost_usd: None,
+            })
+        }
+
         async fn run_plan_with_options(
             &self,
             _workdir: &std::path::Path,
             _plan_target: &std::path::Path,
             options: crate::runtime::PlanRunOptions,
         ) -> anyhow::Result<crate::runtime::PlanExecutionResult> {
-            self.run_ids
-                .lock()
-                .expect("lock run ids")
-                .push(options.run_id);
+            self.plans.lock().expect("lock plan runs").push(options);
             self.gate
                 .acquire()
                 .await
@@ -962,14 +1016,13 @@ mod tests {
         assert_eq!(first["state"], "running", "{body}");
         let first_id = first["run_id"].as_str().expect("a run id").to_string();
         tokio::time::timeout(Duration::from_secs(5), async {
-            while runtime.run_ids.lock().expect("lock run ids").is_empty() {
+            while runtime.run_ids().is_empty() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
         .expect("the run starts");
-        let ran = runtime.run_ids.lock().expect("lock run ids").clone();
-        assert_eq!(ran, [Some(first_id)]);
+        assert_eq!(runtime.run_ids(), [Some(first_id)]);
 
         let beta = call(3, "plan_run", json!({ "plan_id": "beta", "max_usd": 1.0 }));
         let (_, body) = post_mcp(&open, &beta, &[]).await;
@@ -983,6 +1036,60 @@ mod tests {
         let cancelled = &body["result"]["structuredContent"];
         assert_eq!(cancelled["state"], "cancelled", "{body}");
         assert!(state.plan_queue.lock().expect("lock the queue").is_empty());
+        runtime.gate.add_permits(1);
+    }
+
+    /// 9116: `run_prompt` and `plan_run` over `/mcp` must name a spending cap
+    /// above 0 and at most `[serve.mcp] max_run_usd`. A call without one, or
+    /// with one above the maximum, is refused before any run starts; a valid
+    /// cap reaches the runtime's options, with the run's chat origin.
+    #[tokio::test]
+    async fn mcp_run_without_budget_cap_is_refused() {
+        let runtime = Arc::new(HeldPlans::new());
+        let mut config = open_config();
+        config.serve.mcp.max_run_usd = 3.0;
+        let (_dir, state, open) = state_and_router(runtime.clone(), config);
+
+        let refused = [
+            ("run_prompt", json!({ "prompt": "fix the parser" })),
+            ("run_prompt", json!({ "prompt": "fix the parser", "max_usd": 0 })),
+            ("run_prompt", json!({ "prompt": "fix the parser", "max_usd": 4.5 })),
+            ("plan_run", json!({ "plan_id": "alpha" })),
+            ("plan_run", json!({ "plan_id": "alpha", "max_usd": 9.0 })),
+        ];
+        for (id, (name, arguments)) in (1..).zip(refused) {
+            let (_, body) = post_mcp(&open, &call(id, name, arguments), &[]).await;
+            assert!(body["error"]["message"].is_string(), "{body}");
+        }
+        assert!(state.active_runs.read().await.is_empty());
+        assert!(state.active_plans.read().await.is_empty());
+        assert!(runtime.prompts.lock().expect("lock prompt runs").is_empty());
+
+        let prompt = json!({ "prompt": "fix the parser", "max_usd": 2.5 });
+        let (_, body) = post_mcp(&open, &call(6, "run_prompt", prompt), &[]).await;
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        let plan = json!({ "plan_id": "alpha", "max_usd": 3.0 });
+        let (_, body) = post_mcp(&open, &call(7, "plan_run", plan), &[]).await;
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while runtime.prompts.lock().expect("lock prompt runs").is_empty()
+                || runtime.run_ids().is_empty()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("both runs start");
+
+        let chat = RunOrigin::Mcp {
+            client: "local".to_string(),
+        };
+        let prompts = runtime.prompts.lock().expect("lock prompt runs").clone();
+        assert_eq!(prompts[0].max_usd, Some(2.5));
+        assert_eq!(prompts[0].origin, chat);
+        let plans = runtime.plans.lock().expect("lock plan runs").clone();
+        assert_eq!(plans[0].max_usd, Some(3.0));
+        assert_eq!(plans[0].origin, chat);
         runtime.gate.add_permits(1);
     }
 }

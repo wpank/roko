@@ -129,6 +129,51 @@ pub struct PlanRunOptions {
     /// fresh single plan, its checkpoint take this id. `None` lets the runtime
     /// mint its own.
     pub run_id: Option<String>,
+
+    /// Where the run's request came from (9116).
+    pub origin: RunOrigin,
+
+    /// A hard cap on what the run may spend, in USD: its budget ceiling, as
+    /// `roko plan run --budget-override` sets one. `None` keeps the
+    /// configured ceiling. A run a chat host starts always has one (9116).
+    pub max_usd: Option<f64>,
+}
+
+/// Where a run's request came from (9116): the CLI, the HTTP API, or a chat
+/// host over `POST /mcp`. A chat host's run must name a spending cap, and its
+/// request text is untrusted data (9117).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RunOrigin {
+    /// `roko run` or `roko plan run`.
+    Cli,
+    /// The HTTP API.
+    #[default]
+    Http,
+    /// A chat host over `POST /mcp`.
+    Mcp {
+        /// The calling client: its credential's name, or `local` without
+        /// auth.
+        client: String,
+    },
+}
+
+impl RunOrigin {
+    /// Whether a chat host started the run.
+    #[must_use]
+    pub const fn is_chat(&self) -> bool {
+        matches!(self, Self::Mcp { .. })
+    }
+
+    /// The origin in one word: `cli`, `http` or `mcp:<client>`.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Cli => "cli".to_string(),
+            Self::Http => "http".to_string(),
+            Self::Mcp { client } => format!("mcp:{client}"),
+        }
+    }
 }
 
 /// Options for a prompt run through [`CliRuntime::run_prompt_plan`].
@@ -144,6 +189,8 @@ pub struct PromptPlanOptions {
     /// A hard cap on what the run may spend, in USD, as `roko plan run
     /// --budget-override` sets one; `None` keeps the configured ceiling.
     pub max_usd: Option<f64>,
+    /// Where the run's request came from (9116).
+    pub origin: RunOrigin,
 }
 
 /// How a prompt run through [`CliRuntime::run_prompt_plan`] ended.

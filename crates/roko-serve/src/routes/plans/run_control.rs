@@ -3,6 +3,7 @@
 
 use super::*;
 
+use crate::runtime::RunOrigin;
 use crate::state::{
     PLAN_RUN_QUEUE_CAPACITY, PlanRunSpec, PlanRunStatus, PlanSetSpec, QueuedPlanRun, RunState,
 };
@@ -294,6 +295,8 @@ pub(super) async fn execute_plans(
             only_plans,
             max_parallel_plans: effective_max,
         }),
+        origin: RunOrigin::Http,
+        max_usd: None,
     };
     // Start the run, or queue it behind the live one (decision 9105).
     let position = start_or_queue_plan_run(&state, spec).await?;
@@ -328,6 +331,18 @@ pub(crate) async fn start_plan_run(
     state: &Arc<AppState>,
     id: String,
     resume: bool,
+) -> Result<StartedPlanRun, ApiError> {
+    start_plan_run_with(state, id, resume, RunOrigin::Http, None).await
+}
+
+/// [`start_plan_run`] for a run whose request came from `origin`, with
+/// `max_usd` as its budget ceiling when set (9116).
+pub(crate) async fn start_plan_run_with(
+    state: &Arc<AppState>,
+    id: String,
+    resume: bool,
+    origin: RunOrigin,
+    max_usd: Option<f64>,
 ) -> Result<StartedPlanRun, ApiError> {
     validate_path_segment(&id, "plan id")?;
 
@@ -389,6 +404,8 @@ pub(crate) async fn start_plan_run(
         plan_dir,
         resume,
         plan_set: None,
+        origin,
+        max_usd,
     };
     // Start the run, or queue it behind the live one (decision 9105).
     let queued = start_or_queue_plan_run(state, spec).await?;
@@ -544,6 +561,8 @@ fn launch_single_plan_run(
         let plan_id = spec.key.clone();
         let plan_dir = spec.plan_dir.clone();
         let run_id = spec.run_id.clone();
+        let origin = spec.origin.clone();
+        let max_usd = spec.max_usd;
         let state_for_task = Arc::clone(state);
         async move {
             // Do NOT publish PlanStarted here. The runtime publishes its own
@@ -561,6 +580,8 @@ fn launch_single_plan_run(
                 live_agent_output: Some(live_agent_output),
                 // The run takes the id this handler returns (bug-4f833d).
                 run_id: Some(run_id.clone()),
+                origin,
+                max_usd,
                 ..PlanRunOptions::default()
             };
             let outcome = run_plans(&state_for_task, &plan_dir, options, revalidate).await;
@@ -644,6 +665,8 @@ fn launch_plan_set_run(
     let plan_target = spec.plan_dir.clone();
     let run_id = spec.run_id.clone();
     let plans = spec.members.clone();
+    let origin = spec.origin.clone();
+    let max_usd = spec.max_usd;
     let state_for_task = Arc::clone(state);
 
     // Every hub event of this run is sequenced at or after this point.
@@ -659,6 +682,8 @@ fn launch_plan_set_run(
             max_parallel_plans: Some(set.max_parallel_plans),
             live_agent_output: Some(live_agent_output),
             run_id: Some(run_id.clone()),
+            origin,
+            max_usd,
         };
         // Do NOT publish plan lifecycle events (plan_started, plan_completed)
         // for the run_id.  The runtime publishes its own per-plan events

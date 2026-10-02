@@ -1080,6 +1080,15 @@ routing stays with the ladder.
 | `plan_generate` | `prompt` (string, required) | The planner's operation as `run_id` and the new plan's `plan_id`, as `POST /api/plans/generate` starts it |
 | `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped, or a live or queued plan run cancelled, as `POST /api/plans/{id}/cancel` cancels it |
 
+A run a chat host starts must name its spending cap: `run_prompt` and
+`plan_run` refuse, with a JSON-RPC error and before anything starts, a call
+without `max_usd` or with one above `[serve.mcp] max_run_usd` (default 5.00),
+and the cap becomes the run's budget ceiling. Such a run carries its origin,
+`{ "kind": "mcp", "client": "<credential name, or local>" }`: the prompt
+run's `run_started` event and the run's manifest (`.roko/runs/<run_id>/manifest.json`,
+`origin: "mcp:<client>"`) record it. Runs started any other way are not
+affected.
+
 There is no `remember`: personal memory stays with the host.
 
 ---

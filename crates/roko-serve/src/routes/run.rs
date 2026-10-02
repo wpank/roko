@@ -15,7 +15,7 @@ use validator::Validate;
 use crate::error::ApiError;
 use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
-use crate::runtime::{CliRuntime, PromptPlanOptions, RunResult};
+use crate::runtime::{CliRuntime, PromptPlanOptions, RunOrigin, RunResult};
 use crate::sanitize::sanitize_agent_content;
 use crate::state::{AppState, OperationStatus, RunHandle, RunState};
 
@@ -215,13 +215,21 @@ async fn spawn_run(
     let (start_tx, start_rx) = oneshot::channel::<()>();
     let cancel = (mode == RunMode::GatedPlan).then(|| state.cancel.child());
     let cancel_for_task = cancel.clone();
+    // A gated run's start event says where its request came from (9116).
+    let origin = (mode == RunMode::GatedPlan).then(|| options.origin.clone());
 
     let handle = tokio::spawn({
         let run_id = run_id.clone();
         let prompt_for_handle = prompt.clone();
         async move {
             let _ = start_rx.await;
-            publish_run_started(&bus, &run_id, &prompt_for_handle, agent_target.as_deref());
+            publish_run_started(
+                &bus,
+                &run_id,
+                &prompt_for_handle,
+                agent_target.as_deref(),
+                origin,
+            );
 
             // Emit rich DashboardEvents so the TUI shows run activity. The
             // plan is the one `RunStarted` and `RunCompleted` start and end.
@@ -503,10 +511,12 @@ fn publish_run_started(
     run_id: &str,
     prompt: &str,
     agent_target: Option<&str>,
+    origin: Option<RunOrigin>,
 ) {
     bus.publish(ServerEvent::RunStarted {
         run_id: run_id.to_owned(),
         prompt: prompt.to_owned(),
+        origin,
     });
     if let Some(agent_id) = agent_target {
         bus.publish(ServerEvent::AgentOutput {

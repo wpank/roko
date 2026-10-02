@@ -156,6 +156,33 @@ pub struct ServeConfig {
     /// Optional OTLP tracing export. Disabled when `otlp_endpoint` is absent.
     #[serde(default)]
     pub tracing: TracingConfig,
+    /// Limits on runs a chat host starts over `POST /mcp` (9116).
+    #[serde(default)]
+    pub mcp: ServeMcpConfig,
+}
+
+/// `[serve.mcp]`: limits on the runs a chat host starts over `POST /mcp`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServeMcpConfig {
+    /// The most a run started over `/mcp` may spend, in USD. A `run_prompt`
+    /// or `plan_run` call must name a cap (`max_usd`) above 0 and at most
+    /// this, and the cap becomes the run's budget ceiling. Defaults to 5.00;
+    /// runs started any other way are not affected.
+    #[serde(default = "default_mcp_max_run_usd")]
+    pub max_run_usd: f64,
+}
+
+impl Default for ServeMcpConfig {
+    fn default() -> Self {
+        Self {
+            max_run_usd: default_mcp_max_run_usd(),
+        }
+    }
+}
+
+fn default_mcp_max_run_usd() -> f64 {
+    5.0
 }
 
 impl Default for ServeConfig {
@@ -176,6 +203,7 @@ impl Default for ServeConfig {
             event_ingest_allowlist: Vec::new(),
             live_agent_output: LiveAgentOutput::default(),
             tracing: TracingConfig::default(),
+            mcp: ServeMcpConfig::default(),
         }
     }
 }

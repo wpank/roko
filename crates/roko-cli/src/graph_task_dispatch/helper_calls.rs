@@ -673,7 +673,10 @@ mod tests {
         assert_eq!(seen.len(), 2, "the diagnosis and the reflection alone");
         for request in seen.iter() {
             let body = request.to_string();
-            assert!(!body.contains("Rate the quality of this response"), "{body}");
+            assert!(
+                !body.contains("Rate the quality of this response"),
+                "{body}"
+            );
         }
         let alerts = temp.path().join(".roko/learn/gate-gaming-alerts.jsonl");
         assert!(!alerts.exists(), "{} was written", alerts.display());

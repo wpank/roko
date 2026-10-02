@@ -276,7 +276,10 @@ mod tests {
             ("Score: 0.6", 0.6),
             ("0.73", 0.73),
             ("Score (0.0-1.0): 0.4", 0.4),
-            ("1. Tests pass.\n2. The retry is bounded.\n\nRating: 0.9", 0.9),
+            (
+                "1. Tests pass.\n2. The retry is bounded.\n\nRating: 0.9",
+                0.9,
+            ),
             ("**0.8** out of 1", 0.8),
         ];
         for (answer, expected) in scored {

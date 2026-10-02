@@ -34,7 +34,8 @@ API:
     X, Y, LEVELS, ARM, REFERENCE, UNDEFINED_C
     Level(level, n_tasks, n_runs, r, c, r_low, r_high, c_low, c_high, p_r, p_c, p_level, p_chain, claimed, why)
     Envelope(levels, e_star, alpha, arm, reference, b, seed, x, y); .e_star_at(a) -> int
-    envelope(records, *, alpha=0.05, arm=ARM, reference=REFERENCE, x=X, y=Y, b=10_000, seed=0) -> Envelope
+    envelope(records, *, alpha=0.05, arm=ARM, reference=REFERENCE, x=X, y=Y, b=10_000, seed=0, levels=LEVELS)
+        -> Envelope
     level_ratios(records, *, alpha=0.05, arm=ARM, reference=REFERENCE, b=10_000, seed=0) -> list[Level]
     level_table(records, experiment_id, *, ks=(3,)) -> list[dict]
     envelope_metrics(result, records, *, alone=()) -> list[metrics.Metric]
@@ -98,20 +99,24 @@ class Envelope:
 
 
 def envelope(records: Iterable[dict], *, alpha: float = 0.05, arm: str = ARM, reference: str = REFERENCE,
-             x: float = X, y: float = Y, b: int = bootstrap.DEFAULT_B, seed: int = 0) -> Envelope:
-    """The cumulative chain over levels 1-5 at local level `alpha` (module docstring)."""
+             x: float = X, y: float = Y, b: int = bootstrap.DEFAULT_B, seed: int = 0,
+             levels: Sequence[int] = LEVELS) -> Envelope:
+    """The cumulative chain over levels 1-5 at local level `alpha` (module docstring). `levels`, a prefix of 1-5,
+    tests only those: under a global null a false claim needs level 1 first, so `simulate.py` tests (1,)."""
+    if tuple(levels) != LEVELS[:len(levels)] or not levels:
+        raise ValueError(f"levels must be a non-empty prefix of {LEVELS}, not {tuple(levels)}")
     rows, _ = _rows(records, arm, reference)
-    levels, running, chain_open = [], 0.0, True
-    for level in LEVELS:
+    tested, running, chain_open = [], 0.0, True
+    for level in levels:
         found = _level([row for row in rows if row["task"]["ladder"] <= level], level, alpha, arm, x, y, b,
                        seed + level)
         running = max(running, found.p_level)
         why = found.why or ("" if chain_open else "the chain stopped at an earlier level")
         claimed = chain_open and not found.why
         chain_open = claimed
-        levels.append(Level(**{**found.__dict__, "p_chain": running, "claimed": claimed, "why": why}))
-    e_star = sum(1 for _ in _leading(levels))
-    return Envelope(levels=tuple(levels), e_star=e_star, alpha=alpha, arm=arm, reference=reference, b=b, seed=seed,
+        tested.append(Level(**{**found.__dict__, "p_chain": running, "claimed": claimed, "why": why}))
+    e_star = sum(1 for _ in _leading(tested))
+    return Envelope(levels=tuple(tested), e_star=e_star, alpha=alpha, arm=arm, reference=reference, b=b, seed=seed,
                     x=x, y=y)
 
 

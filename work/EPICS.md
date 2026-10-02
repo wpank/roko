@@ -42,9 +42,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **48/58 closed** · goal `proof` · severity p1
-- open by lane: bench 10
-- next: none ready (10 unverified)
+- **49/58 closed** · goal `proof` · severity p1
+- open by lane: bench 9
+- next: none ready (9 unverified)
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
@@ -100,12 +100,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 50 | 81 | 31 (20) |
+| bench | 51 | 82 | 31 (21) |
 | docs | 17 | 19 | 2 (0) |
 | frontend | 3 | 4 | 1 (1) |
 | none | 326 | 401 | 75 (75) |
 | paper | 60 | 73 | 13 (10) |
-| rust-cold | 182 | 232 | 50 (40) |
+| rust-cold | 182 | 233 | 51 (41) |
 | rust-hot | 127 | 156 | 29 (26) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 21 | 24 | 3 (2) |

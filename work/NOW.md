@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 9 anchor gone · 66 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 9 anchor gone · 66 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -36,7 +36,7 @@ _7 more open · `goal = "truth"`_
 - **P1** [gap-c1f4ac](items/gap-c1f4ac-pk15-defaults-that-apply-one-resolver-for.md) PK15 Defaults that apply: One resolver for [runner] worktree_per_task, and roko run follows it (+4 more) · size L · verified 2026-10-02
 - **P2** [gap-e4bfbf](items/gap-e4bfbf-pk18-specs-a-cheap-model-can-execute.md) PK18 Specs a cheap model can execute: `plan validate --spec-quality --dynamic`: red-on-base proof inside Roko (+9 more) · size L · verified 2026-10-02
 
-_3 more open · on hold: gap-c013c5 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_4 more open · on hold: gap-c013c5 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -44,7 +44,7 @@ _3 more open · on hold: gap-c013c5 · 4 unchecked (`TRIAGE.md`) · `goal = "gol
 - **P1** [gap-46fd19](items/gap-46fd19-pk22-viabilitybench-proof-analysis-bootstrap-py-the.md) PK22 ViabilityBench proof: analysis/bootstrap.py: the paired bootstrap stratified by family and level (+5 more) · size L · verified 2026-10-02
 - **P2** [gap-eb1aa3](items/gap-eb1aa3-pk23-viabilitybench-proof-family-f6-ts-result.md) PK23 ViabilityBench proof: Family F6 ts-result: the TypeScript transfer probe (+2 more) · size L · verified 2026-10-02
 
-_9 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 11 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_10 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 10 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 

@@ -2,20 +2,31 @@
 id = "dec-39c781"
 kind = "decision"
 title = "Confirm decisions D28–D36 before the pre-registration lock"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["cybernetic-harness/specs"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "f37936858"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:13, next paper wave); tmp/cybernetic-harness/DECISIONS.md (D28-D36)"
 anchors = ["tmp/cybernetic-harness/DECISIONS.md", "tmp/cybernetic-harness/specs/S09-experiments.md"]
 lane = "bench"
 parent = "spec-567e52"
 links = { depends_on = [], blocks = [], related = ["gap-419298", "q-ab27d3", "gap-ac4ce8"], supersedes = [], duplicate_of = "" }
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T15:53:48Z"
+commit = "f37936858"
+executor = "human"
+via = "manual"
+forced = false
+evidence = "Will confirmed D28-D36 as written on 2026-10-02 (coordinator question round, session roko-90): Holm/Bonferroni multiplicity, exploratory closure tests, BL11 ablation, H5 rho=0.15 tilted with live A0, BLAKE3 config hash, disturbance naming, cross-fitted H4 reference, H3 frontier arm without the API cross-check, spec gate by arm. Unblocks the pre-registration lock (backlog 3345)."
 +++
 
 ## Problem

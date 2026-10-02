@@ -70,6 +70,7 @@ fn zai_provider_config(base_url: impl Into<String>) -> ProviderConfig {
         limits: None,
         require_confirmation: false,
         stream_usage: None,
+        billing: None,
     }
 }
 
@@ -127,6 +128,7 @@ fn ollama_provider_config(base_url: impl Into<String>) -> ProviderConfig {
         limits: None,
         require_confirmation: false,
         stream_usage: None,
+        billing: None,
     }
 }
 

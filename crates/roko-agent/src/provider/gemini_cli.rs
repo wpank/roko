@@ -153,6 +153,7 @@ mod tests {
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         }
     }
 

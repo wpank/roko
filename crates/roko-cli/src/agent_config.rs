@@ -138,6 +138,7 @@ fn command_backed_config(command: &str, model: &str, kind: ProviderKind) -> Roko
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         },
     );
     config.models.insert(

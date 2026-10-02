@@ -140,6 +140,7 @@ connect_timeout_ms = 5000
 | `max_concurrent` | Option\<usize\> | None | Concurrency limit |
 | `limits` | Option\<ProviderLimits\> | None | Rate limits and resource constraints |
 | `require_confirmation` | bool | false | Require user confirmation before dispatch |
+| `billing` | Option\<String\> | None | CLI providers: `"subscription"` bills each attempt $0, `"metered"` bills the CLI's own cost figure; unset leaves the billed amount unknown (`cost.billed_usd`) |
 
 Provider kinds: `anthropic_api`, `claude_cli`, `codex_cli`, `openai_compat`,
 `cursor_acp`, `cursor_cli`, `perplexity_api`, `gemini_api`, `gemini_cli`,

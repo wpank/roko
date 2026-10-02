@@ -1599,6 +1599,7 @@ mod tests {
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let cursor = provider(ProviderKind::CursorCli);
         assert!(adapter_for_kind(ProviderKind::CursorCli).supports_per_call_local_mcp(&cursor));
@@ -1714,6 +1715,7 @@ mod tests {
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -1807,6 +1809,7 @@ mod tests {
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -1986,6 +1989,7 @@ mod tests {
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let enforcement =
             |config: &ProviderConfig| adapter_for_kind(config.kind).turn_cap_enforcement(config);
@@ -2581,6 +2585,7 @@ mod tests {
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -2663,6 +2668,7 @@ mod tests {
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -2747,6 +2753,7 @@ mod tests {
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
 
@@ -2931,6 +2938,7 @@ mod tests {
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -2974,6 +2982,7 @@ mod tests {
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let model = ModelProfile {
             provider: "openclaw".to_string(),

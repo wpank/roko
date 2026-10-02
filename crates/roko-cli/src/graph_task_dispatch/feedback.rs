@@ -90,6 +90,12 @@ pub struct GraphFeedbackContext {
 struct SettledCostRow<R> {
     outcome: AttemptOutcome,
     learning_label: Option<u8>,
+    /// The verdict's `cost.api_equiv_usd`: the attempt's tokens at the rates
+    /// of `price_snapshot_id`, `null` when that snapshot does not list the
+    /// model or the usage is unknown (backlog 2115).
+    api_equiv_usd: Option<f64>,
+    /// The price snapshot behind `api_equiv_usd` (backlog 2115).
+    price_snapshot_id: Option<String>,
     #[serde(flatten)]
     row: R,
 }
@@ -473,6 +479,8 @@ impl GraphTaskDispatcher {
                 row: SettledCostRow {
                     outcome: settled.verdict.outcome,
                     learning_label: settled.verdict.learning_label,
+                    api_equiv_usd: settled.verdict.cost.api_equiv_usd,
+                    price_snapshot_id: settled.verdict.cost.price_snapshot_id.clone(),
                     row: roko_learn::efficiency::ExecutedRow::new(
                         &cost_record,
                         &settled.verdict.executed,

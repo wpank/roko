@@ -969,6 +969,7 @@ exec sleep 60
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(

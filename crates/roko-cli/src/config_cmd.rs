@@ -1306,6 +1306,7 @@ fn legacy_provider_config(config: &RokoConfig) -> Result<(String, ProviderConfig
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         )),
         "ollama" => Ok((
@@ -1328,6 +1329,7 @@ fn legacy_provider_config(config: &RokoConfig) -> Result<(String, ProviderConfig
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         )),
         other => Err(anyhow!(
@@ -2699,6 +2701,7 @@ command = "claude"
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
 
@@ -2829,6 +2832,7 @@ command = "claude"
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         )]);
         config.models.insert(
@@ -2919,6 +2923,7 @@ command = "claude"
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
 

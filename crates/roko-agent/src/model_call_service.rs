@@ -3183,6 +3183,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -4076,6 +4077,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
                 }),
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -4140,6 +4142,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_u
                 }),
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
 

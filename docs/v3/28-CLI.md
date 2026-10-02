@@ -712,7 +712,7 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
               [--resume-plan [<path>]] [--approval] [--no-tui]
               [--max-retries <n>] [--max-tasks <n>] [--dry-run]
               [--fresh] [--force-resume] [--force]
-              [--budget-override <usd>] [--no-budget]
+              [--budget-override <usd>] [--no-budget] [--frozen-learning]
               [--dangerously-skip-permissions]
               [--log-file <path>] [--worktree-per-task | --no-worktree-per-task]
               [--rich-topology] [--promote <branch>]
@@ -734,6 +734,7 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--force` | false | Skip disk-space pre-check. |
 | `--budget-override <usd>` | config | Override the per-plan cost ceiling. |
 | `--no-budget` | false | Disable the per-plan cost ceiling. |
+| `--frozen-learning` | false | Hold learned state fixed for this run, as `[learning] frozen = true` does for every run: the run reads learned state and writes none, while telemetry stays on (decision 2218). Its manifest records `ablation_flags = ["learning_frozen"]`. Refused when a server owns the workspace. |
 | `--dangerously-skip-permissions` | false | Skip agent permission prompts. UNSAFE. |
 | `--log-file <path>` | -- | Write structured JSONL event log to this file. |
 | `--worktree-per-task` | config (`true`) | Run each task in an isolated git worktree, the default from `[runner] worktree_per_task`. Finished plans are delivered into the run's batch branch, `roko/batch/<run-id>`; your checkout is never changed, and the run ends with the command that takes the work (`git merge --ff-only roko/batch/<run-id>`). Without this flag, a workdir that is not the top level of a git checkout with a commit runs its tasks in the shared working tree. |

@@ -1738,6 +1738,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // Graph engine can retry or abort; it is never force-accepted.
         let attempt_key = attempt.key.attempt_key();
         let helper_calls = HelperCalls::default();
+        attempt.verify_started();
         let verification = helper_calls
             .scope(self.settle_task_verification(
                 spec,
@@ -1750,6 +1751,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 None,
             ))
             .await;
+        attempt.verify_ended();
         // The helper model calls verification made count toward this
         // attempt, the background ones included (bug-62e3f4).
         attempt.record_helper_calls(

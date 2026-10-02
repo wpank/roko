@@ -278,6 +278,16 @@ impl AttemptContext {
         self.timing.dispatch_ended_at = Some(now_ms());
     }
 
+    /// Verification starts: the pre-verify screen, then the verify steps.
+    pub(super) fn verify_started(&mut self) {
+        self.timing.verify_started_at = Some(now_ms());
+    }
+
+    /// Verification ended.
+    pub(super) fn verify_ended(&mut self) {
+        self.timing.verify_ended_at = Some(now_ms());
+    }
+
     /// Provider failover passed over `failover`'s models before the one
     /// that ran (bug-35379d).
     pub(super) fn record_failover(&mut self, failover: FailoverChain) {
@@ -333,10 +343,17 @@ impl AttemptContext {
         verdict.gate_verdict = gate_verdict;
         verdict.failure_class = failure_class(outcome, failure_reason.as_deref(), rung);
         verdict.timing = self.timing;
-        // The verdict records no first-token time yet (S01 P0-5). The call's
-        // time to first token, relative to its own start, is on the
-        // efficiency row (gap-7a8474).
-        verdict.timing.ttft_source = Some("unavailable".to_string());
+        // The call's time to first token, measured from its start
+        // (gap-7a8474), places the first token. A call that streamed no
+        // output records none, never 0 (S01 decision 6).
+        let first_token_at = first_token_time(dispatch, verdict.timing.dispatch_started_at);
+        let ttft_source = if first_token_at.is_some() {
+            "stream"
+        } else {
+            "unavailable"
+        };
+        verdict.timing.first_token_at = first_token_at;
+        verdict.timing.ttft_source = Some(ttft_source.to_string());
         verdict.timing.settled_at = Some(now_ms());
         verdict.executed = executed_model(model_requested, dispatch, self.failover);
         verdict.cost.source = cost_source(dispatch);
@@ -601,6 +618,17 @@ pub(super) fn first_token_seen(dispatch: &crate::dispatch_v2::AgentResultDispatc
                 | roko_agent::AgentRuntimeEvent::ToolCall { .. }
         )
     })
+}
+
+/// When the attempt's first token arrived (unix ms): the provider call's
+/// start plus the time to first token its stream measured. `None` when the
+/// call showed no streamed output, or never started.
+fn first_token_time(
+    dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>,
+    dispatch_started_at: Option<i64>,
+) -> Option<i64> {
+    let ttft_ms = i64::try_from(dispatch?.result.ttft_ms?).ok()?;
+    dispatch_started_at?.checked_add(ttft_ms)
 }
 
 /// The telemetry mirror of the Graph gate tag.
@@ -1229,5 +1257,59 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
             Some("pre_verify:no_changes")
         );
         assert_eq!(rung("graph-verify"), None, "a failed verify step");
+    }
+
+    /// A fake Claude CLI that streams its first output after 200 ms.
+    const SLOW_FIRST_TOKEN_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+sleep 0.2
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// backlog 2102: the verdict places the first token by the stream's time
+    /// to first token, and records when verification started and ended. An
+    /// attempt with no measured first token records none, never 0.
+    #[tokio::test]
+    async fn verdict_records_first_token_and_verify_times() {
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, SLOW_FIRST_TOKEN_PROVIDER, no_auto_fix, feedback).await;
+        task.verify = vec![verify_step("structural", "true")];
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+
+        let attempts = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+        let timing = &attempts[1]["timing"];
+        let at = |name: &str| {
+            timing[name]
+                .as_i64()
+                .unwrap_or_else(|| panic!("no {name}: {timing}"))
+        };
+        assert_eq!(timing["ttft_source"], "stream", "{timing}");
+        assert!(at("first_token_at") > at("dispatch_started_at"), "{timing}");
+        assert!(at("dispatch_ended_at") <= at("verify_started_at"), "{timing}");
+        assert!(at("verify_started_at") <= at("verify_ended_at"), "{timing}");
+        assert!(at("verify_ended_at") <= at("settled_at"), "{timing}");
+
+        let passed = Settlement::verified(&Ok(TaskGateVerdict::Passed));
+        let settled = AttemptBook::default()
+            .open(None, "run-1", &spec, &task, None)
+            .settle(passed, "", None);
+        let timing = &settled.verdict.timing;
+        assert_eq!(timing.first_token_at, None);
+        assert_eq!(timing.ttft_source.as_deref(), Some("unavailable"));
+        assert_eq!(timing.verify_started_at, None);
     }
 }

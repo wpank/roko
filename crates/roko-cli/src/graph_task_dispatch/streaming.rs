@@ -449,20 +449,21 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 let verification = if dispatch.result.success && pinned_model_substituted.is_none()
                 {
                     let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
-                    Some(
-                        helper_calls
-                            .scope(self.settle_task_verification(
-                                spec,
-                                &task,
-                                &dispatch,
-                                &lease.path,
-                                &retry_key,
-                                attempt_number,
-                                &attempt_key,
-                                Some(&event_tx),
-                            ))
-                            .await,
-                    )
+                    attempt.verify_started();
+                    let verification = helper_calls
+                        .scope(self.settle_task_verification(
+                            spec,
+                            &task,
+                            &dispatch,
+                            &lease.path,
+                            &retry_key,
+                            attempt_number,
+                            &attempt_key,
+                            Some(&event_tx),
+                        ))
+                        .await;
+                    attempt.verify_ended();
+                    Some(verification)
                 } else {
                     None
                 };

@@ -51,7 +51,8 @@ use roko_learn::latency::LatencyRegistry;
 use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
 use roko_learn::routing_log::{
-    CandidateEntry, ROUTE_DECISION_POINT, RouteInfluence, RouteProposals, RoutingDecisionLog,
+    CandidateEntry, DecisionState, ROUTE_DECISION_POINT, RouteInfluence, RouteProposals,
+    RoutingDecisionLog,
 };
 use roko_learn::telemetry::DecisionSource;
 
@@ -247,6 +248,14 @@ impl FallbackReason {
 /// avoids such providers itself.
 const PROVIDER_UNHEALTHY: &str = "provider_unhealthy";
 
+/// The cascade router's counts a learned-state digest was computed at: its
+/// observations, and the trials and successes of its confidence stats (a
+/// hindsight retraction lowers successes without a new observation).
+type LearnedStateCounts = (u64, u64, u64);
+
+/// The last learned-state digest, with the counts it was computed at.
+type StateDigestMemo = Option<(LearnedStateCounts, roko_learn::cascade_router::RouterStateDigest)>;
+
 /// A picked model and the reason it was picked.
 #[derive(Debug, Clone)]
 pub struct ModelChoice {
@@ -329,6 +338,10 @@ pub struct ModelRouter {
     /// The workspace's durable knowledge store. When present, what it says
     /// about each model weighs into the cascade router's pick (reg-ff6e1a).
     knowledge: Option<roko_neuro::KnowledgeStore>,
+    /// The cascade router's last learned-state digest and the counts it was
+    /// computed at, so a decision digests the state again only after the
+    /// router learned (S01 P0-10).
+    state_digest: Arc<parking_lot::Mutex<StateDigestMemo>>,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -367,6 +380,7 @@ impl ModelRouter {
             models_without_tools: HashSet::new(),
             ladder: None,
             knowledge: None,
+            state_digest: Arc::default(),
         }
     }
 
@@ -721,8 +735,33 @@ impl ModelRouter {
             },
             fallback_reason,
             influences,
-            state: None,
+            state: self.learned_state(),
         }
+    }
+
+    /// The cascade router's learned state, for a decision row: its digest,
+    /// recomputed only after the router's counts moved, and whether it had
+    /// learned anything. Every route reads it, pinned ones included, since
+    /// the router's own pick came from it. `None` without a router.
+    fn learned_state(&self) -> Option<DecisionState> {
+        let router = self.cascade.as_ref()?;
+        let confidence = router.confidence_snapshot();
+        let trials: u64 = confidence.values().map(|(trials, _)| trials).sum();
+        let successes: u64 = confidence.values().map(|(_, successes)| successes).sum();
+        let counts = (router.total_observations(), trials, successes);
+        let mut memo = self.state_digest.lock();
+        let digest = match &*memo {
+            Some((at, digest)) if *at == counts => digest.clone(),
+            _ => router.snapshot_digest(),
+        };
+        *memo = Some((counts, digest.clone()));
+        Some(DecisionState {
+            read: digest.n_obs > 0,
+            version: digest.version,
+            digest: digest.digest,
+            age_s: digest.age_s,
+            n_obs: digest.n_obs,
+        })
     }
 
     /// The task's start rung on the attached `[routing.ladder]`, with the
@@ -2106,5 +2145,54 @@ mod tests {
         assert_eq!(routed(&choice), (pick.as_str(), ModelChoiceSource::Router));
         assert_eq!(row.source, Some(DecisionSource::Router));
         assert_eq!(row.fallback_reason, None);
+    }
+
+    /// The learned state `router`'s decision for `inputs` names.
+    fn decided_state(router: &ModelRouter, inputs: &RoutingInputs) -> DecisionState {
+        let (_, row) = router.decide(inputs).unwrap();
+        row.state.expect("the router's learned state")
+    }
+
+    /// S01 P0-10: every route decision names the cascade router's learned
+    /// state, whatever routed it, and the digest moves only when the router
+    /// learns.
+    #[test]
+    fn decision_records_carry_learned_state_digest() {
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "gpt-5".into(),
+        ]));
+        let router = ModelRouter::new(Some(Arc::clone(&cascade)));
+        let everywhere = ladder(&ladder_config(), |_| true);
+        let laddered = router.clone().with_routing_ladder(everywhere);
+        let mut routed = RoutingInputs::from_task(&task(), &ctx());
+        routed.routing_context = Some(routing_context());
+        let mut t = task();
+        t.tier = "mechanical".into();
+        let mut on_ladder = RoutingInputs::from_task(&t, &ctx());
+        on_ladder.routing_context = Some(routing_context());
+        let mut hinted = routed.clone();
+        hinted.task_model_hint = Some("claude-haiku-4-5".into());
+
+        // Two decisions with no learning between them name one state, and
+        // a ladder or pinned route names the state the router's pick read.
+        let before = decided_state(&router, &routed);
+        assert_eq!(decided_state(&router, &routed), before);
+        assert!(before.digest.starts_with("b3:"), "{before:?}");
+        assert_eq!((before.n_obs, before.read), (0, false));
+        assert_eq!(decided_state(&laddered, &on_ladder), before);
+        assert_eq!(decided_state(&router, &hinted), before);
+
+        // One observation moves it.
+        cascade.record_observation(&routing_context(), "gpt-5", 0.9, true);
+        let after = decided_state(&router, &routed);
+        assert_ne!(after.digest, before.digest);
+        assert_eq!((after.n_obs, after.read), (1, true));
+        assert_eq!(after.version, "cr:obs=1");
+        assert_eq!(decided_state(&laddered, &on_ladder), after);
+
+        // Without a router there is no learned state to name.
+        let (_, row) = ModelRouter::new(None).decide(&routed).unwrap();
+        assert_eq!(row.state, None);
     }
 }

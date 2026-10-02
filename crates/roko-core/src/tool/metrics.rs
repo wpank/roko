@@ -272,8 +272,8 @@ pub fn compute_reward(outcome: &ToolOutcome, cfg: &RewardConfig) -> f32 {
 
 /// Sink for per-call metrics snapshots.
 ///
-/// Implementors (in roko-std / roko-fs): `JsonlMetricsSink` (persistent),
-/// `InMemoryMetricsSink` (test helper), `NoopMetricsSink` (default).
+/// Implementors: `InMemoryMetricsSink` (test helper) and `NoopMetricsSink`
+/// (default). Nothing persists them (backlog 2123).
 pub trait MetricsSink: Send + Sync {
     /// Record a per-call metrics snapshot. Called after each tool call
     /// with the updated aggregate for the key.

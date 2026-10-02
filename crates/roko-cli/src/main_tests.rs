@@ -2801,7 +2801,8 @@ fn bootstrap_observability_dirs_creates_expected_paths() {
     bootstrap_observability_dirs(tmp.path()).unwrap();
     let roko = tmp.path().join(".roko");
     assert!(roko.join("traces").is_dir());
-    assert!(roko.join("metrics").is_dir());
+    // Tool calls keep no metrics file (backlog 2123).
+    assert!(!roko.join("metrics").exists());
     assert!(roko.join("runtime").is_dir());
     assert!(roko.join("runs").is_dir());
 }

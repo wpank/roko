@@ -1038,8 +1038,8 @@ fn graph_run_outcome(
 
 /// Attach the run's tool observability to `factory` (find-f489db). Every tool
 /// call roko's own tool loops make then leaves a scrubbed admit and result
-/// pair in `.roko/tool_audit.jsonl`, a closed trace under `.roko/traces/` and
-/// a record in `.roko/metrics/tool_metrics.jsonl`, all under `workdir`. The
+/// pair in `.roko/tool_audit.jsonl` and a closed trace under `.roko/traces/`,
+/// both under `workdir`; no tool metrics are written (backlog 2123). The
 /// audit scrubs with the process's secret scrubber, which holds the
 /// configured secrets, or the built-in patterns when none is installed. The
 /// audit is observability, not a gate: when its log cannot be opened, the run

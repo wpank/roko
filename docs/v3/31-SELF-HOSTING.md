@@ -322,7 +322,7 @@ applies deterministic structural mutations to the plan itself.
 
 > **Cross-references:** [depth/31-self-hosting/02-replan-loop.md](depth/31-self-hosting/02-replan-loop.md)
 
-### 3.1 Five Replan Strategies
+### 3.1 Replan Strategies (design only; not built on the Graph path)
 
 The controller tries strategies in fixed order, each at most once per
 (strategy, evidence_fingerprint) pair:

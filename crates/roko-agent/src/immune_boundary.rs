@@ -32,8 +32,9 @@ use tokio::sync::mpsc;
 use crate::agent::{Agent, AgentResult};
 use crate::dispatcher::truncate::{bounded_json_bytes, bounded_serialized_bytes};
 use crate::immune_evidence::{
-    AGENT_ISOLATION_CONTROL_KIND as AGENT_ISOLATION_CONTROL_KIND_VALUE, get_agent_control,
-    persist_agent_control, persist_evidence_signals, validate_boundary_label,
+    AGENT_ISOLATION_CONTROL_KIND as AGENT_ISOLATION_CONTROL_KIND_VALUE, PROVIDER_CONTAINMENT_REASON,
+    agent_isolation_control, get_agent_control, persist_agent_control, persist_evidence_signals,
+    validate_boundary_label,
 };
 use crate::live_output::{LiveAgentEvent, LiveOutput, tool_step_target};
 use crate::tool_immune::update_vault;
@@ -722,22 +723,8 @@ impl ImmuneScreenedAgent {
 }
 
 fn isolation_marker_for(agent_id: &str) -> Result<Signal> {
-    validate_boundary_label(agent_id, "agent ID")
-        .map_err(|error| roko_core::RokoError::Store(error.to_string()))?;
-    let control = AgentIsolationControl {
-        schema_version: 1,
-        agent_id: agent_id.to_string(),
-        state: "isolated".to_string(),
-        reason: "provider_output_immune_containment".to_string(),
-    };
-    Ok(
-        Signal::builder(Kind::Custom(AGENT_ISOLATION_CONTROL_KIND.to_string()))
-            .body(Body::from_json(&control)?)
-            .provenance(Provenance::trusted("immune-provider-boundary"))
-            .tag("agent_id", agent_id)
-            .tag("control_state", "isolated")
-            .build(),
-    )
+    agent_isolation_control(agent_id, PROVIDER_CONTAINMENT_REASON)
+        .map_err(|error| roko_core::RokoError::Store(error.to_string()))
 }
 
 pub(crate) fn validate_provider_boundary_receipt(

@@ -5,16 +5,20 @@
 //! deny a suspicious provider or tool result.
 
 use std::collections::BTreeMap;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use roko_core::{ContentHash, Kind, Signal};
+use roko_core::{Body, ContentHash, Kind, Provenance, Signal};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 pub(crate) const IMMUNE_EVIDENCE_RELATIVE_PATH: &str = ".roko/immune/quarantine/evidence.json";
 pub(crate) const AGENT_CONTROLS_RELATIVE_PATH: &str = ".roko/immune/agent-controls.json";
+pub(crate) const AGENT_CONTROL_RELEASES_RELATIVE_PATH: &str =
+    ".roko/immune/agent-control-releases.jsonl";
 pub(crate) const AGENT_ISOLATION_CONTROL_KIND: &str = "roko.security.immune.agent_isolation";
+/// Reason code of the controls the provider boundary writes.
+pub(crate) const PROVIDER_CONTAINMENT_REASON: &str = "provider_output_immune_containment";
 pub(crate) const MAX_IMMUNE_EVIDENCE_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_IMMUNE_EVIDENCE_SIGNALS: usize = 200;
 pub(crate) const MAX_IMMUNE_LABEL_BYTES: usize = 256;
@@ -24,6 +28,7 @@ const AGENT_CONTROL_SCHEMA_VERSION: u32 = 1;
 const MAX_AGENT_CONTROL_LEDGER_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_AGENT_CONTROLS: usize = 512;
 const MAX_SIGNAL_TAGS: usize = 128;
+const MAX_CONTROL_REASON_BYTES: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 struct ImmuneEvidenceLedger {
@@ -260,6 +265,223 @@ pub(crate) fn immune_evidence_path(workspace_root: &Path) -> PathBuf {
 
 pub(crate) fn agent_controls_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(AGENT_CONTROLS_RELATIVE_PATH)
+}
+
+/// The append-only audit file of released isolation controls beneath a
+/// workspace root.
+#[must_use]
+pub fn agent_control_releases_path(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(AGENT_CONTROL_RELEASES_RELATIVE_PATH)
+}
+
+/// One isolation control, as [`list_agent_controls`] reports it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentControlEntry {
+    /// Agent the control denies before dispatch.
+    pub agent_id: String,
+    /// Control state (`isolated`).
+    pub state: String,
+    /// Reason code: `provider_output_immune_containment` for a control the
+    /// provider boundary wrote.
+    pub reason: String,
+    /// Full hex id of the control Signal.
+    pub control_id: String,
+}
+
+/// The audit record of one released control: one line of
+/// `.roko/immune/agent-control-releases.jsonl`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleasedControl {
+    /// When the control was released, in Unix milliseconds.
+    pub released_at_ms: u64,
+    /// Agent the control denied.
+    pub agent_id: String,
+    /// Full hex id of the released control Signal.
+    pub control_id: String,
+    /// Who released it.
+    pub by: String,
+    /// Why it was released.
+    pub reason: String,
+}
+
+/// Build the isolation control Signal for `agent_id` with reason code
+/// `reason`. The provider boundary writes the same Signal, with reason
+/// [`PROVIDER_CONTAINMENT_REASON`], for its own containments.
+pub(crate) fn agent_isolation_control(agent_id: &str, reason: &str) -> io::Result<Signal> {
+    validate_boundary_label(agent_id, "agent ID")?;
+    validate_control_reason(reason)?;
+    let control = crate::immune_boundary::AgentIsolationControl {
+        schema_version: AGENT_CONTROL_SCHEMA_VERSION,
+        agent_id: agent_id.to_string(),
+        state: "isolated".to_string(),
+        reason: reason.to_string(),
+    };
+    let body = Body::from_json(&control)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    Ok(
+        Signal::builder(Kind::Custom(AGENT_ISOLATION_CONTROL_KIND.to_string()))
+            .body(body)
+            .provenance(Provenance::trusted("immune-provider-boundary"))
+            .tag("agent_id", agent_id)
+            .tag("control_state", "isolated")
+            .build(),
+    )
+}
+
+/// Isolate `agent_id` on an operator's behalf: write the same control the
+/// provider boundary writes, with reason code `reason` (lowercase letters,
+/// digits and underscores). An agent that is already isolated keeps its
+/// control. Returns the control in force.
+///
+/// # Errors
+///
+/// Fails for an invalid agent id or reason code, a full or invalid ledger,
+/// or a filesystem error.
+pub fn isolate_agent(
+    workspace_root: &Path,
+    agent_id: &str,
+    reason: &str,
+) -> io::Result<AgentControlEntry> {
+    let control = agent_isolation_control(agent_id, reason)?;
+    let key = agent_control_key(agent_id);
+    roko_fs::with_locked_json_transaction_bounded::<AgentControlLedger, _, io::Error, _>(
+        &agent_controls_path(workspace_root),
+        MAX_AGENT_CONTROL_LEDGER_BYTES,
+        |ledger| {
+            validate_agent_control_ledger(ledger)?;
+            if let Some(existing) = ledger.controls.get(&key) {
+                return control_entry(existing);
+            }
+            if ledger.controls.len() >= MAX_AGENT_CONTROLS {
+                return Err(io::Error::other(format!(
+                    "agent control ledger reached its {MAX_AGENT_CONTROLS}-entry capacity"
+                )));
+            }
+            let entry = control_entry(&control)?;
+            ledger.controls.insert(key, control);
+            validate_agent_control_ledger(ledger)?;
+            Ok(entry)
+        },
+    )
+}
+
+/// List the isolation controls in force, by agent id.
+///
+/// # Errors
+///
+/// Fails closed on an invalid or unreadable ledger.
+pub fn list_agent_controls(workspace_root: &Path) -> io::Result<Vec<AgentControlEntry>> {
+    let mut entries =
+        roko_fs::with_locked_json_transaction_bounded::<AgentControlLedger, _, io::Error, _>(
+            &agent_controls_path(workspace_root),
+            MAX_AGENT_CONTROL_LEDGER_BYTES,
+            |ledger| {
+                validate_agent_control_ledger(ledger)?;
+                ledger
+                    .controls
+                    .values()
+                    .map(control_entry)
+                    .collect::<io::Result<Vec<_>>>()
+            },
+        )?;
+    entries.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    Ok(entries)
+}
+
+/// Release the isolation control of `agent_id`: remove it from the ledger
+/// and append one audit line (time, agent id, control id, `by`, `reason`)
+/// to [`agent_control_releases_path`], both under the ledger's lock. The
+/// audit line is written first, so no release goes unrecorded. Releasing an
+/// agent with no control returns `Ok(None)` and writes nothing.
+///
+/// # Errors
+///
+/// Fails for an invalid agent id, `by` or `reason` (each 1..=256 bytes
+/// without control characters), an invalid ledger, or a filesystem error.
+pub fn release_agent_control(
+    workspace_root: &Path,
+    agent_id: &str,
+    by: &str,
+    reason: &str,
+) -> io::Result<Option<ReleasedControl>> {
+    validate_boundary_label(agent_id, "agent ID")?;
+    validate_boundary_label(by, "release principal")?;
+    validate_boundary_label(reason, "release reason")?;
+    let key = agent_control_key(agent_id);
+    let audit_path = agent_control_releases_path(workspace_root);
+    roko_fs::with_locked_json_transaction_bounded::<AgentControlLedger, _, io::Error, _>(
+        &agent_controls_path(workspace_root),
+        MAX_AGENT_CONTROL_LEDGER_BYTES,
+        |ledger| {
+            validate_agent_control_ledger(ledger)?;
+            let Some(control) = ledger.controls.get(&key) else {
+                return Ok(None);
+            };
+            let released = ReleasedControl {
+                released_at_ms: unix_now_ms(),
+                agent_id: agent_id.to_string(),
+                control_id: control.id.to_hex(),
+                by: by.to_string(),
+                reason: reason.to_string(),
+            };
+            append_release_audit(&audit_path, &released)?;
+            ledger.controls.remove(&key);
+            Ok(Some(released))
+        },
+    )
+}
+
+fn append_release_audit(path: &Path, released: &ReleasedControl) -> io::Result<()> {
+    let mut line = serde_json::to_vec(released)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    line.push(b'\n');
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(&line)?;
+    file.sync_data()
+}
+
+fn control_entry(control: &Signal) -> io::Result<AgentControlEntry> {
+    let body: AgentControlBody = control
+        .body
+        .as_json()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    Ok(AgentControlEntry {
+        agent_id: body.agent_id,
+        state: body.state,
+        reason: body.reason,
+        control_id: control.id.to_hex(),
+    })
+}
+
+fn unix_now_ms() -> u64 {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// A control's reason is a short code of lowercase ASCII letters, digits and
+/// underscores, so it never carries provider or operator text.
+fn validate_control_reason(reason: &str) -> io::Result<()> {
+    let is_code = !reason.is_empty()
+        && reason.len() <= MAX_CONTROL_REASON_BYTES
+        && reason
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+    if is_code {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "agent control reason must be 1..={MAX_CONTROL_REASON_BYTES} lowercase letters, \
+                 digits or underscores"
+            ),
+        ))
+    }
 }
 
 pub(crate) fn validate_boundary_label(label: &str, field: &str) -> io::Result<()> {
@@ -504,10 +726,10 @@ fn validate_agent_control_signal(signal: &Signal) -> io::Result<String> {
         .as_json()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
     validate_boundary_label(&body.agent_id, "agent ID")?;
+    validate_control_reason(&body.reason)?;
     if body.schema_version != AGENT_CONTROL_SCHEMA_VERSION
         || signal.attestation.is_some()
         || body.state != "isolated"
-        || body.reason != "provider_output_immune_containment"
         || signal.tag("agent_id") != Some(body.agent_id.as_str())
         || signal.tag("control_state") != Some("isolated")
         || signal.tags.len() != 2
@@ -530,10 +752,13 @@ fn agent_control_key(agent_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use roko_core::{Body, Provenance};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use tempfile::tempdir;
 
     use super::*;
+    use crate::agent::{Agent, AgentResult};
 
     fn evidence(index: usize) -> Signal {
         Signal::builder(Kind::AgentOutput)
@@ -759,5 +984,99 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ledger.controls.len(), 1);
+    }
+
+    /// Counts its runs and answers with text.
+    struct CountingTextAgent(Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Agent for CountingTextAgent {
+        async fn run(&self, input: &Signal, _ctx: &roko_core::Context) -> AgentResult {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            AgentResult::ok(input.derive(Kind::AgentOutput, Body::text("answer")).build())
+        }
+
+        fn name(&self) -> &str {
+            "counting-text-agent"
+        }
+    }
+
+    /// backlog 1104: an operator sees an isolation, releases it with an
+    /// audit record, and the agent runs again.
+    #[tokio::test]
+    async fn released_control_lets_the_agent_run_again() {
+        let workspace = tempdir().unwrap();
+        let isolated =
+            isolate_agent(workspace.path(), "plan/task#1", "operator_isolation").unwrap();
+        assert_eq!(isolated.agent_id, "plan/task#1");
+        assert_eq!(isolated.state, "isolated");
+        assert_eq!(isolated.reason, "operator_isolation");
+        assert_eq!(
+            list_agent_controls(workspace.path()).unwrap(),
+            vec![isolated.clone()]
+        );
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let boundary = crate::immune_boundary::ImmuneScreenedAgent::durable(
+            Box::new(CountingTextAgent(Arc::clone(&calls))),
+            "plan/task#1",
+            workspace.path(),
+        );
+        let prompt = Signal::builder(Kind::Prompt).body(Body::text("go")).build();
+        let denied = boundary.run(&prompt, &roko_core::Context::now()).await;
+        assert!(!denied.success);
+        assert_eq!(denied.output.tag("immune_reason"), Some("agent_isolated"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let released = release_agent_control(
+            workspace.path(),
+            "plan/task#1",
+            "operator",
+            "blank answer, not tamper",
+        )
+        .unwrap()
+        .expect("a control was released");
+        assert_eq!(released.agent_id, "plan/task#1");
+        assert_eq!(released.control_id, isolated.control_id);
+        assert!(list_agent_controls(workspace.path()).unwrap().is_empty());
+
+        let ran = boundary.run(&prompt, &roko_core::Context::now()).await;
+        assert!(ran.success, "the released agent must reach its provider");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let audit = std::fs::read_to_string(agent_control_releases_path(workspace.path())).unwrap();
+        let lines = audit.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1, "{audit}");
+        let recorded: ReleasedControl = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(recorded, released);
+    }
+
+    #[test]
+    fn releasing_an_unknown_agent_changes_nothing() {
+        let workspace = tempdir().unwrap();
+        isolate_agent(workspace.path(), "kept-agent", "operator_isolation").unwrap();
+        let path = agent_controls_path(workspace.path());
+        let before = std::fs::read(&path).unwrap();
+
+        let released =
+            release_agent_control(workspace.path(), "unknown-agent", "operator", "nothing")
+                .unwrap();
+
+        assert_eq!(released, None);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!agent_control_releases_path(workspace.path()).exists());
+    }
+
+    #[test]
+    fn isolate_agent_is_idempotent_and_takes_only_reason_codes() {
+        let workspace = tempdir().unwrap();
+        let first = isolate_agent(workspace.path(), "agent-a", "operator_isolation").unwrap();
+        let again = isolate_agent(workspace.path(), "agent-a", "another_reason").unwrap();
+        assert_eq!(again, first, "an isolated agent keeps its control");
+        assert_eq!(list_agent_controls(workspace.path()).unwrap().len(), 1);
+
+        let error = isolate_agent(workspace.path(), "agent-b", "Free text!").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(list_agent_controls(workspace.path()).unwrap().len(), 1);
     }
 }

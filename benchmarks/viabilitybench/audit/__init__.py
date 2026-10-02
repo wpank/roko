@@ -7,7 +7,7 @@ Stdlib only, Python 3.11 or newer, beside `analysis/`. It imports as the package
 - `lottery`: the keyed draw that selects green units for an audit (S05 §4.2): π_i, the HMAC draw, the key
   commitment and the reveal check.
 - `estimate`: a window's false-green estimates (S05 §4.5): Horvitz–Thompson, Hájek with its variance, Kish's n_eff,
-  the Wald/Wilson interval, bounds for null labels, and the betting confidence sequence.
+  the Wilson interval at n_eff, bounds for null labels, and the betting confidence sequence.
 - `replay`: N lotteries over a census-labelled stream at each ρ, with the Hájek interval's coverage and bias
   against the census (S05 §7.1, SC1).
 - `fixtures/estimators.json`: the reference inputs and outputs the Rust port (roko-gate's `audit`, 7114) must match.

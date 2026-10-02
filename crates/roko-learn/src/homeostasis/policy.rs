@@ -230,7 +230,9 @@ impl ViabilityPolicy {
             }
         }
         let weights = Ev::ALL.map(|ev| self.drive.weights.get(ev));
-        let negative = weights.iter().any(|weight| weight.is_nan() || *weight < 0.0);
+        let negative = weights
+            .iter()
+            .any(|weight| weight.is_nan() || *weight < 0.0);
         if self.drive.n == 0 || self.drive.m == 0 || negative {
             problems.push("drive needs n, m >= 1 and weights >= 0".to_string());
         }
@@ -743,7 +745,10 @@ audit = { p_floor = 0.10, p_max = 0.25 }
         // A changed config section is a widening.
         let mut widened = search.clone();
         widened.config_after = Some("b3:other".to_string());
-        assert_eq!(rules(&theta0, &raised, &widened), [Violation::ConfigChanged]);
+        assert_eq!(
+            rules(&theta0, &raised, &widened),
+            [Violation::ConfigChanged]
+        );
         // Two blocks, or two notches, are not one move.
         let both = raised
             .step(Knob::RetryDelta, Step::Up, &ladders)
@@ -816,7 +821,10 @@ audit = { p_floor = 0.10, p_max = 0.25 }
         let mut unknown = search;
         unknown.config_before = None;
         unknown.config_after = None;
-        assert_eq!(rules(&theta0, &raised, &unknown), [Violation::ConfigChanged]);
+        assert_eq!(
+            rules(&theta0, &raised, &unknown),
+            [Violation::ConfigChanged]
+        );
         // The non-M1 fingerprint ignores [homeostasis] and sees the rest.
         let base = config();
         let mut shadow_off = base.clone();
@@ -824,7 +832,10 @@ audit = { p_floor = 0.10, p_max = 0.25 }
         assert_eq!(non_m1_fingerprint(&base), non_m1_fingerprint(&shadow_off));
         let mut widened_config = base.clone();
         widened_config.runner.dangerously_skip_permissions = true;
-        assert_ne!(non_m1_fingerprint(&base), non_m1_fingerprint(&widened_config));
+        assert_ne!(
+            non_m1_fingerprint(&base),
+            non_m1_fingerprint(&widened_config)
+        );
     }
 
     /// A candidate θ: usually one notch, sometimes several knobs or
@@ -836,9 +847,15 @@ audit = { p_floor = 0.10, p_max = 0.25 }
     ) -> HarnessParams {
         let knobs = theta.knobs();
         let knob = knobs[rng.gen_range(0..knobs.len())];
-        let step = if rng.gen_bool(0.5) { Step::Up } else { Step::Down };
+        let step = if rng.gen_bool(0.5) {
+            Step::Up
+        } else {
+            Step::Down
+        };
         match rng.gen_range(0..6) {
-            0 | 1 => theta.step(knob, step, ladders).unwrap_or_else(|_| theta.clone()),
+            0 | 1 => theta
+                .step(knob, step, ladders)
+                .unwrap_or_else(|_| theta.clone()),
             2 => {
                 let notches = HarnessParams::notch_count(knob, ladders);
                 theta

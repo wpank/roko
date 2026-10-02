@@ -261,10 +261,12 @@ impl CusumWatch {
     fn observe(&mut self, x: f64) -> WatchOutcome {
         let alarm = self.cusum.update(x) == Some(self.watch);
         let drifted = match self.watch {
-            CusumShift::Downward => self.warn.update(x) != ControlStatus::InControl
-                && self.warn.current() < self.target,
-            CusumShift::Upward => self.warn.update(x) != ControlStatus::InControl
-                && self.warn.current() > self.target,
+            CusumShift::Downward => {
+                self.warn.update(x) != ControlStatus::InControl && self.warn.current() < self.target
+            }
+            CusumShift::Upward => {
+                self.warn.update(x) != ControlStatus::InControl && self.warn.current() > self.target
+            }
         };
         WatchOutcome {
             alarm,
@@ -454,7 +456,10 @@ mod tests {
         for _ in 0..5 {
             assert!(!confirmation.observe(false));
         }
-        assert!(!confirmation.observe(true), "six ticks apart: not consecutive");
+        assert!(
+            !confirmation.observe(true),
+            "six ticks apart: not consecutive"
+        );
         assert!(confirmation.observe(true));
         assert!(!confirmation.observe(true));
         confirmation.reset();

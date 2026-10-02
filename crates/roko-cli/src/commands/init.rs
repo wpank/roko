@@ -295,10 +295,7 @@ mod tests {
     fn cloud_init_template_names_no_third_party_repos() {
         let cloud = render_init_template_for(true, InitProvider::ClaudeCli).expect("render");
         let example = RokoConfig::example_toml();
-        for (name, text) in [
-            ("roko init --cloud", &cloud),
-            ("example config", &example),
-        ] {
+        for (name, text) in [("roko init --cloud", &cloud), ("example config", &example)] {
             let config = RokoConfig::from_toml(text)
                 .unwrap_or_else(|err| panic!("{name}: does not parse: {err}"));
             assert!(

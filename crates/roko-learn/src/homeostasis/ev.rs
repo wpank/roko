@@ -615,7 +615,12 @@ pub fn estimate_latency_p90_s(window: &[TaskResolution]) -> Estimate {
     let interval = bootstrap_interval(&seconds, |sample| {
         Some(p90(sample.iter().map(|&&seconds| seconds).collect()))
     });
-    Estimate::of(Ev::LatencyP90S, p90(seconds.clone()), interval, seconds.len())
+    Estimate::of(
+        Ev::LatencyP90S,
+        p90(seconds.clone()),
+        interval,
+        seconds.len(),
+    )
 }
 
 /// The nearest-rank p90: the ⌈0.9·n⌉-th smallest value.
@@ -982,7 +987,10 @@ mod tests {
         let e3 = estimates.false_green;
         assert!(close(e3.value.expect("E3"), 0.2, 1e-12));
         let probability = e3.breach_probability.expect("E3 breach probability");
-        assert!(close(probability, 0.885_002_442_195_639, 1e-9), "{probability}");
+        assert!(
+            close(probability, 0.885_002_442_195_639, 1e-9),
+            "{probability}"
+        );
         let (lo, hi) = e3.interval.expect("credible interval");
         assert!(close(lo, 0.075_293_816_568_876, 1e-6), "{lo}");
         assert!(close(hi, 0.359_425_649_640_373, 1e-6), "{hi}");
@@ -1017,7 +1025,11 @@ mod tests {
 
         // D = (1·0.5³ + 1·0.2833³ + 2·2.2³ + 0.5·0.32³)^½.
         let shaped = drive(&estimates, &bounds, &DrivePolicy::default());
-        assert!(close(shaped.value, 4.632_507_892_100_172, 1e-9), "{}", shaped.value);
+        assert!(
+            close(shaped.value, 4.632_507_892_100_172, 1e-9),
+            "{}",
+            shaped.value
+        );
         let excess: Vec<f64> = shaped.excess.iter().map(|&(_, g)| g).collect();
         for (actual, expected) in excess.iter().zip([0.5, 0.017 / 0.06, 2.2, 0.32]) {
             assert!(close(*actual, expected, 1e-9), "{actual} vs {expected}");
@@ -1030,7 +1042,10 @@ mod tests {
             calm.push(&resolution(true, 0.05, 100_000));
         }
         let calm_estimates = calm.estimate(&bounds);
-        assert_eq!(drive(&calm_estimates, &bounds, &DrivePolicy::default()).value, 0.0);
+        assert_eq!(
+            drive(&calm_estimates, &bounds, &DrivePolicy::default()).value,
+            0.0
+        );
 
         // Hysteresis: E1 breaches below 0.70, stays breached between the
         // bound and the band, and recovers at 0.75; no value changes nothing.
@@ -1051,13 +1066,14 @@ mod tests {
         let mut band = SchmittBand::new(Ev::FalseGreen, &bounds);
         let audits = |found: usize| -> Vec<bool> { (0..30).map(|index| index < found).collect() };
         let e3_of = |found| estimate_false_green(&audits(found), bounds.false_green.outer());
-        assert!(close(e3_of(7).breach_probability.expect("P"), 0.963_379_384_778_421, 1e-9));
+        assert!(close(
+            e3_of(7).breach_probability.expect("P"),
+            0.963_379_384_778_421,
+            1e-9
+        ));
         assert_eq!(band.update(&e3_of(7)), Some(BandTransition::Breach));
         assert_eq!(band.update(&e3_of(5)), None);
         assert_eq!(band.update(&e3_of(2)), Some(BandTransition::Recover));
-        assert_eq!(
-            estimate_false_green(&[], 0.1).gap,
-            Some(EvGap::NoAudits)
-        );
+        assert_eq!(estimate_false_green(&[], 0.1).gap, Some(EvGap::NoAudits));
     }
 }

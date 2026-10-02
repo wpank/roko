@@ -71,7 +71,9 @@ pub const TASK_BUDGET_SCALE_NOTCHES: [f64; 3] = [1.0, 0.75, 0.5];
 /// A verify-depth floor request on S05 §4.6's scale (B3). S05's ladder is
 /// the single writer of verify depth and applies the higher of its own level
 /// and this floor, so a floor can add checks but never remove one.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 pub enum VerifyDepth {
     /// No floor: the authored verify steps only.
     #[default]
@@ -354,13 +356,12 @@ impl FromStr for Knob {
             (KnobKind::TierFloor, Some(key)) => TaskTier::parse(key)
                 .map(Self::TierFloor)
                 .ok_or_else(unknown),
-            (KnobKind::TierCap, Some(key)) => TaskTier::parse(key)
-                .map(Self::TierCap)
-                .ok_or_else(unknown),
-            (KnobKind::ProviderOrder, Some(key)) => key
-                .parse()
-                .map(Self::ProviderRank)
-                .map_err(|_| unknown()),
+            (KnobKind::TierCap, Some(key)) => {
+                TaskTier::parse(key).map(Self::TierCap).ok_or_else(unknown)
+            }
+            (KnobKind::ProviderOrder, Some(key)) => {
+                key.parse().map(Self::ProviderRank).map_err(|_| unknown())
+            }
             (_, Some(_))
             | (KnobKind::TierFloor | KnobKind::TierCap | KnobKind::ProviderOrder, None) => {
                 Err(unknown())
@@ -604,7 +605,11 @@ impl HarnessParams {
         let floors = self.tier_floor.keys().map(|&tier| Knob::TierFloor(tier));
         let caps = self.tier_cap.keys().map(|&tier| Knob::TierCap(tier));
         let ranks = (0..self.provider_order.len()).map(Knob::ProviderRank);
-        floors.chain(caps).chain(ranks).chain(Knob::SCALARS).collect()
+        floors
+            .chain(caps)
+            .chain(ranks)
+            .chain(Knob::SCALARS)
+            .collect()
     }
 
     /// The value of `knob` as records write it: a rung name, a provider's
@@ -834,7 +839,10 @@ fn values<T: Copy + Into<Value>>(notches: &[T]) -> Vec<Value> {
 
 fn digest_of<T: Serialize>(value: &T) -> String {
     let json = serde_json::to_value(value).expect("plain data serializes to JSON");
-    format!("b3:{}", blake3::hash(canonical_json(&json).as_bytes()).to_hex())
+    format!(
+        "b3:{}",
+        blake3::hash(canonical_json(&json).as_bytes()).to_hex()
+    )
 }
 
 fn set_rung(
@@ -1047,7 +1055,9 @@ mod tests {
         assert_eq!(forward, backward);
         assert_eq!(forward.params_digest(), THETA_DIGEST);
         assert_eq!(backward.params_digest(), THETA_DIGEST);
-        forward.validate(&ladders).expect("the fixture sits on every ladder");
+        forward
+            .validate(&ladders)
+            .expect("the fixture sits on every ladder");
         assert_ne!(theta0.params_digest(), THETA_DIGEST);
 
         // A swap bumps policy_version and carries the new θ's digest.
@@ -1079,7 +1089,8 @@ mod tests {
             Err(HarnessParamsError::EndOfLadder { .. })
         ));
         assert!(matches!(
-            theta0.step(Knob::RetryDelta, Step::Down, &ladders)
+            theta0
+                .step(Knob::RetryDelta, Step::Down, &ladders)
                 .and_then(|theta| theta.step(Knob::RetryDelta, Step::Down, &ladders)),
             Err(HarnessParamsError::EndOfLadder { .. })
         ));
@@ -1106,16 +1117,20 @@ mod tests {
             Err(HarnessParamsError::NotAPermutation { providers: 2, .. })
         ));
         let mut off = theta0.clone();
-        off.tier_floor.insert(TaskTier::Focused, "strong".to_string());
+        off.tier_floor
+            .insert(TaskTier::Focused, "strong".to_string());
         off.tier_cap.insert(TaskTier::Focused, "mid".to_string());
         assert!(matches!(
             off.validate(&ladders),
             Err(HarnessParamsError::CapBelowFloor { .. })
         ));
-        assert!(serde_json::from_str::<HarnessParams>(
-            &THETA_JSON.replace("\"retry_delta\": 1,", "\"retry_delta\": 1, \"allowed_tools\": [],")
-        )
-        .is_err());
+        assert!(
+            serde_json::from_str::<HarnessParams>(&THETA_JSON.replace(
+                "\"retry_delta\": 1,",
+                "\"retry_delta\": 1, \"allowed_tools\": [],"
+            ))
+            .is_err()
+        );
     }
 
     #[test]
@@ -1143,7 +1158,10 @@ mod tests {
             [Knob::ProviderRank(0), Knob::ProviderRank(1)]
         );
         assert_eq!(
-            theta0.changed_blocks(&demoted).into_iter().collect::<Vec<_>>(),
+            theta0
+                .changed_blocks(&demoted)
+                .into_iter()
+                .collect::<Vec<_>>(),
             [Block::B1]
         );
         let budget = theta0
@@ -1154,8 +1172,9 @@ mod tests {
         assert_eq!(budget.value(Knob::TaskBudgetScale), Some(Value::from(0.75)));
 
         // Knob names round-trip through serde too.
-        let names = serde_json::to_string(&[Knob::TierCap(TaskTier::Integrative), Knob::RetryDelta])
-            .expect("knobs to JSON");
+        let names =
+            serde_json::to_string(&[Knob::TierCap(TaskTier::Integrative), Knob::RetryDelta])
+                .expect("knobs to JSON");
         assert_eq!(names, r#"["tier_cap.integrative","retry_delta"]"#);
         assert_eq!(
             "tier_floor.standard".parse::<Knob>(),

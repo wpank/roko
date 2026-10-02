@@ -560,9 +560,7 @@ where
 }
 
 fn group_chains(mut rows: Vec<HistoricalRow>) -> Vec<HistoricalChain> {
-    rows.sort_by(|a, b| {
-        (&a.plan_id, &a.task_id, a.at_ms).cmp(&(&b.plan_id, &b.task_id, b.at_ms))
-    });
+    rows.sort_by(|a, b| (&a.plan_id, &a.task_id, a.at_ms).cmp(&(&b.plan_id, &b.task_id, b.at_ms)));
     let mut chains: Vec<HistoricalChain> = Vec::new();
     for row in rows {
         match chains.last_mut() {
@@ -708,7 +706,10 @@ mod tests {
         // Unverified and already-satisfied chains resolve at close, not
         // verified.
         assert_eq!(resolutions[2].final_verdict, AttemptOutcome::Unverified);
-        assert_eq!(resolutions[3].final_verdict, AttemptOutcome::AlreadySatisfied);
+        assert_eq!(
+            resolutions[3].final_verdict,
+            AttemptOutcome::AlreadySatisfied
+        );
         assert!(!resolutions[2].verified_success() && !resolutions[3].verified_success());
 
         // Only `passed` counts: two verified successes in four resolutions.
@@ -761,7 +762,11 @@ mod tests {
                 unmatched_cost_rows: 1,
             }
         );
-        assert!(resolutions.iter().all(|resolution| resolution.pre_instrumentation));
+        assert!(
+            resolutions
+                .iter()
+                .all(|resolution| resolution.pre_instrumentation)
+        );
         let verdicts: Vec<AttemptOutcome> = resolutions
             .iter()
             .map(|resolution| resolution.final_verdict)
@@ -778,7 +783,11 @@ mod tests {
         // The first chain: two attempts (the gate row is a verdict, not an
         // attempt), priced from its two cost rows, one of them unsourced.
         let first = &resolutions[0];
-        assert!(first.chain_key.starts_with("historical:p:T1@"), "{}", first.chain_key);
+        assert!(
+            first.chain_key.starts_with("historical:p:T1@"),
+            "{}",
+            first.chain_key
+        );
         assert_eq!(first.attempts, 2);
         let usd = first.api_equiv_usd.expect("joined cost rows");
         assert!((usd - 0.60).abs() < 1e-12, "{usd}");

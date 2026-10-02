@@ -609,7 +609,11 @@ mod tests {
     }
 
     fn proposer(change: &str) -> Proposer {
-        Proposer::evolved("homeostat", "counter", format!("homeostat:ep-0001/{change}"))
+        Proposer::evolved(
+            "homeostat",
+            "counter",
+            format!("homeostat:ep-0001/{change}"),
+        )
     }
 
     #[test]
@@ -623,12 +627,16 @@ mod tests {
 
         // The first version and a better one commit.
         assert_eq!(
-            store.propose(&mut state, &checks, &proposer("ch-1")).expect("v1"),
+            store
+                .propose(&mut state, &checks, &proposer("ch-1"))
+                .expect("v1"),
             CommitDecision::Committed
         );
         state.0 = 12;
         assert_eq!(
-            store.propose(&mut state, &checks, &proposer("ch-2")).expect("v2"),
+            store
+                .propose(&mut state, &checks, &proposer("ch-2"))
+                .expect("v2"),
             CommitDecision::Committed
         );
         assert_eq!(store.current(), Some(2));
@@ -636,7 +644,9 @@ mod tests {
         // A held-out regression rolls back to the LKG in enforce mode.
         state.0 = 5;
         assert_eq!(
-            store.propose(&mut state, &checks, &proposer("ch-3")).expect("rolled back"),
+            store
+                .propose(&mut state, &checks, &proposer("ch-3"))
+                .expect("rolled back"),
             CommitDecision::RolledBack
         );
         assert_eq!(state.0, 12, "the live state is the LKG again");
@@ -648,7 +658,9 @@ mod tests {
         store.set_mode(GuardMode::Observe);
         state.0 = -1;
         assert_eq!(
-            store.propose(&mut state, &checks, &proposer("ch-4")).expect("observed"),
+            store
+                .propose(&mut state, &checks, &proposer("ch-4"))
+                .expect("observed"),
             CommitDecision::Observed
         );
         assert_eq!(state.0, -1);
@@ -677,7 +689,13 @@ mod tests {
             rows.iter().map(|row| (row.version, row.parent)).collect();
         assert_eq!(
             versions,
-            [(1, None), (2, Some(1)), (2, Some(2)), (3, Some(2)), (2, Some(3))]
+            [
+                (1, None),
+                (2, Some(1)),
+                (2, Some(2)),
+                (3, Some(2)),
+                (2, Some(3))
+            ]
         );
         let rolled_back = &rows[2];
         assert_eq!(rolled_back.mode, GuardMode::Enforce);
@@ -686,7 +704,10 @@ mod tests {
         assert_eq!(rolled_back.checks[0].numbers["lkg"], 12.0);
         assert_eq!(rolled_back.source, ConfigSource::Evolved);
         assert_eq!(rolled_back.actor, "homeostat");
-        assert_eq!(rolled_back.reason.as_deref(), Some("homeostat:ep-0001/ch-3"));
+        assert_eq!(
+            rolled_back.reason.as_deref(),
+            Some("homeostat:ep-0001/ch-3")
+        );
         assert_eq!(rows[4].actor, "human");
         assert!(rows[4].checks.is_empty());
 

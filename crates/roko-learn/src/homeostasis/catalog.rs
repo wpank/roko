@@ -87,7 +87,10 @@ impl Move {
     /// off (§4.6.5).
     #[must_use]
     pub const fn audit_coupled(&self) -> bool {
-        matches!(self.class, MoveClass::CostReducing | MoveClass::DecreaseOnly)
+        matches!(
+            self.class,
+            MoveClass::CostReducing | MoveClass::DecreaseOnly
+        )
     }
 
     /// Whether the move lowers verification: a lower B3 floor or B7 boost.
@@ -127,12 +130,7 @@ impl Move {
     }
 }
 
-const fn entry(
-    knob: KnobKind,
-    direction: Step,
-    class: MoveClass,
-    effects: [Effect; 4],
-) -> Move {
+const fn entry(knob: KnobKind, direction: Step, class: MoveClass, effects: [Effect; 4]) -> Move {
     Move {
         knob,
         direction,
@@ -149,26 +147,126 @@ const EITHER: Effect = Effect::Varies;
 /// Every move M1's search may make (S06 §4.3). Effects are on
 /// [E1 pass rate, E2 $/verified success, E3 false green, E4 p90 latency].
 pub const CATALOG: [Move; 20] = [
-    entry(KnobKind::TierFloor, Step::Up, MoveClass::Free, [UP, UP, DOWN, NO]),
-    entry(KnobKind::TierFloor, Step::Down, MoveClass::CostReducing, [DOWN, DOWN, UP, NO]),
-    entry(KnobKind::TierCap, Step::Up, MoveClass::Free, [UP, UP, NO, NO]),
-    entry(KnobKind::TierCap, Step::Down, MoveClass::CostReducing, [DOWN, DOWN, NO, NO]),
-    entry(KnobKind::ProviderOrder, Step::Up, MoveClass::Free, [UP, NO, NO, DOWN]),
-    entry(KnobKind::RetryDelta, Step::Up, MoveClass::Free, [UP, UP, NO, UP]),
-    entry(KnobKind::RetryDelta, Step::Down, MoveClass::CostReducing, [DOWN, DOWN, NO, DOWN]),
-    entry(KnobKind::TurnCapMult, Step::Up, MoveClass::Free, [UP, UP, NO, UP]),
-    entry(KnobKind::TurnCapMult, Step::Down, MoveClass::CostReducing, [DOWN, DOWN, NO, DOWN]),
-    entry(KnobKind::ExtraRungs, Step::Up, MoveClass::AddOnly, [NO, UP, DOWN, UP]),
-    entry(KnobKind::ErrorPatternsK, Step::Up, MoveClass::Free, [EITHER, UP, NO, NO]),
-    entry(KnobKind::ErrorPatternsK, Step::Down, MoveClass::Free, [EITHER, DOWN, NO, NO]),
-    entry(KnobKind::KnowledgeSection, Step::Up, MoveClass::Free, [EITHER, UP, NO, NO]),
-    entry(KnobKind::KnowledgeSection, Step::Down, MoveClass::CostReducing, [EITHER, DOWN, NO, NO]),
-    entry(KnobKind::MaxParallel, Step::Up, MoveClass::Free, [NO, NO, NO, EITHER]),
-    entry(KnobKind::MaxParallel, Step::Down, MoveClass::Free, [NO, NO, NO, EITHER]),
-    entry(KnobKind::PromiseMin, Step::Up, MoveClass::CostReducing, [NO, DOWN, NO, DOWN]),
-    entry(KnobKind::PromiseConsecutive, Step::Up, MoveClass::CostReducing, [NO, DOWN, NO, DOWN]),
-    entry(KnobKind::AuditBoost, Step::Up, MoveClass::AddOnly, [NO, UP, DOWN, NO]),
-    entry(KnobKind::TaskBudgetScale, Step::Up, MoveClass::DecreaseOnly, [DOWN, DOWN, NO, NO]),
+    entry(
+        KnobKind::TierFloor,
+        Step::Up,
+        MoveClass::Free,
+        [UP, UP, DOWN, NO],
+    ),
+    entry(
+        KnobKind::TierFloor,
+        Step::Down,
+        MoveClass::CostReducing,
+        [DOWN, DOWN, UP, NO],
+    ),
+    entry(
+        KnobKind::TierCap,
+        Step::Up,
+        MoveClass::Free,
+        [UP, UP, NO, NO],
+    ),
+    entry(
+        KnobKind::TierCap,
+        Step::Down,
+        MoveClass::CostReducing,
+        [DOWN, DOWN, NO, NO],
+    ),
+    entry(
+        KnobKind::ProviderOrder,
+        Step::Up,
+        MoveClass::Free,
+        [UP, NO, NO, DOWN],
+    ),
+    entry(
+        KnobKind::RetryDelta,
+        Step::Up,
+        MoveClass::Free,
+        [UP, UP, NO, UP],
+    ),
+    entry(
+        KnobKind::RetryDelta,
+        Step::Down,
+        MoveClass::CostReducing,
+        [DOWN, DOWN, NO, DOWN],
+    ),
+    entry(
+        KnobKind::TurnCapMult,
+        Step::Up,
+        MoveClass::Free,
+        [UP, UP, NO, UP],
+    ),
+    entry(
+        KnobKind::TurnCapMult,
+        Step::Down,
+        MoveClass::CostReducing,
+        [DOWN, DOWN, NO, DOWN],
+    ),
+    entry(
+        KnobKind::ExtraRungs,
+        Step::Up,
+        MoveClass::AddOnly,
+        [NO, UP, DOWN, UP],
+    ),
+    entry(
+        KnobKind::ErrorPatternsK,
+        Step::Up,
+        MoveClass::Free,
+        [EITHER, UP, NO, NO],
+    ),
+    entry(
+        KnobKind::ErrorPatternsK,
+        Step::Down,
+        MoveClass::Free,
+        [EITHER, DOWN, NO, NO],
+    ),
+    entry(
+        KnobKind::KnowledgeSection,
+        Step::Up,
+        MoveClass::Free,
+        [EITHER, UP, NO, NO],
+    ),
+    entry(
+        KnobKind::KnowledgeSection,
+        Step::Down,
+        MoveClass::CostReducing,
+        [EITHER, DOWN, NO, NO],
+    ),
+    entry(
+        KnobKind::MaxParallel,
+        Step::Up,
+        MoveClass::Free,
+        [NO, NO, NO, EITHER],
+    ),
+    entry(
+        KnobKind::MaxParallel,
+        Step::Down,
+        MoveClass::Free,
+        [NO, NO, NO, EITHER],
+    ),
+    entry(
+        KnobKind::PromiseMin,
+        Step::Up,
+        MoveClass::CostReducing,
+        [NO, DOWN, NO, DOWN],
+    ),
+    entry(
+        KnobKind::PromiseConsecutive,
+        Step::Up,
+        MoveClass::CostReducing,
+        [NO, DOWN, NO, DOWN],
+    ),
+    entry(
+        KnobKind::AuditBoost,
+        Step::Up,
+        MoveClass::AddOnly,
+        [NO, UP, DOWN, NO],
+    ),
+    entry(
+        KnobKind::TaskBudgetScale,
+        Step::Up,
+        MoveClass::DecreaseOnly,
+        [DOWN, DOWN, NO, NO],
+    ),
 ];
 
 /// The catalog's move on `knob` toward `direction`, if the search may make
@@ -228,8 +326,7 @@ impl Signature {
 #[must_use]
 pub fn candidates(signature: &Signature) -> Vec<Move> {
     let mut picks: Vec<(KnobKind, Step)> = Vec::new();
-    let outage =
-        signature.provider_errors && (signature.latency_high || signature.pass_rate_low);
+    let outage = signature.provider_errors && (signature.latency_high || signature.pass_rate_low);
     if outage {
         picks.extend([
             (KnobKind::ProviderOrder, Step::Up),

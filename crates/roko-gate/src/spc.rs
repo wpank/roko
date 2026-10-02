@@ -13,7 +13,9 @@
 //!
 //! Reference: docs/04-verification/06-adaptive-thresholds.md sections 11-15.
 
-pub use roko_learn::homeostasis::spc::{ControlStatus, CusumDetector, CusumShift, EwmaControlChart};
+pub use roko_learn::homeostasis::spc::{
+    ControlStatus, CusumDetector, CusumShift, EwmaControlChart,
+};
 use serde::{Deserialize, Serialize};
 
 // ─── BOCPD (Bayesian Online Change Point Detection) ─────────────────────────

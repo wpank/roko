@@ -2081,8 +2081,8 @@ fn build_rung_execution_config(
     };
 
     let generated_test_artifacts: Option<Arc<dyn roko_gate::generated_test_gate::ArtifactStore>> = {
-        // `.roko/generated-tests/`: where the Graph dispatcher writes eval
-        // artifacts when `gates.write_eval_artifacts` is enabled.
+        // `.roko/generated-tests/`: where the Graph dispatcher wrote eval
+        // artifacts before S05 F2 removed that write.
         let store = FsGeneratedArtifactStore::new(workdir.join(".roko"));
         if store.matching_entries("generated-tests/gen_").is_empty() {
             None

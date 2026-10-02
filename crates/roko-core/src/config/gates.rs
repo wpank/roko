@@ -158,15 +158,13 @@ pub struct GatesConfig {
     /// and always hand failures directly to the agent.
     #[serde(default = "default_true")]
     pub cargo_fix_enabled: bool,
-    /// Write `EvalGenerator` test artifacts to `.roko/generated-tests/` before
-    /// each standard-tier Graph task dispatch.
+    /// Removed: `plan run` once wrote `EvalGenerator` test artifacts to
+    /// `.roko/generated-tests/`, inside the agent's workdir, before each
+    /// standard-tier Graph task dispatch. Audits author hidden tests in the
+    /// vault instead (S05 F2).
     ///
-    /// Defaults to `false`. The files are for manual inspection: nothing in
-    /// `plan run` executes them. Only evaluations that pass
-    /// `EvalGenerator::generate_checked` (a `#[test]` that can fail) are
-    /// written, and the built-in template needs an assertion body that Graph
-    /// tasks do not author, so today none is: `plan run` and `roko config
-    /// doctor` report the key as inert.
+    /// Defaults to `false`. The key still parses, since configs set it, and
+    /// `plan run` and `roko config doctor` report it as inert.
     #[serde(default)]
     pub write_eval_artifacts: bool,
     /// Maximum time allowed for changed-target and Cargo metadata analysis.

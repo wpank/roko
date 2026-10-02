@@ -31,9 +31,7 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
                           plan-task models";
     const NO_WARM_POOL: &str = "no dispatch path pre-spawns or reuses agents";
     const PIPELINE_BAND: &str = "only `max_turns` in [pipeline.<tier>] affects plan run";
-    const NO_EVAL_SOURCE: &str = "the built-in eval template needs an assertion body that plan \
-                                  tasks do not author, so nothing is written (bug-017c2d), and \
-                                  nothing in plan run executes generated tests";
+    const EVAL_WRITE_REMOVED: &str = "removed: audits author hidden tests in the vault";
 
     let defaults = RokoConfig::default();
     let (gates, default_gates) = (&config.gates, &defaults.gates);
@@ -86,7 +84,7 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
         (
             gates.write_eval_artifacts != default_gates.write_eval_artifacts,
             "gates.write_eval_artifacts",
-            NO_EVAL_SOURCE,
+            EVAL_WRITE_REMOVED,
         ),
         (
             gates.skip_streak_threshold != default_gates.skip_streak_threshold,
@@ -214,8 +212,8 @@ pub(super) fn warn_inert_graph_settings_once(config: &RokoConfig) {
 mod tests {
     use super::*;
 
-    /// bug-05a434: with no property-body source on the Graph path,
-    /// `gates.write_eval_artifacts` writes nothing, and `plan run` says so.
+    /// S05 F2: `plan run` no longer writes eval artifacts into the workdir,
+    /// so `gates.write_eval_artifacts` only parses, and `plan run` says so.
     #[test]
     fn write_eval_artifacts_is_reported_inert_on_graph() {
         let mut config = RokoConfig::default();
@@ -225,10 +223,9 @@ mod tests {
             .iter()
             .find(|setting| setting.key == "gates.write_eval_artifacts")
             .expect("write_eval_artifacts is reported");
-        assert!(
-            setting.reason.contains("assertion body"),
-            "{}",
-            setting.reason
+        assert_eq!(
+            setting.reason,
+            "removed: audits author hidden tests in the vault"
         );
     }
 

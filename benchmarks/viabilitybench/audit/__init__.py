@@ -10,7 +10,13 @@ Stdlib only, Python 3.11 or newer, beside `analysis/`. It imports as the package
   the Wilson interval at n_eff, bounds for null labels, and the betting confidence sequence.
 - `replay`: N lotteries over a census-labelled stream at each ρ, with the Hájek interval's coverage and bias
   against the census (S05 §7.1, SC1).
-- `fixtures/estimators.json`: the reference inputs and outputs the Rust port (roko-gate's `audit`, 7114) must match.
+- `tamper`: A1, the tamper diff of base..c_i (S05 §4.3): the inline screen's kinds, ported from roko-gate's
+  `attempt_diff.rs`, and the audit-only ones. Any finding gives G = 1.
+- `battery`: the offline battery over a recorded run's archive bundle: A1, A2 (three clean re-runs of the visible
+  checks, in the sandbox) and B1 when hidden suites are given (7109); B2 and B3 are null.
+- `labels`: census vs.label rows from run records, with the battery's results kept beside the census label.
+- `fixtures/estimators.json`: the reference inputs and outputs the Rust port (roko-gate's `audit`, 7114) must match;
+  `fixtures/tamper.json`: the planted repos, one per A1 kind and a clean one, that `tests/test_battery.py` builds.
 
 **The `vs.label` row** (S05 §0.1 and §5; `schema/vs-label.schema.json`) is the label S09 scores, one per attempt in
 census mode (`vs_source` "census", π = 1) and one per audited attempt in production (`vs_source` "audit", π = the

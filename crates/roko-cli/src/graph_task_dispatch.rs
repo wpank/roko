@@ -28,7 +28,6 @@ use roko_core::{Body, Context, Kind, Signal, Verify};
 use roko_gate::GatePayload;
 use roko_gate::ShellGate;
 use roko_gate::TurnSnapshot;
-use roko_gate::eval_generator::EvalGenerator;
 use roko_gate::rung_for_gate_name;
 use roko_graph::cell::CellContext;
 use roko_graph::cells::task_executor::TaskGateVerdict;
@@ -730,7 +729,7 @@ impl GraphTaskDispatcher {
             tracing::info!(
                 plan_id = %spec.plan_id,
                 "plan sets skip_enrichment: dispatching tasks as authored \
-                 (no eval artifacts, no dream/cross-cut routing advice)"
+                 (no dream/cross-cut routing advice)"
             );
         }
         plans.insert(spec.plan_id.clone(), skip);
@@ -947,72 +946,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
         }
 
         // A plan with `[meta] skip_enrichment = true` is dispatched as
-        // authored: no eval artifacts and no dream/cross-cut routing advice.
+        // authored: no dream/cross-cut routing advice.
         let skip_enrichment = self.plan_skips_enrichment(spec);
-
-        // ── P0-02: EvalGenerator pre-dispatch ───────────────────────────
-        //
-        // For standard-tier and above tasks, write the evaluations that pass
-        // `generate_checked` (each holds a `#[test]` that can fail) to
-        // `.roko/generated-tests/`, not the repo root, before the agent
-        // starts. Opt-in via `gates.write_eval_artifacts`: nothing in `plan
-        // run` executes them, and the built-in template needs an assertion
-        // body that Graph tasks do not author, so none is written today.
-        if self.feedback.eval_generation_enabled
-            && self.config.gates.write_eval_artifacts
-            && !skip_enrichment
-        {
-            let is_standard_or_above = task.tier_class() != roko_core::task::TaskTier::Mechanical;
-            if is_standard_or_above {
-                let target_crates = crate::task_helpers::task_target_crates(Some(&task));
-                let primary_crate = target_crates
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "roko-cli".to_string());
-                let generator = EvalGenerator::new();
-                let (evals, rejected) =
-                    generator.generate_checked_all(&task.title, &primary_crate, &task.files, None);
-                for error in &rejected {
-                    tracing::debug!(
-                        plan_id = %spec.plan_id,
-                        task_id = %task.id,
-                        %error,
-                        "P0-02: eval template rejected (non-fatal)"
-                    );
-                }
-                if !evals.is_empty() {
-                    let gen_dir = self.workdir.join(".roko").join("generated-tests");
-                    if let Err(err) = std::fs::create_dir_all(&gen_dir) {
-                        tracing::warn!(
-                            plan_id = %spec.plan_id,
-                            task_id = %task.id,
-                            error = %err,
-                            "P0-02: failed to create generated-tests dir (non-fatal)"
-                        );
-                    } else {
-                        for eval in &evals {
-                            let file_name = format!("{}.rs", eval.name);
-                            let file_path = gen_dir.join(&file_name);
-                            if let Err(err) = std::fs::write(&file_path, &eval.test_source) {
-                                tracing::warn!(
-                                    plan_id = %spec.plan_id,
-                                    task_id = %task.id,
-                                    file = %file_name,
-                                    error = %err,
-                                    "P0-02: failed to write generated eval (non-fatal)"
-                                );
-                            }
-                        }
-                        tracing::debug!(
-                            plan_id = %spec.plan_id,
-                            task_id = %task.id,
-                            eval_count = evals.len(),
-                            "P0-02: generated eval artifacts before dispatch"
-                        );
-                    }
-                }
-            }
-        }
 
         // ── P2-01: ShadowRunner decision recording ──────────────────────
         //
@@ -2623,43 +2558,70 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         );
     }
 
-    /// bug-017c2d, bug-05a434: no placeholder test is written, and nothing
-    /// reaches the repo root. With `write_eval_artifacts` on, only checked
-    /// evaluations are written; the built-in template needs a property body
-    /// that no plan task authors, so none is, and `plan run` reports the key
-    /// as inert.
+    /// A fake Claude CLI that lists, as the agent starts, the
+    /// `generated-tests` directories and Rust files under its workdir in
+    /// `seen-by-agent`, then answers like [`make_batch_dispatcher`]'s.
+    const EVAL_PROBE_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+dir="$(dirname -- "$0")"
+find "$dir" \( -name generated-tests -o -name '*.rs' \) -print >"$dir/seen-by-agent"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"batch-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// The `generated-tests` directories and Rust files under `dir`.
+    fn generated_tests_under(dir: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.ends_with("generated-tests") {
+                    found.push(path.clone());
+                }
+                found.extend(generated_tests_under(&path));
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    /// S05 F2: dispatch writes no generated test where the agent can read
+    /// it. With `gates.write_eval_artifacts` off or on, no `generated-tests`
+    /// directory and no Rust file is under the workdir before dispatch, when
+    /// the agent starts, or after dispatch; the key only parses, and `plan
+    /// run` reports it as inert.
     #[tokio::test]
-    async fn write_eval_artifacts_writes_nothing_without_a_property_body() {
+    async fn write_eval_artifacts_creates_nothing_in_the_workdir() {
         for write_eval_artifacts in [false, true] {
             let temp = tempdir().expect("tempdir");
-            let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |config| {
-                config.gates.write_eval_artifacts = write_eval_artifacts;
-            })
-            .await;
-            let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
-                eval_generation_enabled: true,
-                ..GraphFeedbackContext::default()
-            });
+            let (dispatcher, task) =
+                make_scripted_batch_dispatcher(&temp, EVAL_PROBE_PROVIDER, |config| {
+                    config.gates.write_eval_artifacts = write_eval_artifacts;
+                })
+                .await;
+            let setting = format!("write_eval_artifacts={write_eval_artifacts}");
+            assert!(generated_tests_under(temp.path()).is_empty(), "{setting}");
             dispatcher
                 .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
                 .await
                 .expect("dispatch");
 
-            assert!(!temp.path().join("generated-tests").exists());
-            let written = std::fs::read_dir(temp.path().join(".roko/generated-tests"))
-                .map(|entries| entries.count())
-                .unwrap_or(0);
-            assert_eq!(
-                written, 0,
-                "write_eval_artifacts={write_eval_artifacts} wrote {written} artifacts"
-            );
+            let seen = std::fs::read_to_string(temp.path().join("seen-by-agent"))
+                .expect("the agent started");
+            assert_eq!(seen, "", "{setting}: the agent saw generated tests");
+            let after = generated_tests_under(temp.path());
+            assert!(after.is_empty(), "{setting}: {after:?}");
         }
     }
 
     /// `[meta] skip_enrichment` is read once per plan, and a plan that sets it
-    /// still dispatches. What it skips leaves nothing to observe here: eval
-    /// artifacts need a property body (bug-05a434), and the fixture has no
-    /// dream routing advice.
+    /// still dispatches. What it skips leaves nothing to observe here: the
+    /// fixture has no dream routing advice.
     #[tokio::test]
     async fn skip_enrichment_plan_meta_is_read_once_per_plan() {
         let temp = tempdir().expect("tempdir");

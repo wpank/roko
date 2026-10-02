@@ -168,6 +168,28 @@ def test_a_unit_that_left_records_stops_the_campaign_until_it_is_moved(places, c
     assert len(read_jsonl(out / "only-2" / "records.jsonl")) == 2
 
 
+def test_max_cost_usd_caps_the_whole_campaign(places, capsys):
+    """The campaign's --max-cost-usd: each billed unit gets its share of its block's cap or what the experiment's
+    books leave under the campaign's, whichever is smaller, and a unit left less than one task's worst case does not
+    start."""
+    path = manifest(places, block("first"), block("second", max_cost_usd=2.0))
+    out = places["results"] / EXPERIMENT
+    with StubServer(SOLVE) as stub:
+        assert run_campaign(places, path, stub.url, "--max-cost-usd", "0") == 2
+        assert run_campaign(places, path, stub.url, "--max-cost-usd", "0.2") == 2  # one toy task may cost $0.29
+        assert "less than one task's worst case" in capsys.readouterr().err and stub.requests == []
+        code, shown = dry_run(places, path, stub.url, capsys, "--max-cost-usd", "1.2")
+        assert code == 0 and any(note.startswith("--max-cost-usd $1.20: ") for note in shown["notes"])
+        assert run_campaign(places, path, stub.url, "--max-cost-usd", "1.2") == 0
+    caps = {}
+    for run_id in ("first-1", "second-1"):
+        argv = json.loads((out / run_id / "manifest.json").read_text())["argv"]
+        caps[run_id] = float(argv[argv.index("--max-cost-usd") + 1])
+    spent = sum(row["billed_usd"] for row in read_jsonl(out / "first-1" / "ledger.jsonl"))
+    assert spent > 0 and caps["first-1"] == 1.0  # its block's $1.00: the campaign's $1.20 had room for it
+    assert 1.2 - spent - 1e-6 <= caps["second-1"] <= 1.2 - spent + 1e-12  # what first left, under its $2.00 share
+
+
 def test_an_instance_keeps_one_secret_across_campaigns(places, capsys):
     """S09 §4.1: an instance that another campaign ran under another secret file is refused."""
     other = places["results"] / "OTHER-EXP" / campaign.LOG

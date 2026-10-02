@@ -33,6 +33,10 @@ use crate::graph_task_dispatch::WiringReport;
 /// `kind` of the manifests a Graph plan run writes.
 const PLAN_RUN_KIND: &str = "plan_run";
 
+/// The ablation flag of a run that holds learned state fixed (`[learning]
+/// frozen`, decision 2218).
+pub const LEARNING_FROZEN_FLAG: &str = "learning_frozen";
+
 /// The provenance every run of one plan-run invocation shares, and the runs
 /// it reopened.
 #[derive(Debug)]
@@ -44,16 +48,21 @@ pub struct RunManifests {
     workspace: WorkspaceProvenance,
     /// `sha256` of this process's command-line arguments.
     args_sha256: String,
+    /// The loops this process's runs switch off, which their manifests
+    /// record (`experiment.ablation_flags`).
+    ablation_flags: Vec<String>,
     /// Records an earlier close of a run counted as dropped, per run this
     /// process reopened: its close adds them to its own.
     carried_drops: parking_lot::Mutex<HashMap<String, u64>>,
 }
 
 impl RunManifests {
-    /// Capture the harness build, the fingerprint of `config` and the commit
-    /// of the workspace at `workdir`, whose `.roko/runs` holds the manifests.
+    /// Capture the harness build, the fingerprint of `config`, the loops it
+    /// switches off and the commit of the workspace at `workdir`, whose
+    /// `.roko/runs` holds the manifests.
     #[must_use]
     pub fn capture(workdir: &Path, config: &RokoConfig) -> Self {
+        let config_frozen = config.learning.frozen;
         let config = match roko_core::config::fingerprint(config) {
             Ok(fingerprint) => ConfigHashProvenance {
                 hash: fingerprint.hash,
@@ -68,12 +77,17 @@ impl RunManifests {
         let base_commit = git_output(workdir, &["rev-parse", "HEAD"])
             .map(|head| String::from_utf8_lossy(&head).trim().to_string())
             .filter(|head| !head.is_empty());
+        let mut ablation_flags = Vec::new();
+        if config_frozen {
+            ablation_flags.push(LEARNING_FROZEN_FLAG.to_string());
+        }
         Self {
             runs_dir: RokoLayout::for_project(workdir).runs_dir(),
             harness: harness_provenance(),
             config,
             workspace: WorkspaceProvenance { base_commit },
             args_sha256: args_sha256(),
+            ablation_flags,
             carried_drops: parking_lot::Mutex::default(),
         }
     }
@@ -98,6 +112,13 @@ impl RunManifests {
         };
         if !manifest.plan_ids.iter().any(|id| id == plan_id) {
             manifest.plan_ids.push(plan_id.to_string());
+        }
+        // A frozen invocation marks the run frozen (decision 2218).
+        let flags = &mut manifest.experiment.ablation_flags;
+        for flag in &self.ablation_flags {
+            if !flags.contains(flag) {
+                flags.push(flag.clone());
+            }
         }
         if let Some(closed) = &manifest.closed {
             self.carried_drops

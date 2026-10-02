@@ -931,6 +931,24 @@ pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
     run_graph_plan_in_run(params, None).await
 }
 
+tokio::task_local! {
+    /// Whether the plan run of this task freezes learning for itself alone
+    /// ([`with_frozen_learning`]).
+    static FROZEN_LEARNING_RUN: bool;
+}
+
+/// Run `run`, a plan run such as [`run_graph_plan`], with learning frozen
+/// for that run alone when `frozen` (`roko plan run --frozen-learning`,
+/// decision 2218): its config reads `[learning] frozen = true` whatever
+/// `roko.toml` says. The switch is scoped to the run's task rather than
+/// carried in [`GraphPlanRunParams`], which more commands build.
+pub async fn with_frozen_learning<F>(frozen: bool, run: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    FROZEN_LEARNING_RUN.scope(frozen, run).await
+}
+
 /// [`run_graph_plan`] for a caller whose run already has an id: a single
 /// plan's fresh checkpoint takes `run_id`, so the run's attempt records and
 /// manifest land in the caller's own `.roko/runs/<run_id>/` (`roko run`,
@@ -1161,6 +1179,18 @@ async fn run_graph_plan_body(
     // `--effort` sets this run's reasoning effort (gap-9980c6).
     if let Some(effort) = effort {
         roko_config.agent.default_effort = effort;
+    }
+    // `--frozen-learning` freezes this run alone (`with_frozen_learning`),
+    // before the manifest, the feedback facade and the dispatcher are built,
+    // so every reader sees one value.
+    if FROZEN_LEARNING_RUN.try_with(|frozen| *frozen).unwrap_or(false) {
+        roko_config.learning.frozen = true;
+    }
+    if roko_config.learning.frozen {
+        tracing::info!(
+            "learning is frozen for this run: it reads learned state and writes none \
+             (decision 2218)"
+        );
     }
     roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
         .context("validate model configuration before Graph dispatch")?;
@@ -5030,6 +5060,60 @@ max_retries = 0
             attempt_log.map(|component| component.kind.as_str()),
             Some("store")
         );
+    }
+
+    /// The manifest of the one run in workspace `dir`.
+    #[cfg(unix)]
+    fn only_run_manifest(dir: &Path) -> roko_learn::telemetry::RunProvenanceManifest {
+        let run_dirs: Vec<PathBuf> = std::fs::read_dir(dir.join(".roko/runs"))
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(run_dirs.len(), 1, "one run, one directory: {run_dirs:?}");
+        roko_learn::telemetry::RunProvenanceManifest::load(&run_dirs[0])
+            .expect("read the manifest")
+            .expect("the run wrote a manifest")
+    }
+
+    /// Decision 2218: `--frozen-learning` (`with_frozen_learning`) freezes a
+    /// run's learning, and `[learning] frozen = true` every run's. Either
+    /// reaches the run's config, so its fingerprint is a frozen one, and its
+    /// manifest records `ablation_flags = ["learning_frozen"]`; neither
+    /// leaves the flags empty.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn frozen_learning_switch_reaches_config_and_manifest() {
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let live = only_run_manifest(dir.path());
+        assert!(
+            live.experiment.ablation_flags.is_empty(),
+            "{:?}",
+            live.experiment
+        );
+
+        // The run resumes with the flag: that invocation's config is frozen.
+        let resume = run_plan_set(dir.path(), Some(1), None);
+        let (exit_code, _, _) = with_frozen_learning(true, resume).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let frozen = only_run_manifest(dir.path());
+        assert_eq!(frozen.experiment.ablation_flags, ["learning_frozen"]);
+        let hashes: Vec<&str> = frozen
+            .invocations
+            .iter()
+            .filter_map(|invocation| invocation.config.as_ref())
+            .map(|config| config.hash.as_str())
+            .collect();
+        assert_eq!(hashes.len(), 2, "{:?}", frozen.invocations);
+        assert_ne!(hashes[0], hashes[1], "a frozen config is another config");
+        assert!(frozen.mixed_provenance, "a live run resumed frozen");
+
+        let configured = verified_plan_set(&[("a", "a.txt", &[])], "\n[learning]\nfrozen = true\n");
+        let (exit_code, _, _) = run_plan_set(configured.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let manifest = only_run_manifest(configured.path());
+        assert_eq!(manifest.experiment.ablation_flags, ["learning_frozen"]);
     }
 
     /// bug-0ba3d9: attempt records carry the invocation ordinal the run's

@@ -115,6 +115,7 @@ fn minimal() -> RokoConfig {
             gate_threshold_flush_interval:
                 crate::config::learning::DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL,
             knowledge: Default::default(),
+            frozen: false,
         },
         ..RokoConfig::default()
     }
@@ -185,6 +186,7 @@ fn thorough() -> RokoConfig {
             gate_threshold_flush_interval:
                 crate::config::learning::DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL,
             knowledge: Default::default(),
+            frozen: false,
         },
         ..RokoConfig::default()
     }

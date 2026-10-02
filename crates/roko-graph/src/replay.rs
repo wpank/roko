@@ -285,8 +285,8 @@ impl ActivityReplayer {
             .split(|byte| *byte == b'\n')
             .enumerate()
             .filter(|(_, line)| !line.trim_ascii().is_empty())
-            .filter_map(|(index, line)| {
-                match serde_json::from_slice::<RecordEntry>(line) {
+            .filter_map(
+                |(index, line)| match serde_json::from_slice::<RecordEntry>(line) {
                     Ok(entry) => Some(LoggedRecord {
                         line: index as u64,
                         entry,
@@ -299,8 +299,8 @@ impl ActivityReplayer {
                         );
                         None
                     }
-                }
-            });
+                },
+            );
         Self::build(records, &BTreeSet::new(), false)
     }
 

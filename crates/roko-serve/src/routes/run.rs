@@ -15,7 +15,7 @@ use validator::Validate;
 use crate::error::ApiError;
 use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
-use crate::runtime::RunResult;
+use crate::runtime::{CliRuntime, PromptPlanOptions, RunResult};
 use crate::sanitize::sanitize_agent_content;
 use crate::state::{AppState, OperationStatus, RunHandle, RunState};
 
@@ -43,16 +43,28 @@ impl RequestPayload for RunRequest {
     }
 }
 
-/// `POST /api/run` — spawn a background `run_once()` invocation.
+/// `POST /api/run` — run the prompt in the background as a gated one-task
+/// plan through the Graph engine, as `roko run` does, under the id the 202
+/// returns (9113).
+///
+/// One plan executor runs at a time, and prompt runs are not queued behind
+/// plan runs yet: while a plan run is live the request is refused with 409
+/// instead of waiting for the workspace.
 async fn start_run(
     State(state): State<Arc<AppState>>,
     ValidJson(body): ValidJson<RunRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let run_id = spawn_background_run(
+    if state.live_plan_runs().await > 0 {
+        return Err(ApiError::conflict(
+            "a plan run is active in this workspace; start the prompt run once it ends",
+        ));
+    }
+    let run_id = spawn_run(
         &state,
         body.prompt.clone(),
         body.workdir.map(PathBuf::from),
         None,
+        RunMode::GatedPlan,
     )
     .await;
 
@@ -93,11 +105,63 @@ async fn run_status(
     Ok(result)
 }
 
+/// How a background run executes its prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    /// One model call whose answer no gate checks, as an agent's chat reply
+    /// is: its verdict comes from its result (G42).
+    Answer,
+    /// A gated one-task plan through the Graph engine, as `roko run` runs a
+    /// prompt (9113): its verdict is the plan's.
+    GatedPlan,
+}
+
+/// Spawn a background run that answers `prompt` with one model call, as an
+/// agent's chat reply does, and return its id.
 pub(crate) async fn spawn_background_run(
     state: &Arc<AppState>,
     prompt: String,
     workdir: Option<PathBuf>,
     agent_target: Option<String>,
+) -> String {
+    spawn_run(state, prompt, workdir, agent_target, RunMode::Answer).await
+}
+
+/// Run `prompt` as `mode` says: the run's verdict and result. A gated run
+/// takes `options`; an answer needs none.
+async fn execute_run(
+    runtime: &dyn CliRuntime,
+    workdir: &std::path::Path,
+    prompt: &str,
+    mode: RunMode,
+    options: PromptPlanOptions,
+) -> anyhow::Result<(RunState, RunResult)> {
+    match mode {
+        RunMode::Answer => {
+            let result = runtime.run_once(workdir, prompt).await?;
+            Ok((run_verdict(&result), result))
+        }
+        RunMode::GatedPlan => {
+            let plan = runtime.run_prompt_plan(workdir, prompt, options).await?;
+            let result = RunResult {
+                success: plan.success,
+                output_text: plan.output_text,
+                usage: None,
+                gate_results: Vec::new(),
+            };
+            Ok((plan.verdict, result))
+        }
+    }
+}
+
+/// Spawn a background run of `prompt` in `mode` and return its id: the id it
+/// runs under.
+async fn spawn_run(
+    state: &Arc<AppState>,
+    prompt: String,
+    workdir: Option<PathBuf>,
+    agent_target: Option<String>,
+    mode: RunMode,
 ) -> String {
     let run_id = uuid::Uuid::new_v4().to_string();
     let workdir = workdir.unwrap_or_else(|| state.workdir.clone());
@@ -153,12 +217,24 @@ pub(crate) async fn spawn_background_run(
                 ]);
             }
 
-            let run = runtime.run_once(workdir.as_path(), &prompt_for_handle);
+            // A gated run takes the id this route returns, and stops when
+            // the server shuts down.
+            let options = PromptPlanOptions {
+                run_id: Some(run_id.clone()),
+                cancel: Some(state_for_task.cancel.child()),
+                ..PromptPlanOptions::default()
+            };
+            let run = execute_run(
+                runtime.as_ref(),
+                workdir.as_path(),
+                &prompt_for_handle,
+                mode,
+                options,
+            );
             let hub = &state_for_task.state_hub;
             match run_with_heartbeats(hub, agent_label, &plan_id, &task_id, run).await {
-                Ok(result) => {
-                    let verdict = run_verdict(&result);
-                    record_run_result(&state_for_task, &run_id, result.clone()).await;
+                Ok((verdict, result)) => {
+                    record_run_result(&state_for_task, &run_id, verdict, result.clone()).await;
                     publish_run_completed(
                         &bus,
                         &run_id,
@@ -262,6 +338,7 @@ pub(crate) async fn spawn_background_run(
         prompt,
         status: OperationStatus::Running,
         result: None,
+        verdict: None,
         handle,
     };
 
@@ -319,12 +396,13 @@ async fn run_with_heartbeats<T>(
     result
 }
 
-async fn record_run_result(state: &AppState, run_id: &str, result: RunResult) {
+async fn record_run_result(state: &AppState, run_id: &str, verdict: RunState, result: RunResult) {
     if let Some(handle) = state.active_runs.write().await.get_mut(run_id) {
         handle.status = OperationStatus::Completed {
             result: result.output_text.clone(),
         };
         handle.result = Some(result);
+        handle.verdict = Some(verdict);
     }
 }
 
@@ -357,14 +435,19 @@ fn run_verdict(result: &RunResult) -> RunState {
 }
 
 /// The state a run handle reports, with the error of a run that failed:
-/// `running`, then the run's verdict ([`run_verdict`]) once it ends.
+/// `running`, then the run's verdict once it ends: the one it recorded, else
+/// the one its result gives ([`run_verdict`]).
 pub(crate) fn run_handle_state(handle: &RunHandle) -> (RunState, Option<&str>) {
     match &handle.status {
         OperationStatus::Running => (RunState::Running, None),
-        OperationStatus::Completed { .. } => match &handle.result {
-            Some(result) => (run_verdict(result), None),
-            None => (RunState::Unverified, None),
-        },
+        OperationStatus::Completed { .. } => {
+            let verdict = match (handle.verdict, &handle.result) {
+                (Some(verdict), _) => verdict,
+                (None, Some(result)) => run_verdict(result),
+                (None, None) => RunState::Unverified,
+            };
+            (verdict, None)
+        }
         OperationStatus::Failed { error } => (RunState::Failed, Some(error.as_str())),
     }
 }
@@ -657,12 +740,8 @@ mod tests {
         }
     }
 
-    /// G42: a run nothing checked is not a success. With a runtime that says
-    /// it succeeded but returns no gate results, `GET /api/run/{id}/status`
-    /// reports `unverified` with `success: false`, and the run's completion
-    /// event carries the same verdict.
-    #[tokio::test]
-    async fn api_run_without_gates_reports_unverified() {
+    /// Server state over `runtime` in a fresh workspace.
+    fn state_over(runtime: Arc<dyn CliRuntime>) -> (tempfile::TempDir, Arc<AppState>) {
         let dir = tempfile::tempdir().expect("tempdir");
         let deploy_backend = Arc::from(
             crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
@@ -670,17 +749,21 @@ mod tests {
         let state = Arc::new(
             AppState::new(
                 dir.path().to_path_buf(),
-                Arc::new(crate::runtime::NoOpRuntime),
+                runtime,
                 roko_core::config::schema::RokoConfig::default(),
                 deploy_backend,
             )
             .expect("AppState::new"),
         );
+        (dir, state)
+    }
 
-        let run_id = spawn_background_run(&state, "say hi".into(), None, None).await;
-        let status = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    /// What `GET /api/run/{id}/status` reports once run `run_id` has ended,
+    /// waiting at most ten seconds for it to end.
+    async fn ended_run_status(state: &Arc<AppState>, run_id: &str) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                let Json(status) = run_status(State(Arc::clone(&state)), Path(run_id.clone()))
+                let Json(status) = run_status(State(Arc::clone(state)), Path(run_id.to_string()))
                     .await
                     .expect("the run is tracked");
                 if status["finished"] == true {
@@ -690,7 +773,19 @@ mod tests {
             }
         })
         .await
-        .expect("the run ends in time");
+        .expect("the run ends in time")
+    }
+
+    /// G42: a run nothing checked is not a success. With a runtime that says
+    /// it succeeded but returns no gate results, as an agent's one-call reply
+    /// does, `GET /api/run/{id}/status` reports `unverified` with `success:
+    /// false`, and the run's completion event carries the same verdict.
+    #[tokio::test]
+    async fn api_run_without_gates_reports_unverified() {
+        let (_dir, state) = state_over(Arc::new(crate::runtime::NoOpRuntime));
+
+        let run_id = spawn_background_run(&state, "say hi".into(), None, None).await;
+        let status = ended_run_status(&state, &run_id).await;
 
         assert_eq!(status["status"], "unverified", "{status}");
         assert_eq!(status["verdict"], "unverified", "{status}");
@@ -707,6 +802,124 @@ mod tests {
             })
             .expect("the run's completion event");
         assert_eq!(completed, (false, Some(RunState::Unverified)));
+    }
+
+    /// A runtime whose prompt runs end as gated plans that succeeded, which
+    /// records the run id each ran under.
+    #[derive(Default)]
+    struct GatedPrompts {
+        run_ids: std::sync::Mutex<Vec<Option<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime::CliRuntime for GatedPrompts {
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<RunResult> {
+            anyhow::bail!("POST /api/run must not answer with one model call")
+        }
+
+        async fn run_prompt_plan(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+            options: PromptPlanOptions,
+        ) -> anyhow::Result<crate::runtime::PromptPlanResult> {
+            let run_id = options.run_id.clone().unwrap_or_default();
+            self.run_ids
+                .lock()
+                .expect("lock run ids")
+                .push(options.run_id);
+            Ok(crate::runtime::PromptPlanResult {
+                run_id,
+                verdict: RunState::Succeeded,
+                success: true,
+                output_text: Some("Done.".to_string()),
+                cost_usd: Some(0.02),
+            })
+        }
+
+        fn session_status(&self, workdir: PathBuf) -> crate::runtime::SessionStatusInfo {
+            crate::runtime::SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
+            crate::runtime::DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+    }
+
+    /// 9113: `POST /api/run` runs the prompt as a gated one-task plan under the
+    /// id it returns. The runtime runs it under that id, and the run's status
+    /// carries the plan's verdict.
+    #[tokio::test]
+    async fn api_run_reports_the_gated_runs_id_and_verdict() {
+        let runtime = Arc::new(GatedPrompts::default());
+        let (_dir, state) = state_over(Arc::clone(&runtime) as Arc<dyn CliRuntime>);
+
+        let request = RunRequest {
+            prompt: "add a test for the parser".into(),
+            workdir: None,
+        };
+        let response = start_run(State(Arc::clone(&state)), ValidJson(request))
+            .await
+            .expect("start the run")
+            .into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the response body");
+        let body: Value = serde_json::from_slice(&body).expect("a JSON body");
+        let run_id = body["id"].as_str().expect("the run's id").to_string();
+
+        let status = ended_run_status(&state, &run_id).await;
+        assert_eq!(status["status"], "succeeded", "{status}");
+        assert_eq!(status["verdict"], "succeeded", "{status}");
+        assert_eq!(status["success"], true, "{status}");
+        assert_eq!(status["output_text"], "Done.", "{status}");
+        let ran = runtime.run_ids.lock().expect("lock run ids").clone();
+        assert_eq!(ran, [Some(run_id)]);
+    }
+
+    /// 9113: prompt runs are not queued behind plan runs yet, so `POST
+    /// /api/run` refuses with 409 while a plan run is live instead of waiting.
+    #[tokio::test]
+    async fn api_run_is_refused_while_a_plan_run_is_live() {
+        let (_dir, state) = state_over(Arc::new(GatedPrompts::default()));
+        let plan_run = crate::state::PlanHandle {
+            id: "run-1".into(),
+            plan_dir: state.workdir.join("plans").join("live"),
+            members: vec!["live".into()],
+            status: crate::state::PlanRunStatus::running(),
+            handle: tokio::spawn(tokio::time::sleep(std::time::Duration::from_secs(30))),
+            cancel: roko_runtime::cancel::CancelToken::new(),
+        };
+        state
+            .active_plans
+            .write()
+            .await
+            .insert("live".into(), plan_run);
+
+        let request = RunRequest {
+            prompt: "add a test".into(),
+            workdir: None,
+        };
+        let err = match start_run(State(Arc::clone(&state)), ValidJson(request)).await {
+            Ok(_) => panic!("a live plan run must refuse the prompt run"),
+            Err(err) => err,
+        };
+        assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
+        assert!(state.active_runs.read().await.is_empty());
     }
 
     /// gap-8a1fb3: a one-shot run's agent reports how long it has worked while

@@ -131,6 +131,38 @@ pub struct PlanRunOptions {
     pub run_id: Option<String>,
 }
 
+/// Options for a prompt run through [`CliRuntime::run_prompt_plan`].
+#[derive(Debug, Clone, Default)]
+pub struct PromptPlanOptions {
+    /// The run id the caller returned to its client: the one-task plan and
+    /// its Graph run take it. `None` lets the runtime mint its own.
+    pub run_id: Option<String>,
+    /// Cancellation token the run observes, so the caller can stop it.
+    pub cancel: Option<CancelToken>,
+    /// The task's work domain; `None` leaves it unset.
+    pub domain: Option<roko_core::TaskDomain>,
+    /// A hard cap on what the run may spend, in USD, as `roko plan run
+    /// --budget-override` sets one; `None` keeps the configured ceiling.
+    pub max_usd: Option<f64>,
+}
+
+/// How a prompt run through [`CliRuntime::run_prompt_plan`] ended.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptPlanResult {
+    /// The run id the run ran under.
+    pub run_id: String,
+    /// The run's verdict: `succeeded`, `failed`, `unverified` or `cancelled`.
+    pub verdict: crate::state::RunState,
+    /// Whether the run succeeded: its verdict is `succeeded`.
+    pub success: bool,
+    /// The task's final output, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_text: Option<String>,
+    /// What the run cost, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
 /// Summary info for a configured repository, used to give agents
 /// cross-repo context during dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -329,6 +361,21 @@ pub trait CliRuntime: Send + Sync + 'static {
         _overrides: &BenchConfigOverrides,
     ) -> anyhow::Result<RunResult> {
         self.run_once(workdir, prompt).await
+    }
+
+    /// Run `prompt` as a gated one-task plan through the Graph engine, as
+    /// `roko run` does, under `options.run_id` when it is set: the route of
+    /// `POST /api/run` (9113). Text generation uses [`Self::run_once`].
+    ///
+    /// The default bails: the runtime cannot run prompt plans.
+    async fn run_prompt_plan(
+        &self,
+        workdir: &std::path::Path,
+        prompt: &str,
+        options: PromptPlanOptions,
+    ) -> anyhow::Result<PromptPlanResult> {
+        let _ = (workdir, prompt, options);
+        anyhow::bail!("runtime does not support prompt plan runs")
     }
 
     /// Generate implementation plans from a PRD.

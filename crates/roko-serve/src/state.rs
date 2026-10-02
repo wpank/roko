@@ -226,6 +226,9 @@ pub struct RunHandle {
     pub status: OperationStatus,
     /// Final result payload once the run has completed.
     pub result: Option<RunResult>,
+    /// The run's verdict once it has completed: a gated run's own, or the
+    /// one its result gives (G42).
+    pub verdict: Option<RunState>,
     /// Background task driving the run.
     pub handle: JoinHandle<()>,
 }

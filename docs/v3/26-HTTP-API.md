@@ -499,13 +499,13 @@ aliases (both are mounted).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/run` | Spawn a background run (202 Accepted) |
+| POST | `/api/run` | Run the prompt in the background as a gated one-task plan, as `roko run` does (202 Accepted with the run's `id`, which the Graph run takes; 409 while a plan run is live) |
 | GET | `/api/run/{id}/status` | Poll run status |
 
 The status is `running`, then the run's verdict: `succeeded` when gates checked
-its output and passed it, `failed`, or `unverified` when no gate checked it. Only
+its work and passed it, `failed`, or `unverified` when no gate checked it. Only
 `succeeded` sets `success: true`, and the `run_completed` event carries the same
-`verdict`.
+`verdict`. `GET /api/runs/{id}/summary` reports the same run from its index.
 
 ### 8.4 Run-Scoped Observability
 

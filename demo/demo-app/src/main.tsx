@@ -35,6 +35,14 @@ const BenchRunDetail = lazy(() => import('./pages/BenchRunDetail'));
 const BenchCompare = lazy(() => import('./pages/BenchCompare'));
 const Settings = lazy(() => import('./pages/Settings'));
 const SharePage = lazy(() => import('./pages/Share'));
+// The showcase (S10 §4.2), R1: replay-only views of one recorded bundle.
+const Overview = lazy(() => import('./pages/showcase/Overview'));
+const HeadToHead = lazy(() => import('./pages/showcase/HeadToHead'));
+const AuditLottery = lazy(() => import('./pages/showcase/AuditLottery'));
+const Replays = lazy(() => import('./pages/showcase/Replays'));
+const ReplayView = lazy(() => (
+  import('./pages/showcase/Replays').then((module) => ({ default: module.ReplayView }))
+));
 
 // Fixture-only harness routes (S10 §7). The condition is replaced at build time, so a build
 // without VITE_ALLOW_FIXTURES=1 compiles the import out.
@@ -59,17 +67,6 @@ const LAB_PATHS = [
 function ToLab() {
   const { pathname, search, hash } = useLocation();
   return <Navigate to={`/lab${pathname}${search}${hash}`} replace />;
-}
-
-/** The showcase home until the R1 pages land (S10 §4.1): nothing measured is shown yet. */
-function ShowcaseHome() {
-  return (
-    <section data-showcase-page="overview" style={{ padding: 'var(--sp-8) var(--sp-6)' }}>
-      <h1 style={{ fontSize: 'var(--text-2xl)' }}>A Cybernetic Agent Harness</h1>
-      <p>Cheap models, made dependable by measured self-regulation.</p>
-      <p data-not-measured="PILOT">not yet measured · planned in PILOT</p>
-    </section>
-  );
 }
 
 function RouteLoading() {
@@ -133,7 +130,11 @@ createRoot(document.getElementById('root')!).render(
               {FixtureRoutes && <Route path="__fixtures/*" element={<FixtureRoutes />} />}
               <Route element={<AppShell />}>
                 {/* The showcase (S10 §4.2): measured claims at the home. */}
-                <Route index element={<ShowcaseHome />} />
+                <Route index element={<Overview />} />
+                <Route path="p1/head-to-head" element={<HeadToHead />} />
+                <Route path="p2/audits" element={<AuditLottery />} />
+                <Route path="replays" element={<Replays />} />
+                <Route path="replay/:bundleId" element={<ReplayView />} />
                 {/* Legacy pages, local only (D23). */}
                 <Route path="lab">
                   <Route index element={<Landing />} />

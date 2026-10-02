@@ -53,6 +53,10 @@ function showcaseFixtureBundles(enabled: boolean): Plugin {
 export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, APP_DIR, 'VITE_');
   const fixtures = process.env.VITE_ALLOW_FIXTURES ?? env.VITE_ALLOW_FIXTURES ?? '';
+  // S10 §4.5: a production build never carries fixture data, so refuse it at build time.
+  if (command === 'build' && mode === 'production' && fixtures !== '') {
+    throw new Error('VITE_ALLOW_FIXTURES is set: a production build must not allow fixtures');
+  }
   return {
     plugins: [react(), showcaseFixtureBundles(fixtures === '1')],
     // Build for /demo/ so assets resolve correctly under roko serve.

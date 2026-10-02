@@ -8,6 +8,7 @@ severity = "p1"
 goal = "whitepaper"
 rank = 95
 size = "L"
+hold = "paper rewrite in progress (session roko-55, at Will's request, 2026-10-02): no work on docs/whitepaper/* or tmp/cybernetic-harness/paper/* until it reports done; 9510 also waits on the telemetry harvest (gap-263de5)"
 subsystem = ["paper"]
 created = 2026-10-02
 updated = 2026-10-02
@@ -28,7 +29,7 @@ command = "python3 -c \"import tomllib,subprocess,sys;d=tomllib.load(open('docs/
 command = "! grep -qE '(WIRED|PARTIAL|BROKEN|ORPHANED|MISSING|BUILT-UNWIRED|REMOVED|DOCS-ONLY|UNPROVEN)@41228d7b2' docs/whitepaper/[0-9]*.md docs/whitepaper/README.md && grep -q '2026-10-02-live-cheap-model-run.md' docs/whitepaper/09-status-and-roadmap.md && python3 tools/status_matrix.py --check && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper/*.md"
 
 [[verify]]
-command = "grep -q '^## Re-read after the audit re-pin' docs/whitepaper/REVIEW.md && grep -q '^Verdict: accept' docs/whitepaper/REVIEW.md && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper/*.md"
+command = "grep -q '^## Re-read after the audit re-pin' docs/whitepaper/REVIEW.md && grep '^Verdict:' docs/whitepaper/REVIEW.md | tail -1 | grep -q '^Verdict: accept' && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper/*.md"
 
 [[verify]]
 command = "grep -q 'cut, masked, stale and unlogged' tmp/cybernetic-harness/paper/sections/00-abstract.md && grep -q 'cut, masked, stale and unlogged' tmp/cybernetic-harness/paper/sections/01-introduction.md && ! grep -q 'TODO: confirm both bars' tmp/cybernetic-harness/paper/sections/01-introduction.md && python3 tmp/cybernetic-harness/paper/tools/claims.py --check"

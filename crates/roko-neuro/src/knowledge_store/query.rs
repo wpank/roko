@@ -222,10 +222,10 @@ impl KnowledgeStore {
         });
         hits.truncate(top_k);
 
-        // P2-29: HDC telemetry -- log query metrics for Lens/tracing consumption.
+        // P2-29: HDC telemetry -- log the result count and top similarity. No
+        // counter: nothing in production calls this (bug-aa8893).
         let top_score = hits.first().map(|h| h.total_score).unwrap_or(0.0);
         tracing::info!(
-            monotonic_counter.roko_hdc_queries_total = 1_u64,
             result_count = hits.len(),
             top_similarity = %format!("{top_score:.4}"),
             top_k,

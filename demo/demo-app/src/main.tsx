@@ -36,6 +36,13 @@ const BenchCompare = lazy(() => import('./pages/BenchCompare'));
 const Settings = lazy(() => import('./pages/Settings'));
 const SharePage = lazy(() => import('./pages/Share'));
 
+// Fixture-only harness routes (S10 §7). The condition is replaced at build time, so a build
+// without VITE_ALLOW_FIXTURES=1 compiles the import out.
+const FixtureRoutes =
+  import.meta.env.MODE !== 'production' && import.meta.env.VITE_ALLOW_FIXTURES === '1'
+    ? lazy(() => import('./showcase/fixtureRoutes'))
+    : null;
+
 function RouteLoading() {
   return (
     <div className="route-loading progressive-reveal">
@@ -94,6 +101,7 @@ createRoot(document.getElementById('root')!).render(
         <ToastProvider>
           <Suspense fallback={<RouteLoading />}>
             <Routes>
+              {FixtureRoutes && <Route path="__fixtures/*" element={<FixtureRoutes />} />}
               <Route element={<AppShell />}>
                 <Route index element={<Landing />} />
                 <Route path="dashboard" element={<DashboardLayout />}>

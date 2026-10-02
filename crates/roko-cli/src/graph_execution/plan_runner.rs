@@ -1183,6 +1183,27 @@ async fn run_graph_plan_body(
         .context("validate model configuration before Graph dispatch")?;
     // A run refuses to start on a nearly full disk (reg-7cf6f9).
     super::disk_admission::check_free_disk(workdir, &roko_config.resources, force_disk_check)?;
+    // 3231: the plan-load spec gate, which every run passes (plan run,
+    // serve, ACP, roko run): score each task, prove its shell checks red on
+    // the base when `[spec_quality] red_on_base` is on, and refuse the plans
+    // before any dispatch when a task is blocked (decision 3201). Each
+    // plan's run records the decisions before its first task starts.
+    let spec_files: Vec<PathBuf> = plans
+        .iter()
+        .map(|plan| plan.dir.join("tasks.toml"))
+        .collect();
+    let spec_gate =
+        match crate::spec_gate::gate_plans(&spec_files, workdir, &roko_config.spec_quality) {
+            Ok(report) => report,
+            Err(interrupted) => {
+                tracing::error!("{interrupted}");
+                return Ok(128 + interrupted.signal);
+            }
+        };
+    if spec_gate.blocks() {
+        crate::spec_gate::log_blocked(&spec_gate);
+        return Ok(1);
+    }
 
     // Merge CLI flag with config (same logic as runner-v2).
     let dangerously_skip_permissions =
@@ -1728,6 +1749,7 @@ async fn run_graph_plan_body(
         run_manifests: &run_manifests,
         caller_run_id: run_id.as_deref(),
         failure_issues: failure_issues.as_ref(),
+        spec_gate: &spec_gate,
     };
     let mut scheduler = super::plan_set::PlanSetScheduler::new(
         &plan_order,
@@ -2601,6 +2623,9 @@ struct PlanRunContext<'a> {
     /// Files a GitHub issue for each task a plan leaves failed, when
     /// `[github] auto_pr` is on (gap-cd51b7).
     failure_issues: Option<&'a super::failure_issues::FailureIssues>,
+    /// The plan-load spec gate's decisions, which each plan's run records
+    /// before its first task starts (3231).
+    spec_gate: &'a crate::spec_gate::SpecGateReport,
 }
 
 /// Services the cells of a plan's graph run with (gap-6daad9). The rich
@@ -3260,6 +3285,15 @@ async fn run_one_plan(
     // rewrites them, since its build may differ.
     ctx.run_manifests
         .write_census(&run_id, &ctx.graph_task_dispatcher.wiring_report());
+    // 3231: the plan's spec.quality and spec.gate records, before any of its
+    // tasks starts, and one event-log line per decision for SSE.
+    let run_dir = RokoLayout::for_project(ctx.workdir).runs_dir().join(&run_id);
+    let tasks_path = plan.dir.join("tasks.toml");
+    for event in
+        crate::spec_gate::record_plan(ctx.spec_gate, &tasks_path, ctx.workdir, &run_dir, &run_id)
+    {
+        ctx.graph_tui_bridge.log_event("spec.gate", &event);
+    }
     // A resumed run's attempts continue from the plan branch its earlier
     // process accepted work onto, and re-attach the checkouts it kept
     // (bug-056b40).

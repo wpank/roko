@@ -16,10 +16,15 @@
 //! where a score below `block_threshold` blocks its task as well. There is no
 //! per-run override, so every refusal follows from `roko.toml`.
 //!
-//! `plan run` calls the gate from `validate_before_run`; the plan runner can
-//! call it for serve and ACP runs too.
+//! `plan run` calls the gate from `validate_before_run`, without the
+//! red-on-base check. Every Graph run, from `plan run`, serve, ACP or
+//! `roko run`, passes the plan-load gate ([`gate_plans`], 3231) before its
+//! first dispatch: it adds the red-on-base results, refuses blocked plans,
+//! and each plan's run records a `spec.quality` and a `spec.gate` line per
+//! task ([`record_plan`]).
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use roko_core::config::{SpecQualityConfig, SpecQualityMode};
@@ -30,6 +35,10 @@ use serde::Serialize;
 
 /// The hard fails that block a plan at the gate: nothing else refuses them.
 pub const BLOCKING_HARD_FAILS: [&str; 2] = ["HF2", "HF3"];
+
+/// The file in a run's directory that holds its `spec.quality` and
+/// `spec.gate` records (3231).
+pub const SPEC_RECORDS_FILE: &str = "spec.jsonl";
 
 /// What the gate decided for one task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -125,6 +134,162 @@ pub fn check_plans(
         mode: config.mode,
         quality: Some(quality),
         decisions,
+    }
+}
+
+/// The plan-load gate (3231): [`check_plans`] over `files`, with the
+/// red-on-base results `[spec_quality]` asks for. An interrupt during the
+/// red-on-base check comes back as the error.
+pub fn gate_plans(
+    files: &[PathBuf],
+    workdir: &Path,
+    config: &SpecQualityConfig,
+) -> Result<SpecGateReport, crate::spec_red_on_base::Interrupted> {
+    let red_on_base = crate::spec_red_on_base::gate_results(files, workdir, config)?;
+    Ok(check_plans(files, workdir, config, &red_on_base))
+}
+
+/// Log each blocked task's findings, then that the plans are refused.
+pub fn log_blocked(report: &SpecGateReport) {
+    for decision in report.blocked() {
+        for finding in &decision.findings {
+            tracing::error!(
+                plan = %decision.plan_path,
+                task = %decision.task_id,
+                rule = finding.rule,
+                detail = %finding.detail,
+                "spec gate: task blocked"
+            );
+        }
+    }
+    tracing::error!(
+        "plan refused before dispatch: fix the task specs above ([spec_quality] in roko.toml \
+         sets what the gate checks)"
+    );
+}
+
+/// One task's `spec.gate` record (S07 §5): what the gate decided and why.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SpecGateRecord<'a> {
+    /// Always `spec.gate`.
+    pub ev: &'static str,
+    /// The run the plan's tasks dispatch in.
+    pub run_id: &'a str,
+    /// The `tasks.toml` path, relative to the workspace root when inside it.
+    pub plan_path: &'a str,
+    /// The task id.
+    pub task_id: &'a str,
+    /// What the gate decided.
+    pub decision: SpecGateAction,
+    /// The `[spec_quality] mode` it decided in.
+    pub mode: SpecQualityMode,
+    /// The task's spec-quality score, 0–100.
+    pub score: f64,
+    /// The score's band.
+    pub band: &'static str,
+    /// The findings that block the task, `rule: detail`, joined; empty
+    /// unless it is blocked.
+    pub reason: String,
+    /// Whether score-based decisions skipped the task (the holdout, 3232).
+    pub holdout: bool,
+    /// Unix ms the record was written, before the plan's first task starts.
+    pub recorded_at_ms: i64,
+}
+
+/// A task's `spec.quality` record with the run it belongs to.
+#[derive(Serialize)]
+struct QualityLine<'a> {
+    #[serde(flatten)]
+    record: &'a SpecQualityRecord,
+    run_id: &'a str,
+    recorded_at_ms: i64,
+}
+
+/// Write the `spec.quality` and `spec.gate` records of the plan at
+/// `tasks_path` to `run_dir`'s [`SPEC_RECORDS_FILE`], one of each per task,
+/// and return one line per decision for the run's event log. Nothing is
+/// written when the gate is off. A write failure is logged, not raised: the
+/// records are telemetry.
+pub fn record_plan(
+    report: &SpecGateReport,
+    tasks_path: &Path,
+    workdir: &Path,
+    run_dir: &Path,
+    run_id: &str,
+) -> Vec<String> {
+    let Some(quality) = &report.quality else {
+        return Vec::new();
+    };
+    let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let (tasks_path, root) = (canonical(tasks_path), canonical(workdir));
+    let plan_path = tasks_path
+        .strip_prefix(&root)
+        .unwrap_or(&tasks_path)
+        .to_string_lossy()
+        .into_owned();
+    let recorded_at_ms = chrono::Utc::now().timestamp_millis();
+    let mut lines = Vec::new();
+    let mut events = Vec::new();
+    for (record, decision) in quality.tasks.iter().zip(&report.decisions) {
+        if record.plan_path != plan_path {
+            continue;
+        }
+        let quality_line = QualityLine {
+            record,
+            run_id,
+            recorded_at_ms,
+        };
+        let reason: Vec<String> = decision
+            .findings
+            .iter()
+            .map(|finding| format!("{}: {}", finding.rule, finding.detail))
+            .collect();
+        let gate_line = SpecGateRecord {
+            ev: "spec.gate",
+            run_id,
+            plan_path: &plan_path,
+            task_id: &decision.task_id,
+            decision: decision.action,
+            mode: report.mode,
+            score: decision.score,
+            band: decision.band,
+            reason: reason.join("; "),
+            holdout: false,
+            recorded_at_ms,
+        };
+        lines.extend(serde_json::to_string(&quality_line).ok());
+        lines.extend(serde_json::to_string(&gate_line).ok());
+        events.push(format!(
+            "{} {}: {} (score {:.1}, band {})",
+            plan_path,
+            decision.task_id,
+            action_word(decision.action),
+            decision.score,
+            decision.band
+        ));
+    }
+    if lines.is_empty() {
+        return events;
+    }
+    let text = lines.join("\n") + "\n";
+    let written = std::fs::create_dir_all(run_dir).and_then(|()| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(run_dir.join(SPEC_RECORDS_FILE))?
+            .write_all(text.as_bytes())
+    });
+    if let Err(error) = written {
+        tracing::warn!(%error, run = %run_id, "spec gate: cannot write the run's spec records");
+    }
+    events
+}
+
+fn action_word(action: SpecGateAction) -> &'static str {
+    match action {
+        SpecGateAction::Allow => "allow",
+        SpecGateAction::Advise => "advise",
+        SpecGateAction::Block => "block",
     }
 }
 

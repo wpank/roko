@@ -2626,16 +2626,10 @@ fn spec_gate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
             return Some(1);
         }
     };
-    // gap-0ee70b: prove each task's shell checks red on the base first; a
-    // check that already passes there is HF3. Cargo checks are left to the
-    // batch gate unless `[spec_quality] red_on_base_cargo` is set.
-    let red_on_base = match roko_cli::spec_red_on_base::gate_results(&files, workdir, &config) {
-        Ok(results) => results,
-        Err(interrupted) => {
-            tracing::error!("{interrupted}");
-            return Some(128 + interrupted.signal);
-        }
-    };
+    // A vacuous check (HF2) is refused here, before the run starts. The
+    // red-on-base check (gap-0ee70b) runs once, in the plan-load gate every
+    // run passes before its first dispatch (3231), so it is not repeated.
+    let red_on_base = std::collections::BTreeMap::new();
     let report = roko_cli::spec_gate::check_plans(&files, workdir, &config, &red_on_base);
     for decision in report.blocked() {
         for finding in &decision.findings {

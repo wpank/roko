@@ -14,7 +14,7 @@ last_verified = 2026-10-02
 last_verified_rev = "f8906b3c0"
 source = "tmp/archive/CONSOLIDATED-BACKLOG-2026-09-23.md#P1-GE-1 (Subsystem: Graph Engine)"
 discovered_from = "audit:tmp/archive/CONSOLIDATED-BACKLOG-2026-09-23.md#P1-GE-1 (Subsystem: Graph Engine)"
-anchors = ["crates/roko-cli/src/graph_checkpoint.rs::prepare_graph_checkpoint", "crates/roko-cli/src/graph_checkpoint.rs::resume_checkpoint", "crates/roko-cli/src/graph_checkpoint.rs::GraphCheckpointManifest", "crates/roko-cli/src/graph_checkpoint.rs::invalidate_unverified_activities", "crates/roko-cli/src/graph_checkpoint.rs::write_manifest_atomic", "crates/roko-cli/src/graph_checkpoint.rs::write_cost_ledger_atomic", "crates/roko-graph/src/replay.rs::ActivityReplayer::load_scoped", "crates/roko-graph/src/replay.rs::retain_recorded_activities", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
+anchors = ["crates/roko-cli/src/graph_checkpoint.rs::prepare_graph_checkpoint", "crates/roko-cli/src/graph_checkpoint.rs::resume_checkpoint", "crates/roko-cli/src/graph_checkpoint.rs::GraphCheckpointManifest", "crates/roko-cli/src/graph_checkpoint.rs::invalidate_unverified_activities", "crates/roko-cli/src/graph_checkpoint.rs::write_manifest_atomic", "crates/roko-cli/src/graph_checkpoint.rs::write_cost_ledger_atomic", "crates/roko-graph/src/replay.rs::ActivityReplayer::load_scoped", "crates/roko-graph/src/replay.rs::activity_records", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
 links = { depends_on = [], blocks = [], related = ["gap-9c82d3"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -189,6 +189,32 @@ spend, is set aside visibly and does not block resume.
   `activity_records_number_every_line_and_fail_closed`, `records_refused_by_line_stay_in_the_log_and_never_replay`,
   `the_commit_hook_sees_each_durable_record`, `set_aside_after_keeps_exactly_the_committed_prefix`. The roko-cli
   half (the generation stamp, the readers and the item's own tests) is the next step.
+- 2026-10-02 (wk-tamper): implemented on work/gap-7147bb; cargo verification deferred to the batch check. Step 2,
+  the rest of the item (Plan steps 1-7):
+  - The manifest is the commit point (schema v4). Each write names the next `generation`, and under `committed` the
+    Activity log's committed length and BLAKE3, the spent and reserved cost, and the lines a resume refused.
+  - `CheckpointCommits` is shared by the recorder, the cost ledger and the run's own manifest writes, and writes the
+    manifest last: after each synced record (the recorder's commit hook), after each `costs.json` write, and on each
+    manifest change.
+  - Resume uses exactly that generation, checked by `select_generation` before any file changes. It fails closed
+    when committed bytes changed. It sets aside the log's bytes past them, and a cost the ledger holds beyond the
+    committed one, as `*.uncommitted.<ms>`. It refuses unverified records by line number instead of rewriting the
+    log, so a second resume derives the same state. The spend after resume is the generation's.
+  - A v2 or v3 manifest resumes as generation 0: the log's complete records and the ledger's cost.
+  - One parser, `replay::activity_records`, serves every reader: the replayer, the resume preview, the gate-verdict
+    summary, the interrupted-attempt check, and `inspect_canonical_checkpoint` (`roko diagnose`, `backlog audit`).
+    The inspection also reports the committed cost.
+  - A forced exit marks an open checkpoint interrupted through its commit point, so a later commit keeps the status.
+  - `retain_recorded_activities` is gone. The backlog audit test fixture now names its plan as the records' graph,
+    as real logs do.
+  - Tests in `graph_checkpoint.rs`: `resume_selects_single_immutable_generation`, `resuming_twice_derives_the_same_state`,
+    `a_v3_checkpoint_resumes_as_generation_zero`, `resume_fails_closed_when_committed_records_change`,
+    `a_commit_after_a_forced_exit_mark_keeps_the_interrupted_status`.
+  Every Done-when is implemented; the cargo gate decides. Unchanged, outside the Done-when:
+  - A generation that committed an unresolved reservation (a crash during a provider call under a plan budget)
+    still refuses resume, as the ledger did.
+  - Manifest writes are still renames without an fsync.
+  - roko-serve's `graph_task_commit` (`routes/plans/merge.rs`) still reads the whole log leniently.
 
 ## Original notes
 

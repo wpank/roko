@@ -138,6 +138,38 @@ server-owned run).
   (a transport to a live run, shared with bug-8208a6; `ExecutionCommandKind::Inject` and its prompt delivery;
   dedup). The `i` key in the TUI has the same false success: it appends `roko.inject.directive` to
   `.roko/signals.jsonl` and toasts "Injected", but nothing reads that kind.
+- 2026-10-02 (wk-childenv): Plan steps 2-5 on work/gap-1555ac; cargo verification deferred to the batch check.
+  - Transport decision: (b), a per-run socket. Each `roko plan run` binds `.roko/runtime/inject/<pid>.sock`
+    (`inject/transport.rs`, `listen_for_inject`) and writes the token a client must present first to
+    `<pid>.token`. Both are `0600`, and the token and frames are the StateHub IPC socket's (frame size bounded
+    before allocation). `roko inject` asks each listening run in turn, and the one running the plan the session
+    names answers. The session is a running plan's id or its Graph checkpoint run id
+    (`GraphTaskDispatcher::inject_target`). No socket, an unknown session, a refusal, a run that has finished
+    and a run that does not acknowledge in time all exit non-zero, with `inject_transport_unavailable`,
+    `inject_unknown_session` or `inject_rejected`; nothing is written under `.roko/state/`.
+  - Executor side: the socket sends `ExecutionCommandKind::Inject { kind, text }` (directive or context;
+    `InjectedText`'s `Debug` and the kind's `Display` hide the text) or `Cancel` for an abort, with the
+    resolved plan id, on a second command channel of the run. The plan-set driver routes that channel with
+    `route_execution_commands`, as it does the TUI's. An inject command for a running plan is queued in
+    `OperatorDirectives` (graph_task_dispatch/operator_directives.rs: at most 8 KiB per text and 8 waiting
+    per plan) and acked `Accepted`. `plan_dispatch` appends what waits to the next prompt of that plan, once,
+    under "## Operator directive" or "## Operator context". An abort cancels that plan only. The control
+    adapter (#255) rejects inject commands, since the graph control service has none.
+  - Dedup: the command id is the request id. The socket answers a request id it already accepted from its
+    remembered answer without sending it again, and the queue ignores a request id it has seen. Both last for
+    the run, bounded at 1024 ids.
+  - Tests: `a_directive_reaches_the_run_and_gets_its_acknowledgement`, `a_request_sent_again_is_not_delivered_again`,
+    `unknown_silent_and_finished_runs_refuse` and `a_client_without_the_token_reaches_nothing` (inject/transport.rs);
+    `a_text_waits_for_one_prompt_and_is_queued_once`, `texts_and_queues_are_bounded` and
+    `a_queued_directive_reaches_the_next_prompt_once` (operator_directives.rs, the last through a real dispatch
+    against a fake provider script that logs its prompt); `inject_commands_queue_for_the_running_plan_and_never_log_their_text`
+    (plan_runner.rs, with every log line captured); `inject_succeeds_only_on_the_runs_acknowledgement` and
+    the existing `inject_fail_closed_*` / `inject_fails_without_executor_ack` (main_tests.rs, bin).
+  - Every Done-when line is now covered. Not done, as follow-ups: (c) a REST route on `roko serve` for
+    server-owned runs (`POST /api/runs/{run_id}/commands` with the same request and answer); the TUI's `i` key,
+    which still fails closed and could send `ExecutionCommandKind::Inject` on the TUI's own command channel; and a
+    shared transport for `roko plan pause/resume/cancel/retry` (bug-8208a6 still writes `control.json`, which
+    the driver polls).
 
 ## Original notes
 

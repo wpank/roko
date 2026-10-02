@@ -5,8 +5,9 @@
 //! `.roko/state/graph/<plan>/` (status, recorded task outputs, spend), the
 //! plan's `tasks.toml`, and the logs Graph task dispatch appends:
 //! `.roko/learn/costs.jsonl` (one row per provider attempt),
-//! `.roko/learn/gate-failures.jsonl` (failed verify steps) and
-//! `.roko/episodes.jsonl` (failure reasons). The Runner-v2 snapshot at
+//! `.roko/learn/gate-failures.jsonl` (failed verify steps),
+//! `.roko/episodes.jsonl` (failure reasons) and the run's
+//! `.roko/runs/<run>/attempts.jsonl` (tool policies). The Runner-v2 snapshot at
 //! `.roko/state/state-snapshot.json` is read only for a plan without a Graph
 //! checkpoint.
 
@@ -25,7 +26,7 @@ use roko_gate::{FailureClass, GateFailureAction, GateFailureKind, GateFailureRec
 use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_learn::costs_db::CostRecord;
 use roko_learn::episode_logger::Episode;
-use roko_learn::telemetry::CostSource;
+use roko_learn::telemetry::{CostSource, ToolPolicyRecord};
 use roko_runtime::{
     DurableRunnerProjection, STATE_SNAPSHOT_RELATIVE_PATH, load_durable_runner_projection,
 };
@@ -278,6 +279,10 @@ pub struct TaskDiagnosis {
     /// `attempts`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub episode_ids: Vec<String>,
+    /// The tool policy of each attempt that recorded one, oldest first.
+    /// Listed like `attempts`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_policies: Vec<AttemptToolPolicy>,
 }
 
 /// One provider attempt at a task, from `.roko/learn/costs.jsonl`.
@@ -303,6 +308,22 @@ pub struct AttemptInfo {
     pub failure_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub episode_id: Option<String>,
+}
+
+/// One attempt's tool policy, from its verdict in the run's `attempts.jsonl`
+/// (`executed.tool_policy`): what its contract asked for, what its provider
+/// enforced, and the operation it was stopped at. Only an attempt on a
+/// provider that runs its own tools, such as Codex, records one (gap-baab0a).
+#[derive(Debug, Clone, Serialize)]
+pub struct AttemptToolPolicy {
+    /// The attempt's number in the run.
+    pub attempt: u32,
+    /// The model the attempt was launched on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The recorded policy, its fields beside `attempt` and `model`.
+    #[serde(flatten)]
+    pub policy: ToolPolicyRecord,
 }
 
 /// One failed verify step, from `.roko/learn/gate-failures.jsonl`.
@@ -415,12 +436,16 @@ struct RunRecords {
     gate_failures: Vec<GateFailureRecord>,
     /// Task episodes from `.roko/episodes.jsonl`.
     episodes: Vec<Episode>,
+    /// Attempts' tool policies from the run's `attempts.jsonl`, with their
+    /// task ids, oldest first.
+    tool_policies: Vec<(String, AttemptToolPolicy)>,
 }
 
 impl RunRecords {
     /// `plan_id`'s records written at or after `since_ms` (all of them when
-    /// `None`). A record whose time cannot be read is kept.
-    fn load(workdir: &Path, plan_id: &str, since_ms: Option<i64>) -> Self {
+    /// `None`), and its attempts' tool policies in run `run_id`. A record
+    /// whose time cannot be read is kept.
+    fn load(workdir: &Path, plan_id: &str, run_id: &str, since_ms: Option<i64>) -> Self {
         let layout = RokoLayout::for_project(workdir);
         let in_run = |at_ms: Option<i64>| since_ms.zip(at_ms).is_none_or(|(since, at)| at >= since);
         Self {
@@ -441,6 +466,7 @@ impl RunRecords {
                         && in_run(Some(episode.timestamp.timestamp_millis()))
                 })
                 .collect(),
+            tool_policies: recorded_tool_policies(&layout.run_dir(run_id), plan_id),
         }
     }
 
@@ -459,6 +485,29 @@ impl RunRecords {
     }
 }
 
+/// The tool policies `plan_id`'s attempts recorded in their verdicts in
+/// `run_dir`'s `attempts.jsonl`, with their task ids, oldest first. An
+/// unreadable log has none.
+fn recorded_tool_policies(run_dir: &Path, plan_id: &str) -> Vec<(String, AttemptToolPolicy)> {
+    let Ok(run) = roko_learn::telemetry::report::RunRecords::load(run_dir) else {
+        return Vec::new();
+    };
+    run.verdicts
+        .into_iter()
+        .map(|verdict| verdict.record)
+        .filter(|record| record.identity.plan_id == plan_id)
+        .filter_map(|record| {
+            let policy = record.executed.tool_policy?;
+            let attempt = AttemptToolPolicy {
+                attempt: record.identity.attempt,
+                model: record.executed.model_dispatched,
+                policy,
+            };
+            Some((record.identity.task_id, attempt))
+        })
+        .collect()
+}
+
 /// Report a plan's Graph run from its checkpoint, its `tasks.toml` and the
 /// logs Graph task dispatch appended during the run.
 fn build_graph_report(
@@ -472,7 +521,7 @@ fn build_graph_report(
     let since_ms = checkpoint
         .replaced_at_ms
         .and_then(|ms| i64::try_from(ms).ok());
-    let records = RunRecords::load(workdir, plan_id, since_ms);
+    let records = RunRecords::load(workdir, plan_id, &checkpoint.manifest.run_id, since_ms);
     let definition = load_plan_definition(workdir, plan_id, &mut notes);
     let tasks = diagnose_tasks(checkpoint, definition.as_ref(), &records, verbose);
     let resume = definition
@@ -713,6 +762,12 @@ fn diagnose_tasks(
                 .filter(|episode| episode.task_id == task_id)
                 .map(episode_id)
                 .collect();
+            let tool_policies: Vec<AttemptToolPolicy> = records
+                .tool_policies
+                .iter()
+                .filter(|(policy_task, _)| policy_task == task_id)
+                .map(|(_, policy)| policy.clone())
+                .collect();
             // Listed for every task that did not complete; a completed task's
             // history only with `--verbose`.
             let listed = verbose || state != TaskState::Completed;
@@ -735,6 +790,7 @@ fn diagnose_tasks(
                 attempts: if listed { attempts } else { Vec::new() },
                 gate_failures: if listed { gate_failures } else { Vec::new() },
                 episode_ids: if listed { episode_ids } else { Vec::new() },
+                tool_policies: if listed { tool_policies } else { Vec::new() },
             };
             diagnosis.reason = describe_task(&diagnosis, checkpoint.manifest.status, &states);
             diagnosis
@@ -1819,6 +1875,43 @@ fn render_task(out: &mut String, task: &TaskDiagnosis) {
         }
         out.push('\n');
     }
+    for policy in &task.tool_policies {
+        render_tool_policy(out, policy);
+    }
+}
+
+/// One attempt's tool policy: what its contract asked for, what its provider
+/// enforced, and the operation it was stopped at.
+fn render_tool_policy(out: &mut String, policy: &AttemptToolPolicy) {
+    let (attempt, record) = (policy.attempt, &policy.policy);
+    let model = policy.model.as_deref().unwrap_or("an unrecorded model");
+    let enforcement = &record.enforcement;
+    let _ = writeln!(
+        out,
+        "    attempt {attempt} on {model}: tool policy enforced by {enforcement}"
+    );
+    let mut asked = Vec::new();
+    if let Some(allowed) = &record.allowed_tools {
+        asked.push(format!("allow only [{}]", allowed.join(", ")));
+    }
+    if !record.forbidden_tools.is_empty() {
+        asked.push(format!("forbid {}", record.forbidden_tools.join(", ")));
+    }
+    let mut enforced = Vec::new();
+    if !record.denied_operations.is_empty() {
+        enforced.push(format!("deny {}", record.denied_operations.join(", ")));
+    }
+    if record.network_off {
+        enforced.push("network off".to_string());
+    }
+    for (label, parts) in [("asked", asked), ("enforced", enforced)] {
+        if !parts.is_empty() {
+            let _ = writeln!(out, "      {label}: {}", parts.join("; "));
+        }
+    }
+    if let Some(denial) = &record.denial {
+        let _ = writeln!(out, "      stopped at: {denial}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2617,6 +2710,79 @@ title = "Tidy the changelog"
         let verbose = render_text(&report, true);
         let completed = "T1 [completed] Write the parser";
         assert!(verbose.contains(completed), "{verbose}");
+    }
+
+    /// gap-baab0a: an attempt's tool policy, recorded in its verdict in the
+    /// run's `attempts.jsonl`, is listed with its task, with the operation
+    /// the broker stopped it at. A verdict without one, and another plan's,
+    /// add nothing.
+    #[test]
+    fn graph_report_lists_the_tool_policy_of_each_attempt() {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, TelemetryWriter,
+            TelemetryWriterConfig,
+        };
+
+        let workspace = failed_run();
+        let root = workspace.path();
+        let run_id = inspect_canonical_checkpoint(root, PLAN_ID)
+            .expect("read checkpoint")
+            .expect("checkpoint")
+            .manifest
+            .run_id;
+        let policy = ToolPolicyRecord {
+            allowed_tools: None,
+            forbidden_tools: vec!["web_fetch".into(), "web_search".into()],
+            enforcement: "broker".into(),
+            denied_operations: vec!["web_search".into()],
+            network_off: true,
+            denial: Some("web_search denied by policy: parser docs".into()),
+        };
+        let verdict = |plan: &str, attempt: u32, policy: Option<ToolPolicyRecord>| {
+            let key = AttemptKey::new(run_id.as_str(), plan, "T2", attempt);
+            let mut verdict = AttemptVerdictRecord::settle(
+                AttemptIdentity::new(&key),
+                AttemptOutcome::ProviderError,
+                true,
+            );
+            verdict.executed.model_dispatched = Some("gpt-5-codex".to_string());
+            verdict.executed.tool_policy = policy;
+            verdict
+        };
+        let run_dir = RokoLayout::for_project(root).run_dir(&run_id);
+        let writer = TelemetryWriter::spawn(&run_dir, TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        assert!(writer.submit(verdict(PLAN_ID, 1, None)));
+        assert!(writer.submit(verdict(PLAN_ID, 2, Some(policy.clone()))));
+        assert!(writer.submit(verdict("other-plan", 1, Some(policy.clone()))));
+        assert_eq!(writer.close().written, 3);
+
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        let t2 = task(&report, "T2");
+        assert_eq!(t2.tool_policies.len(), 1, "{:?}", t2.tool_policies);
+        assert_eq!(t2.tool_policies[0].attempt, 2);
+        assert_eq!(t2.tool_policies[0].model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(t2.tool_policies[0].policy, policy);
+        assert!(task(&report, "T1").tool_policies.is_empty());
+
+        let json = serde_json::to_value(&report).expect("serialize");
+        let recorded = &json["tasks"][1]["tool_policies"][0];
+        assert_eq!(recorded["attempt"], 2);
+        assert_eq!(recorded["enforcement"], "broker");
+        assert_eq!(
+            recorded["denial"],
+            "web_search denied by policy: parser docs"
+        );
+
+        let text = render_text(&report, false);
+        for line in [
+            "attempt 2 on gpt-5-codex: tool policy enforced by broker",
+            "asked: forbid web_fetch, web_search",
+            "enforced: deny web_search; network off",
+            "stopped at: web_search denied by policy: parser docs",
+        ] {
+            assert!(text.contains(line), "{text}");
+        }
     }
 
     #[test]

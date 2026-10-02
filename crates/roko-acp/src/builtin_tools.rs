@@ -495,9 +495,9 @@ pub fn slash_command_allowed_tools(command: &str) -> Option<Vec<String>> {
     match command {
         // Read-only: research commands don't need file writes or bash
         "research" | "search" | "knowledge" | "explain" | "replay" | "status" | "doctor"
-        | "config" | "models" | "learn" | "plan-list" | "plan-show" | "agents"
-        | "learn-router" | "learn-episodes" | "knowledge-stats" | "index" | "analyze"
-        | "affect" | "dream-status" => Some(read_only()),
+        | "config" | "models" | "learn" | "plan-list" | "plan-show" | "agents" | "learn-router"
+        | "learn-episodes" | "knowledge-stats" | "index" | "analyze" | "affect"
+        | "dream-status" => Some(read_only()),
         // Read + write: plan editing but no bash
         "enhance-plan" | "plan-generate" | "plan-regenerate" => Some(read_write()),
         // Full access: implementation commands need bash for verification
@@ -528,15 +528,16 @@ pub fn command_tool_ceiling(command: &str) -> Option<ToolPermission> {
         }),
         // Read-only: status/diagnostic/inspection commands.
         "status" | "doctor" | "config" | "models" | "learn" | "knowledge" | "explain"
-        | "replay" | "plan-list" | "plan-show" | "agents" | "learn-router"
-        | "learn-episodes" | "knowledge-stats" | "index" | "analyze" | "affect"
-        | "dream-status" => Some(ToolPermission {
-            read: true,
-            write: false,
-            exec: false,
-            git: false,
-            network: false,
-        }),
+        | "replay" | "plan-list" | "plan-show" | "agents" | "learn-router" | "learn-episodes"
+        | "knowledge-stats" | "index" | "analyze" | "affect" | "dream-status" => {
+            Some(ToolPermission {
+                read: true,
+                write: false,
+                exec: false,
+                git: false,
+                network: false,
+            })
+        }
         // Read + write: plan editing commands.
         "enhance-plan" | "plan-generate" | "plan-regenerate" => Some(ToolPermission {
             read: true,

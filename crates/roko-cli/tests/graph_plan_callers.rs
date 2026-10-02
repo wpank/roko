@@ -202,13 +202,7 @@ fn run_plan_executes_through_graph_engine() {
     // plan to `plans/` and runs it alone, not the sample plan beside it.
     let output = run_roko(
         workdir,
-        &[
-            "--json",
-            "run",
-            "--plan",
-            "--yes",
-            "run the prepared plan",
-        ],
+        &["--json", "run", "--plan", "--yes", "run the prepared plan"],
     );
     assert_not_runner_v2_stub(&output);
     let report = json_report(&output);

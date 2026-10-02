@@ -403,13 +403,7 @@ fn cli_parses_run_flags() {
 
 #[test]
 fn cli_parses_run_of_a_plan_directory() {
-    let cli = Cli::try_parse_from([
-        "roko",
-        "run",
-        "plans/add-login",
-        "--fresh",
-    ])
-    .unwrap();
+    let cli = Cli::try_parse_from(["roko", "run", "plans/add-login", "--fresh"]).unwrap();
     assert!(matches!(
         cli.command,
         Some(Command::Run { ref prompt, fresh: true, .. }) if prompt == &vec!["plans/add-login".to_string()]

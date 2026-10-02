@@ -544,5 +544,4 @@ mod tests {
         assert_eq!(replayed.len(), 1);
         assert_eq!(replayed[0].payload, event);
     }
-
 }

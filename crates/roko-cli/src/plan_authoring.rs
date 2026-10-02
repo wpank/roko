@@ -726,8 +726,10 @@ pub async fn revise_plan_source(
         }
     };
 
-    let budget =
-        revision_failure_budget(crate::plan_generate::planner_context_window(models, &planner_model));
+    let budget = revision_failure_budget(crate::plan_generate::planner_context_window(
+        models,
+        &planner_model,
+    ));
     let last_failure = last_run_failure_context(workdir, plan_id, budget);
 
     // First attempt.
@@ -1224,7 +1226,6 @@ command = "cargo test -p x parse"
             id: "my-plan".to_string(),
             dir: plan_dir.clone(),
             tasks: TasksFile::parse(&plan_dir.join("tasks.toml")).expect("parse tasks.toml"),
-            prd_excerpt: String::new(),
         };
         let mut checkpoint = start_plan_checkpoint(workdir, &plan).expect("checkpoint");
         checkpoint

@@ -219,7 +219,10 @@ command = "test -f tests/feature_a.rs"
     // Step 3: the plans index lists the plan.
     roko_cli::index::rebuild_plans_index(workdir).unwrap();
     let index = fs::read_to_string(plans_dir(workdir).join("INDEX.md")).unwrap();
-    assert!(index.contains(slug), "plans index must list {slug}:\n{index}");
+    assert!(
+        index.contains(slug),
+        "plans index must list {slug}:\n{index}"
+    );
 
     // Step 4: no PRD artifacts.
     assert!(!workdir.join(".roko").join("prd").exists());

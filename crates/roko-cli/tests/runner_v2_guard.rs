@@ -106,9 +106,9 @@ fn no_runner_run_call_sites() {
 #[test]
 fn plan_execution_callers_use_graph_engine() {
     for caller in [
-        "serve_runtime.rs",   // POST /api/plans/{id}/execute
-        "prd.rs",             // PRD auto_plan + auto-execute
-        "worker/cloud.rs",    // deployed cloud code-implementer worker
+        "serve_runtime.rs",    // POST /api/plans/{id}/execute
+        "prd.rs",              // PRD auto_plan + auto-execute
+        "worker/cloud.rs",     // deployed cloud code-implementer worker
         "commands/run_cmd.rs", // `roko run` with a generated plan
     ] {
         let path = crate_src_dir().join(caller);

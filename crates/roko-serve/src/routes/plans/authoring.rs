@@ -190,9 +190,9 @@ impl RequestPayload for GenerateRequest {
         }
         match &self.prompt {
             None => Err(ApiError::unprocessable_entity("'prompt' is required")),
-            Some(prompt) if prompt.trim().is_empty() => Err(ApiError::unprocessable_entity(
-                "'prompt' must not be blank",
-            )),
+            Some(prompt) if prompt.trim().is_empty() => {
+                Err(ApiError::unprocessable_entity("'prompt' must not be blank"))
+            }
             Some(_) => Ok(()),
         }
     }

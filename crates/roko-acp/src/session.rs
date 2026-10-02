@@ -1820,13 +1820,7 @@ fn slash_command(
 }
 
 const BARE_MODE_COMMANDS: &[&str] = &[
-    "status",
-    "doctor",
-    "config",
-    "help",
-    "research",
-    "search",
-    "analyze",
+    "status", "doctor", "config", "help", "research", "search", "analyze",
 ];
 
 /// Auto-detect bare mode from workspace state.

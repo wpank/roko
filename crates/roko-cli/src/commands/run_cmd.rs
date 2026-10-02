@@ -172,7 +172,9 @@ pub(crate) async fn cmd_run(cli: &Cli, args: RunArgs) -> Result<i32> {
     }
 
     match plan_argument(&workdir, &input) {
-        PlanArgument::Plan(plans_dir) => return run_plan_dir(cli, &workdir, plans_dir, &args).await,
+        PlanArgument::Plan(plans_dir) => {
+            return run_plan_dir(cli, &workdir, plans_dir, &args).await;
+        }
         PlanArgument::NoPlans(dir) => {
             out.error(&format!(
                 "{} holds no plan: no tasks.toml in it or in a directory just below it",
@@ -271,17 +273,11 @@ pub(crate) async fn cmd_run(cli: &Cli, args: RunArgs) -> Result<i32> {
 
     match route {
         RunRoute::Mechanical | RunRoute::Focused => {
-            run_one_task(
-                cli,
-                &workdir,
-                &input,
-                complexity,
-                forced,
-                &args,
-            )
-            .await
+            run_one_task(cli, &workdir, &input, complexity, forced, &args).await
         }
-        RunRoute::PromptPlan => run_prompt_plan(cli, &workdir, &input, complexity, forced, &args).await,
+        RunRoute::PromptPlan => {
+            run_prompt_plan(cli, &workdir, &input, complexity, forced, &args).await
+        }
         RunRoute::DryRun { .. } => unreachable!("dry-run routes return above"),
     }
 }
@@ -318,9 +314,9 @@ fn plan_argument(workdir: &Path, input: &str) -> PlanArgument {
         workdir.join(raw)
     };
     if path.is_file() && path.file_name().is_some_and(|name| name == "tasks.toml") {
-        return path
-            .parent()
-            .map_or(PlanArgument::Prompt, |dir| PlanArgument::Plan(dir.to_path_buf()));
+        return path.parent().map_or(PlanArgument::Prompt, |dir| {
+            PlanArgument::Plan(dir.to_path_buf())
+        });
     }
     if path.is_dir() {
         return if holds_plan(&path) {
@@ -397,7 +393,10 @@ async fn run_plan_dir(
             "{} only applies to a prompt, not to a plan directory",
             prompt_only.join(", ")
         ));
-        out.step("Options", "roko plan run --help lists every plan-run option");
+        out.step(
+            "Options",
+            "roko plan run --help lists every plan-run option",
+        );
         return Ok(EXIT_AGENT_FAILURE);
     }
 

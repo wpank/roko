@@ -334,10 +334,7 @@ pub(crate) async fn cmd_init(
 
     println!("initialized roko workspace at {}", target.display());
     println!("detected project domain: {domain}");
-    println!(
-        "suggested gates: {}",
-        domain_gate_hint(domain)
-    );
+    println!("suggested gates: {}", domain_gate_hint(domain));
 
     if demo {
         let report = roko_cli::demo_seed::seed_demo_workspace(&target, demo_config.as_ref())?;

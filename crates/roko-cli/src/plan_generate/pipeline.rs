@@ -14,7 +14,6 @@
 
 use super::{accept_blocks, dry_run_fs};
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -31,7 +30,7 @@ use crate::workspace_paths::plans_dir as workspace_plans_dir;
 use anyhow::{Context as _, Result, anyhow};
 use indexmap::IndexMap;
 use roko_core::config::routing::LadderConfig;
-use roko_core::config::schema::{ModelProfile, RokoConfig};
+use roko_core::config::schema::ModelProfile;
 use roko_core::io::atomic_write_str;
 pub use roko_learn::runtime_feedback::{ArtifactValidationReport, GenerationOutcome};
 
@@ -1732,7 +1731,9 @@ fn validate_and_fix_generated_plan(
                                     task.insert(correction, value);
                                 }
                             } else {
-                                tracing::warn!("plan generate: {task_id_label}: unknown field '{key}'");
+                                tracing::warn!(
+                                    "plan generate: {task_id_label}: unknown field '{key}'"
+                                );
                             }
                         }
                     }

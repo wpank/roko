@@ -186,9 +186,7 @@ pub fn build_research_prompt(
     if !context.is_empty()
         && !matches!(
             mode,
-            ResearchMode::EnhancePlan
-                | ResearchMode::EnhanceTasks
-                | ResearchMode::AnalyzeExecution
+            ResearchMode::EnhancePlan | ResearchMode::EnhanceTasks | ResearchMode::AnalyzeExecution
         )
     {
         let _ = writeln!(prompt, "\n## Additional context\n{context}");

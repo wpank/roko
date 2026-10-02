@@ -22,7 +22,9 @@ what has run, is tracked in `work/items/` under epic `spec-567e52`.
   `~/vb-work`). Each pilot's small summary bundle (records, metrics, ledger and report page; no transcripts or
   archives) is committed under `reports/`.
 - **Stdlib-only Python 3.11 or newer** for everything the benchmark runs: families, verifiers, driver and
-  analysis. pytest is a dev-only dependency, pinned in `requirements.lock`.
+  analysis. pytest is a dev-only dependency, pinned in `requirements.lock`. The one exception (decision 3336): the
+  secondary analyses under `analysis/models/` (the GLMM, 2PL IRT and ICC) use numpy and scipy, pinned in
+  `requirements-analysis.lock`. Nothing else imports them, so every primary analysis stays stdlib-only.
 - **One price source.** Costs come from `config/prices/<date>.toml`, never from `roko.toml`'s per-model rates
   (its gpt-oss-120b rates are wrong) and never from a fallback rate.
 - **No provider calls in tests.** Tests run offline against fixtures and stub servers.
@@ -52,6 +54,8 @@ benchmarks/viabilitybench/
   driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
   analysis/{metrics, passk, report}.py                      # vb report
   analysis/gates.py                                         # gate pages: G0's go/no-go (go-no-go.md, g0.json)
+  analysis/{bootstrap, cs, mcnemar, cuped}.py               # S09 §4.1's toolkit: bootstrap, sequences, McNemar, CUPED
+  analysis/models/{glmm, irt}.py                            # the secondaries on numpy and scipy (decision 3336)
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
   manifest.json  order-<seed>.json  records.jsonl  ledger.jsonl  reservations.jsonl  errors.jsonl  metrics.json
@@ -60,8 +64,7 @@ $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
 
 Tests sit beside the code they test (`test_*.py`), plus `tests/test_plan_slice.py`, and `driver/testdata/` holds a
 toy family. The prices live in `config/prices/2026-09-28.toml` (§5.6). S08 §5.1 plans more than this tree holds: the
-families F2, F3 and F5–F8, `external/swebench/`, the other streams and arms, and
-`analysis/{bootstrap, cs, cuped, irt, replay}.py`.
+families F2, F3 and F5–F8, `external/swebench/`, the other streams and arms, and `analysis/replay.py`.
 
 ## The driver
 
@@ -261,3 +264,12 @@ dependencies with hashes. To change them, edit `requirements.in` and regenerate 
 ```bash
 uv pip compile requirements.in --generate-hashes --universal --python-version 3.11 -o requirements.lock
 ```
+
+The secondary models' tests (`analysis/models/test_models.py`) need the analysis stack too, and skip without it:
+
+```bash
+benchmarks/viabilitybench/.venv/bin/python -m pip install --require-hashes -r benchmarks/viabilitybench/requirements-analysis.lock
+uv pip compile requirements-analysis.in --generate-hashes --universal --python-version 3.11 -o requirements-analysis.lock
+```
+
+The second line regenerates that lock from this directory after `requirements-analysis.in` changes.

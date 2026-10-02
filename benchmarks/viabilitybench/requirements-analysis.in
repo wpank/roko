@@ -1,0 +1,5 @@
+# The pinned scientific stack for the secondary analyses only (decision 3336): numpy and scipy, imported only under
+# analysis/models/ (GLMM, 2PL IRT, ICC), never by the families, the verifiers, the driver or the primaries.
+# Regenerate the lock (README, "Tests") after changing this file.
+numpy
+scipy

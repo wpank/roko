@@ -352,17 +352,21 @@ fn chat_response_from_backend(
     }
 }
 
+/// The finish reason a response names, read through the canonical mapping.
+/// Gemini names its reasons in upper case (`STOP`, `MAX_TOKENS`); they read
+/// lower-cased, as `gemini::native` reads them, not as errors (bug-e3940b).
 fn response_finish_reason(response: &BackendResponse) -> Option<FinishReason> {
     match response {
         BackendResponse::Json(value) => value
             .pointer("/choices/0/finish_reason")
             .and_then(Value::as_str)
+            .map(normalize_finish_reason)
             .or_else(|| {
                 value
                     .pointer("/candidates/0/finishReason")
                     .and_then(Value::as_str)
-            })
-            .map(normalize_finish_reason),
+                    .map(|reason| normalize_finish_reason(&reason.to_ascii_lowercase()))
+            }),
         BackendResponse::StreamJson(_) | BackendResponse::Text(_) => None,
     }
 }
@@ -1470,6 +1474,7 @@ fn append_log_line_sync(path: &Path, line: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use roko_agent::tool_loop::LlmError;
 
     fn make_state(store: Arc<dyn AgentStateStore>) -> AgentState {
         AgentState::new(
@@ -2050,5 +2055,85 @@ mod tests {
         let req: ResearchRequest =
             serde_json::from_str(r#"{"topic":"test"}"#).expect("deserialize");
         assert_eq!(req.mode, ResearchMode::LocalKnowledge);
+    }
+
+    /// Replays OpenAI-compatible SSE lines through roko-agent's stream
+    /// parser, as the OpenAI-compatible backend streams a turn.
+    struct SseBackend {
+        lines: Vec<String>,
+    }
+
+    #[async_trait]
+    impl LlmBackend for SseBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            Err(LlmError::Backend("this backend only streams".to_string()))
+        }
+
+        async fn stream_turn(
+            &self,
+            _messages: &[Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+            _config: &TurnConfig,
+        ) -> Result<futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError>
+        {
+            let events: Vec<Result<StreamEvent, LlmError>> = self
+                .lines
+                .iter()
+                .flat_map(|line| roko_agent::streaming::parse_sse_line(line))
+                .map(Ok)
+                .collect();
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    /// bug-e3940b: a streamed finish reason keeps its meaning in the
+    /// sidecar's response. The SSE parser wrote `Debug` names, which read
+    /// back as errors: a `length` finish became `Error("Length")`, and even a
+    /// normal `stop` an error.
+    #[tokio::test]
+    async fn streamed_finish_reason_keeps_its_meaning() {
+        for (wire, expected) in [
+            ("length", FinishReason::Length),
+            ("stop", FinishReason::Stop),
+            ("tool_calls", FinishReason::ToolCalls),
+        ] {
+            let chunk = serde_json::json!({
+                "choices": [{"delta": {"content": "cut"}, "finish_reason": wire}]
+            });
+            let backend = SseBackend {
+                lines: vec![format!("data: {chunk}"), "data: [DONE]".to_string()],
+            };
+            let (event_tx, _event_rx) = mpsc::channel(8);
+            let response = BackendMessageDispatcher::new(Arc::new(backend))
+                .dispatch_streaming(chat_request("hi", true), event_tx)
+                .await
+                .expect("the stream dispatches");
+            assert_eq!(response.finish_reason, expected, "{wire}");
+        }
+    }
+
+    /// Gemini's upper-case finish reasons read as the canonical reasons, not
+    /// as errors named `STOP` or `MAX_TOKENS` (bug-e3940b).
+    #[test]
+    fn gemini_finish_reasons_read_lower_cased() {
+        let gemini = |reason: &str| {
+            BackendResponse::Json(serde_json::json!({
+                "candidates": [{"finishReason": reason}]
+            }))
+        };
+        assert_eq!(
+            response_finish_reason(&gemini("STOP")),
+            Some(FinishReason::Stop)
+        );
+        assert_eq!(
+            response_finish_reason(&gemini("MAX_TOKENS")),
+            Some(FinishReason::Length)
+        );
     }
 }

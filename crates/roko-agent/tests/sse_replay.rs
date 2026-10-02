@@ -109,7 +109,8 @@ async fn glm_47_recorded_stream_replays_without_loss() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(finish_reasons, ["ToolCalls", "unknown"]);
+    // In canonical text, not the `Debug` name `ToolCalls` (bug-e3940b).
+    assert_eq!(finish_reasons, ["tool_calls", "unknown"]);
 
     // Every chunk names the model; the `[DONE]` line names none.
     let (done_marker, chunks) = events.split_last().expect("a [DONE] event");
@@ -134,7 +135,7 @@ async fn glm_47_recorded_stream_replays_without_loss() {
     assert_eq!(response.extract_usage(), usage);
     assert_eq!(
         response.extract_finish_reason_raw().as_deref(),
-        Some("ToolCalls")
+        Some("tool_calls")
     );
     assert_eq!(response.extract_text(), "");
     assert_eq!(response.extract_reasoning().as_deref(), Some(REASONING));

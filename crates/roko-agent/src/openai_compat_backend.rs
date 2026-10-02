@@ -15,7 +15,6 @@ use crate::provider::{ProviderError, map_provider_error};
 use crate::rate_limit::ProviderRateLimiter;
 use crate::streaming::{SseError, SseLine, UNKNOWN_FINISH_REASON, parse_sse_frame};
 use crate::tool_loop::{LlmBackend, LlmError, StreamEvent, StreamEventKind};
-use crate::translate::FinishReason;
 use crate::translate::{BackendResponse, RenderedTools, SessionState, convert_images_for_openai};
 use roko_core::agent::ProviderKind;
 use roko_core::defaults::{DEFAULT_PROVIDER_RPM, DEFAULT_REQUEST_TIMEOUT_MS};
@@ -583,7 +582,7 @@ impl OpenAiCompatLlmBackend {
             "choices": [{
                 "index": 0,
                 "message": message,
-                "finish_reason": finish_reason_to_wire(&response.finish_reason),
+                "finish_reason": response.finish_reason.as_str(),
             }],
             "usage": crate::translate::openai::usage_to_wire(&response.usage),
         });
@@ -941,16 +940,6 @@ impl LlmBackend for OpenAiCompatLlmBackend {
 
     fn backend_id(&self) -> &'static str {
         "openai_compat"
-    }
-}
-
-fn finish_reason_to_wire(finish_reason: &FinishReason) -> String {
-    match finish_reason {
-        FinishReason::Stop => "stop".to_string(),
-        FinishReason::Length => "length".to_string(),
-        FinishReason::ToolCalls => "tool_calls".to_string(),
-        FinishReason::ContentFilter => "content_filter".to_string(),
-        FinishReason::Error(reason) => reason.clone(),
     }
 }
 
@@ -2083,7 +2072,8 @@ mod tests {
 
     /// backlog 1111: content and then the end of the stream, with no finish
     /// reason, ends the turn as `unknown`, not `stop`; a named finish reason
-    /// followed by `[DONE]` stays the only one.
+    /// followed by `[DONE]` stays the only one, in its canonical text
+    /// (`length`, not the `Debug` name `Length`: bug-e3940b).
     #[tokio::test]
     async fn stream_without_finish_reason_is_not_stop() {
         let (base_url, server) =
@@ -2097,7 +2087,7 @@ mod tests {
         );
         let items = streamed_turn(&base_url).await;
         server.join().expect("server thread");
-        assert_eq!(finish_reasons(&items), vec!["Length".to_string()]);
+        assert_eq!(finish_reasons(&items), vec!["length".to_string()]);
 
         let (base_url, server) = serve_sse_once(
             "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n",

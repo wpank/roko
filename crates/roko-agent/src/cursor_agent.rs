@@ -409,7 +409,7 @@ impl CursorAgent {
             "choices": [{
                 "index": 0,
                 "message": message,
-                "finish_reason": finish_reason_to_wire(&response.finish_reason),
+                "finish_reason": response.finish_reason.as_str(),
             }],
             "usage": crate::translate::openai::usage_to_wire(&response.usage),
         });
@@ -609,16 +609,6 @@ impl Agent for CursorAgent {
 
     fn supports_streaming(&self) -> bool {
         true
-    }
-}
-
-fn finish_reason_to_wire(finish_reason: &crate::chat_types::FinishReason) -> String {
-    match finish_reason {
-        crate::chat_types::FinishReason::Stop => "stop".to_string(),
-        crate::chat_types::FinishReason::Length => "length".to_string(),
-        crate::chat_types::FinishReason::ToolCalls => "tool_calls".to_string(),
-        crate::chat_types::FinishReason::ContentFilter => "content_filter".to_string(),
-        crate::chat_types::FinishReason::Error(reason) => reason.clone(),
     }
 }
 

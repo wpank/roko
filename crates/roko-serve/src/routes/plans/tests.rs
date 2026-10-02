@@ -1657,7 +1657,7 @@ fn scripted_state(runtime: &Arc<ScriptedPlanRuntime>) -> (tempfile::TempDir, Arc
     let state = Arc::new(
         AppState::new_with_state_hub(
             dir.path().to_path_buf(),
-            Arc::clone(runtime),
+            runtime.clone(),
             roko_core::config::schema::RokoConfig::default(),
             deploy_backend,
             runtime.hub.clone(),

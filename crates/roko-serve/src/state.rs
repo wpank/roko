@@ -242,12 +242,69 @@ pub struct PlanHandle {
     /// Multi-plan executions (future) would list every member plan id so that
     /// `active_run_for` can resolve the entry from any member's id.
     pub members: Vec<String>,
-    /// Current execution status.
-    pub status: OperationStatus,
+    /// Current execution status: `running` until the run's task records how
+    /// the run ended (G43).
+    pub status: PlanRunStatus,
     /// Background task driving the plan runner.
     pub handle: JoinHandle<()>,
     /// Cancel token for pausing / stopping the execution.
     pub cancel: CancelToken,
+}
+
+impl PlanHandle {
+    /// Whether the run is still going: its task has not ended and it has not
+    /// recorded how the run ended.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        !self.handle.is_finished() && !self.status.state.is_terminal()
+    }
+
+    /// The state the run reports. A task that ended without recording how
+    /// the run ended, because it panicked or was aborted, reports `failed`.
+    #[must_use]
+    pub fn state(&self) -> RunState {
+        if self.handle.is_finished() && !self.status.state.is_terminal() {
+            RunState::Failed
+        } else {
+            self.status.state
+        }
+    }
+}
+
+/// How a plan run stands. The run's task records the terminal state when the
+/// run ends, so `GET /api/plans/{id}/status` still answers for a run that is
+/// over (G43).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanRunStatus {
+    /// `running` until the run ends; then `succeeded`, `failed`,
+    /// `unverified` or `cancelled`.
+    pub state: RunState,
+    /// Why a failed run failed.
+    pub error: Option<String>,
+    /// When the run ended.
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl PlanRunStatus {
+    /// A run that is executing.
+    #[must_use]
+    pub const fn running() -> Self {
+        Self {
+            state: RunState::Running,
+            error: None,
+            finished_at: None,
+        }
+    }
+
+    /// A run that ended now in `state`, with the error of a failed run.
+    #[must_use]
+    pub fn ended(state: RunState, error: Option<String>) -> Self {
+        Self {
+            state,
+            error,
+            finished_at: Some(chrono::Utc::now()),
+        }
+    }
 }
 
 /// A tracked generic operation (PRD draft, research, etc.).
@@ -320,7 +377,47 @@ impl RunState {
     pub const fn is_terminal(self) -> bool {
         !matches!(self, Self::Queued | Self::Running)
     }
+
+    /// The state of a run that has ended, from whether it was cancelled,
+    /// whether it reported success, and the classes of the outcomes its
+    /// tasks ended with. The plan-run handle and the run summary both use it,
+    /// so the two never disagree: `cancelled` for a cancelled run, `failed`
+    /// when a task failed, `unverified` when a task ended unverified and none
+    /// failed, which is never a success (G42), and otherwise `succeeded` if
+    /// the run reported success, else `failed`.
+    #[must_use]
+    pub fn of_ended_run(
+        cancelled: bool,
+        succeeded: bool,
+        tasks: impl IntoIterator<Item = roko_core::dashboard_snapshot::TaskOutcomeClass>,
+    ) -> Self {
+        use roko_core::dashboard_snapshot::TaskOutcomeClass;
+
+        if cancelled {
+            return Self::Cancelled;
+        }
+        let mut unverified = false;
+        for class in tasks {
+            match class {
+                TaskOutcomeClass::Failed => return Self::Failed,
+                TaskOutcomeClass::Unverified => unverified = true,
+                _ => {}
+            }
+        }
+        if unverified {
+            Self::Unverified
+        } else if succeeded {
+            Self::Succeeded
+        } else {
+            Self::Failed
+        }
+    }
 }
+
+/// How long the handle of a plan run that ended stays in
+/// `AppState::active_plans`, answering `GET /api/plans/{id}/status`, before
+/// the handle GC drops it (G43).
+pub const FINISHED_PLAN_RUN_RETENTION_SECS: i64 = 60 * 60;
 
 /// A recorded template run outcome used by the metrics summary endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1876,14 +1973,31 @@ impl AppState {
             .write()
             .await
             .retain(|_, handle| !handle.handle.is_finished());
-        self.active_plans
-            .write()
-            .await
-            .retain(|_, handle| !handle.handle.is_finished());
+        // A plan run that ended keeps its handle for a while, so its status
+        // route still reports how it ended (G43).
+        let now = chrono::Utc::now();
+        self.active_plans.write().await.retain(|_, handle| {
+            handle.is_live()
+                || handle.status.finished_at.is_some_and(|finished_at| {
+                    now.signed_duration_since(finished_at).num_seconds()
+                        < FINISHED_PLAN_RUN_RETENTION_SECS
+                })
+        });
         self.operations
             .write()
             .await
             .retain(|_, handle| !handle.handle.is_finished());
+    }
+
+    /// The number of plan runs still going. The handle of a run that ended
+    /// stays in `active_plans` for a while (G43) and is not counted.
+    pub async fn live_plan_runs(&self) -> usize {
+        self.active_plans
+            .read()
+            .await
+            .values()
+            .filter(|handle| handle.is_live())
+            .count()
     }
 }
 

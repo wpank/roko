@@ -10,7 +10,7 @@
 //!    `POST /api/plans/{id}/execute` both return 409.
 //! 4. `GET /api/plans/{member}/status` finds the run through a member plan id;
 //!    `POST /api/plans/{member}/cancel` returns 200 and the stub observed its
-//!    token cancelled; a subsequent status check returns 404.
+//!    token cancelled; a subsequent status check reports it `cancelled`.
 //! 5. Once a run has finished, executing again does not return 409.
 //! 6. `POST /api/plans/{id}/execute` with `{"resume":true}` passes
 //!    `force_resume`; with no body it passes `fresh`.
@@ -578,7 +578,8 @@ async fn execute_plans_409_while_set_run_active() {
 
 /// 4. `GET /api/plans/{member}/status` finds the run via a member plan id.
 ///    `POST /api/plans/{member}/cancel` returns 200 and the stub observed its
-///    token cancelled. A subsequent status check returns 404.
+///    token cancelled. A subsequent status check reports the run `cancelled`
+///    and finished (G43).
 #[tokio::test(flavor = "multi_thread")]
 async fn execute_plans_status_and_cancel_via_member_id() {
     let runtime = Arc::new(StubSetRuntime::new_blocking());
@@ -654,7 +655,7 @@ async fn execute_plans_status_and_cancel_via_member_id() {
         "stub must have observed the cancel token"
     );
 
-    // After cancel the entry is removed; status via member id must return 404.
+    // After cancel the run is over; status via member id reports how it ended.
     let app_status_after = build_app(Arc::clone(&state));
     let status_after = app_status_after
         .oneshot(
@@ -668,9 +669,12 @@ async fn execute_plans_status_and_cancel_via_member_id() {
         .expect("send status after cancel");
     assert_eq!(
         status_after.status(),
-        StatusCode::NOT_FOUND,
-        "status must return 404 after cancel"
+        StatusCode::OK,
+        "status must still answer after cancel"
     );
+    let status_payload = body_json(status_after).await;
+    assert_eq!(status_payload["status"], "cancelled", "{status_payload}");
+    assert_eq!(status_payload["finished"], true, "{status_payload}");
 }
 
 /// 5. Once a run has finished, executing the same set again does not return 409.

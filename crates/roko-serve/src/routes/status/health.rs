@@ -25,7 +25,11 @@ pub async fn health(State(state): State<Arc<AppState>>) -> (axum::http::StatusCo
     let uptime_secs = state.started_at.elapsed().as_secs();
     // Use try_read() to avoid blocking on RwLock contention during plan runs,
     // which caused health-check timeouts and false "SERVE OFFLINE" in the demo UI.
-    let active_plans = state.active_plans.try_read().map(|r| r.len()).unwrap_or(0);
+    let active_plans = state
+        .active_plans
+        .try_read()
+        .map(|plans| plans.values().filter(|plan| plan.is_live()).count())
+        .unwrap_or(0);
     let supervised = state.supervisor.count().await;
     let discovered = state
         .discovered_agents

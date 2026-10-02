@@ -3,10 +3,13 @@
 
 use super::*;
 
+use crate::state::{PlanRunStatus, RunState};
+use roko_core::dashboard_snapshot::classify_task_outcome;
+
 // ── Active-run bookkeeping helpers ────────────────────────────────────
 
-/// Returns the map key of any unfinished run entry, or `None` when every
-/// entry is already finished or the map is empty.
+/// Returns the map key of any live run entry ([`PlanHandle::is_live`]), or
+/// `None` when every entry has ended or the map is empty.
 ///
 /// A finished entry does **not** constitute a conflict: `execute_plan`
 /// replaces a stale finished entry rather than blocking on it.
@@ -15,25 +18,88 @@ pub(super) fn active_run_conflict(
 ) -> Option<String> {
     active
         .iter()
-        .find(|(_, h)| !h.handle.is_finished())
+        .find(|(_, h)| h.is_live())
         .map(|(key, _)| key.clone())
 }
 
-/// Returns the map key of the unfinished entry whose key equals `id` or
+/// Whether the run of `handle`, stored under `key`, is the one `id` names:
+/// `id` is its key, its run id or one of its member plan ids.
+fn run_named(key: &str, handle: &PlanHandle, id: &str) -> bool {
+    key == id || handle.id == id || handle.members.iter().any(|m| m == id)
+}
+
+/// Returns the map key of the live entry whose key or run id equals `id`, or
 /// whose `members` list contains `id`.
 ///
 /// Returns `None` when no live entry matches — either because `id` is
-/// unknown or because every matching entry has already finished.
+/// unknown or because every matching entry has already ended.
 pub(super) fn active_run_for(
     active: &std::collections::HashMap<String, PlanHandle>,
     id: &str,
 ) -> Option<String> {
     active
         .iter()
-        .find(|(key, h)| {
-            !h.handle.is_finished() && (*key == id || h.members.iter().any(|m| m == id))
-        })
+        .find(|(key, h)| h.is_live() && run_named(key, h, id))
         .map(|(key, _)| key.clone())
+}
+
+/// Returns the map key of the newest entry `id` names whose run has ended,
+/// kept so its status route can report how it ended (G43).
+fn finished_run_for(
+    active: &std::collections::HashMap<String, PlanHandle>,
+    id: &str,
+) -> Option<String> {
+    active
+        .iter()
+        .filter(|(key, h)| !h.is_live() && run_named(key, h, id))
+        .max_by_key(|(_, h)| h.status.finished_at)
+        .map(|(key, _)| key.clone())
+}
+
+/// How a plan run ended (G43): [`RunState::of_ended_run`] over whether it was
+/// cancelled, whether the runtime reported success, and the last outcome
+/// each task of `plans` published into `hub` from `first_seq` on, with
+/// `failure` as the error of a run that failed.
+fn plan_run_end(
+    hub: &roko_runtime::SharedStateHub,
+    first_seq: u64,
+    plans: &[String],
+    cancelled: bool,
+    success: bool,
+    failure: Option<String>,
+) -> PlanRunStatus {
+    let mut outcomes = std::collections::BTreeMap::new();
+    for envelope in hub.replay_from(first_seq) {
+        if let roko_core::DashboardEvent::TaskCompleted {
+            plan_id,
+            task_id,
+            outcome,
+        } = envelope.payload
+            && plans.contains(&plan_id)
+        {
+            outcomes.insert((plan_id, task_id), outcome);
+        }
+    }
+    let tasks = outcomes
+        .values()
+        .map(String::as_str)
+        .map(classify_task_outcome);
+    let state = RunState::of_ended_run(cancelled, success, tasks);
+    let error = (state == RunState::Failed)
+        .then(|| failure.unwrap_or_else(|| "a task of the run failed".to_string()));
+    PlanRunStatus::ended(state, error)
+}
+
+/// Record `status`, how the plan run `run_id` ended, on its handle under
+/// `key`, unless a newer run has taken the key or the run's end is already
+/// recorded.
+async fn record_plan_run_end(state: &AppState, key: &str, run_id: &str, status: PlanRunStatus) {
+    if let Some(handle) = state.active_plans.write().await.get_mut(key)
+        && handle.id == run_id
+        && !handle.status.state.is_terminal()
+    {
+        handle.status = status;
+    }
 }
 
 /// Optional request body for `POST /api/plans/:id/execute`.
@@ -201,6 +267,8 @@ pub(super) async fn execute_plans(
     let task_cancel = cancel.clone();
     let plan_target_for_task = plan_target.clone();
     let run_id_for_task = run_id.clone();
+    let state_for_task = Arc::clone(&state);
+    let plans_for_task = order.clone();
 
     // Atomically check-and-insert with the write lock, then spawn the task.
     let order_for_response = order.clone();
@@ -211,9 +279,13 @@ pub(super) async fn execute_plans(
         )));
     }
 
+    // Every hub event of this run is sequenced at or after this point.
+    let hub = state.state_hub.clone();
+    let first_run_seq = hub.total_published();
+
     let handle = tokio::spawn(async move {
         let options = PlanRunOptions {
-            cancel: Some(task_cancel),
+            cancel: Some(task_cancel.clone()),
             fresh: !resume,
             force_resume: resume,
             only_plans,
@@ -224,14 +296,34 @@ pub(super) async fn execute_plans(
         // Do NOT publish plan lifecycle events (plan_started, plan_completed)
         // for the run_id.  The runtime publishes its own per-plan events
         // (plan_set_loaded, run_completed) with the correct metadata.
-        if let Err(err) = runtime
+        let (success, failure) = match runtime
             .run_plan_with_options(&workdir, &plan_target_for_task, options)
             .await
         {
-            bus.publish(ServerEvent::Error {
-                message: format!("plan set execution failed (run {run_id_for_task}): {err}"),
-            });
-        }
+            Ok(result) => {
+                let failure = (!result.success)
+                    .then(|| format!("plan set run {run_id_for_task} completed with failures"));
+                (result.success, failure)
+            }
+            Err(err) => {
+                let message = format!("plan set execution failed (run {run_id_for_task}): {err}");
+                bus.publish(ServerEvent::Error {
+                    message: message.clone(),
+                });
+                (false, Some(message))
+            }
+        };
+        // Record how the run ended on its handle, so its status route still
+        // answers once it is over (G43).
+        let status = plan_run_end(
+            &hub,
+            first_run_seq,
+            &plans_for_task,
+            task_cancel.is_cancelled(),
+            success,
+            failure,
+        );
+        record_plan_run_end(&state_for_task, &run_id_for_task, &run_id_for_task, status).await;
     });
 
     let plan_handle = PlanHandle {
@@ -239,7 +331,7 @@ pub(super) async fn execute_plans(
         plan_dir: plan_target,
         // members carries every plan id so cancel/status by member id works.
         members: order,
-        status: OperationStatus::Running,
+        status: PlanRunStatus::running(),
         handle,
         cancel,
     };
@@ -353,6 +445,7 @@ pub(super) async fn start_plan_run(
         let plan_id = plan_id.clone();
         let plan_dir = plan_dir.clone();
         let run_id = run_id.clone();
+        let state_for_task = Arc::clone(state);
         async move {
             // Do NOT publish PlanStarted here. The runtime publishes its own
             // PlanStarted event (with the correct tasks_total) into the server
@@ -363,15 +456,15 @@ pub(super) async fn start_plan_run(
             // the handler calls cancel.cancel(). The run observes the token
             // internally; there is no select! race here.
             let options = PlanRunOptions {
-                cancel: Some(task_cancel),
+                cancel: Some(task_cancel.clone()),
                 fresh: !resume,
                 force_resume: resume,
                 live_agent_output: Some(live_agent_output),
                 // The run takes the id this handler returns (bug-4f833d).
-                run_id: Some(run_id),
+                run_id: Some(run_id.clone()),
                 ..PlanRunOptions::default()
             };
-            let success = match runtime
+            let (success, failure) = match runtime
                 .run_plan_with_options(&workdir, &plan_dir, options)
                 .await
             {
@@ -383,27 +476,44 @@ pub(super) async fn start_plan_run(
                     // embedded in the message string because
                     // DashboardEvent::Error carries no structured plan_id
                     // field; the portal cannot recover it separately.
-                    if !success {
+                    let failure = (!success)
+                        .then(|| format!("plan {plan_id} completed with task-level failures"));
+                    if let Some(message) = &failure {
                         bus.publish(ServerEvent::Error {
-                            message: format!("plan {plan_id} completed with task-level failures"),
+                            message: message.clone(),
                         });
                     }
-                    success
+                    (success, failure)
                 }
                 Err(err) => {
+                    let message = format!("plan execution failed for {plan_id}: {err}");
                     bus.publish(ServerEvent::Error {
-                        message: format!("plan execution failed for {plan_id}: {err}"),
+                        message: message.clone(),
                     });
-                    false
+                    (false, Some(message))
                 }
             };
+            let status = plan_run_end(
+                &hub,
+                first_run_seq,
+                std::slice::from_ref(&plan_id),
+                task_cancel.is_cancelled(),
+                success,
+                failure,
+            );
             // The Graph run settles the plan itself. Publish PlanCompleted
             // only for a run that did not: one that failed before the plan
             // started, or a runtime that publishes no plan lifecycle. Clients
             // then see exactly one.
             if !hub_published_plan_completed(&hub, first_run_seq, &plan_id) {
-                bus.publish(ServerEvent::PlanCompleted { plan_id, success });
+                bus.publish(ServerEvent::PlanCompleted {
+                    plan_id: plan_id.clone(),
+                    success,
+                });
             }
+            // Record how the run ended on its handle, so its status route
+            // still answers once it is over (G43).
+            record_plan_run_end(&state_for_task, &plan_id, &run_id, status).await;
         }
     });
 
@@ -413,7 +523,7 @@ pub(super) async fn start_plan_run(
         plan_dir: plan_dir.clone(),
         // Single-plan run: the only member is this plan.
         members: vec![plan_id.clone()],
-        status: OperationStatus::Running,
+        status: PlanRunStatus::running(),
         handle,
         cancel,
     };
@@ -497,22 +607,31 @@ pub(super) async fn execute_plan(
 
 /// `GET /api/plans/:id/status` — check execution status for a plan.
 ///
-/// `{id}` may be the run key **or** any member plan id of an active run.
+/// `{id}` may be the run key, the run id **or** any member plan id of a run.
+/// A live run reports `running`. Once it ends, the newest run `{id}` names
+/// reports how it ended, `succeeded`, `failed` (with `error`), `unverified`
+/// or `cancelled`, with `finished: true` and `finished_at`, for as long as
+/// its handle is kept (G43).
 pub(super) async fn plan_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let active = state.active_plans.read().await;
     let key = active_run_for(&active, &id)
-        .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
+        .or_else(|| finished_run_for(&active, &id))
+        .ok_or_else(|| ApiError::not_found("no execution of this plan is known"))?;
     let h = active
         .get(&key)
         .expect("key from active_run_for must exist in map");
+    let run_state = h.state();
     Ok(Json(json!({
         "id": h.id,
+        "run_id": h.id,
         "plan_dir": h.plan_dir,
-        "status": format!("{:?}", h.status),
-        "finished": h.handle.is_finished(),
+        "status": run_state.as_str(),
+        "error": h.status.error,
+        "finished": run_state.is_terminal(),
+        "finished_at": h.status.finished_at,
     })))
 }
 
@@ -636,8 +755,8 @@ pub(super) async fn resume_plan(
 ///
 /// Unlike `/pause`, which holds the run, this handler stops it. It signals
 /// the cancel token for ordered shutdown, waits a short grace window, aborts
-/// the task if still running, and then removes the plan from the
-/// active-plans map.
+/// the task if still running, and then records the run as `cancelled`: the
+/// handle stays, ended, so `GET /api/plans/{id}/status` reports it (G43).
 ///
 /// Returns 200 `{ "cancelled": true }` on success, or 404 when the plan is not
 /// actively executing.
@@ -659,8 +778,9 @@ pub(super) async fn cancel_plan(
         return Err(ApiError::not_found("no active execution for this plan"));
     }
 
-    // Capture the abort handle before releasing the lock.
+    // Capture the abort handle and the run's id before releasing the lock.
     let task_abort = handle.handle.abort_handle();
+    let run_id = handle.id.clone();
 
     // Signal ordered cancellation so the task can unwind cleanly.
     handle.cancel.cancel();
@@ -686,10 +806,11 @@ pub(super) async fn cancel_plan(
         }
     };
 
-    // Remove from the active set using the resolved key.  No snapshot is
-    // written — a cancelled plan is not resumable.
-    let mut active_final = state.active_plans.write().await;
-    drop(active_final.remove(&key));
+    // The run is over: record it as cancelled, unless its task recorded how
+    // it ended first. No snapshot is written — a cancelled plan is not
+    // resumable.
+    let cancelled = PlanRunStatus::ended(RunState::Cancelled, None);
+    record_plan_run_end(&state, &key, &run_id, cancelled).await;
 
     // Publish PlanCompleted only when the task did not finish cleanly on its
     // own.  If the run observed the cancel token and returned, it already

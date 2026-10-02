@@ -481,7 +481,7 @@ aliases (both are mounted).
 | GET | `/api/plans/{id}` | Full plan details |
 | GET | `/api/plans/{id}/tasks` | Tasks for a plan |
 | POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted with the run's `id`; 422 with the validation report in `details` when `roko plan run` would refuse the plan) |
-| GET | `/api/plans/{id}/status` | Execution status |
+| GET | `/api/plans/{id}/status` | Execution status of the run `{id}` names (plan id, member plan id or run id): `running`, then `succeeded`, `failed` (with `error`), `unverified` or `cancelled`, with `finished` and `finished_at`; a run that ended keeps answering for an hour |
 | POST | `/api/plans/{id}/pause` | Pause execution |
 | POST | `/api/plans/{id}/resume` | Resume execution |
 | GET | `/api/plans/{id}/gates` | Gate results grouped by task |

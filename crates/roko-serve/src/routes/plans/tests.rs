@@ -1539,6 +1539,156 @@ async fn run_failing_before_the_plan_starts_completes_it_once() {
     assert_eq!(plan_completions_of_single_plan_run(true).await, vec![false]);
 }
 
+/// A plan runtime whose runs end as a test scripts them: a run publishes
+/// `task_outcome`, when set, as the outcome of task `T1` of its plan into the
+/// server's hub, then returns `success`.
+struct ScriptedPlanRuntime {
+    hub: roko_runtime::SharedStateHub,
+    success: bool,
+    task_outcome: Option<&'static str>,
+}
+
+#[async_trait::async_trait]
+impl CliRuntime for ScriptedPlanRuntime {
+    async fn run_once(
+        &self,
+        _workdir: &std::path::Path,
+        _prompt: &str,
+    ) -> anyhow::Result<RunResult> {
+        anyhow::bail!("ScriptedPlanRuntime only runs plans")
+    }
+
+    async fn load_plan_summary(
+        &self,
+        _workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+        Ok(Some(crate::plan_types::PlanSummaryDto {
+            id: plan_id.to_string(),
+            title: "Scripted plan".to_string(),
+            task_count: 1,
+            tasks_done: 0,
+            tasks_failed: 0,
+            completed: false,
+            status: "ready".to_string(),
+            superseded_by: None,
+            old_format: false,
+            last_error: None,
+            group: None,
+            estimated_minutes: None,
+        }))
+    }
+
+    async fn run_plan_with_options(
+        &self,
+        _workdir: &std::path::Path,
+        plan_target: &std::path::Path,
+        _options: PlanRunOptions,
+    ) -> anyhow::Result<PlanExecutionResult> {
+        if let Some(outcome) = self.task_outcome {
+            let plan_id = plan_target
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let hub = self.hub.sender();
+            hub.publish(roko_core::DashboardEvent::TaskCompleted {
+                plan_id,
+                task_id: "T1".to_string(),
+                outcome: outcome.to_string(),
+            });
+        }
+        Ok(PlanExecutionResult {
+            success: self.success,
+            output_text: None,
+            gate_results: Vec::new(),
+        })
+    }
+
+    fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+        SessionStatusInfo {
+            session_id: None,
+            workdir,
+            daemon_running: false,
+            signal_count: None,
+            episode_count: None,
+            last_episode_passed: None,
+        }
+    }
+
+    fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+        DashboardInfo {
+            rendered: String::new(),
+        }
+    }
+}
+
+/// Run plan `hello` on a [`ScriptedPlanRuntime`], wait for the run to end,
+/// and return what `GET /api/plans/hello/status` then reports, after checking
+/// that it names the run the start returned.
+async fn status_after_plan_run(success: bool, task_outcome: Option<&'static str>) -> Value {
+    let hub = roko_runtime::SharedStateHub::new_in_process();
+    let runtime = Arc::new(ScriptedPlanRuntime {
+        hub: hub.clone(),
+        success,
+        task_outcome,
+    });
+    let dir = tempdir().expect("tempdir");
+    let deploy_backend =
+        Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+    let state = Arc::new(
+        AppState::new_with_state_hub(
+            dir.path().to_path_buf(),
+            runtime,
+            roko_core::config::schema::RokoConfig::default(),
+            deploy_backend,
+            hub,
+        )
+        .expect("AppState::new_with_state_hub"),
+    );
+
+    let started = start_plan_run(&state, "hello".into(), false)
+        .await
+        .expect("start the run");
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let Json(status) = plan_status(State(Arc::clone(&state)), Path("hello".into()))
+                .await
+                .expect("the run's status");
+            if status["finished"] == true {
+                break status;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the run ends");
+    assert_eq!(status["run_id"], started.run_id.as_str(), "{status}");
+    status
+}
+
+/// G43: a plan run's handle keeps how the run ended. After a run that fails,
+/// one that succeeds and one whose task ended unverified, `GET
+/// /api/plans/{id}/status` still answers instead of 404ing, with `finished:
+/// true`, when the run ended, and `failed` (with its error), `succeeded` or
+/// `unverified`.
+#[tokio::test]
+async fn plan_status_reports_terminal_state() {
+    use roko_core::dashboard_snapshot::TASK_OUTCOME_UNVERIFIED;
+
+    for (success, task_outcome, expected) in [
+        (false, None, "failed"),
+        (true, None, "succeeded"),
+        (false, Some(TASK_OUTCOME_UNVERIFIED), "unverified"),
+    ] {
+        let status = status_after_plan_run(success, task_outcome).await;
+        assert_eq!(status["status"], expected, "{status}");
+        assert_eq!(status["finished"], true, "{status}");
+        assert!(status["finished_at"].is_string(), "{status}");
+        assert_eq!(status["error"].is_string(), expected == "failed", "{status}");
+    }
+}
+
 #[tokio::test]
 async fn list_plans_returns_internal_error_for_corrupt_plan_file() {
     let (dir, state) = test_state();
@@ -1652,7 +1802,7 @@ async fn rest_pause_holds_the_run_without_cancelling() {
         id: "run-1".to_string(),
         plan_dir: state.workdir.join("plans").join("held-plan"),
         members: vec!["held-plan".to_string()],
-        status: crate::state::OperationStatus::Running,
+        status: crate::state::PlanRunStatus::running(),
         handle,
         cancel: cancel.clone(),
     };
@@ -2266,7 +2416,7 @@ async fn put_plan_source_returns_409_when_run_is_active() {
         id: "run-1".to_string(),
         plan_dir: state.workdir.join("plans").join("active-plan"),
         members: vec!["active-plan".to_string()],
-        status: crate::state::OperationStatus::Running,
+        status: crate::state::PlanRunStatus::running(),
         handle,
         cancel,
     };

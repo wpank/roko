@@ -6,8 +6,8 @@
 //! 2. A second execute while the first is still active returns HTTP 409.
 //! 3. `POST /api/plans/:id/execute` on a nonexistent plan id returns HTTP 404.
 //! 4. `POST /api/plans/:id/cancel` on an active plan returns HTTP 200 with
-//!    `{ "cancelled": true }` and removes the entry from the active set, so a
-//!    subsequent `GET /api/plans/:id/status` reports HTTP 404.
+//!    `{ "cancelled": true }` and ends the run, so a subsequent
+//!    `GET /api/plans/:id/status` reports it `cancelled` and finished (G43).
 //! 5. The run id a 202 returns is the one the runtime runs the plan under,
 //!    for a single plan and for a plan set.
 //! 6. A plan that fails validation is refused with 422 and its report, and no
@@ -385,15 +385,16 @@ async fn execute_nonexistent_plan_returns_404() {
     );
 }
 
-/// 4. Cancel on an active plan returns success and removes it from the active
-///    set, so a subsequent status request reports no active execution (404).
+/// 4. Cancel on an active plan returns success and ends the run, so a
+///    subsequent status request reports it cancelled (G43).
 ///
 /// Proves that:
 /// - `POST /api/plans/:id/cancel` returns HTTP 200 with `{ "cancelled": true }`
-/// - The entry is removed from `active_plans` by the cancel handler
-/// - `GET /api/plans/:id/status` returns 404 once the entry is gone
+/// - The cancel handler records the run as `cancelled` and keeps its handle
+/// - `GET /api/plans/:id/status` then returns 200 with `status: "cancelled"`
+///   and `finished: true`
 #[tokio::test(flavor = "multi_thread")]
-async fn cancel_active_plan_removes_from_active_set() {
+async fn cancel_active_plan_ends_it_cancelled() {
     let plan_id = "my-dir-plan";
     let (_dir, state) = make_state(plan_id).await;
 
@@ -456,7 +457,7 @@ async fn cancel_active_plan_removes_from_active_set() {
         "cancel response must contain {{ \"cancelled\": true }}: {cancel_payload}"
     );
 
-    // After cancel, the plan must no longer appear in the active set.
+    // After cancel, the run is over and reports how it ended.
     let app_status_after = build_app(Arc::clone(&state));
     let status_after = app_status_after
         .oneshot(
@@ -470,9 +471,12 @@ async fn cancel_active_plan_removes_from_active_set() {
         .expect("status-after-cancel request");
     assert_eq!(
         status_after.status(),
-        StatusCode::NOT_FOUND,
-        "status must return 404 after the plan has been cancelled"
+        StatusCode::OK,
+        "status must still answer after the plan has been cancelled"
     );
+    let status_payload = body_json(status_after).await;
+    assert_eq!(status_payload["status"], "cancelled", "{status_payload}");
+    assert_eq!(status_payload["finished"], true, "{status_payload}");
 }
 
 /// 5. bug-4f833d: the run id a 202 returns is the one the runtime runs the

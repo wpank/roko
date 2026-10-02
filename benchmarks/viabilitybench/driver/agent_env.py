@@ -8,7 +8,12 @@ key can reach an agent, and `check` asserts that on the finished environment.
 - HOME and TMPDIR point into a per-task directory outside the workdir, so `~` never reaches the real home and its
   `~/.roko/.env`.
 - PATH starts with a per-task `.vb-bin/`, whose `python3` and `python` link to the driver's own base interpreter (the
-  families need Python 3.11 or newer), followed by the system directories.
+  families need Python 3.11 or newer), followed by the host's Rust toolchain, when there is one, and the system
+  directories.
+- The Rust toolchain (F7; Will's decision of 2026-10-02, `common/toolchain`): its own bin directory on PATH (cargo,
+  rustc, rustfmt, clippy; not `~/.cargo/bin`, which holds whatever `cargo install` put there), RUSTUP_HOME the
+  real one, and CARGO_HOME under the task's HOME, so cargo's registry cache is per run. Every sandbox the agent's
+  code runs in keeps the real toolchain read-only (`common/sandbox`).
 - PYTHONDONTWRITEBYTECODE keeps `__pycache__` out of the tree the census labels; git gets a fixed identity and no
   system config, so an agent's `git commit` behaves the same on every host.
 
@@ -49,7 +54,8 @@ API:
     driver_env(env: Mapping[str, str] | None = None) -> dict        # the allowlisted driver environment
     exec_scrubbed() -> None                         # start again with `driver_env()`, once; returns if already done
     proxy_env(url: str) -> dict                     # the variables that send HTTP clients through the egress proxy
-    FORBIDDEN_NAME, PASSTHROUGH, SYSTEM_PATH, DRIVER_PASSTHROUGH, DRIVER_SCRUBBED, PROXY_NAMES, NO_PROXY
+    FORBIDDEN_NAME, PASSTHROUGH, SYSTEM_PATH, TOOLCHAIN_NAMES, DRIVER_PASSTHROUGH, DRIVER_SCRUBBED, PROXY_NAMES,
+    NO_PROXY
 """
 
 from __future__ import annotations
@@ -62,9 +68,11 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import layout
+from common import toolchain
 
 PASSTHROUGH = ("LANG", "LC_ALL", "LC_CTYPE", "TZ")
 SYSTEM_PATH = ("/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+TOOLCHAIN_NAMES = ("RUSTUP_HOME", "CARGO_HOME")  # what `build` sets for the host's Rust toolchain (common/toolchain)
 FORBIDDEN_NAME = re.compile(r"^VB_|API_?KEY|TOKEN|SECRET|PASSW|CREDENTIAL|^AWS_|^ANTHROPIC_|^OPENAI_|^CEREBRAS_",
                             re.IGNORECASE)
 FIXED = {"SHELL": "/bin/bash", "TERM": "dumb", "NO_COLOR": "1", "PAGER": "cat", "GIT_PAGER": "cat",
@@ -73,8 +81,9 @@ FIXED = {"SHELL": "/bin/bash", "TERM": "dumb", "NO_COLOR": "1", "PAGER": "cat", 
          "GIT_COMMITTER_NAME": "vb-agent", "GIT_COMMITTER_EMAIL": "agent@vb.invalid"}
 _forbidden: tuple[str, ...] = ()  # set by `forbid`: the benchmark secret and its canary, once `vb run` has read them
 # What the driver itself keeps of the operator's environment: paths, locale and its own settings, never a credential.
+# TOOLCHAIN_NAMES let `toolchain.find` see a toolchain installed outside ~/.rustup and ~/.cargo.
 DRIVER_PASSTHROUGH = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
-                      "CLAUDE_CONFIG_DIR", "VB_SECRET_FILE", "VB_KEY_FILE", "VB_RESULTS", "VB_WORK")
+                      "CLAUDE_CONFIG_DIR", *TOOLCHAIN_NAMES, "VB_SECRET_FILE", "VB_KEY_FILE", "VB_RESULTS", "VB_WORK")
 DRIVER_SCRUBBED = "VB_DRIVER_ENV"  # "scrubbed" in the environment `exec_scrubbed` starts the driver with
 PROXY_NAMES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
 NO_PROXY = "127.0.0.1,localhost,::1"  # NO_PROXY and no_proxy under `proxy_env`: the loopback stays direct
@@ -98,8 +107,12 @@ def build(*, home: Path, extra: Mapping[str, str] | None = None, forbidden_value
             link.symlink_to(python)
     env = {name: os.environ[name] for name in PASSTHROUGH if name in os.environ}
     env.update(FIXED)
-    env.update(HOME=str(home), TMPDIR=str(tmp), PATH=os.pathsep.join([str(bin_dir), *SYSTEM_PATH]),
+    rust = toolchain.find()  # the host's Rust toolchain, or None (module docstring)
+    path = [str(bin_dir), *([str(rust.bin_dir)] if rust is not None else []), *SYSTEM_PATH]
+    env.update(HOME=str(home), TMPDIR=str(tmp), PATH=os.pathsep.join(path),
                USER=os.environ.get("USER", "vb-agent"), LOGNAME=os.environ.get("LOGNAME", "vb-agent"))
+    if rust is not None:
+        env.update(rust.env(home))
     env.update(extra or {})
     check(env, forbidden_values)
     return env

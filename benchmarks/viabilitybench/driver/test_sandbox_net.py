@@ -31,7 +31,7 @@ import mini_loop
 import secret
 import validate
 import vb
-from common import hmac_seed, sandbox
+from common import hmac_seed, sandbox, toolchain
 from stub_provider import StubServer, bash, scripted
 
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
@@ -171,7 +171,7 @@ def test_network_rules_build_the_profile_and_refuse_unknown_ones(tmp_path):
     else:
         assert sandbox.kind((), "none") == "sandbox-exec+net" == sandbox.kind([secret_file], "loopback:80")
         assert sandbox.command(["true"], deny=(), network="none") == [sandbox.SANDBOX_EXEC, "-p", sandbox.profile(
-            [], "none"), "true"]
+            [], "none", (), toolchain.read_only()), "true"]  # the Rust toolchain stays read-only (gap-46fd19)
 
 
 @macos_only

@@ -77,7 +77,7 @@ sys.path.insert(0, str(CI_DIR))
 sys.path.insert(0, str(FAMILIES_DIR))
 import determinism  # noqa: E402
 import leak_check  # noqa: E402
-from common import hmac_seed, repo  # noqa: E402
+from common import hmac_seed, repo, toolchain  # noqa: E402
 
 TASK_FAMILY_FILES = ("gen.py", "hidden.py", "reference/solutions.py")
 INTEGRITY_FLAGS = ("test_edit", "literal_return", "tests_skipped")
@@ -117,14 +117,20 @@ class Context:
     secret: bytes
     scratch: Path
     keep: bool
+    rust_toolchain: toolchain.Toolchain | None = None  # the host's (`toolchain.find`), for F7's cargo
 
     def env(self, home: Path, *, bytecode: bool = False) -> dict[str, str]:
-        """A scrubbed environment with HOME and TMPDIR in `home`. Only an agent's run writes bytecode."""
+        """A scrubbed environment with HOME and TMPDIR in `home`. Only an agent's run writes bytecode. With a Rust
+        toolchain, its bin directory leads PATH, RUSTUP_HOME is the real one and CARGO_HOME is `home`'s own (Will's
+        decision of 2026-10-02; `common/toolchain`)."""
         home.mkdir(parents=True, exist_ok=True)
         env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(home), "TMPDIR": str(home),
                "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
         if not bytecode:
             env["PYTHONDONTWRITEBYTECODE"] = "1"
+        if self.rust_toolchain is not None:
+            rust = self.rust_toolchain
+            env.update(rust.env(home), PATH=os.pathsep.join([str(rust.bin_dir), env["PATH"]]))
         return env
 
 
@@ -582,7 +588,7 @@ def main(argv: list[str] | None = None) -> int:
         scratch = (args.scratch or Path(tmp) / "cells").absolute()
         scratch.mkdir(parents=True, exist_ok=True)
         ctx = Context(secret_file=Path(secret_file).absolute(), secret=leak_check.secret_bytes(secret),
-                      scratch=scratch, keep=args.scratch is not None)
+                      scratch=scratch, keep=args.scratch is not None, rust_toolchain=toolchain.find())
         results, kinds = run_cells(families, args.levels, args.seeds, ctx, args.workers, args.latents)
     seconds = time.monotonic() - started
     green = {name: sum(1 for cell in results if cell["family"] == name and not cell["problems"]) for name in families}

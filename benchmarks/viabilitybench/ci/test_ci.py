@@ -11,6 +11,7 @@ Run: benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybe
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import shutil
 import sys
@@ -25,7 +26,7 @@ sys.path.insert(0, str(FAMILIES_DIR))
 import determinism  # noqa: E402
 import leak_check  # noqa: E402
 import verify_verifiers  # noqa: E402
-from common import canary, hmac_seed  # noqa: E402
+from common import canary, hmac_seed, toolchain  # noqa: E402
 
 ONE_CELL = ["--latents", "v1", "--levels", "1", "--seeds", "1"]
 ALWAYS_PASS = '''#!/usr/bin/env python3
@@ -228,3 +229,22 @@ def test_families_levels_and_seeds_are_parsed(tmp_path):
         with pytest.raises(SystemExit) as exited:
             verify_verifiers.main(args)
         assert exited.value.code == 2, args
+
+
+def test_a_family_gets_the_rust_toolchain_and_a_cargo_home_of_its_own(tmp_path):
+    """gap-46fd19: each step's HOME is its own, so a Rust family's cargo would find no toolchain under `~`. With the
+    host's toolchain (`common/toolchain`), its bin directory leads PATH, RUSTUP_HOME is the real one, and CARGO_HOME
+    (cargo's registry cache) belongs to the step; the operator's CARGO_HOME never appears."""
+    rust = toolchain.Toolchain(bin_dir=tmp_path / "rustup" / "toolchains" / "stable" / "bin",
+                               rustup_home=tmp_path / "rustup", cargo_home=tmp_path / "operator-cargo")
+    ctx = verify_verifiers.Context(secret_file=tmp_path / "secret", secret=b"", scratch=tmp_path, keep=False,
+                                   rust_toolchain=rust)
+    home = tmp_path / "cell" / "home"
+    env = ctx.env(home)
+    assert env["PATH"].split(os.pathsep) == [str(rust.bin_dir), *os.environ.get("PATH", os.defpath).split(os.pathsep)]
+    assert (env["HOME"], env["RUSTUP_HOME"], env["CARGO_HOME"]) == (str(home), str(rust.rustup_home),
+                                                                    str(home / ".cargo"))
+    assert str(rust.cargo_home) not in json.dumps(env)
+    bare = verify_verifiers.Context(secret_file=tmp_path / "secret", secret=b"", scratch=tmp_path, keep=False)
+    assert {"RUSTUP_HOME", "CARGO_HOME"}.isdisjoint(bare.env(tmp_path / "bare"))
+    assert bare.env(tmp_path / "bare")["PATH"] == os.environ.get("PATH", os.defpath)

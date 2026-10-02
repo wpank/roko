@@ -5,7 +5,9 @@
 arm therefore adds an arm file and, if its harness is new, one module with `run_task`; `vb.py` does not change.
 
 A runner:
-- works in `ctx.workdir` only, and starts every agent process with `ctx.agent_env` (`agent_env.build`);
+- works in `ctx.workdir` only, and starts every agent process with `ctx.agent_env` (`agent_env.build`). A runner that
+  confines them with `common.sandbox` (a network rule, and `ctx.deny`; gap-0bd49a) says how in its outcome's
+  `network_policy`;
 - when `ctx.verify_wrapper` is set, runs its visible checks through it (`vb_verify`, S08 §4.6 `flaky_verify`);
 - appends one ledger row per attempt it dispatched (`ctx.ledger`), when the attempt ends, even on failure;
 - returns when the agent has ended its session (status `completed`) or a cap stopped it (`aborted_cap`, `timeout`),
@@ -19,7 +21,7 @@ first task; anything it raises stops the run. The Roko arm checks there that its
 API:
     TaskContext(...)                  # frozen; see the fields
     Attempt(...); Attempt.as_record() -> dict          # one vb.run_record/1 execution.attempts[] entry
-    TaskOutcome(status, reason, attempts, transcript, started_at, finished_at, s01_run_dir=None)
+    TaskOutcome(status, reason, attempts, transcript, started_at, finished_at, s01_run_dir=None, network_policy=None)
     RUNNER_STATUSES; utc_now() -> str
 """
 
@@ -65,6 +67,9 @@ class TaskContext:
     verify_wrapper: Path | None = None
     # The model the proxy serves in place of the pin (`model_swap`), which the model checks accept; None if none.
     model_swap: str | None = None
+    # The paths every agent process is denied (`common.sandbox`): the secret file, the key file and the run's private
+    # task directories, which `vb run` fills in.
+    deny: tuple[Path, ...] = ()
 
     @property
     def chain_key(self) -> str:
@@ -114,3 +119,6 @@ class TaskOutcome:
     started_at: str
     finished_at: str
     s01_run_dir: str | None = None  # where the runner copied the harness's own S01 records, relative to the run dir
+    # The run record's `provenance.network_policy`: the network rule the agent's processes ran under and the
+    # confinement that applied it (`sandbox.kind`), plus a runner's own detail; None when the runner did not say.
+    network_policy: dict | None = None

@@ -19,6 +19,12 @@ attempt; a runner that classes its attempts accounts for all of the run's spend 
 costs $0, and a class holding an attempt of unknown cost is null. The direct and CLI runners record neither, so
 their records carry nulls.
 
+`provenance.network_policy` is what the runner says of its agent's network (gap-0bd49a, `harness.TaskOutcome`): the
+rule its agent's processes ran under (`network`: "none", or "loopback:<port>" for a proxy's port), the confinement
+that applied it on this host (`sandbox`: "sandbox-exec+net", or "none" where nothing did, off macOS), and the
+runner's own detail, such as the Claude Code arm's egress log. It is null when the runner did not say, as for a
+runner that crashed.
+
 `visible` is the census's clean rerun of the visible checks, which never meets a flake. In a run with `flaky_verify`
 it also carries what the visible-verify wrapper logged of the arm's own visible checks (`vb_verify`): `verify_runs`
 (null when no wrapper ran), `flakes` (each injected failure's run number and time) and `flake_injected`.
@@ -147,7 +153,7 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
                        "bundle": f"archives/{archived.bundle.name}" if archived else None,
                        "diff_sha256": archived.diff_sha256 if archived else None, "transcript_ref": transcript_ref,
                        "s01_run_dir": outcome.s01_run_dir, "canary_hits": result.canary_hits,
-                       "canary_places": sorted(result.canaries)},
+                       "canary_places": sorted(result.canaries), "network_policy": outcome.network_policy},
         "simulated": False,
     }
     record["costs"]["meter_cross_check_usd"] = meter_usd  # the metering proxy's own figure for the task, if one ran

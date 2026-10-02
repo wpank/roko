@@ -432,7 +432,7 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         provider=run.chat, snapshot=plan.snapshot, caps=limits, ledger=run.book, billed=plan.arm["arm"]["billed"],
         instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text, agent_env=env,
         visible_verify=tuple(task.manifest["visible_verify"]), files_in_scope=tuple(task.manifest["files_in_scope"]),
-        verify_wrapper=wrapper, model_swap=swap)
+        verify_wrapper=wrapper, model_swap=swap, deny=_agent_deny(run))
     if run.proxy:  # the proxy's rows for this task carry its key, which is how the Roko arm finds them
         held = getattr(run.runner, "PROXY_CAPS", ())  # the caps a runner's harness cannot hold itself
         run.proxy.configure(task=ctx.key, profile=disturb.profile(run.disturbances, position),
@@ -496,6 +496,12 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
           + ("" if meter_usd is None else f" meter=${meter_usd:.4f}") + (f" flakes={len(flakes)}" if flakes else ""),
           file=sys.stderr)
     return True
+
+
+def _agent_deny(run: Run) -> tuple[Path, ...]:
+    """What every agent process is denied (`TaskContext.deny`, `common.sandbox`): the secret file, every file the
+    tripwire holds (the key file too), and the run's private task directories, every earlier task's included."""
+    return tuple(dict.fromkeys([run.secret_file, *(wire.path for wire in secret.tripwires()), run.run_dir / "private"]))
 
 
 def _verify_wrapper(run: Run, key: str, manifest: dict, env: dict[str, str], position: int) -> Path | None:

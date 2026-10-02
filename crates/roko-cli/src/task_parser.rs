@@ -259,7 +259,7 @@ impl TaskDef {
             }
         }
         if let Some(hidden) = &spec.hidden
-            && !(hidden.interface.is_empty() && hidden.properties.is_empty())
+            && (!hidden.interface.is_empty() || !hidden.properties.is_empty())
         {
             out.push_str("\n## Hidden tests\nA hidden test suite checks this task.\n");
             for item in &hidden.interface {

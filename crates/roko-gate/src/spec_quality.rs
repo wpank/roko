@@ -985,8 +985,9 @@ fn round_to(value: f64, places: usize) -> f64 {
     format!("{value:.places$}").parse().unwrap_or(value)
 }
 
-/// An acceptance item's id: its `ACn` prefix, or `AC<position>`.
-fn ac_id(item: &str, index: usize) -> String {
+/// An acceptance item's id: its `ACn` prefix, or `AC<position>` for the item at 0-based `index`.
+/// A verify step's `covers` names criteria by these ids; `plan validate` checks them (PLAN_044).
+pub fn ac_id(item: &str, index: usize) -> String {
     AC_ID
         .captures(item)
         .and_then(|captures| captures.get(1))

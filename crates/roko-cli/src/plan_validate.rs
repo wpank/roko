@@ -15,9 +15,10 @@ use serde::Serialize;
 use toml::Value;
 
 use roko_cli::task_parser::{
-    CONTEXT_KEYS, META_KEYS, TASK_KEYS, VERIFY_KEYS, normalize_model_alias,
+    CONTEXT_KEYS, META_KEYS, TASK_KEYS, TaskDef, VERIFY_KEYS, normalize_model_alias,
     suggest_field_correction,
 };
+use roko_gate::spec_quality::ac_id;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -489,6 +490,61 @@ fn unknown_key_diagnostics(parsed: &Value, plan_id: &str) -> Vec<Diagnostic> {
     diagnostics
 }
 
+/// 3208: PLAN_044 for a task whose verify steps name acceptance criteria in
+/// `covers`, by the ids the spec-quality score uses ([`ac_id`]): an error for
+/// an id its `acceptance` does not define, and a warning for a criterion no
+/// step covers. A task that uses no `covers` gets neither.
+fn covers_diagnostics(task: &TaskDef, plan_id: &str) -> Vec<Diagnostic> {
+    if task.verify.iter().all(|step| step.covers.is_empty()) {
+        return Vec::new();
+    }
+    let ids: Vec<String> = task
+        .acceptance
+        .iter()
+        .enumerate()
+        .map(|(index, item)| ac_id(item, index))
+        .collect();
+    let diagnostic = |severity, message| Diagnostic {
+        severity,
+        rule_id: "PLAN_044".to_string(),
+        plan_id: Some(plan_id.to_string()),
+        task_id: Some(task.id.clone()),
+        message,
+    };
+    let mut diagnostics = Vec::new();
+    let mut covered = BTreeSet::new();
+    for (index, step) in task.verify.iter().enumerate() {
+        for id in step.covers.iter().map(|id| id.trim()) {
+            if ids.iter().any(|known| known == id) {
+                covered.insert(id);
+                continue;
+            }
+            let defined = if ids.is_empty() {
+                "it has no acceptance criteria".to_string()
+            } else {
+                format!("its criteria are {}", ids.join(", "))
+            };
+            let message = format!(
+                "task '{}' verify step {} covers `{id}`, which is not one of its acceptance \
+                 criteria: {defined}",
+                task.id,
+                index + 1
+            );
+            diagnostics.push(diagnostic(Severity::Error, message));
+        }
+    }
+    for (id, item) in ids.iter().zip(&task.acceptance) {
+        if !covered.contains(id.as_str()) {
+            let message = format!(
+                "task '{}' acceptance criterion {id} is covered by no verify step: {item}",
+                task.id
+            );
+            diagnostics.push(diagnostic(Severity::Warning, message));
+        }
+    }
+    diagnostics
+}
+
 /// The keys of `table` that `known` does not list.
 fn unknown_keys<'a>(
     table: &'a toml::map::Map<String, Value>,
@@ -655,6 +711,10 @@ fn validate_tasks_file(
                         ),
                     });
                 }
+            }
+            // 3208: a verify step names the acceptance criteria it checks.
+            for task in &tasks_file.tasks {
+                diagnostics.extend(covers_diagnostics(task, &plan_id));
             }
             // A role whose safety contract denies write tools cannot produce
             // the task's declared `files`; the task would fail at runtime.
@@ -2138,6 +2198,81 @@ verify = [{ phase = "structural", command = "! grep -q TODO src/lib.rs" }]
         assert_eq!(negative.len(), 1, "{report:?}");
         assert_eq!(negative[0].severity, Severity::Warning);
         assert_eq!(negative[0].task_id.as_deref(), Some("T1"));
+    }
+
+    /// 3208: a verify step's `covers` must name one of its task's acceptance
+    /// criteria (a PLAN_044 error), and a task that uses `covers` gets a
+    /// PLAN_044 warning for each criterion no step covers. A task without
+    /// `covers` gets neither.
+    #[test]
+    fn covers_must_name_an_acceptance_criterion() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+role = "implementer"
+files = ["src/config.rs"]
+depends_on = []
+acceptance = [
+  "AC1: a negative limit is rejected",
+  "the default limit is 3",
+  "AC7: the limit is logged",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p demo --lib retry"
+covers = ["AC1", "AC9"]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p demo --lib config"
+covers = ["AC2"]
+
+[[task]]
+id = "T2"
+title = "Retry docs"
+role = "implementer"
+files = ["docs/retry.md"]
+depends_on = []
+acceptance = ["the docs name the limit"]
+verify = [{ phase = "structural", command = "grep -q limit docs/retry.md" }]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let covers = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_044")
+            .collect::<Vec<_>>();
+        assert_eq!(covers.len(), 2, "{report:?}");
+        assert_eq!(covers[0].severity, Severity::Error);
+        assert_eq!(covers[0].task_id.as_deref(), Some("T1"));
+        assert_eq!(
+            covers[0].message,
+            "task 'T1' verify step 1 covers `AC9`, which is not one of its acceptance criteria: \
+             its criteria are AC1, AC2, AC7"
+        );
+        assert_eq!(covers[1].severity, Severity::Warning);
+        assert_eq!(covers[1].task_id.as_deref(), Some("T1"));
+        assert_eq!(
+            covers[1].message,
+            "task 'T1' acceptance criterion AC7 is covered by no verify step: AC7: the limit is \
+             logged"
+        );
+        assert_eq!(report.totals.errors, 1, "{report:?}");
     }
 
     /// gap-9ed15e: `plan validate` checks the plans `plan run` finds: none

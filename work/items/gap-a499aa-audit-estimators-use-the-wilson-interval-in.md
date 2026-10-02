@@ -49,3 +49,12 @@ The verify passes and `replay.py` reports every cell MET.
 ## Notes
 
 Decided by Will, 2026-10-02 (coordinator question round). Backlog context: tmp/backlog/2026-10-02-complete-and-wire.
+
+## Progress
+
+- 2026-10-02: implemented at 9f469522c (branch `work/gap-46fd19-2`). The estimators use Wilson at Kish n_eff in every
+  cell (no Wald branch); the 7114 fixture is regenerated. `test_wilson_interval_meets_coverage_in_every_cell` replays
+  the 200-unit window 1,000 times at every ρ, uniform and tilted, and requires coverage ≥ 0.93 and |bias| ≤ 0.01 in
+  all six cells. The verify passes, and `replay.py` on that window reports every cell met (tilted ρ = 0.30: 0.909 NOT
+  MET at the base, 0.989 met now). S05 §4.5 is amended in place (untracked). Two backlog specs still describe the
+  Wald/Wilson switch and should follow the fixture: 7114 (`estimate.rs`) and 7131.

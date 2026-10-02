@@ -86,3 +86,16 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: nothing.
 - Existing work items this package covers or touches: find-8872ad. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-5e9292`; cargo verification deferred to the batch gate (static greps of every verify pass).
+
+- 9101: implemented at c6a6e7134
+- 9102: implemented at d59f3c8f4 (option a: the enum, `TypedContext` and both `lib.rs` lines deleted; both docs pages corrected)
+- 9103: implemented at 01755a555 (adds `RunState`, the run-state words every run route shares)
+- 9104: implemented at 3d7441310 (ended plan handles are kept an hour; active-plan counters count live runs only)
+- 9111: implemented at 54c31ff46 (decision 9105 option a; queue of 8)
+- 9112: implemented at f4ade3ffc
+- 9113: implemented at f0c15452d
+- 9114: implemented at 64bf22a36, test fix at 3c2a7e67f

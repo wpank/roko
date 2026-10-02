@@ -21,11 +21,14 @@ The modules and their public names:
   `new_canary`, `mark`, `mark_file`, `strip`, `find`, `find_in_diff`, `find_in_tree`, `CanaryError`.
 - `mutate`: surface renames, so the instances of one family differ. `choose`, `rename_text`, `rename_tree`.
 - `sandbox`: runs the agent's code, when a truth suite runs it, with the secret file and the private task directory
-  out of reach. `command`, `denied`, `profile`, `KIND`.
+  out of reach, and the Rust toolchain read-only. `command`, `denied`, `profile`, `KIND`.
+- `toolchain`: the host's Rust toolchain, for an environment with a HOME of its own (F7). `find`, `read_only`,
+  `Toolchain`.
 
 Each module's docstring fixes its signatures and contracts. Change them only together with every family that uses
 them. `VERSION` belongs in each family's `verifier_version`, so a change here shows up in the records.
 """
 
-VERSION = "common-1.2.0"  # 1.2.0: the suites run agent code through `sandbox` (gap-8c3752); 1.1.0: test_edits and
-# file_hashes skip bytecode and pytest caches (bug-993e7e)
+VERSION = "common-1.3.0"  # 1.3.0: `sandbox` keeps the Rust toolchain read-only (gap-46fd19); 1.2.0: the suites run
+# agent code through `sandbox` (gap-8c3752); 1.1.0: test_edits and file_hashes skip bytecode and pytest caches
+# (bug-993e7e)

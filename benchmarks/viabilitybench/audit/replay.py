@@ -19,8 +19,8 @@ coverage ≥ 0.93 and |bias| ≤ 0.01 (`TARGET_COVERAGE`, `TARGET_BIAS`).
 - **Empty samples.** At a low ρ a small stream sometimes selects nothing. That lottery has no Hájek estimate and the
   vacuous interval, which covers; the count is printed, and the Hájek columns average over the other lotteries.
   The HT columns average over every lottery, an empty one estimating 0, which is what makes HT unbiased.
-- With about 60 units at ρ = 0.10 a lottery audits about 6, and the Wilson fallback decides coverage: read n_eff
-  beside it (S05.2's risk).
+- The interval is Wilson's at Kish n_eff in every cell (gap-a499aa). With about 60 units at ρ = 0.10 a lottery
+  audits about 6, so read n_eff beside the coverage (S05.2's risk).
 
 `--write-fixture PATH` writes `build_fixture()`, the reference inputs and outputs of the lottery and the estimators
 that roko-gate's `audit` module (7114) must reproduce, to `fixtures/estimators.json` by convention.
@@ -152,7 +152,7 @@ def format_report(report: dict) -> str:
         f"targets: coverage >= {TARGET_COVERAGE}, |bias| <= {TARGET_BIAS}",
         "",
         f"{'rho':>5} {'pi_min':>7} {'audits':>7} {'n_eff':>6} {'theta_H':>8} {'CI (mean)':>17} {'coverage':>9} "
-        f"{'|bias|':>7} {'HT |bias| (mc se)':>18} {'wald':>5} {'empty':>6}  targets",
+        f"{'|bias|':>7} {'HT |bias| (mc se)':>18} {'empty':>6}  targets",
     ]
     for cell in report["cells"]:
         theta_hajek = "-" if cell["mean_theta_hajek"] is None else f"{cell['mean_theta_hajek']:.4f}"
@@ -161,7 +161,7 @@ def format_report(report: dict) -> str:
         ht = f"{abs(cell['bias_ht']):.4f} ({cell['ht_mc_se']:.4f})"
         lines.append(f"{cell['rho']:>5.2f} {cell['pi_min']:>7.3f} {cell['mean_audited']:>7.1f} "
                      f"{cell['mean_n_eff']:>6.1f} {theta_hajek:>8} {ci:>17} {cell['coverage']:>9.3f} {bias:>7} "
-                     f"{ht:>18} {cell['wald_share']:>5.0%} {cell['empty']:>6}  "
+                     f"{ht:>18} {cell['empty']:>6}  "
                      f"{'met' if cell['targets_met'] else 'NOT MET'}")
     return "\n".join(lines)
 
@@ -170,7 +170,7 @@ class _Cell:
     """One ρ's running totals over the lotteries."""
 
     def __init__(self) -> None:
-        self.runs = self.covered = self.wald = self.empty = 0
+        self.runs = self.covered = self.empty = 0
         self.audited: list[int] = []
         self.n_eff: list[float] = []
         self.hajek: list[float] = []
@@ -182,7 +182,6 @@ class _Cell:
         self.runs += 1
         low, high = est.ci
         self.covered += low <= theta <= high
-        self.wald += est.ci_method == "wald"
         self.audited.append(est.n_audited)
         self.n_eff.append(est.n_eff)
         self.ht.append(est.theta_ht)
@@ -205,7 +204,7 @@ class _Cell:
             "mean_audited": sum(self.audited) / self.runs, "mean_n_eff": math.fsum(self.n_eff) / self.runs,
             "mean_theta_hajek": mean_hajek, "mean_ci": mean_ci,
             "coverage": coverage, "bias_hajek": bias_hajek, "bias_ht": mean_ht - theta,
-            "ht_mc_se": math.sqrt(spread / self.runs), "wald_share": self.wald / self.runs, "empty": self.empty,
+            "ht_mc_se": math.sqrt(spread / self.runs), "empty": self.empty,
             "targets_met": coverage >= TARGET_COVERAGE and bias_hajek is not None and abs(bias_hajek) <= TARGET_BIAS,
         }
 
@@ -249,13 +248,13 @@ def build_fixture() -> dict:
     wilsons = [{"p": p, "n": n, "z": estimate.Z95, "ci": list(estimate.wilson(p, n))}
                for p, n in ((0.0, 6.0), (1.0, 6.0), (0.2, 9.0), (0.15, 23.7), (0.5, 0.0), (0.3, 1e6))]
     tilted = [(0.05, 0), (0.05, 1), (0.08, 0), (0.12, 1), (0.4, 1), (0.4, 0), (0.8, 1), (1.0, 0), (1.0, 1)]
-    wald = [(0.3, 1)] * 12 + [(0.3, 0)] * 48
+    large = [(0.3, 1)] * 12 + [(0.3, 0)] * 48  # n_eff 60 with 12 events: Wald's cell under S05 §4.5's first rule
     estimates = [{"name": name, "n_green": n_green, "alpha": 0.05, "units": [list(unit) for unit in units],
                   "expected": estimate.estimate(units, n_green).record()}
                  for name, n_green, units in (
                      ("wilson", 60, [(0.15, 1), (0.15, 0), (0.15, 0), (0.15, 1), (0.15, 0), (0.15, 0), (0.15, 0),
                                      (0.15, 0), (0.15, 0)]),
-                     ("wald", 200, wald), ("tilted", 120, tilted), ("empty", 50, []),
+                     ("n_eff_60", 200, large), ("tilted", 120, tilted), ("empty", 50, []),
                      ("no_events", 40, [(0.1, 0)] * 6), ("all_events", 40, [(0.2, 1)] * 4),
                      ("census", 40, [(1.0, 1)] * 6 + [(1.0, 0)] * 34))]
     nulls = []
@@ -279,8 +278,7 @@ def build_fixture() -> dict:
                  "roko-gate's audit module (7114). Regenerate with audit/replay.py --write-fixture; "
                  "audit/tests/test_estimate.py checks this file against the code to 1e-12.",
         "constants": {"eps_floor": lottery.EPS_FLOOR, "z95": estimate.Z95, "draw_tag": lottery.DRAW_TAG,
-                      "key_tag": lottery.KEY_TAG, "wald_min_n_eff": estimate.WALD_MIN_N_EFF,
-                      "wald_min_events": estimate.WALD_MIN_EVENTS, "cs_c": estimate.CS_C,
+                      "key_tag": lottery.KEY_TAG, "ci_method": estimate.CI_METHOD, "cs_c": estimate.CS_C,
                       "cs_hedge": estimate.CS_HEDGE},
         "run_key": [{"secret_hex": secret.hex(), "run_id": run_id, "key_hex": key.hex()},
                     {"secret_hex": secret.hex(), "run_id": "run-other", "key_hex": other.hex()}],

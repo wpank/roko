@@ -54,6 +54,7 @@ impl App {
             command: command.clone(),
             run_id: None,
             approval_id: None,
+            held_task: false,
         });
         self.pending_approval_response = Some(response_tx);
         self.tui_state.input_mode = InputMode::Confirm;

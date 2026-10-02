@@ -455,6 +455,10 @@ async fn run_simple_path(
         max_retries: None,
         quiet: cli.quiet || cli.json,
         state_hub: None,
+        run_id: None,
+        cancel: None,
+        domain: None,
+        max_usd: None,
     })
     .await;
 

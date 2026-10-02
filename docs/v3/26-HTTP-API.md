@@ -480,10 +480,12 @@ aliases (both are mounted).
 | POST | `/api/plans` | Create a new plan |
 | GET | `/api/plans/{id}` | Full plan details |
 | GET | `/api/plans/{id}/tasks` | Tasks for a plan |
-| POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted with the run's `id`; 422 with the validation report in `details` when `roko plan run` would refuse the plan) |
-| GET | `/api/plans/{id}/status` | Execution status |
+| POST | `/api/plans/{id}/execute` | Execute plan (background, 202 Accepted with the run's `id`; 422 with the validation report in `details` when `roko plan run` would refuse the plan). While another plan run is live the run is queued instead: 202 with `queued: true` and its `position`, started under its `id` when the live run ends; 409 only when the queue's 8 places are taken |
+| POST | `/api/plans/execute` | Execute a plan set, named plans or every plan (body `plans`, `target`, `resume`, `max_parallel_plans`); queued like a single plan |
+| GET | `/api/plans/{id}/status` | Execution status of the run `{id}` names (plan id, member plan id or run id): `running`, then `succeeded`, `failed` (with `error`), `unverified` or `cancelled`, with `finished` and `finished_at`; a run that ended keeps answering for an hour |
 | POST | `/api/plans/{id}/pause` | Pause execution |
 | POST | `/api/plans/{id}/resume` | Resume execution |
+| POST | `/api/plans/{id}/cancel` | Cancel a running run, or take a queued one out of the queue; either ends `cancelled` |
 | GET | `/api/plans/{id}/gates` | Gate results grouped by task |
 | GET | `/api/plans/{id}/costs` | Retry-inclusive spend, ceilings, projections |
 | GET | `/api/plans/{id}/reviews` | Human reviews |
@@ -497,8 +499,13 @@ aliases (both are mounted).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/run` | Spawn a background run (202 Accepted) |
+| POST | `/api/run` | Run the prompt in the background as a gated one-task plan, as `roko run` does (202 Accepted with the run's `id`, which the Graph run takes; 409 while a plan run is live) |
 | GET | `/api/run/{id}/status` | Poll run status |
+
+The status is `running`, then the run's verdict: `succeeded` when gates checked
+its work and passed it, `failed`, or `unverified` when no gate checked it. Only
+`succeeded` sets `success: true`, and the `run_completed` event carries the same
+`verdict`. `GET /api/runs/{id}/summary` reports the same run from its index.
 
 ### 8.4 Run-Scoped Observability
 
@@ -509,6 +516,7 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 |--------|------|-------------|
 | GET | `/api/dashboard/runs` | Bounded summary of hashed per-run indexes |
 | GET | `/api/runs/{run_id}` | Run detail, terminal state, counts, integrity |
+| GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `finished_at`, `links` |
 | GET | `/api/runs/{run_id}/events` | Cursor-paginated events (`?cursor=&limit=&types=&source=`) |
 | GET | `/api/runs/{run_id}/events/stream` | Run-filtered SSE |
 | GET | `/api/runs/{run_id}/tasks` | Task summaries and attempt numbers |
@@ -1030,6 +1038,30 @@ The defaults are the safe choice, and each opt-out is an explicit `[serve]` key:
 | POST | `/api/event-ingest` | Event ingestion endpoint |
 | GET/POST | `/api/workspaces` | Multi-workspace management |
 | GET | `/api/swe-bench/*` | SWE-bench evaluation routes |
+
+### 8.41 MCP for chat hosts
+
+`POST /mcp` (no `/api/` prefix) lets a host such as Hermes or OpenClaw call Roko
+as an MCP tool server. It speaks MCP's Streamable HTTP transport with one JSON
+response per request and no SSE stream: `initialize`, `ping`, `tools/list` and
+`tools/call`; a notification such as `notifications/initialized` gets 202 with no
+body, and protocol errors are JSON-RPC errors. With auth on it takes the API's
+key, scope and RBAC checks (`read` scope, `dashboard:view`), and `tools/call`
+checks each tool's own scope. A request whose `Origin` is not this machine is
+refused with 403, so a web page cannot reach it through DNS rebinding; hosts
+call it from outside a browser and send no `Origin`.
+
+The tools and their arguments are the contract with hosts. Both only read
+(`annotations.readOnlyHint: true`), and each returns its JSON as text and as
+`structuredContent`; a tool's own failure, such as an unknown run, is a result
+with `isError: true`.
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `run_status` | `run_id` (string, required); `wait_secs` (integer, 0 to 30, default 0) | The run's summary, as `GET /api/runs/{run_id}/summary` returns it, once its state changes, it has ended, or `wait_secs` pass |
+| `recall` | `query` (string, required); `limit` (integer, 1 to 50, default 5) | The knowledge store's entries on `query`, most relevant first, as `GET /api/knowledge` returns them |
+
+There is no `remember`: personal memory stays with the host.
 
 ---
 

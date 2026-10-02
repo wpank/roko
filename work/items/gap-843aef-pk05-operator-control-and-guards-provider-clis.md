@@ -87,3 +87,17 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK04 (gap-198c9c).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-843aef`; cargo verification deferred to the batch gate. The portal change (1220) was written
+by hand: npm, vitest and `tsc` were not run.
+
+- 1212: implemented at d75891cb3
+- 1213: implemented at e847cea8b
+- 1215: implemented at c29d33858
+- 1216: implemented at a97022723
+- 1217: implemented at de9465618
+- 1218: implemented at d9e1acadc
+- 1219: implemented at 073ca943c
+- 1220: implemented at c77015269

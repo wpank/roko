@@ -121,8 +121,6 @@ pub mod defaults;
 
 pub mod demurrage;
 pub mod dispatch_plan;
-/// Domain profiles for agent specialization: gate defaults, tool sets, context templates.
-pub mod domain_profile;
 /// Canonical single-unit duration parser (`ms`, `s`, `m`, `h`, `d`).
 pub mod duration;
 /// Backward-compatible re-export module — canonical definitions live in [`signal`].
@@ -314,7 +312,6 @@ pub use dispatch_plan::{
     DispatchPlan, DispatchRequest, DispatchRequirement, FallbackPolicy, ProviderDispatchError,
     TransportAuth, TransportPlan,
 };
-pub use domain_profile::{DomainProfile, TypedContext};
 pub use duration::{DurationParseError, parse_duration, parse_duration_ms};
 pub use error::{Result, RokoError};
 pub use feed::{

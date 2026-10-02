@@ -7,17 +7,15 @@ Y_i ∈ {0, 1} their labels (1 = false green; γ̂ and ω̂ take the gaming and 
     θ̂_H   = Σ_s w_i Y_i / N̂,   N̂ = Σ_s w_i          Hájek: the reported estimate
     v̂     = Σ_s (1 − π_i) w_i² (Y_i − θ̂_H)² / N̂²    its linearized variance under Poisson sampling
     n_eff = N̂² / Σ_s w_i²                           Kish's effective sample size
-    CI    = Wald on v̂ when n_eff ≥ 30 with at least 5 events (and 5 non-events), else Wilson at n_eff
+    CI    = Wilson at n_eff, in every cell
 
-- **The interval** (`interval`). Wald is θ̂_H ± z·√v̂, Wilson the score interval for θ̂_H at the (fractional)
-  n_eff; both are clipped to [0, 1], with z = Φ⁻¹(1 − α/2), `Z95` at α = 0.05. S05 names the event count; the
-  non-event count is the same rule for the other tail, where θ̂_H = 1 would give Wald zero width. An empty sample
-  has a Horvitz–Thompson estimate of 0, no Hájek estimate, and the vacuous interval [0, 1].
-- **How far to trust Wald.** In 20,000 simulated lotteries per cell (60 to 400 units, uniform and M3-tilted
-  selection; 2026-10-02), the Wald branch, where it applied (ρ = 0.30 at 200 units, ρ = 0.15 at 400), covered as
-  little as 0.93 under a uniform lottery and 0.91 under a strong tilt, while Wilson at n_eff covered at least 0.957
-  in every cell. The 60-unit first slice at every ρ, SC1's primary cell (ρ = 0.15 tilted: n_eff about 13 over 120
-  units, 22 over 200) and 200-unit windows at ρ = 0.10 almost always stay below n_eff = 30, where the rule is Wilson.
+- **The interval** (`wilson`). The Wilson score interval for θ̂_H at the (fractional) n_eff, clipped to [0, 1], with
+  z = Φ⁻¹(1 − α/2), `Z95` at α = 0.05; `ci_method` is always "wilson_eff". An empty sample has a Horvitz–Thompson
+  estimate of 0, no Hájek estimate, and the vacuous interval [0, 1]. v̂ is reported beside it.
+- **No Wald branch** (gap-a499aa; Will's decision of 2026-10-02). S05 §4.5 first took Wald, θ̂_H ± z·√v̂, once
+  n_eff ≥ 30 with at least 5 events. In 20,000 simulated lotteries per cell (60 to 400 units, uniform and M3-tilted
+  selection; 2026-10-02), that branch covered 0.909 (tilted, ρ = 0.30, 200 units), 0.927 (tilted, ρ = 0.15, 400
+  units) and 0.933 (uniform) against SC1's 0.93, while Wilson at n_eff covered at least 0.957 in every cell.
 - **Null labels** (a battery error or timeout): `null_bounds` gives the estimate with every missing label read as 0,
   and again as 1.
 - **The live sequence** (`betting_cs`). For every green unit in stream order, audited or not,
@@ -34,13 +32,12 @@ The arithmetic is the reference for roko-gate's `audit` module (7114), through `
 `math.fsum`, and the betting process uses only +, −, ×, ÷, √ and the logarithm in its bets.
 
 API:
-    Z95; z_value(alpha) -> float
+    Z95; CI_METHOD; z_value(alpha) -> float
     Estimate(n_green, n_audited, events, n_hat, theta_ht, theta_hajek, variance, n_eff, ci, ci_method, alpha)
         .record() -> dict
     estimate(audited: Iterable[(pi, y)], n_green: int, alpha=0.05) -> Estimate
     null_bounds(audited: Iterable[(pi, y | None)], n_green, alpha=0.05) -> (Estimate missing = 0, Estimate missing = 1)
-    interval(theta, variance, n_eff, events, nonevents, z) -> ((low, high), "wald" | "wilson_eff")
-    wilson(p, n, z=Z95) -> (low, high)
+    wilson(p, n, z=Z95) -> (low, high)                  # the interval, at n = n_eff
     audit_z(selected: bool, y: int | None, pi: float) -> float
     hedged_capital(xs: Sequence[float], m: float, alpha=0.05) -> list[float]      # K_t^±(m) after each x_t
     betting_cs(z: Sequence[float], alpha=0.05, *, z_max=1.0, grid=1000) -> list[(low, high) | None]
@@ -57,8 +54,7 @@ from statistics import NormalDist
 from audit.lottery import EPS_FLOOR
 
 Z95 = 1.959963984540054  # Φ⁻¹(0.975), as scipy prints it; Rust hardcodes the same double
-WALD_MIN_N_EFF = 30.0
-WALD_MIN_EVENTS = 5
+CI_METHOD = "wilson_eff"  # Wilson at Kish n_eff, in every cell (gap-a499aa)
 CS_C = 0.5  # the bet truncation c of Waudby-Smith and Ramdas: a factor never drops below 1 − c
 CS_HEDGE = 0.5  # weight of the upward process; the downward one gets the rest
 CS_GRID = 1000
@@ -101,15 +97,14 @@ def estimate(audited: Iterable[tuple[float, int]], n_green: int, alpha: float = 
     z = z_value(alpha)
     events = sum(y for _, y in units)
     if not units:
-        return Estimate(n_green, 0, 0, 0.0, 0.0, None, None, 0.0, (0.0, 1.0), "wilson_eff", alpha)
+        return Estimate(n_green, 0, 0, 0.0, 0.0, None, None, 0.0, (0.0, 1.0), CI_METHOD, alpha)
     n_hat = math.fsum(1.0 / pi for pi, _ in units)
     weighted = math.fsum(y / pi for pi, y in units)
     theta_hajek = weighted / n_hat
     variance = math.fsum((1.0 - pi) * (y - theta_hajek) ** 2 / pi ** 2 for pi, y in units) / n_hat ** 2
     n_eff = n_hat ** 2 / math.fsum(1.0 / pi ** 2 for pi, _ in units)
-    ci, method = interval(theta_hajek, variance, n_eff, events, len(units) - events, z)
-    return Estimate(n_green, len(units), events, n_hat, weighted / n_green, theta_hajek, variance, n_eff, ci, method,
-                    alpha)
+    return Estimate(n_green, len(units), events, n_hat, weighted / n_green, theta_hajek, variance, n_eff,
+                    wilson(theta_hajek, n_eff, z), CI_METHOD, alpha)
 
 
 def null_bounds(audited: Iterable[tuple[float, int | None]], n_green: int,
@@ -119,15 +114,6 @@ def null_bounds(audited: Iterable[tuple[float, int | None]], n_green: int,
     low = estimate([(pi, 0 if y is None else y) for pi, y in units], n_green, alpha)
     high = estimate([(pi, 1 if y is None else y) for pi, y in units], n_green, alpha)
     return low, high
-
-
-def interval(theta: float, variance: float, n_eff: float, events: int, nonevents: int,
-             z: float) -> tuple[tuple[float, float], str]:
-    """Wald on the variance when n_eff ≥ 30 with at least 5 events and 5 non-events, else Wilson at n_eff."""
-    if n_eff >= WALD_MIN_N_EFF and events >= WALD_MIN_EVENTS and nonevents >= WALD_MIN_EVENTS:
-        half = z * math.sqrt(variance)
-        return (max(0.0, theta - half), min(1.0, theta + half)), "wald"
-    return wilson(theta, n_eff, z), "wilson_eff"
 
 
 def wilson(p: float, n: float, z: float = Z95) -> tuple[float, float]:

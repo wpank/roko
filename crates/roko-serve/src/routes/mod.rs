@@ -31,6 +31,7 @@ mod integrations;
 mod jobs;
 mod learning;
 mod marketplace;
+mod mcp;
 pub(crate) mod meta;
 mod metrics;
 pub(crate) mod middleware;
@@ -472,6 +473,30 @@ pub fn build_router(
         relay_proxy::routes()
     };
 
+    // MCP for chat hosts (9114), at the root like the relay: the API's auth
+    // layers when auth is on, and its secret scrubbing always.
+    let mcp = if api_auth.enabled {
+        mcp::routes()
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                rbac_middleware::require_route_permission,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                middleware::require_scope,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                middleware::require_api_key,
+            ))
+    } else {
+        mcp::routes()
+    };
+    let mcp = mcp.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(&state.scrubber),
+        middleware::scrub_secrets,
+    ));
+
     let router = Router::new()
         // Top-level liveness probe — no auth, no /api prefix.
         .route("/health", get(top_level_health))
@@ -492,6 +517,7 @@ pub fn build_router(
         .nest("/api", api)
         .merge(ws)
         .merge(relay)
+        .merge(mcp)
         // API/WS typos are JSON 404s; browser routes retain the SPA fallback.
         .fallback(crate::serve_api_or_spa_fallback);
 
@@ -2539,6 +2565,8 @@ mod tests {
             ("/api/team/members/did:test", "write"),
             ("/api/webhooks/generic", "write"),
             ("/api/providers/openai/test", "write"),
+            // read: tools/call checks each MCP tool's own scope
+            ("/mcp", "read"),
         ];
 
         for (path, expected_scope) in router_routes {

@@ -31,16 +31,25 @@ the processes' own sockets: a system service the code asks over Mach IPC is not 
 "sandbox-exec+net" when a network rule applies; off macOS it reports "none", since nothing applies it there, and the
 run record says so.
 
+**The Rust toolchain** (gap-46fd19, Will's decision of 2026-10-02). Every sandbox that `command` applies also keeps
+the host's Rust toolchain read-only (`toolchain.read_only`: RUSTUP_HOME and the operator's CARGO_HOME), so the
+confined code can read and run cargo and rustc but cannot change them, rustup's settings or the operator's cargo
+config for later runs. Passing `read_only` replaces that default list. It adds to a sandbox that `deny` or a network
+rule applies and on its own applies none, so `kind` is the same with or without it. The toolchain reaches the
+confined code through its environment (`toolchain.Toolchain.env`, which `driver/agent_env` and the verifier CI
+apply).
+
 API:
     KIND: str                                           # "sandbox-exec" or "none", on this host
     NETWORK_NONE: str                                   # "none", the rule with no outgoing connection
     command(argv: Sequence[str], *, deny: Iterable[str | Path], network: str | None = None,
-            sockets: Iterable[str | Path] = ()) -> list[str]
+            sockets: Iterable[str | Path] = (), read_only: Iterable[str | Path] | None = None) -> list[str]
     kind(deny: Sequence[str | Path], network: str | None = None) -> str     # what `command` applies on this host
     loopback(*ports: int) -> str                        # the rule for those loopback ports
     ports(network: str | None) -> tuple[int, ...]       # the loopback ports a rule admits; ValueError if unknown
     denied(secret_file: str | Path, task_file: str | Path) -> tuple[Path, Path]   # the secret file and DIR
-    profile(deny: Iterable[str | Path], network: str | None = None, sockets: Iterable[str | Path] = ()) -> str
+    profile(deny: Iterable[str | Path], network: str | None = None, sockets: Iterable[str | Path] = (),
+            read_only: Iterable[str | Path] = ()) -> str
 """
 
 from __future__ import annotations
@@ -51,6 +60,8 @@ import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
+from . import toolchain
+
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 KIND = "sandbox-exec" if sys.platform == "darwin" and os.access(SANDBOX_EXEC, os.X_OK) else "none"
 NETWORK_NONE = "none"
@@ -59,15 +70,17 @@ LOOPBACK_RULE = re.compile(r"loopback:([0-9]{1,5}(?:,[0-9]{1,5})*)")
 
 
 def command(argv: Sequence[str], *, deny: Iterable[str | Path], network: str | None = None,
-            sockets: Iterable[str | Path] = ()) -> list[str]:
-    """`argv` run so that every file operation on a path in `deny` fails and, under a `network` rule, every outgoing
-    connection the rule does not admit fails; `argv` itself when there is nothing to apply or no sandbox on this host
-    (`KIND`). An unknown rule raises ValueError on every host."""
+            sockets: Iterable[str | Path] = (), read_only: Iterable[str | Path] | None = None) -> list[str]:
+    """`argv` run so that every file operation on a path in `deny` fails, every write to a path in `read_only` (by
+    default the Rust toolchain, `toolchain.read_only`) fails and, under a `network` rule, every outgoing connection
+    the rule does not admit fails; `argv` itself when neither `deny` nor a rule applies or there is no sandbox on
+    this host (`KIND`). An unknown rule raises ValueError on every host."""
     deny, sockets = list(deny), list(sockets)
     ports(network)  # refuse an unknown rule here too, not only where a profile is built
     if KIND != "sandbox-exec" or not (deny or network is not None):
         return list(argv)
-    return [SANDBOX_EXEC, "-p", profile(deny, network, sockets), *argv]
+    kept = toolchain.read_only() if read_only is None else list(read_only)
+    return [SANDBOX_EXEC, "-p", profile(deny, network, sockets, kept), *argv]
 
 
 def kind(deny: Sequence[str | Path], network: str | None = None) -> str:
@@ -103,11 +116,15 @@ def denied(secret_file: str | Path, task_file: str | Path) -> tuple[Path, Path]:
     return Path(secret_file), Path(task_file).parent
 
 
-def profile(deny: Iterable[str | Path], network: str | None = None, sockets: Iterable[str | Path] = ()) -> str:
-    """A sandbox-exec profile that allows everything but file operations on the resolved `deny` paths and, under a
-    `network` rule, outgoing connections the rule does not admit. A later rule wins, so the allows follow the deny."""
+def profile(deny: Iterable[str | Path], network: str | None = None, sockets: Iterable[str | Path] = (),
+            read_only: Iterable[str | Path] = ()) -> str:
+    """A sandbox-exec profile that allows everything but file operations on the resolved `deny` paths, writes to the
+    resolved `read_only` paths and, under a `network` rule, outgoing connections the rule does not admit. A later
+    rule wins, so the allows follow the deny."""
     paths = sorted({os.path.realpath(path) for path in deny})
     rules = "".join(f' (deny file* (subpath "{_quoted(path)}"))' for path in paths)
+    rules += "".join(f' (deny file-write* (subpath "{_quoted(path)}"))'
+                     for path in sorted({os.path.realpath(path) for path in read_only}))
     if network is not None:
         rules += " (deny network-outbound)"
         rules += "".join(f' (allow network-outbound (remote ip "localhost:{port}"))' for port in ports(network))

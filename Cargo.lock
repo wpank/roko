@@ -6844,6 +6844,7 @@ dependencies = [
  "roko-gateway",
  "roko-graph",
  "roko-learn",
+ "roko-mcp-stdio",
  "roko-neuro",
  "roko-plugin",
  "roko-primitives",

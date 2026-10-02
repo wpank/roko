@@ -11,9 +11,11 @@
 //!   locale, toolchain and proxy settings, and `ROKO_*`. Credential-looking
 //!   names and names roko loaded from a `.env` file are dropped even when the
 //!   allowlist matches them. See [`gate_env`].
-//! - **Provider CLIs** (Claude, Codex, Gemini, Cursor, Hermes, OpenClaw) keep
-//!   their inherited environment minus the provider credentials they do not
-//!   own. See [`CredentialScrub`].
+//! - **Provider CLIs** (Claude, Codex, Gemini, Cursor, Hermes, OpenClaw) and
+//!   MCP servers keep their inherited environment minus every credential they
+//!   do not own: provider keys, names that look like a credential
+//!   (`GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`) and names roko loaded from a
+//!   `.env` file. See [`CredentialScrub`].
 //!
 //! Both accept passthrough patterns from config (`[gates] env_passthrough`,
 //! `[agent] env_passthrough`): an exact name (`DATABASE_URL`) or a prefix
@@ -33,6 +35,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+
+use parking_lot::Mutex;
 
 use crate::agent::ProviderKind;
 use crate::config::loader::config_text_holds_secrets;
@@ -355,17 +359,26 @@ const fn native_credentials(kind: ProviderKind) -> &'static [&'static str] {
 ///
 /// A provider CLI keeps its inherited environment except for:
 /// - known LLM provider keys ([`is_provider_key_var`]),
-/// - every name roko loaded from a `.env` file, and
-/// - roko's own credentials (`ROKO_*` names that look secret, such as a serve
-///   admin key).
+/// - every name that looks like a credential ([`is_secret_env_name`]), known
+///   to roko or not: `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`,
+///   `STRIPE_SECRET_KEY`, and roko's own `ROKO_*` credentials such as a serve
+///   admin key, and
+/// - every name roko loaded from a `.env` file.
 ///
-/// Three exemptions apply. Names matching a `keep` pattern stay (the
+/// Two exemptions apply. Names matching a `keep` pattern stay (the
 /// provider's `api_key_env`, `[agent] env_passthrough`, variables an MCP
 /// config the agent receives refers to). The CLI's own credentials stay when
 /// they came from the environment roko was started with rather than from
 /// roko's `.env` files: a user's exported `ANTHROPIC_API_KEY` still reaches
 /// `claude` exactly as it would without roko, while a key only roko loaded
 /// does not.
+///
+/// A CLI that reads another credential itself, such as Claude Code on
+/// Bedrock or Vertex reading `AWS_*` or `GOOGLE_APPLICATION_CREDENTIALS`,
+/// gets it when `[agent] env_passthrough` names it.
+///
+/// The default policy, with no owner, is the one MCP servers get. The names
+/// a policy strips are logged at debug, each once per process.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CredentialScrub {
     owner: Option<ProviderKind>,
@@ -405,9 +418,8 @@ impl CredentialScrub {
     /// Whether the subprocess loses the inherited variable `name`.
     #[must_use]
     pub fn strips(&self, name: &str, dotenv: &DotenvNames) -> bool {
-        let credential = is_provider_key_var(name)
-            || dotenv.is_listed(name)
-            || (name.starts_with("ROKO_") && is_secret_env_name(name));
+        let credential =
+            is_provider_key_var(name) || is_secret_env_name(name) || dotenv.is_listed(name);
         if !credential || matches_any(name, &self.keep) {
             return false;
         }
@@ -474,9 +486,30 @@ impl CredentialScrub {
             .filter_map(|(name, _)| name.into_string().ok())
             .filter(|name| !explicit.contains(OsStr::new(name)))
             .collect();
-        for name in self.names_to_strip(inherited.iter().map(String::as_str), startup_dotenv()) {
+        let stripped = self.names_to_strip(inherited.iter().map(String::as_str), startup_dotenv());
+        log_stripped(stripped.iter().map(String::as_str));
+        for name in stripped {
             cmd.env_remove(name);
         }
+    }
+}
+
+/// Log at debug the inherited variables a [`CredentialScrub`] kept out of a
+/// child, each name once per process. Names only, never values.
+fn log_stripped<'a>(names: impl IntoIterator<Item = &'a str>) {
+    static LOGGED: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    let fresh: Vec<&str> = {
+        let mut logged = LOGGED.get_or_init(|| Mutex::new(BTreeSet::new())).lock();
+        names
+            .into_iter()
+            .filter(|name| logged.insert((*name).to_string()))
+            .collect()
+    };
+    if !fresh.is_empty() {
+        tracing::debug!(
+            names = %fresh.join(","),
+            "inherited credentials kept out of a child process"
+        );
     }
 }
 
@@ -493,9 +526,10 @@ pub fn apply_credential_scrub_from(
 ) {
     let explicit = explicit_env(cmd);
     let dotenv = startup_dotenv();
-    let kept = inherited
+    let (stripped, kept): (Vec<_>, Vec<_>) = inherited
         .into_iter()
-        .filter(|(name, _)| !scrub.strips(name, dotenv));
+        .partition(|(name, _)| scrub.strips(name, dotenv));
+    log_stripped(stripped.iter().map(|(name, _)| name.as_str()));
     cmd.env_clear();
     cmd.envs(kept);
     restore_env(cmd, explicit);
@@ -792,9 +826,35 @@ mod tests {
             vec![
                 "OPENAI_API_KEY",
                 "GEMINI_API_KEY",
+                "GITHUB_TOKEN",
                 "ROKO_SERVE_AUTH_API_KEY"
             ]
         );
+    }
+
+    #[test]
+    fn credential_scrub_strips_unknown_secret_names() {
+        let scrub = CredentialScrub::for_kind(ProviderKind::ClaudeCli);
+        let dotenv = DotenvNames::new();
+        // Exported secrets whose names roko does not know as provider keys.
+        for name in [
+            "AWS_SECRET_ACCESS_KEY",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "STRIPE_SECRET_KEY",
+        ] {
+            assert!(scrub.strips(name, &dotenv), "{name} should be stripped");
+        }
+        for name in ["PATH", "HOME"] {
+            assert!(!scrub.strips(name, &dotenv), "{name} should be kept");
+        }
+        // Claude's own key, exported in the shell roko started from.
+        assert!(!scrub.strips("ANTHROPIC_API_KEY", &dotenv));
+        // A CLI that reads a cloud credential itself gets it through a keep
+        // pattern (`[agent] env_passthrough = ["AWS_*"]`).
+        let scrub = scrub.keep("AWS_*");
+        assert!(!scrub.strips("AWS_SECRET_ACCESS_KEY", &dotenv));
+        assert!(scrub.strips("GITHUB_TOKEN", &dotenv));
     }
 
     #[test]
@@ -908,12 +968,11 @@ mod tests {
                 ("PERPLEXITY_API_KEY", "pplx-inherited"),
             ]),
         );
-        // A blocklist: a shell `GITHUB_TOKEN` stays, provider keys and
-        // roko's own credentials go, and a value set on the command wins.
+        // Provider keys, roko's own credentials and a shell `GITHUB_TOKEN`
+        // go, other variables stay, and a value set on the command wins.
         assert_eq!(
             command_env(&cmd),
             vec![
-                set("GITHUB_TOKEN", "ghp_test"),
                 set("MCP_SERVER_SETTING", "from-config"),
                 set("PATH", "/usr/bin:/bin"),
                 set("PERPLEXITY_API_KEY", "named-in-the-config"),

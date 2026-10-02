@@ -53,7 +53,7 @@ pub async fn metrics_handler(State(state): State<Arc<AppState>>) -> Response {
     let _ = writeln!(output, "# TYPE roko_agents_active gauge");
     let _ = writeln!(output, "roko_agents_active {active_agents}");
 
-    let active_plans = state.active_plans.read().await.len();
+    let active_plans = state.live_plan_runs().await;
     let _ = writeln!(
         output,
         "# HELP roko_plans_active Number of currently executing plans"

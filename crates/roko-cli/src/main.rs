@@ -45,18 +45,13 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use commands::backlog::BacklogCmd;
 use commands::bench::BenchCmd;
 use commands::cache::CacheCmd;
-use commands::config_cmd::{
-    ConfigCmd, ConfigModelCmd, ConfigProviderCmd, ConfigSubscriptionCmd, PluginCmd,
-};
+use commands::config_cmd::{ConfigCmd, ConfigModelCmd, ConfigProviderCmd};
 use commands::experiment::{ExperimentCmd, dispatch_experiment};
 use commands::job::JobCmd;
-use commands::knowledge::{
-    DreamCmdLegacy, KnowledgeCmd, KnowledgeCustodyCmd, KnowledgeDreamCmd, KnowledgeSyncDirection,
-    NeuroCmd,
-};
-use commands::learn::{ExperimentsSubCmd, InspectSubsystem, LearnCmd};
+use commands::knowledge::KnowledgeCmd;
+use commands::learn::{InspectSubsystem, LearnCmd};
 use commands::mcp::ConfigMcpCmd;
-use commands::plan::{PlanCmd, PlanEngine, QueueCmd};
+use commands::plan::PlanCmd;
 use commands::prd::{PrdCmd, PrdDraftCmd};
 use commands::research::{ResearchBackend, ResearchCmd, SearchRecency};
 use commands::run_index::RunIndexCmd;

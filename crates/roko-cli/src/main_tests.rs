@@ -499,6 +499,7 @@ fn cli_parses_doctor_subcommand() {
             subject: None,
             workdir: Some(_),
             serve_url: Some(_),
+            fix: false,
         })
     ));
 }
@@ -511,6 +512,19 @@ fn cli_parses_doctor_disk_subreport() {
         Some(Command::Doctor {
             subject: Some(DoctorSubject::Disk),
             workdir: Some(_),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn cli_parses_doctor_disk_fix() {
+    let cli = Cli::try_parse_from(["roko", "doctor", "disk", "--fix"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Doctor {
+            subject: Some(DoctorSubject::Disk),
+            fix: true,
             ..
         })
     ));

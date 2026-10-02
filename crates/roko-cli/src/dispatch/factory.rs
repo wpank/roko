@@ -345,10 +345,14 @@ impl SharedAgentFactory {
     /// Load the error pattern store from disk at the given workspace root.
     #[must_use]
     pub fn with_error_patterns_from_disk(mut self, workdir: &Path) -> Self {
-        let path = workdir
-            .join(".roko")
-            .join("learn")
-            .join("error-patterns.json");
+        let learn_dir = workdir.join(".roko").join("learn");
+        // Runner-v2's pattern file is set aside, never read (backlog 4204).
+        if let Err(error) =
+            roko_learn::error_pattern_store::retire_legacy_discovered_patterns(&learn_dir)
+        {
+            tracing::warn!(%error, "factory: Runner-v2's pattern file could not be set aside");
+        }
+        let path = learn_dir.join(roko_learn::error_pattern_store::ERROR_PATTERNS_FILE);
         let store = ErrorPatternStore::load(&path);
         tracing::debug!(
             pattern_count = store.len(),

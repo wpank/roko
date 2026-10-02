@@ -59,6 +59,38 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// The store's file name in `.roko/learn`: the one pattern file plan runs
+/// write and every reader loads (backlog 4204).
+pub const ERROR_PATTERNS_FILE: &str = "error-patterns.json";
+
+/// Runner-v2's pattern file in `.roko/learn`, which nothing writes any more.
+/// [`retire_legacy_discovered_patterns`] sets it aside.
+pub const LEGACY_DISCOVERED_PATTERNS_FILE: &str = "discovered-patterns.json";
+
+/// Set aside Runner-v2's pattern file in `learn_dir`: rename it to
+/// `discovered-patterns.json.v2-legacy`, the suffix roko-fs migrations use,
+/// and log it. Its rows carry no task or command key, so keyed selection
+/// would never pick them: they are not imported. A file already set aside is
+/// never overwritten. Returns whether a file was set aside (backlog 4204).
+///
+/// # Errors
+///
+/// Returns the I/O error of a rename that failed.
+pub fn retire_legacy_discovered_patterns(learn_dir: &Path) -> std::io::Result<bool> {
+    let legacy = learn_dir.join(LEGACY_DISCOVERED_PATTERNS_FILE);
+    let retired = learn_dir.join(format!("{LEGACY_DISCOVERED_PATTERNS_FILE}.v2-legacy"));
+    if !legacy.is_file() || retired.exists() {
+        return Ok(false);
+    }
+    std::fs::rename(&legacy, &retired)?;
+    tracing::info!(
+        from = %legacy.display(),
+        to = %retired.display(),
+        "set aside Runner-v2's pattern file; plan runs read {ERROR_PATTERNS_FILE}"
+    );
+    Ok(true)
+}
+
 /// A single normalized error pattern with occurrence tracking.
 ///
 /// Patterns are keyed by [`ErrorPattern::key`]. Older digest-only rows are
@@ -729,6 +761,23 @@ fn truncate_chars(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// backlog 4204: Runner-v2's pattern file is renamed aside, never
+    /// deleted or imported, and a second call finds nothing to do.
+    #[test]
+    fn legacy_discovered_patterns_file_is_set_aside() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let legacy = tmp.path().join(LEGACY_DISCOVERED_PATTERNS_FILE);
+        std::fs::write(&legacy, "{\"patterns\":{}}").expect("write the legacy file");
+
+        assert!(retire_legacy_discovered_patterns(tmp.path()).expect("set aside"));
+        assert!(!legacy.exists());
+        let retired = tmp.path().join("discovered-patterns.json.v2-legacy");
+        let kept = std::fs::read_to_string(&retired).expect("the file set aside");
+        assert_eq!(kept, "{\"patterns\":{}}");
+        assert!(!tmp.path().join(ERROR_PATTERNS_FILE).exists(), "nothing imported");
+        assert!(!retire_legacy_discovered_patterns(tmp.path()).expect("nothing to do"));
+    }
     use tempfile::TempDir;
 
     #[test]

@@ -1,16 +1,16 @@
 //! Per-model pricing tables and cost normalization utilities.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::collections::HashMap;
 
 use indexmap::IndexMap;
-use parking_lot::Mutex;
 use roko_agent::Usage;
 use roko_core::config::model_registry::{
     DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER, is_snapshot_of,
 };
 use roko_core::config::schema::ModelProfile;
 use serde::{Deserialize, Serialize};
+
+pub use roko_core::config::model_registry::warn_unpriced_model;
 
 /// Pricing for a single model slug.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,24 +203,6 @@ impl CostTable {
             tracing::info!(updated, "P3-33: cost table refreshed from config");
         }
         updated
-    }
-}
-
-/// Log, once per slug, that `model_slug` has no price row, so its usage is
-/// recorded with an unknown cost (gap-ad0d39). The gateway's cost tracker
-/// logs through it too (bug-39d15f), so a model is reported once.
-pub fn warn_unpriced_model(model_slug: &str) {
-    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let first = WARNED
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .insert(model_slug.to_string());
-    if first {
-        tracing::warn!(
-            model = model_slug,
-            "no price for this model: its usage is recorded with an unknown cost; set \
-             cost_input_per_m and cost_output_per_m on its [models.*] entry"
-        );
     }
 }
 

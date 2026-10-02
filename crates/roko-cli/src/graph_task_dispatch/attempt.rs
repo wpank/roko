@@ -29,8 +29,8 @@ use roko_learn::telemetry::records::{
 };
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord,
-    AttemptOrdinals, AttemptTiming, AttemptVerdictRecord, Blame, CostSource, ExecutedModel,
-    ExposureCounts, ExposureRecord, GateVerdictTag, HelperCallsUsage, TelemetryEvent,
+    AttemptOrdinals, AttemptTiming, AttemptVerdictRecord, Blame, ContentDecisionRecord, CostSource,
+    ExecutedModel, ExposureCounts, ExposureRecord, GateVerdictTag, HelperCallsUsage, TelemetryEvent,
     TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,
 };
 use sha2::Digest;
@@ -337,6 +337,12 @@ impl AttemptContext {
     /// `exposures.jsonl` (S01 P0-9).
     pub(super) fn record_exposure(&self, exposure: ExposureRecord) {
         self.run.submit(exposure);
+    }
+
+    /// Queue the content decision the attempt's prompt made at one decision
+    /// point for the run's `decisions.jsonl` (S01 P0-9).
+    pub(super) fn record_content_decision(&self, decision: ContentDecisionRecord) {
+        self.run.submit(decision);
     }
 
     /// The attempt's prompt retrieved and included `counts` content items,

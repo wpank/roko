@@ -17,10 +17,10 @@ _7 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRI
 ## 2. Whitepaper v1 and the research papers
 
 - **P1** [gap-d4a1c1](items/gap-d4a1c1-pk95-papers-freeze-the-audit-s-live.md) PK95 Papers: Freeze the audit's live-run findings (R3, R4) as whitepaper evidence (+10 more) · size L · verified 2026-10-02
-- **P2** [gap-a6dab7](items/gap-a6dab7-pk96-papers-figure-and-table-scripts-for.md) PK96 Papers: Figure and table scripts for the P1 results (F2–F5, F9; T3, T7, T9, T11), dry-run on… (+5 more) · size L · verified 2026-10-02
 - **P2** [gap-d2507f](items/gap-d2507f-pk97-papers-companion-fill-the-e2-and.md) PK97 Papers: Companion: fill the E2 and E3 results from the human ratings, and redraw Figure 3 (+2 more) · size M · verified 2026-10-02
+- **P2** [gap-9b5582](items/gap-9b5582-pk99-papers-research-paper-5-and-appendix.md) PK99 Papers: Research paper §5 and Appendix D: cite the pre-registration lock for every number and… (+1 more) · size S · verified 2026-10-02
 
-_5 more open · on hold: gap-6aaee9, gap-85f86a, gap-ac1aed, gap-b90650 · 2 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_4 more open · on hold: gap-6aaee9, gap-85f86a, gap-ac1aed, gap-b90650 · 2 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
@@ -44,7 +44,7 @@ _4 more open · on hold: gap-c013c5 · 4 unchecked (`TRIAGE.md`) · `goal = "gol
 - **P1** [gap-46fd19](items/gap-46fd19-pk22-viabilitybench-proof-analysis-bootstrap-py-the.md) PK22 ViabilityBench proof: analysis/bootstrap.py: the paired bootstrap stratified by family and level (+5 more) · size L · verified 2026-10-02
 - **P2** [gap-eb1aa3](items/gap-eb1aa3-pk23-viabilitybench-proof-family-f6-ts-result.md) PK23 ViabilityBench proof: Family F6 ts-result: the TypeScript transfer probe (+2 more) · size L · verified 2026-10-02
 
-_10 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 10 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_9 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 10 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -52,7 +52,7 @@ _10 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a
 - **P2** [gap-f61823](items/gap-f61823-pk10-decision-records-and-census-exposure-and.md) PK10 Decision records and census: Exposure and content-decision record types, and the telemetry report reads them (+9 more) · size L · verified 2026-10-02
 - **P2** [gap-b5caf3](items/gap-b5caf3-pk32-loops-re-closed-retire-the-legacy.md) PK32 Loops re-closed: Retire the legacy holdout from Graph runs: its learning gate gates nothing (+11 more) · size L · verified 2026-10-02
 
-_31 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_30 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

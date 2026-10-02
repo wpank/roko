@@ -2,7 +2,7 @@
 id = "gap-a6dab7"
 kind = "gap"
 title = "PK96 Papers: Figure and table scripts for the P1 results (F2–F5, F9; T3, T7, T9, T11), dry-run on… (+5 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -12,6 +12,7 @@ subsystem = ["companion"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "e74148090"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK96"
 anchors = ["tmp/cybernetic-harness/companion-audit/E10-DRAFT.md"]
 lane = "paper"
@@ -35,6 +36,17 @@ command = "! grep -v '^>' tmp/cybernetic-harness/companion-audit/E10-DRAFT.md | 
 
 [[verify]]
 command = "python3 -c \"import csv,sys;r=list(csv.DictReader(open('tmp/cybernetic-harness/companion-audit/HUMAN-RATING-E6.csv')));sys.exit(0 if len(r)==150 else 1)\" && grep -qE '^Joined sessions: [0-9]+' tmp/cybernetic-harness/companion-audit/research/E6-TRANSCRIPT-JOIN.md"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T16:52:36Z"
+commit = "e74148090"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T13:40:01Z"
+forced = false
+evidence = "Gate 2 (merged as e74148090): test_figures_p1 (7 passed) and test_figures_p2 (4 passed) in the bench venv; the four companion-audit verifies pass in the main checkout (untracked tmp/)."
 +++
 
 ## Problem

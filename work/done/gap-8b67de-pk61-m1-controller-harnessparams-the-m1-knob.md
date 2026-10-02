@@ -2,7 +2,7 @@
 id = "gap-8b67de"
 kind = "gap"
 title = "PK61 M1 controller: HarnessParams: the M1 knob surface with notch ladders, θ₀, an atomic handle and a… (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -12,6 +12,7 @@ subsystem = ["roko-learn/homeostasis"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "e74148090"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK61"
 anchors = ["crates/roko-core/src/config/mod.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-learn/Cargo.toml", "crates/roko-learn/src/lib.rs"]
 lane = "rust-cold"
@@ -41,6 +42,17 @@ command = "grep -rqw 'fn guarded_commit_rolls_back_on_failed_check' crates/roko-
 
 [[verify]]
 command = "grep -rqw 'fn first_move_lies_in_requisite_variety_row' crates/roko-learn/ && cargo test -p roko-learn first_move_lies_in_requisite_variety_row"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T16:52:22Z"
+commit = "e74148090"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T13:40:01Z"
+forced = false
+evidence = "Gate 2 on work/backlog-batch-2 at 2199ba9ea (merged as e74148090, identical tree): cargo check --workspace --tests, clippy -D warnings (roko-core/learn/gate/cli), nextest --lib 7,385 passed; all 8 verifies pass (lib tests named in each verify passed; static parts rc=0). CUSUM/EWMA moved to roko_learn::homeostasis::spc per Will's decision (14d74247b); roko layer-check: no violations."
 +++
 
 ## Problem

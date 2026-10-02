@@ -2,7 +2,7 @@
 id = "gap-a63e3c"
 kind = "gap"
 title = "PK81 Showcase and deploy: `roko init --cloud` and the example config register deploy webhooks on another… (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -12,6 +12,7 @@ subsystem = ["demo-app/showcase"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "e74148090"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK81"
 anchors = [".github/workflows/deploy-fly.yml", "crates/roko-cli/src/commands/init.rs", "crates/roko-cli/src/commands/server.rs", "crates/roko-core/src/config/schema.rs", "demo/demo-app/e2e/navigation.spec.ts", "demo/demo-app/package.json", "demo/demo-app/playwright.config.ts", "demo/demo-app/src/components/TopNav.tsx", "demo/demo-app/src/main.tsx", "demo/demo-app/vite.config.ts", "fly.toml"]
 lane = "rust-cold"
@@ -41,6 +42,17 @@ command = "! grep -q 'path=\"demo\" element={null}' demo/demo-app/src/main.tsx &
 
 [[verify]]
 command = "test -f demo/demo-app/src/pages/showcase/Overview.tsx && test -f demo/demo-app/e2e/showcase/golden-views.spec.ts && cd demo/demo-app && npx playwright test --project=showcase-fixture e2e/showcase/golden-views.spec.ts e2e/showcase/refuse-simulated.spec.ts"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T16:52:23Z"
+commit = "e74148090"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T13:40:01Z"
+forced = false
+evidence = "Gate 2 at 2199ba9ea (merged as e74148090): check/clippy/nextest green; cloud_init_template_names_no_third_party_repos and fly_toml_points_state_root_at_the_volume pass; all 6 Playwright verifies pass (showcase-fixture and chromium projects) after the gate fix 3f5875b5a-era commit renaming whisker data-axis to data-ci-axis."
 +++
 
 ## Problem

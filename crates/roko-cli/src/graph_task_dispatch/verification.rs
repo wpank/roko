@@ -2330,7 +2330,9 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
                     .await;
             task.timeout_secs = 600;
             let marker = temp.path().join("ran.txt");
-            let mut step = verify_step("compile", "echo ran > ran.txt # cargo check");
+            // The step reads the whole project, so it waits for the sibling,
+            // and it runs cargo, so it waits for the compile lock.
+            let mut step = verify_step("compile", "bash -c 'echo ran > ran.txt' # cargo check");
             step.timeout_ms = 120_000;
             task.verify = vec![step];
             let spec = make_spec(&task);

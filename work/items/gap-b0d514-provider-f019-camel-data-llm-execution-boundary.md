@@ -230,6 +230,16 @@ LLM failure blocks the content instead of passing it through.
 - Left, outside Done-when: audit records of each routing decision (Plan step 7), and cancellation (step 8): the
   data-LLM call is not raced against the loop's cancel token, so a cancel waits for the call or its `timeout_ms`
   (the raw text still never passes).
+- 2026-10-02 (wk-childenv): gate 6e failed three of the boundary's tests. The dispatcher's immune screen
+  (`tool_immune::screen_tool_result`) quarantines untrusted results that contain a known injection phrase ("ignore
+  previous instructions", ...) and rate-limits that tool source for 60 s, before the loop's data-LLM boundary sees
+  them. The fixtures used such phrases, and the tool-loop tests shared `/tmp` as their immune root, so the first
+  test's rate limit denied the second. The order stays as it is: the deterministic screen runs first and keeps the
+  quarantine evidence of the raw payload, the data model reads the rest, and an immune denial reaches the model as
+  roko's own error and passes the boundary unchanged. The fixtures now carry injections the screen does not know,
+  each test keeps its immune state in a tempdir (the e2e test through `AgentOptions::working_dir`), and the new
+  `the_immune_screen_withholds_known_injections_before_the_data_model` pins the order: a known phrase is quarantined
+  and the data model is never called.
 
 ## Original notes
 

@@ -37,7 +37,7 @@ except `Conductor`, which is a meta-watcher).
 | Role | Tier | Description |
 |------|------|-------------|
 | **Conductor** | Premium | Meta-orchestrator; watches agents, intervenes |
-| **Strategist** | Standard | Writes plan briefs, decomposes PRDs into tasks |
+| **Strategist** | Standard | Writes plan briefs, decomposes requests into tasks |
 
 ### Implementation
 
@@ -79,7 +79,7 @@ except `Conductor`, which is a meta-watcher).
 
 | Role | Tier | Description |
 |------|------|-------------|
-| **SpecDriftDetector** | Fast | Detects divergence between PRD and implementation |
+| **SpecDriftDetector** | Fast | Detects divergence between the spec and the implementation |
 | **RegressionDetector** | Fast | Watches for regression in test-pass rate and cost |
 | **PerformanceSentinel** | Fast | Tracks performance metrics across runs |
 | **CoverageTracker** | Fast | Tracks coverage/rung satisfaction |

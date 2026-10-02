@@ -77,7 +77,7 @@ The composition uses the 9-layer prompt builder:
 
 1. Core identity and capabilities
 2. Role-specific instructions
-3. Plan context (PRD, task description)
+3. Plan context (plan.md, task description)
 4. Learned context (skills, playbooks, knowledge)
 5. Feedback context (gate failures, review feedback)
 6. Operating constraints (budget, timeout, tool restrictions)

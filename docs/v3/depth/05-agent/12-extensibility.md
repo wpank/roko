@@ -353,7 +353,7 @@ modifies its own code and empirically validates each change using
 benchmarks. SWE-bench improved from 20.0% to 50.0% (2.5x improvement).
 
 **Mapping to Roko:** Roko already has the infrastructure for
-self-modification (PRD, plan, execute, gate, persist). The DGM
+self-modification (plan, execute, gate, persist). The DGM
 pattern adds an evolutionary archive -- maintaining a population of
 agent configurations and selecting for fitness.
 

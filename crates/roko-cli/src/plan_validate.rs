@@ -14,7 +14,10 @@ use roko_gate::AcceptanceContract;
 use serde::Serialize;
 use toml::Value;
 
-use roko_cli::task_parser::normalize_model_alias;
+use roko_cli::task_parser::{
+    CONTEXT_KEYS, META_KEYS, TASK_KEYS, VERIFY_KEYS, normalize_model_alias,
+    suggest_field_correction,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -426,6 +429,96 @@ fn negates_a_grep(command: &str) -> bool {
     })
 }
 
+/// 3206: one PLAN_043 warning per key of `parsed` that `plan run` does not
+/// read, naming its table, so `--strict` rejects it. The parser drops such a
+/// key without a word, which turns a precise spec into a vague one: R3's
+/// plans set `read_files` beside `files`, and no task got its context file.
+fn unknown_key_diagnostics(parsed: &Value, plan_id: &str) -> Vec<Diagnostic> {
+    let warning = |task_id: Option<String>, message: String| Diagnostic {
+        severity: Severity::Warning,
+        rule_id: "PLAN_043".to_string(),
+        plan_id: Some(plan_id.to_string()),
+        task_id,
+        message,
+    };
+    let mut diagnostics = Vec::new();
+    if let Some(meta) = parsed.get("meta").and_then(Value::as_table) {
+        for key in unknown_keys(meta, META_KEYS) {
+            let message = unknown_key_message("[meta]", key, META_KEYS);
+            diagnostics.push(warning(None, message));
+        }
+        for (index, step) in table_items(meta.get("verify")).enumerate() {
+            let owner = format!("[[meta.verify]] step {}", index + 1);
+            for key in unknown_keys(step, VERIFY_KEYS) {
+                let message = unknown_key_message(&owner, key, VERIFY_KEYS);
+                diagnostics.push(warning(None, message));
+            }
+        }
+    }
+    for (index, task) in table_items(parsed.get("task")).enumerate() {
+        let task_id = string_field(task.get("id"));
+        let label = task_id
+            .clone()
+            .unwrap_or_else(|| format!("task #{}", index + 1));
+        for key in unknown_keys(task, TASK_KEYS) {
+            let message = if CONTEXT_KEYS.contains(&key) {
+                format!(
+                    "task '{label}' sets `{key}` at the top level of [[task]], where plan run \
+                     ignores it; move it under [task.context]"
+                )
+            } else {
+                unknown_key_message(&format!("task '{label}' [[task]]"), key, TASK_KEYS)
+            };
+            diagnostics.push(warning(task_id.clone(), message));
+        }
+        if let Some(context) = task.get("context").and_then(Value::as_table) {
+            let owner = format!("task '{label}' [task.context]");
+            for key in unknown_keys(context, CONTEXT_KEYS) {
+                let message = unknown_key_message(&owner, key, CONTEXT_KEYS);
+                diagnostics.push(warning(task_id.clone(), message));
+            }
+        }
+        for (step_index, step) in table_items(task.get("verify")).enumerate() {
+            let owner = format!("task '{label}' verify step {}", step_index + 1);
+            for key in unknown_keys(step, VERIFY_KEYS) {
+                let message = unknown_key_message(&owner, key, VERIFY_KEYS);
+                diagnostics.push(warning(task_id.clone(), message));
+            }
+        }
+    }
+    diagnostics
+}
+
+/// The keys of `table` that `known` does not list.
+fn unknown_keys<'a>(
+    table: &'a toml::map::Map<String, Value>,
+    known: &'a [&'a str],
+) -> impl Iterator<Item = &'a str> {
+    table
+        .keys()
+        .map(String::as_str)
+        .filter(move |key| !known.contains(key))
+}
+
+/// The tables of an array field: `[[task]]`, or a list of verify steps.
+fn table_items(value: Option<&Value>) -> impl Iterator<Item = &toml::map::Map<String, Value>> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_table)
+}
+
+/// What PLAN_043 says about `key` in `owner`, with the key it most likely
+/// means when one is close.
+fn unknown_key_message(owner: &str, key: &str, known: &[&str]) -> String {
+    let mut message = format!("{owner} has unknown key `{key}`, which plan run ignores");
+    if let Some(correction) = suggest_field_correction(key, known) {
+        let _ = write!(message, "; did you mean `{correction}`?");
+    }
+    message
+}
+
 /// The `tasks.toml` files of the plans under `dir`, sorted: `dir` itself
 /// when it is one, otherwise those of the plans `roko plan run` finds there
 /// ([`find_plan_dirs`]), so `plan validate` checks the plans that run
@@ -618,6 +711,8 @@ fn validate_tasks_file(
             });
         }
     }
+    // 3206: `plan run` drops a key it does not read without a word.
+    diagnostics.extend(unknown_key_diagnostics(&parsed, &plan_id));
     let tasks = parsed
         .get("task")
         .and_then(Value::as_array)

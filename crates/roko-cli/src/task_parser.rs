@@ -843,6 +843,216 @@ impl From<&roko_core::config::GateRungConfig> for VerifyStep {
     }
 }
 
+// ─── The keys of a tasks.toml ────────────────────────────────────────────────
+
+/// Every `[[task]]` key: the fields of [`TaskDef`] as `tasks.toml` spells
+/// them (with `write_files`, the alias of `files`) and those of its
+/// flattened [`TaskHints`], plus `sequence`, which [`TasksFile::write`]
+/// writes and parsing stamps again. Three keys are read by tools rather
+/// than by `plan run`: `gate_rung` and `deferral` by `plan validate`
+/// (PLAN_007, PLAN_026) and `closes` by `tools/work.py sync`.
+///
+/// `plan validate` warns about any other key (PLAN_043), and plan
+/// generation corrects near misses against this set.
+pub const TASK_KEYS: &[&str] = &[
+    "id",
+    "title",
+    "description",
+    "role",
+    "status",
+    "tier",
+    "frequency",
+    "model_hint",
+    "replan_strategy",
+    "max_loc",
+    "files",
+    "write_files",
+    "allowed_tools",
+    "denied_tools",
+    "mcp_servers",
+    "depends_on",
+    "depends_on_plan",
+    "split_into",
+    "context",
+    "verify",
+    "timeout_secs",
+    "max_retries",
+    "acceptance",
+    "acceptance_contract",
+    "accept",
+    "domain",
+    "estimated_minutes",
+    "crates_touched",
+    "sequence",
+    // `roko_core::TaskHints`
+    "category",
+    "complexity_band",
+    "reasoning_level",
+    "speed_priority",
+    "preferred_model",
+    "preferred_provider",
+    "escalate_on_retry",
+    "rung",
+    "quality_profile",
+    "test_invariants",
+    "context_weight",
+    "skills",
+    "example_pattern",
+    "context_files",
+    "plan_section",
+    "types_to_define",
+    "formulas",
+    "imports",
+    "research_before_edit",
+    "parallel_group",
+    "exclusive_files",
+    "tags",
+    "dependency_tags",
+    "fixture_keys",
+    "sidecar_requirements",
+    "integration_surfaces",
+    // Read by tools, not by `plan run`.
+    "gate_rung",
+    "deferral",
+    "closes",
+];
+
+/// Every `[task.context]` key ([`TaskContext`]).
+pub const CONTEXT_KEYS: &[&str] = &[
+    "read_files",
+    "symbols",
+    "anti_patterns",
+    "prior_failures",
+    "impact_acknowledgement",
+];
+
+/// Every key of a `[[task.verify]]` or `[[meta.verify]]` step ([`VerifyStep`]).
+pub const VERIFY_KEYS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms", "scope"];
+
+/// Every `[meta]` key: the fields of [`TaskMeta`], plus `queue_kind`,
+/// `queue_schema` and `kind`, by which `plan validate` recognises an
+/// architecture queue.
+pub const META_KEYS: &[&str] = &[
+    "plan",
+    "iteration",
+    "total",
+    "done",
+    "status",
+    "superseded_by",
+    "max_parallel",
+    "estimated_total_minutes",
+    "skip_enrichment",
+    "source_prd",
+    "failure_policy",
+    "workspace_rungs",
+    "verify",
+    "approval",
+    "allow_unverified",
+    // Read by `plan validate`.
+    "queue_kind",
+    "queue_schema",
+    "kind",
+];
+
+/// Misspellings of `tasks.toml` keys that plan generators write, and the key
+/// each one means.
+const KEY_TYPOS: &[(&str, &str)] = &[
+    ("pha", "phase"),
+    ("phas", "phase"),
+    ("cmd", "command"),
+    ("comand", "command"),
+    ("commnad", "command"),
+    ("commmand", "command"),
+    ("descrption", "description"),
+    ("descripion", "description"),
+    ("desc", "description"),
+    ("stat", "status"),
+    ("staus", "status"),
+    ("tite", "title"),
+    ("titl", "title"),
+    ("modle_hint", "model_hint"),
+    ("model", "model_hint"),
+    ("modelhint", "model_hint"),
+    ("depnds_on", "depends_on"),
+    ("dependson", "depends_on"),
+    ("depend_on", "depends_on"),
+    ("filse", "files"),
+    ("fles", "files"),
+    ("verfy", "verify"),
+    ("verfiy", "verify"),
+    ("tiemout_secs", "timeout_secs"),
+    ("fail_message", "fail_msg"),
+    ("failure_msg", "fail_msg"),
+    ("timeout", "timeout_ms"),
+    // Singular/plural variants
+    ("denied_tool", "denied_tools"),
+    ("deni_tools", "denied_tools"),
+    ("allowed_tool", "allowed_tools"),
+    ("mcp_server", "mcp_servers"),
+    ("file", "files"),
+    ("write_file", "write_files"),
+    // Truncated field names
+    ("stus", "status"),
+    ("rol", "role"),
+    ("tie", "tier"),
+    ("tit", "title"),
+    ("max_lo", "max_loc"),
+    ("model_hin", "model_hint"),
+    ("depends_o", "depends_on"),
+    ("timeout_sec", "timeout_secs"),
+    ("max_retrie", "max_retries"),
+    // Common misspellings
+    ("discription", "description"),
+    ("dependancies", "depends_on"),
+    ("dependecies", "depends_on"),
+];
+
+/// The key of `known` that `field` most likely means: its entry in the typo
+/// table, or else the nearest key within two edits. `None` when no key is
+/// close.
+#[must_use]
+pub fn suggest_field_correction(field: &str, known: &[&str]) -> Option<String> {
+    if let Some((_, correction)) = KEY_TYPOS
+        .iter()
+        .find(|(typo, correction)| *typo == field && known.contains(correction))
+    {
+        return Some((*correction).to_string());
+    }
+    let mut best: Option<(&str, usize)> = None;
+    for &known_field in known {
+        let dist = strsim_distance(field, known_field);
+        if dist > 0 && dist <= 2 && best.is_none_or(|(_, best_dist)| dist < best_dist) {
+            best = Some((known_field, dist));
+        }
+    }
+    best.map(|(key, _)| key.to_string())
+}
+
+/// Levenshtein distance between two byte strings.
+fn strsim_distance(a: &str, b: &str) -> usize {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let m = a_bytes.len();
+    let n = b_bytes.len();
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0usize; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = usize::from(a_bytes[i - 1] != b_bytes[j - 1]);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
 /// The full parsed tasks.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TasksFile {
@@ -3541,5 +3751,161 @@ files = ["README.md"]
             message.contains("(implementer, scribe, auto-fixer)"),
             "{message}"
         );
+    }
+
+    /// 3206: the key sets hold every key the parser reads. Each literal below
+    /// lists every field of its type, so a field added to one breaks this test
+    /// until it is set here, and then fails it until its key joins the set
+    /// that `plan validate` checks each `tasks.toml` against (PLAN_043).
+    #[test]
+    fn key_sets_cover_every_parsed_field() {
+        use roko_core::task::{
+            TaskCategory, TaskComplexityBand, TaskContextWeight, TaskQualityProfile,
+            TaskReasoningLevel, TaskSpeedPriority,
+        };
+
+        let some = || Some(vec!["x".to_string()]);
+        let step = VerifyStep {
+            phase: "test".into(),
+            command: "cargo test -p roko-cli".into(),
+            fail_msg: Some("failed".into()),
+            timeout_ms: 1_000,
+            scope: vec!["crates/roko-cli".into()],
+        };
+        let ctx = TaskContext {
+            read_files: vec![ReadFile {
+                path: "crates/roko-cli/src/task_parser.rs".into(),
+                lines: Some("1-10".into()),
+                why: "the parser".into(),
+            }],
+            symbols: vec!["TaskDef".into()],
+            anti_patterns: vec!["x".into()],
+            prior_failures: vec!["x".into()],
+            impact_acknowledgement: Some("x".into()),
+        };
+        let hints = TaskHints {
+            category: Some(TaskCategory::Verification),
+            complexity_band: Some(TaskComplexityBand::Complex),
+            reasoning_level: Some(TaskReasoningLevel::High),
+            speed_priority: Some(TaskSpeedPriority::Accuracy),
+            preferred_model: Some("x".into()),
+            preferred_provider: Some("x".into()),
+            escalate_on_retry: Some(true),
+            rung: Some("strong".into()),
+            quality_profile: Some(TaskQualityProfile::Hardened),
+            test_invariants: some(),
+            context_weight: Some(TaskContextWeight::Deep),
+            skills: some(),
+            example_pattern: Some("x".into()),
+            context_files: some(),
+            plan_section: Some("x".into()),
+            types_to_define: some(),
+            formulas: some(),
+            imports: some(),
+            research_before_edit: Some(true),
+            parallel_group: Some("x".into()),
+            exclusive_files: Some(false),
+            tags: some(),
+            dependency_tags: some(),
+            fixture_keys: some(),
+            sidecar_requirements: some(),
+            integration_surfaces: some(),
+        };
+        let raw = TaskDefSerde {
+            id: "T1".into(),
+            title: "Check the key sets".into(),
+            description: Some("x".into()),
+            role: Some("implementer".into()),
+            status: "ready".into(),
+            tier: "focused".into(),
+            frequency: Some(OperatingFrequency::Theta),
+            model_hint: Some("x".into()),
+            replan_strategy: Some(ReplanStrategy::Decompose),
+            max_loc: Some(10),
+            files: vec!["x".into()],
+            allowed_tools: some(),
+            denied_tools: some(),
+            mcp_servers: some(),
+            depends_on: vec!["T0".into()],
+            depends_on_plan: vec!["p".into()],
+            split_into: some(),
+            context: Some(ctx.clone()),
+            verify: vec![step.clone()],
+            timeout_secs: Some(60),
+            max_retries: 1,
+            acceptance: vec!["x".into()],
+            acceptance_contract: Some(toml::from_str("version = 1").expect("a contract")),
+            accept: Some(TaskAccept::default()),
+            domain: Some(TaskDomain::Code),
+            estimated_minutes: Some(5),
+            crates_touched: some(),
+            hints,
+        };
+        let meta = TaskMeta {
+            plan: "keys".into(),
+            iteration: 1,
+            total: 1,
+            done: 0,
+            status: "ready".into(),
+            superseded_by: Some("x".into()),
+            max_parallel: Some(1),
+            estimated_total_minutes: 5,
+            skip_enrichment: true,
+            source_prd: Some("x".into()),
+            failure_policy: Some(roko_core::config::PlanFailurePolicy::FailFast),
+            workspace_rungs: Some(false),
+            verify: vec![step.clone()],
+            approval: Some(ApprovalMode::PerTask),
+            allow_unverified: true,
+        };
+
+        let task = TaskDef::from(raw.clone());
+        let tables = [
+            ("[[task]] parse", toml::Value::try_from(&raw), TASK_KEYS),
+            ("[[task]] write", toml::Value::try_from(&task), TASK_KEYS),
+            ("[task.context]", toml::Value::try_from(&ctx), CONTEXT_KEYS),
+            ("verify step", toml::Value::try_from(&step), VERIFY_KEYS),
+            ("[meta]", toml::Value::try_from(&meta), META_KEYS),
+        ];
+        for (table, value, set) in tables {
+            let value = value.expect("serialize");
+            let keys = value.as_table().expect("a table").keys();
+            for key in keys {
+                assert!(set.contains(&key.as_str()), "{table}: `{key}` is not in its key set");
+            }
+        }
+        for set in [TASK_KEYS, CONTEXT_KEYS, VERIFY_KEYS, META_KEYS] {
+            let unique: HashSet<&str> = set.iter().copied().collect();
+            assert_eq!(unique.len(), set.len(), "a key set lists a key twice: {set:?}");
+        }
+    }
+
+    #[test]
+    fn strsim_distance_basic() {
+        assert_eq!(strsim_distance("phase", "phase"), 0);
+        assert_eq!(strsim_distance("pha", "phase"), 2);
+        assert_eq!(strsim_distance("stat", "status"), 2);
+        assert_eq!(strsim_distance("", "abc"), 3);
+        assert_eq!(strsim_distance("abc", ""), 3);
+    }
+
+    #[test]
+    fn suggest_correction_finds_typos() {
+        assert_eq!(
+            suggest_field_correction("pha", VERIFY_KEYS),
+            Some("phase".to_string())
+        );
+        assert_eq!(
+            suggest_field_correction("stat", TASK_KEYS),
+            Some("status".to_string())
+        );
+        assert_eq!(
+            suggest_field_correction("verfy", TASK_KEYS),
+            Some("verify".to_string())
+        );
+        // A typo-table correction counts only for a key of the table checked.
+        assert_eq!(suggest_field_correction("file", META_KEYS), None);
+        // Unknown field with no close match returns None.
+        assert_eq!(suggest_field_correction("zzzzunknown", TASK_KEYS), None);
     }
 }

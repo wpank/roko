@@ -410,6 +410,63 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
     assert!(stdout.contains("PLAN_007"), "missing PLAN_007: {stdout}");
 }
 
+/// 3206: a key that `plan run` does not read is a PLAN_043 warning naming
+/// its table. A context key at the top level of a task says where it
+/// belongs, and a typo says which key it most likely means. Both are
+/// warnings, so only `--strict` fails.
+#[test]
+fn plan_validate_warns_on_unknown_task_key() {
+    let temp = TempDir::new().unwrap();
+    write_plan(
+        temp.path(),
+        "keys",
+        r#"
+[meta]
+plan = "keys"
+
+[[task]]
+id = "T1"
+title = "Slugify titles"
+role = "implementer"
+files = ["src/slug.py"]
+depends_on = []
+read_files = ["tests/test_slug.py"]
+verify = [{ phase = "test", command = "python3 -m unittest tests.test_slug" }]
+
+[[task]]
+id = "T2"
+title = "Document slugify"
+role = "implementer"
+files = ["docs/slug.md"]
+depends_on = ["T1"]
+verify = [{ phase = "structural", command = "test -f docs/slug.md" }]
+verfy = [{ phase = "structural", command = "grep -q slugify docs/slug.md" }]
+"#,
+    );
+
+    let assert = run_validate(&temp, &["plans"]).success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.matches("PLAN_043").count(), 2, "{stdout}");
+    assert!(
+        stdout.contains(
+            "task 'T1' sets `read_files` at the top level of [[task]], where plan run ignores \
+             it; move it under [task.context]"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "task 'T2' [[task]] has unknown key `verfy`, which plan run ignores; did you mean \
+             `verify`?"
+        ),
+        "{stdout}"
+    );
+    assert!(stdout.contains("2 diagnostics in 1 plan"), "{stdout}");
+
+    let strict = run_validate(&temp, &["plans", "--strict"]).failure();
+    assert_eq!(strict.get_output().status.code(), Some(1));
+}
+
 #[test]
 fn plan_validate_accepts_typed_acceptance_contract() {
     let temp = TempDir::new().unwrap();

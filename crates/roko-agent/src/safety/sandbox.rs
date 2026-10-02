@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use roko_core::audit_home::{is_under_root, vault_root};
+use roko_core::audit_home::{is_under_root, vault_roots};
 use roko_core::config::schema::RunnerSandboxLevel;
 use roko_core::plugin::PluginTier;
 use roko_core::tool::{ToolCall, ToolContext, ToolDef, ToolError, ToolPermission};
@@ -40,7 +40,7 @@ pub struct SandboxPolicy {
     /// Whether the child/tool may inherit environment variables.
     pub allow_environment: bool,
     /// The audit vault's roots (S05 §4.4), out of reach at every level:
-    /// `ROKO_AUDIT_HOME` or `~/.roko/audit` by default.
+    /// `ROKO_AUDIT_HOME` and `~/.roko/audit` by default.
     pub vault_roots: Vec<PathBuf>,
 }
 
@@ -54,35 +54,35 @@ impl SandboxLevel {
                 config: SandboxConfig::unrestricted(),
                 audit_only: false,
                 allow_environment: true,
-                vault_roots: vault_root().into_iter().collect(),
+                vault_roots: vault_roots(),
             },
             Self::Observe => SandboxPolicy {
                 level: self,
                 config: SandboxConfig::unrestricted(),
                 audit_only: true,
                 allow_environment: true,
-                vault_roots: vault_root().into_iter().collect(),
+                vault_roots: vault_roots(),
             },
             Self::Restrict => SandboxPolicy {
                 level: self,
                 config: SandboxConfig::for_tier_level(3),
                 audit_only: false,
                 allow_environment: true,
-                vault_roots: vault_root().into_iter().collect(),
+                vault_roots: vault_roots(),
             },
             Self::Isolate => SandboxPolicy {
                 level: self,
                 config: SandboxConfig::for_tier_level(2),
                 audit_only: false,
                 allow_environment: false,
-                vault_roots: vault_root().into_iter().collect(),
+                vault_roots: vault_roots(),
             },
             Self::Quarantine => SandboxPolicy {
                 level: self,
                 config: SandboxConfig::most_restricted(),
                 audit_only: false,
                 allow_environment: false,
-                vault_roots: vault_root().into_iter().collect(),
+                vault_roots: vault_roots(),
             },
         }
     }

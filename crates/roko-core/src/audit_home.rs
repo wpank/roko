@@ -191,11 +191,27 @@ pub fn vault_root() -> Option<PathBuf> {
     .map(|root| canonical_lenient(&root))
 }
 
+/// The roots agents are kept out of: [`vault_root`] and, when
+/// `ROKO_AUDIT_HOME` points elsewhere, the default `~/.roko/audit` too,
+/// which may still hold an earlier vault.
+#[must_use]
+pub fn vault_roots() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").filter(|value| !value.is_empty());
+    let default = root_path(None, home.as_deref().map(Path::new));
+    let mut roots: Vec<PathBuf> = vault_root().into_iter().collect();
+    if let Some(root) = default.map(|root| canonical_lenient(&root))
+        && !roots.contains(&root)
+    {
+        roots.push(root);
+    }
+    roots
+}
+
 /// Whether `path`, once symlinks and `..` are resolved, lies in the vault
-/// ([`vault_root`]). The sandbox refuses such a path (7118, 7119).
+/// ([`vault_roots`]). The sandbox refuses such a path (7118, 7119).
 #[must_use]
 pub fn is_vault_path(path: &Path) -> bool {
-    vault_root().is_some_and(|root| is_under_root(path, &root))
+    vault_roots().iter().any(|root| is_under_root(path, root))
 }
 
 /// Whether `path`, once symlinks and `..` are resolved, lies under `root`,

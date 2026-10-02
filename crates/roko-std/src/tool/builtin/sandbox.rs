@@ -69,6 +69,10 @@ pub fn require_within_worktree(worktree: &Path, rel: &str) -> Result<PathBuf, To
 ///
 /// Returns [`ToolError::KeyFileBlocked`] naming the form that is refused.
 pub fn refuse_key_file(path: &Path) -> Result<(), ToolError> {
+    // The audit vault (S05 §4.4) holds hidden tests and audit keys.
+    if roko_core::audit_home::is_vault_path(path) {
+        return Err(vault_refused(&path.display().to_string()));
+    }
     if is_key_file(path) || is_config_with_secrets(path) {
         return Err(ToolError::KeyFileBlocked(path.to_path_buf()));
     }
@@ -111,6 +115,12 @@ pub fn refuse_key_file(path: &Path) -> Result<(), ToolError> {
 pub fn refuse_key_file_in_command(command: &str, cwd: &Path) -> Result<(), ToolError> {
     let mut words = Vec::new();
     command_words(command, 0, &mut words)?;
+    if let Some(word) = words.iter().find(|word| names_the_vault(word)) {
+        return Err(vault_refused(word));
+    }
+    if names_the_vault(command) {
+        return Err(vault_refused(command));
+    }
     if let Some(word) = words.iter().find(|word| key_path_in_text(word)) {
         return Err(ToolError::KeyFileBlocked(word.into()));
     }
@@ -137,6 +147,25 @@ pub fn refuse_key_file_in_command(command: &str, cwd: &Path) -> Result<(), ToolE
         }
     }
     reads::refuse_secret_reads(command, cwd)
+}
+
+/// Whether `text` names the audit vault by a variable or the default path:
+/// `$ROKO_AUDIT_HOME`, or `~/.roko/audit` through `~`, `$HOME` or
+/// `${HOME}`. The workspace's own `.roko/audit` log stays readable.
+fn names_the_vault(text: &str) -> bool {
+    static VAULT_TEXT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"ROKO_AUDIT_HOME|(?:~|\$HOME|\$\{HOME\})/\.roko/audit(?:[^\w.-]|$)")
+            .expect("a valid vault pattern")
+    });
+    VAULT_TEXT.is_match(text)
+}
+
+/// The refusal of a command or path that reaches the audit vault.
+fn vault_refused(what: &str) -> ToolError {
+    ToolError::PermissionDenied(format!(
+        "`{what}` reaches the audit vault (ROKO_AUDIT_HOME, else ~/.roko/audit), which \
+         holds hidden tests: agents may not read it"
+    ))
 }
 
 /// How deep command lines may nest (`sh -c '…'` in `sh -c '…'`):
@@ -465,7 +494,8 @@ mod tests {
             "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
         )
         .expect("write roko.toml");
-        let cases: Vec<(bool, &Path, &str)> = include_str!("sandbox/secret_read_cases.txt")
+        // (refused with the secrets, refused without them, cwd, command)
+        let cases: Vec<(bool, bool, &Path, &str)> = include_str!("sandbox/secret_read_cases.txt")
             .lines()
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .map(|line| {
@@ -473,13 +503,14 @@ mod tests {
                 let (cwd, command) = rest
                     .strip_prefix("in src: ")
                     .map_or((root.as_path(), rest), |command| (src.as_path(), command));
-                (verdict == "deny", cwd, command)
+                let vault = verdict == "vault";
+                (verdict == "deny" || vault, vault, cwd, command)
             })
             // A Grep tool call is for the Claude CLI guard alone.
-            .filter(|(_, _, command)| !command.starts_with("Grep: "))
+            .filter(|(_, _, _, command)| !command.starts_with("Grep: "))
             .collect();
 
-        for &(deny, cwd, command) in &cases {
+        for &(deny, _, cwd, command) in &cases {
             let result = refuse_key_file_in_command(command, cwd);
             assert_eq!(
                 result.is_err(),
@@ -488,19 +519,58 @@ mod tests {
                 cwd.display()
             );
         }
-        // Without the secret and the key files, every command runs.
+        // Without the secret and the key files, every command runs but those
+        // that read the audit vault.
         std::fs::write(&config, "[serve.auth]\nenabled = true\n").expect("rewrite roko.toml");
         for key in &keys {
             std::fs::remove_file(key).expect("remove key file");
         }
-        for &(_, cwd, command) in &cases {
+        for &(_, vault, cwd, command) in &cases {
             let result = refuse_key_file_in_command(command, cwd);
-            assert!(
-                result.is_ok(),
+            assert_eq!(
+                result.is_err(),
+                vault,
                 "`{command}` in {}: {result:?}",
                 cwd.display()
             );
         }
+    }
+
+    /// S05 §4.4: the bash tool keeps agents out of the audit vault. A command
+    /// that names it, by `$ROKO_AUDIT_HOME` or the default `~/.roko/audit`, is
+    /// refused, and a tree that holds the vault holds its files for the
+    /// recursive-search rules; the workspace's own `.roko/audit` log is not
+    /// the vault.
+    #[test]
+    fn bash_reads_of_the_audit_vault_are_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path().canonicalize().expect("canonical tempdir");
+        let vault_rows = include_str!("sandbox/secret_read_cases.txt")
+            .lines()
+            .filter_map(|line| line.strip_prefix("vault "));
+        for command in vault_rows.chain(["cat ~/.roko/audit", "echo $ROKO_AUDIT_HOME/x"]) {
+            let result = refuse_key_file_in_command(command, &cwd);
+            let error = result.expect_err(command).to_string();
+            assert!(error.contains("audit vault"), "`{command}`: {error}");
+        }
+        for command in [
+            "cat .roko/audit/messages.jsonl",
+            "ls ~/.roko/plans",
+            "grep -r x .roko/audit",
+        ] {
+            let result = refuse_key_file_in_command(command, &cwd);
+            assert!(result.is_ok(), "`{command}`: {result:?}");
+        }
+
+        let vault = cwd.join("home/.roko/audit");
+        let suite = vault.join("ws/hidden/hs-1/suite.py");
+        std::fs::create_dir_all(suite.parent().expect("a parent")).expect("mkdir vault");
+        std::fs::write(&suite, "# ROKO-CANARY-hs-1\n").expect("write suite");
+        let roots = [vault.clone()];
+        let home = cwd.join("home");
+        assert_eq!(reads::vault_files_in(&home, &roots), [suite.clone()]);
+        assert_eq!(reads::vault_files_in(&vault.join("ws"), &roots), [suite]);
+        assert!(reads::vault_files_in(&cwd.join("elsewhere"), &roots).is_empty());
     }
 
     /// bug-fa1537: a recursive search, or a read of what find or xargs

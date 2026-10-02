@@ -2,7 +2,7 @@
 id = "gap-198c9c"
 kind = "gap"
 title = "PK04 Operator control and guards: roko's own bash git guard lets git stash, clean, checkout and restore through (+9 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -12,6 +12,7 @@ subsystem = ["roko-cli/graph-execution"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "e53136640"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK04"
 anchors = ["crates/roko-acp/src/builtin_tools.rs", "crates/roko-agent/src/safety/git.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/graph_execution/delivery.rs", "crates/roko-cli/src/graph_execution/plan_set.rs", "crates/roko-cli/src/graph_execution/plan_verify.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/supervision.rs", "crates/roko-cli/src/inject.rs", "crates/roko-cli/src/inject/transport.rs", "crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/serve_client.rs", "crates/roko-cli/tests/secrets_and_git_guard_canary.rs", "crates/roko-core/src/config/execution.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-serve/src/routes/plans/run_control.rs", "crates/roko-serve/src/routes/plans/tests.rs"]
 lane = "rust-hot"
@@ -47,6 +48,17 @@ command = "grep -rqw 'fn conductor_supervise_false_keeps_stall_watchdog' crates/
 
 [[verify]]
 command = "grep -rqw 'fn default_config_builds_no_daimon_state' crates/roko-cli/ && cargo test -p roko-cli default_config_builds_no_daimon_state"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T15:39:04Z"
+commit = "e53136640"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T11:55:02Z"
+forced = false
+evidence = "Backlog gate 1: work/backlog-batch-1 at 660e1a8f8 (cargo check, clippy -D warnings, 10,933 lib tests, 16 golden-path and new canaries, 471 ViabilityBench tests, paperlint and status_matrix clean); every [[verify]] of this item passed there. Merged as e53136640 with an identical tree."
 +++
 
 ## Problem

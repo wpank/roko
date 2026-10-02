@@ -2,7 +2,7 @@
 id = "gap-c06ff3"
 kind = "gap"
 title = "PK28 M4 deep audits: Python: the vs.label schema, the audit estimators and the lottery replay (S05 task 2)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -12,6 +12,7 @@ subsystem = ["benchmarks/viabilitybench/audit"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "e53136640"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK28"
 anchors = ["benchmarks/viabilitybench", "benchmarks/viabilitybench/schema"]
 lane = "bench"
@@ -20,6 +21,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_hajek_ci_covers_theta_in_1000_replays' benchmarks/viabilitybench/audit/tests/test_estimate.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/audit/tests/test_estimate.py -q"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T15:40:22Z"
+commit = "e53136640"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-02T11:55:16Z"
+forced = false
+evidence = "Backlog gate 1: work/backlog-batch-1 at 660e1a8f8 (cargo check, clippy -D warnings, 10,933 lib tests, 16 golden-path and new canaries, 471 ViabilityBench tests, paperlint and status_matrix clean); every [[verify]] of this item passed there. Merged as e53136640 with an identical tree."
 +++
 
 ## Problem

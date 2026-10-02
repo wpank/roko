@@ -2,7 +2,7 @@
 id = "gap-cb5133"
 kind = "gap"
 title = "PK17 Specs a cheap model can execute: Warn on unknown [[task]] keys: R3's top-level read_files never reached a prompt (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -12,6 +12,7 @@ subsystem = ["roko-cli/plan_validate"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "e53136640"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK17"
 anchors = ["benchmarks/viabilitybench/speclint/speclint.py", "benchmarks/viabilitybench/speclint/tests/test_speclint.py", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-cli/src/lib.rs", "crates/roko-cli/src/plan_generator.rs", "crates/roko-cli/src/plan_validate.rs", "crates/roko-cli/src/prd.rs", "crates/roko-cli/src/task_parser.rs", "crates/roko-cli/tests/plan_validate.rs", "crates/roko-core/src/config/config_fingerprint_golden.json", "crates/roko-core/src/config/mod.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-gate/src/spec_quality.rs", "plans/e2e-smoke-test/tasks.toml", "plans/wire-http-plan-execute/tasks.toml"]
 lane = "rust-cold"
@@ -47,6 +48,17 @@ command = "grep -qw 'def test_planner_written_test_counts_as_acceptance' benchma
 
 [[verify]]
 command = "grep -rqw 'fn exact_test_backed_task_scores_band_b_or_better' crates/roko-gate/src/ && cargo test -p roko-gate --lib exact_test_backed_task_scores_band_b_or_better"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T15:39:06Z"
+commit = "e53136640"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T11:55:03Z"
+forced = false
+evidence = "Backlog gate 1: work/backlog-batch-1 at 660e1a8f8 (cargo check, clippy -D warnings, 10,933 lib tests, 16 golden-path and new canaries, 471 ViabilityBench tests, paperlint and status_matrix clean); every [[verify]] of this item passed there. Merged as e53136640 with an identical tree."
 +++
 
 ## Problem

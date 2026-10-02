@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 9 anchor gone · 63 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 9 anchor gone · 66 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -16,11 +16,11 @@ _7 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRI
 
 ## 2. Whitepaper v1 and the research papers
 
-- **P2** [gap-064c40](items/gap-064c40-pk29-papers-research-paper-5-and-appendix.md) PK29 Papers: Research paper §5 and Appendix D: reconcile with S09 v1.4 and the confirmed defaults,… · size S · verified 2026-10-02
 - **P1** [gap-d4a1c1](items/gap-d4a1c1-pk95-papers-freeze-the-audit-s-live.md) PK95 Papers: Freeze the audit's live-run findings (R3, R4) as whitepaper evidence (+10 more) · size L · verified 2026-10-02
 - **P2** [gap-a6dab7](items/gap-a6dab7-pk96-papers-figure-and-table-scripts-for.md) PK96 Papers: Figure and table scripts for the P1 results (F2–F5, F9; T3, T7, T9, T11), dry-run on… (+5 more) · size L · verified 2026-10-02
+- **P2** [gap-d2507f](items/gap-d2507f-pk97-papers-companion-fill-the-e2-and.md) PK97 Papers: Companion: fill the E2 and E3 results from the human ratings, and redraw Figure 3 (+2 more) · size M · verified 2026-10-02
 
-_6 more open · on hold: gap-6aaee9, gap-85f86a, gap-ac1aed, gap-b90650 · 2 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_5 more open · on hold: gap-6aaee9, gap-85f86a, gap-ac1aed, gap-b90650 · 2 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
@@ -28,31 +28,31 @@ _6 more open · on hold: gap-6aaee9, gap-85f86a, gap-ac1aed, gap-b90650 · 2 unc
 - **P1** [gap-e00238](items/gap-e00238-pk02-failure-paths-immune-denials-leave-provider.md) PK02 Failure paths: Immune denials leave provider health alone, and each attempt records provider health once (+7 more) · size L · verified 2026-10-02
 - **P2** [gap-d254a3](items/gap-d254a3-pk03-failure-paths-a-plan-branch-conflict.md) PK03 Failure paths: A plan-branch conflict tells the next attempt what it conflicted with (+5 more) · size L · verified 2026-10-02
 
-_9 more open · `goal = "truth"`_
+_7 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - **P2** [gap-997366](items/gap-997366-pk14-defaults-that-apply-a-plan-budget.md) PK14 Defaults that apply: A plan budget without max_turn_usd reserves a share per call, and any wait is logged (+8 more) · size L · verified 2026-10-02
 - **P1** [gap-c1f4ac](items/gap-c1f4ac-pk15-defaults-that-apply-one-resolver-for.md) PK15 Defaults that apply: One resolver for [runner] worktree_per_task, and roko run follows it (+4 more) · size L · verified 2026-10-02
-- **P2** [gap-cb5133](items/gap-cb5133-pk17-specs-a-cheap-model-can-execute.md) PK17 Specs a cheap model can execute: Warn on unknown [[task]] keys: R3's top-level read_files never reached a prompt (+7 more) · size L · verified 2026-10-02
+- **P2** [gap-e4bfbf](items/gap-e4bfbf-pk18-specs-a-cheap-model-can-execute.md) PK18 Specs a cheap model can execute: `plan validate --spec-quality --dynamic`: red-on-base proof inside Roko (+9 more) · size L · verified 2026-10-02
 
-_4 more open · on hold: gap-c013c5 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_3 more open · on hold: gap-c013c5 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- **P1** [gap-5ebb4f](items/gap-5ebb4f-pk20-viabilitybench-proof-run-the-direct-loop.md) PK20 ViabilityBench proof: Run the direct loop's shell commands in a loopback-only network sandbox on macOS (+7 more) · size L · verified 2026-10-02
 - **P1** [gap-1149aa](items/gap-1149aa-pk21-viabilitybench-proof-vb-run-gives-a.md) PK21 ViabilityBench proof: vb run gives a multi-model arm one endpoint and one proxy upstream per provider (+5 more) · size L · verified 2026-10-02
 - **P1** [gap-46fd19](items/gap-46fd19-pk22-viabilitybench-proof-analysis-bootstrap-py-the.md) PK22 ViabilityBench proof: analysis/bootstrap.py: the paired bootstrap stratified by family and level (+5 more) · size L · verified 2026-10-02
+- **P2** [gap-eb1aa3](items/gap-eb1aa3-pk23-viabilitybench-proof-family-f6-ts-result.md) PK23 ViabilityBench proof: Family F6 ts-result: the TypeScript transfer probe (+2 more) · size L · verified 2026-10-02
 
-_10 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 12 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_9 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-ba9965, gap-e9218e · 11 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
 - **P2** [gap-cc5051](items/gap-cc5051-pk09-decision-records-and-census-s01-becomes.md) PK09 Decision records and census: S01 becomes the one schema: merge the S03/S06 addenda, the ladder source and today's… (+7 more) · size L · verified 2026-10-02
 - **P2** [gap-f61823](items/gap-f61823-pk10-decision-records-and-census-exposure-and.md) PK10 Decision records and census: Exposure and content-decision record types, and the telemetry report reads them (+9 more) · size L · verified 2026-10-02
-- **P2** [gap-c06ff3](items/gap-c06ff3-pk28-m4-deep-audits-python-the-vs.md) PK28 M4 deep audits: Python: the vs.label schema, the audit estimators and the lottery replay (S05 task 2) · size M · verified 2026-10-02
+- **P2** [gap-b5caf3](items/gap-b5caf3-pk32-loops-re-closed-retire-the-legacy.md) PK32 Loops re-closed: Retire the legacy holdout from Graph runs: its learning gate gates nothing (+11 more) · size L · verified 2026-10-02
 
-_33 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_31 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

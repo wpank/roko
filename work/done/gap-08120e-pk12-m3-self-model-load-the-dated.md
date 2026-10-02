@@ -2,7 +2,7 @@
 id = "gap-08120e"
 kind = "gap"
 title = "PK12 M3 self-model: Load the dated price snapshot in roko-core and price token usage from it"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -12,6 +12,7 @@ subsystem = ["roko-core/pricing"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "e53136640"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK12"
 anchors = ["crates/roko-core/src/config/schema.rs", "crates/roko-core/src/lib.rs"]
 lane = "rust-cold"
@@ -20,6 +21,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn pricing_snapshot_reprices_one_row_per_provider' crates/roko-core/ && cargo test -p roko-core pricing_snapshot"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T15:39:04Z"
+commit = "e53136640"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-02T11:55:03Z"
+forced = false
+evidence = "Backlog gate 1: work/backlog-batch-1 at 660e1a8f8 (cargo check, clippy -D warnings, 10,933 lib tests, 16 golden-path and new canaries, 471 ViabilityBench tests, paperlint and status_matrix clean); every [[verify]] of this item passed there. Merged as e53136640 with an identical tree."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-ac2611"
 kind = "gap"
 title = "PK34 M2 loop-liveness: Add the loop_audit module: LoopSpec, closed reason codes and the registry loader (+2 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -12,6 +12,7 @@ subsystem = ["roko-learn/loop_audit"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "e53136640"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK34"
 anchors = ["crates/roko-learn/src/lib.rs"]
 lane = "rust-cold"
@@ -26,6 +27,17 @@ command = "grep -rqw 'fn embedded_registry_declares_every_loop' crates/roko-lear
 
 [[verify]]
 command = "grep -rqw 'fn assignment_uniform_sticky_and_independent_across_layers' crates/roko-learn/src/loop_audit/ && cargo test -p roko-learn assignment_uniform_sticky_and_independent_across_layers && grep -rqw 'fn composed_route_propensity_sums_to_one' crates/roko-learn/src/loop_audit/ && cargo test -p roko-learn composed_route_propensity_sums_to_one"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T15:40:24Z"
+commit = "e53136640"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-02T11:55:02Z"
+forced = false
+evidence = "Backlog gate 1: work/backlog-batch-1 at 660e1a8f8 (cargo check, clippy -D warnings, 10,933 lib tests, 16 golden-path and new canaries, 471 ViabilityBench tests, paperlint and status_matrix clean); every [[verify]] of this item passed there. Merged as e53136640 with an identical tree."
 +++
 
 ## Problem

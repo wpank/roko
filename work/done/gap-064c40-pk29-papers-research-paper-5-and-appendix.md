@@ -2,7 +2,7 @@
 id = "gap-064c40"
 kind = "gap"
 title = "PK29 Papers: Research paper §5 and Appendix D: reconcile with S09 v1.4 and the confirmed defaults,…"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -12,6 +12,7 @@ subsystem = ["paper"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "e53136640"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK29"
 anchors = ["tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md", "tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md"]
 lane = "paper"
@@ -20,6 +21,17 @@ links = { depends_on = [], blocks = [], related = ["dec-39c781"], supersedes = [
 
 [[verify]]
 command = "! (python3 tools/paperlint.py --strict tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md 2>&1 | grep -qE '\\[(marker|banned|header|citation|identifier|status-tag|link)\\]') && grep -q 'S09 v1.4' tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md && grep -q 'S09 v1.4' tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T15:40:23Z"
+commit = "e53136640"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-02T11:55:02Z"
+forced = false
+evidence = "Backlog gate 1: work/backlog-batch-1 at 660e1a8f8 (cargo check, clippy -D warnings, 10,933 lib tests, 16 golden-path and new canaries, 471 ViabilityBench tests, paperlint and status_matrix clean); every [[verify]] of this item passed there. Merged as e53136640 with an identical tree."
 +++
 
 ## Problem

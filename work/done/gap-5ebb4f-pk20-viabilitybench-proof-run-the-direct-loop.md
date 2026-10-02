@@ -2,7 +2,7 @@
 id = "gap-5ebb4f"
 kind = "gap"
 title = "PK20 ViabilityBench proof: Run the direct loop's shell commands in a loopback-only network sandbox on macOS (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -12,6 +12,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "e53136640"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK20"
 anchors = ["benchmarks/viabilitybench/driver/agent_env.py", "benchmarks/viabilitybench/driver/mini_loop.py", "benchmarks/viabilitybench/driver/planemit.py", "benchmarks/viabilitybench/driver/records.py", "benchmarks/viabilitybench/driver/run_cli.py", "benchmarks/viabilitybench/driver/run_roko.py", "benchmarks/viabilitybench/driver/test_run_cli.py", "benchmarks/viabilitybench/driver/vb.py", "benchmarks/viabilitybench/families/common/sandbox.py"]
 lane = "bench"
@@ -41,6 +42,17 @@ command = "grep -qw 'def test_g0_page_reports_every_check_with_its_value' benchm
 
 [[verify]]
 command = "grep -qw 'def test_ladder_mode_emits_rungs_without_fallbacks' benchmarks/viabilitybench/driver/test_planemit.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_planemit.py -k test_ladder_mode_emits_rungs_without_fallbacks -q"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T15:41:07Z"
+commit = "e53136640"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T11:55:02Z"
+forced = true
+evidence = "Backlog gate 1: work/backlog-batch-1 at 660e1a8f8 ran all 8 verifies with the ViabilityBench venv (benchmarks/viabilitybench/.venv) and all passed, inside 471 passing bench tests; merged as e53136640 with an identical tree. --force only because the venv is git-ignored and absent in the main checkout, so work.py's static check cannot start the interpreter there; every grep guard passes in MAIN."
 +++
 
 ## Problem

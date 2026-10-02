@@ -2,14 +2,16 @@
 id = "dec-1089ec"
 kind = "decision"
 title = "Raise ViabilityBench budget line BL0's cap from $10 to $14 for Pilot B's seeds 2–3"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/experiments", "cybernetic-harness/specs"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "e53136640"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-ledger's report on gap-33d54b)"
 anchors = ["benchmarks/viabilitybench/experiments/budget.toml", "tmp/cybernetic-harness/specs/S09-experiments.md"]
@@ -19,6 +21,15 @@ links = { depends_on = [], blocks = [], related = ["gap-33d54b", "dec-39c781", "
 
 [[verify]]
 command = "grep -A4 'id = .BL0.' benchmarks/viabilitybench/experiments/budget.toml | grep -q 'cap_usd = 14'"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T15:40:24Z"
+commit = "e53136640"
+executor = "claude-session"
+via = "manual"
+forced = false
+evidence = "Will approved raising BL0 to $14 with pilots A-C on 2026-10-02 (backlog decision 3301). Applied in 049c16944: budget.toml BL0 cap 14, caps sum $394 with $106 never allocated, S09 amended to v1.5; merged in e53136640."
 +++
 
 ## Problem

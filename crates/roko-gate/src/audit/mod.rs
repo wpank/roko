@@ -1,18 +1,20 @@
-//! M4, random deep audits (S05): the audit lottery and the false-green
-//! estimators, so far. The Python reference in
+//! M4, random deep audits (S05). The Python reference in
 //! `benchmarks/viabilitybench/audit/` fixes every number, and the tests here
 //! read its `fixtures/estimators.json`, the one source of truth for both.
 //!
 //! - [`policy`]: the inclusion probability π_i, the keyed draw, the run key,
 //!   its commitment and the reveal check (S05 §4.2, DP1);
 //! - [`estimate`]: Horvitz–Thompson, Hájek, v̂, Kish's n_eff, the Wilson
-//!   interval at n_eff and the betting confidence sequence (S05 §4.5).
+//!   interval at n_eff and the betting confidence sequence (S05 §4.5);
+//! - [`ledger`]: the SHA-256 hash chain of audit events in the vault, and its
+//!   redacted mirror in the workspace (S05 §5).
 //!
 //! Plain types other crates read (verify depth, labels, strata, the
 //! `vs.label` row) live in `roko_core::audit_types`, and the vault in
 //! `roko_core::audit_home`.
 
 pub mod estimate;
+pub mod ledger;
 pub mod policy;
 
 /// Why an audit computation refused its input.

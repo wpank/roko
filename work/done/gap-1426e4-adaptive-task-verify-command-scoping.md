@@ -2,15 +2,15 @@
 id = "gap-1426e4"
 kind = "gap"
 title = "Adaptive Task-Verify Command Scoping"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "features"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-07
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "40d55e0b7"
 source = "tmp/backlog/archive/170-adaptive-verify-scoping.md#170 — Adaptive Task-Verify Command Scoping"
 discovered_from = "audit:tmp/backlog/archive/170-adaptive-verify-scoping.md#170 — Adaptive Task-Verify Command Scoping"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/verify_focus.rs::focus_steps", "crates/roko-cli/src/runner/gate_dispatch.rs:923", "crates/roko-cli/src/runner/impact_analysis.rs"]
@@ -18,6 +18,15 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rq 'impact_analysis::' crates/roko-cli/src/graph_task_dispatch && grep -rqw 'fn focused_verify_scopes_an_authored_cargo_test_to_the_changed_target' crates/roko-cli/src && cargo test -p roko-cli --lib focused_verify_scopes_an_authored_cargo_test_to_the_changed_target"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T01:17:32Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+claimed_at = "2026-10-01T16:11:59Z"
+forced = false
+evidence = "Gate 6f on 9d7b62cbd plus its fixes, re-checked at 41c59176b and merged as 40d55e0b7 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests pass (roko-cli 3425, roko-core 1985, roko-learn 1233, roko-gate 700); all eight canaries, golden_path_suite, secret_canary and C2 pass; graph_plan_callers and smoke pass; bin 445; scripts/test_run_evidence_graph.py 9/9; all 245 --help pages identical to the pre-split binary once the binary name is normalized; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 smarter verify commands reduce false rejections and token waste. Plan task-verify commands are currently static strings written at plan creation time (e.g., `cargo test -p roko-gate`). These run the entire crate's test suite regardless of what the agent changed. This leads to:
 

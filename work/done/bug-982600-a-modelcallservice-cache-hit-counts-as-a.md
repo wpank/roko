@@ -2,7 +2,7 @@
 id = "bug-982600"
 kind = "bug"
 title = "A ModelCallService cache hit counts as a fresh router trial and adds cost in the gateway stats"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
@@ -11,7 +11,7 @@ subsystem = ["roko-learn", "roko-serve"]
 created = 2026-10-01
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "a788dfd8d"
+last_verified_rev = "40d55e0b7"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-c1f6b8"
 anchors = ["crates/roko-learn/src/feedback_service.rs", "crates/roko-serve/src/routes/gateway.rs", "crates/roko-agent/src/gateway_events.rs::GatewayEvent::billed_cost_usd"]
@@ -20,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["bug-c1f6b8"], supersedes = [
 
 [[verify]]
 command = "cargo test -p roko-learn --lib cache_hits_are_not_router_trials"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T01:17:33Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T22:34:31Z"
+forced = false
+evidence = "Gate 6f on 9d7b62cbd plus its fixes, re-checked at 41c59176b and merged as 40d55e0b7 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean; lib tests pass (roko-cli 3425, roko-core 1985, roko-learn 1233, roko-gate 700); all eight canaries, golden_path_suite, secret_canary and C2 pass; graph_plan_callers and smoke pass; bin 445; scripts/test_run_evidence_graph.py 9/9; all 245 --help pages identical to the pre-split binary once the binary name is normalized; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem

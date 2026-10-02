@@ -1996,6 +1996,8 @@ fn screened_tool_steps_replace_unscreened() {
 /// the offer goes once the task no longer waits.
 #[test]
 fn tui_offers_a_held_task_for_approval() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
     use crate::execution_control::{
         CommandAckReceiver, ExecutionCommandKind, ExecutionCommandSender,
     };

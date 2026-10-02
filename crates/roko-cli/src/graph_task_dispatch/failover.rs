@@ -1422,6 +1422,7 @@ exec sleep 5
             max_concurrent: None,
             limits: None,
             require_confirmation: false,
+            stream_usage: None,
         };
         let mut config = RokoConfig::default();
         config.providers.clear();

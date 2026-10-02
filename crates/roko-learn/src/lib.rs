@@ -165,8 +165,6 @@ pub mod prompt_compiler;
 pub mod tool_cap_learner;
 /// P4-17: Persistent tool metrics aggregation store.
 pub mod tool_metrics_store;
-/// P4-19: Tool recommendation from efficiency history.
-pub mod tool_recommendation;
 /// P4-16: Trigger outcome learning.
 pub mod trigger_outcome;
 /// P4-01: LLM-generated verbal self-reflection after gate failure.

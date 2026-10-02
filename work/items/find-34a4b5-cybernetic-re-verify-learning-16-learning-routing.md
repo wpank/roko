@@ -159,6 +159,9 @@ This finding is an umbrella. Resolve it by giving every lost closure a home, and
   - P0-13: deleted `PromptEfficiencyScore` and `Grade` (`roko-learn/src/efficiency.rs`). Nothing built a score,
     and its main input, the share of prompt tokens that help, needs the per-section effects nothing on the Graph
     path writes (P0-01).
+  - P4-19: deleted `ToolRecommender` (`roko-learn/src/tool_recommendation.rs`). Nothing called it, and it could not
+    read today's efficiency rows: it parsed `tools_used` as a list of tools, which `AgentEfficiencyEvent` writes as a
+    count, so it skipped every row.
 
 ## Original notes
 

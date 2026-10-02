@@ -37,45 +37,6 @@ fn truncate_to_budget(content: &str, budget: usize) -> String {
     }
 }
 
-// ── PRD Extract ────────────────────────────────────────────────────
-
-/// System prompt for PRD context extraction.
-pub const PRD_SYSTEM: &str = r#"You are a context engineer extracting relevant specification sections for an implementation plan.
-
-Given a plan that references specification documents (PRD, RFC, design docs), extract the sections most relevant to implementation. For each referenced document:
-
-1. Include the section title and path.
-2. Extract the specific paragraphs, requirements, or constraints referenced.
-3. Truncate long sections but preserve structure.
-4. Note any cross-references to other specification sections.
-
-Output format:
-```markdown
-# PRD Context for Plan {name}
-
-## {source_path}
-
-<prd-file path="{path}">
-{extracted content}
-[... truncated at N/M chars]
-</prd-file>
-```
-
-Budget: aim for 8000-15000 characters total. Prioritize sections directly referenced by the plan over tangentially related content."#;
-
-/// Build the user message for PRD extraction.
-pub fn prd_user(plan_content: &str, prd_sections: &[(&str, &str)]) -> String {
-    let plan = truncate_to_budget(plan_content, PLAN_BUDGET);
-    let mut msg = format!(
-        "Extract relevant PRD context for this plan:\n\n{plan}\n\n---\n\nAvailable PRD sections:\n"
-    );
-    for (path, content) in prd_sections {
-        let c = truncate_to_budget(content, SUPPORT_BUDGET);
-        msg.push_str(&format!("\n## {path}\n\n{c}\n"));
-    }
-    msg
-}
-
 // ── Briefs ─────────────────────────────────────────────────────────
 
 /// System prompt for brief generation.
@@ -87,7 +48,7 @@ Given a plan document, produce a concise brief with these sections:
 Table mapping artifact names to their file paths within the plan directory.
 
 ## Authority Chain
-Which documents take precedence (plan > PRD > brief for implementation details).
+Which documents take precedence (plan > spec > brief for implementation details).
 
 ## Dependencies
 What must exist before this plan can be implemented. List prerequisite plans, modules, or packages.

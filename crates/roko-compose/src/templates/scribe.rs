@@ -36,8 +36,6 @@ pub struct ScribeInput {
     pub agents_md: String,
     /// Plan metadata + full content.
     pub plan: PlanSlice,
-    /// PRD2 specification extract (up to 16k — the largest prd2 budget).
-    pub prd2_extract: String,
     /// Strategist brief.
     pub brief: String,
     /// Source file snippets the scribe should document.
@@ -67,13 +65,13 @@ Rules:\n\
 1. Open with the problem, not the solution. Never start with \"This module provides...\"\n\
 2. Frame the plan as a single coherent story before documenting individual modules.\n\
 3. Include a Mermaid graph TD diagram showing how modules relate.\n\
-4. Every formula must cite the PRD2 file path, section, and academic source.\n\
+4. Every formula must cite the spec file path, section, and academic source.\n\
 5. Every state machine gets a stateDiagram-v2. Every multi-step flow gets a sequenceDiagram.\n\
 6. Minimum 4 numbered, captioned Mermaid diagrams per plan.\n\
 7. No diagram exceeds 15 nodes — split complex ones into sub-diagrams.\n\
 8. All 7 required sections must be present: Context, Architecture, Concepts, API, \
 Implementation, Cross-Module, Testing.\n\
-9. Preserve the full depth of PRD2 source material. Do not truncate or simplify.\n\
+9. Preserve the full depth of the source material. Do not truncate or simplify.\n\
 10. Operate autonomously. Do not ask questions.";
 
 static CRITIC_ROLE_IDENTITY: &str = "\
@@ -83,7 +81,7 @@ spec fidelity.\n\
 Check each of these and report ALL failures:\n\
 - Completeness: every public type, function, and trait is documented\n\
 - Accuracy: type signatures, parameter ranges, return values match source\n\
-- PRD2 Fidelity: every formula, threshold, constant appears with correct citation\n\
+- Spec Fidelity: every formula, threshold, constant appears with correct citation\n\
 - Depth: docs explain WHY, not just WHAT\n\
 - Cross-references: data flow, event sequences, type contracts documented\n\
 - Holistic Narrative: plan-level overview present, not just a table of contents\n\
@@ -137,16 +135,7 @@ impl RolePromptTemplate for ScribeTemplate {
                 .with_hard_cap(budget.plan),
         );
 
-        // 3. prd2_extract — Session / High / hard_cap 16k (scribe gets the largest prd2 budget)
-        sections.push(
-            PromptSection::new("prd2_extract", truncate(&input.prd2_extract, budget.prd2))
-                .with_priority(SectionPriority::High)
-                .with_cache_layer(CacheLayer::Workspace)
-                .with_placement(Placement::Middle)
-                .with_hard_cap(budget.prd2),
-        );
-
-        // 4. brief — Session / High
+        // 3. brief — Session / High
         sections.push(
             PromptSection::new("brief", &input.brief)
                 .with_priority(SectionPriority::High)
@@ -154,7 +143,7 @@ impl RolePromptTemplate for ScribeTemplate {
                 .with_placement(Placement::Middle),
         );
 
-        // 5. file_context — Task / High (source snippets concatenated)
+        // 4. file_context — Task / High (source snippets concatenated)
         if !input.source_snippets.is_empty() {
             let text = format_snippets(&input.source_snippets);
             sections.push(
@@ -165,7 +154,7 @@ impl RolePromptTemplate for ScribeTemplate {
             );
         }
 
-        // 6. critic_feedback — Dynamic / High (only for Revision variant)
+        // 5. critic_feedback — Dynamic / High (only for Revision variant)
         if input.variant == ScribeVariant::Revision
             && let Some(ref feedback) = input.critic_feedback
         {
@@ -177,7 +166,7 @@ impl RolePromptTemplate for ScribeTemplate {
             );
         }
 
-        // 7. prior_docs — Task / High (only for Critic variant — the docs to review)
+        // 6. prior_docs — Task / High (only for Critic variant — the docs to review)
         if input.variant == ScribeVariant::Critic
             && let Some(ref docs) = input.prior_docs
         {
@@ -240,7 +229,6 @@ mod tests {
                 title: "Agent lifecycle model".into(),
                 content: "## Plan\nDocument the agent lifecycle model.".into(),
             },
-            prd2_extract: "## PRD2\nGompertz lifecycle: lambda(t) = ae^(bt).".into(),
             brief: "Brief about lifecycle module.".into(),
             source_snippets: vec![
                 FileSnippet {
@@ -263,33 +251,26 @@ mod tests {
         let template = ScribeTemplate;
         let sections = template.sections(&full_input());
 
-        // 5 sections: agents_instructions, plan_spec, prd2_extract, brief, file_context
-        assert_eq!(sections.len(), 5);
+        // 4 sections: agents_instructions, plan_spec, brief, file_context
+        assert_eq!(sections.len(), 4);
 
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            &[
-                "agents_instructions",
-                "plan_spec",
-                "prd2_extract",
-                "brief",
-                "file_context",
-            ]
+            &["agents_instructions", "plan_spec", "brief", "file_context"]
         );
 
         // Cache layers
         assert_eq!(sections[0].cache_layer, CacheLayer::Role);
         assert_eq!(sections[1].cache_layer, CacheLayer::Workspace);
         assert_eq!(sections[2].cache_layer, CacheLayer::Workspace);
-        assert_eq!(sections[4].cache_layer, CacheLayer::Plan);
+        assert_eq!(sections[3].cache_layer, CacheLayer::Plan);
 
-        // Hard caps — scribe gets 16k for prd2
+        // Hard caps
         assert_eq!(sections[1].hard_cap, Some(50_000));
-        assert_eq!(sections[2].hard_cap, Some(16_000));
 
         // file_context contains both snippets
-        let fc = &sections[4].content;
+        let fc = &sections[3].content;
         assert!(fc.contains("lifecycle.rs"));
         assert!(fc.contains("agent.rs"));
         assert!(fc.contains("compute_rate"));
@@ -325,18 +306,6 @@ mod tests {
     }
 
     #[test]
-    fn budget_capped_render_truncates_oversized_prd2() {
-        let template = ScribeTemplate;
-        let mut input = full_input();
-        input.prd2_extract = "x".repeat(50_000);
-        let sections = template.sections(&input);
-        let prd2 = sections.iter().find(|s| s.name == "prd2_extract").unwrap();
-        // Should be truncated to ~16k + marker
-        assert!(prd2.content.len() < 17_000);
-        assert!(prd2.content.contains("truncated"));
-    }
-
-    #[test]
     fn empty_ctx_omits_optional_sections() {
         let template = ScribeTemplate;
         let input = ScribeInput {
@@ -345,7 +314,6 @@ mod tests {
                 content: "plan".into(),
                 ..Default::default()
             },
-            prd2_extract: "prd2".into(),
             brief: String::new(),
             source_snippets: vec![],
             variant: ScribeVariant::Initial,
@@ -354,9 +322,9 @@ mod tests {
         };
         let sections = template.sections(&input);
 
-        // 4 sections: agents_instructions, plan_spec, prd2_extract, brief
+        // 3 sections: agents_instructions, plan_spec, brief
         // No file_context (empty snippets), no critic_feedback, no prior_docs
-        assert_eq!(sections.len(), 4);
+        assert_eq!(sections.len(), 3);
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
         assert!(!names.contains(&"file_context"));
         assert!(!names.contains(&"critic_feedback"));

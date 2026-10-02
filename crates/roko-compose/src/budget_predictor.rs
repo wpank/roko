@@ -306,7 +306,7 @@ impl SectionRecord {
 /// this approximates the causal effect.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SectionInfluence {
-    /// Per-section statistics, keyed by section name (e.g., "prd2", "context").
+    /// Per-section statistics, keyed by section name (e.g., "brief", "context").
     sections: HashMap<String, SectionRecord>,
     /// Minimum observations before influence scores are trusted.
     #[serde(default = "default_min_obs")]
@@ -745,17 +745,17 @@ mod tests {
             ..SectionInfluence::default()
         };
 
-        let all = vec!["prd2".into(), "context".into()];
+        let all = vec!["brief".into(), "context".into()];
 
-        // Tasks with "prd2" succeed; tasks without it fail.
+        // Tasks with "brief" succeed; tasks without it fail.
         for _ in 0..5 {
-            influence.record(&["prd2".into(), "context".into()], &all, true);
+            influence.record(&["brief".into(), "context".into()], &all, true);
             influence.record(&["context".into()], &all, false);
         }
 
         let weights = influence.weights();
-        // "prd2" has positive lift (always present when success).
-        assert!(weights["prd2"] > 1.0);
+        // "brief" has positive lift (always present when success).
+        assert!(weights["brief"] > 1.0);
     }
 
     #[test]

@@ -190,7 +190,7 @@ fn step_depends_on_output(step: EnrichStep, output_filename: &str) -> bool {
     // Map output filenames to the files they produce in the plan directory.
     // This is derived from step_dependency_paths logic.
     match step {
-        EnrichStep::Prd | EnrichStep::Invariants => false,
+        EnrichStep::Invariants => false,
         EnrichStep::Briefs => output_filename == "decomposition.md",
         EnrichStep::Tasks => false,
         EnrichStep::Decompose => output_filename == "brief.md",
@@ -385,7 +385,7 @@ impl<C: LlmClient> EnrichmentPipeline<C> {
     /// Run all enrichment steps for a plan in dependency order.
     ///
     /// Continues past failures — each step's outcome is collected.
-    /// Returns the list of outcomes for all 13 steps.
+    /// Returns the list of outcomes for all 12 steps.
     pub async fn run_all(&self, plan_base: &str) -> Vec<StepOutcome> {
         self.run_steps(plan_base, ALL_ORDERED).await
     }
@@ -753,7 +753,7 @@ mod tests {
         let pipeline = EnrichmentPipeline::new(config, client);
         let outcomes = pipeline.run_all("test-plan").await;
 
-        assert_eq!(outcomes.len(), 13);
+        assert_eq!(outcomes.len(), 12);
         for outcome in &outcomes {
             match outcome {
                 StepOutcome::Skipped { reason, .. } => {
@@ -774,7 +774,7 @@ mod tests {
         config.force = true;
 
         let pipeline = EnrichmentPipeline::new(config, client);
-        let selected = [EnrichStep::Tasks, EnrichStep::Prd, EnrichStep::Briefs];
+        let selected = [EnrichStep::Tasks, EnrichStep::Research, EnrichStep::Briefs];
         let outcomes = pipeline.run_steps("test-plan", &selected).await;
 
         assert_eq!(outcomes.len(), selected.len());
@@ -792,20 +792,20 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let plan_dir = setup_plan_dir(tmp.path(), "test-plan");
 
-        // Pre-create the Prd output so it is fresh.
-        std::fs::write(plan_dir.join("prd-extract.md"), "# Existing PRD\n").expect("write output");
+        // Pre-create the Briefs output so it is fresh.
+        std::fs::write(plan_dir.join("brief.md"), "# Existing brief\n").expect("write output");
 
         let config = make_config(tmp.path());
         let client = MockLlmClient::single_ok("unused");
         let pipeline = EnrichmentPipeline::new(config, client);
 
-        let outcome = pipeline.run_step(EnrichStep::Prd, "test-plan").await;
+        let outcome = pipeline.run_step(EnrichStep::Briefs, "test-plan").await;
         match outcome {
             StepOutcome::Skipped {
                 step,
                 reason: SkipReason::Fresh,
             } => {
-                assert_eq!(step, EnrichStep::Prd);
+                assert_eq!(step, EnrichStep::Briefs);
             }
             other => panic!("expected Skipped(Fresh), got {other:?}"),
         }
@@ -816,8 +816,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let plan_dir = setup_plan_dir(tmp.path(), "test-plan");
 
-        // Pre-create the Prd output.
-        std::fs::write(plan_dir.join("prd-extract.md"), "# Old PRD\n").expect("write output");
+        // Pre-create the Briefs output.
+        std::fs::write(plan_dir.join("brief.md"), "# Old brief\n").expect("write output");
 
         let mut config = make_config(tmp.path());
         config.force = true;
@@ -825,20 +825,20 @@ mod tests {
         let client = MockLlmClient::single_ok("unused");
         let pipeline = EnrichmentPipeline::new(config, client);
 
-        let outcome = pipeline.run_step(EnrichStep::Prd, "test-plan").await;
+        let outcome = pipeline.run_step(EnrichStep::Briefs, "test-plan").await;
         match outcome {
             StepOutcome::Generated {
                 step, llm_calls, ..
             } => {
-                assert_eq!(step, EnrichStep::Prd);
-                assert_eq!(llm_calls, 0); // Prd is non-LLM
+                assert_eq!(step, EnrichStep::Briefs);
+                assert_eq!(llm_calls, 0); // Briefs is non-LLM
             }
             other => panic!("expected Generated, got {other:?}"),
         }
 
         // Verify the file was overwritten.
-        let content = std::fs::read_to_string(plan_dir.join("prd-extract.md")).expect("read");
-        assert_ne!(content, "# Old PRD\n");
+        let content = std::fs::read_to_string(plan_dir.join("brief.md")).expect("read");
+        assert_ne!(content, "# Old brief\n");
     }
 
     #[tokio::test]
@@ -957,7 +957,7 @@ mod tests {
         let pipeline = EnrichmentPipeline::new(config, client);
         let outcomes = pipeline.run_all("test-plan").await;
 
-        assert_eq!(outcomes.len(), 13, "should have 13 outcomes");
+        assert_eq!(outcomes.len(), 12, "should have 12 outcomes");
 
         // Non-LLM steps should succeed.
         let generated: Vec<_> = outcomes
@@ -976,10 +976,10 @@ mod tests {
             "LLM steps should fail when client errors"
         );
 
-        // Total should be 13 (no panics, no short-circuits).
+        // Total should be 12 (no panics, no short-circuits).
         let total =
             generated.len() + failed.len() + outcomes.iter().filter(|o| o.is_skipped()).count();
-        assert_eq!(total, 13);
+        assert_eq!(total, 12);
     }
 
     #[tokio::test]
@@ -993,8 +993,8 @@ mod tests {
 
         let pipeline = EnrichmentPipeline::new(config, client);
 
-        // Prd is a non-LLM step.
-        let outcome = pipeline.run_step(EnrichStep::Prd, "test-plan").await;
+        // Briefs is a non-LLM step.
+        let outcome = pipeline.run_step(EnrichStep::Briefs, "test-plan").await;
         match outcome {
             StepOutcome::Generated {
                 llm_calls, cost, ..
@@ -1066,7 +1066,7 @@ mod tests {
         let pipeline = EnrichmentPipeline::new(config, client);
         let outcomes = pipeline.run_all("full-plan").await;
 
-        assert_eq!(outcomes.len(), 13);
+        assert_eq!(outcomes.len(), 12);
 
         // Count generated vs failed.
         let generated_count = outcomes
@@ -1075,12 +1075,12 @@ mod tests {
             .count();
         let failed_count = outcomes.iter().filter(|o| o.is_failed()).count();
 
-        // Non-LLM steps (7) should all generate. LLM steps may fail if the
+        // Non-LLM steps (6) should all generate. LLM steps may fail if the
         // mock response doesn't match what the step expects (e.g. TOML step
-        // getting markdown), but at minimum the 7 non-LLM steps should work.
+        // getting markdown), but at minimum the 6 non-LLM steps should work.
         assert!(
-            generated_count >= 7,
-            "expected at least 7 generated, got {generated_count} (failed: {failed_count})"
+            generated_count >= 6,
+            "expected at least 6 generated, got {generated_count} (failed: {failed_count})"
         );
     }
 
@@ -1095,7 +1095,7 @@ mod tests {
         let config = make_config(tmp.path());
 
         let pipeline = EnrichmentPipeline::new(config, client);
-        let outcome = pipeline.run_step(EnrichStep::Prd, "no-plan").await;
+        let outcome = pipeline.run_step(EnrichStep::Briefs, "no-plan").await;
 
         assert!(outcome.is_failed(), "expected Failed for missing plan.md");
         if let StepOutcome::Failed { message, .. } = outcome {
@@ -1112,7 +1112,7 @@ mod tests {
         let plan_dir = setup_plan_dir(tmp.path(), "stale-plan");
 
         // Create output file first.
-        let output_path = plan_dir.join("prd-extract.md");
+        let output_path = plan_dir.join("brief.md");
         std::fs::write(&output_path, "# Old content\n").expect("write output");
 
         // Wait a tiny bit then touch the input to make it newer.
@@ -1127,11 +1127,11 @@ mod tests {
         let config = make_config(tmp.path()); // force=false
 
         let pipeline = EnrichmentPipeline::new(config, client);
-        let outcome = pipeline.run_step(EnrichStep::Prd, "stale-plan").await;
+        let outcome = pipeline.run_step(EnrichStep::Briefs, "stale-plan").await;
 
         match outcome {
             StepOutcome::Generated { step, .. } => {
-                assert_eq!(step, EnrichStep::Prd);
+                assert_eq!(step, EnrichStep::Briefs);
             }
             other => panic!("expected Generated (stale output should regenerate), got {other:?}"),
         }
@@ -1151,7 +1151,7 @@ mod tests {
         }
 
         assert!(history.should_skip(EnrichStep::Research));
-        assert!(!history.should_skip(EnrichStep::Prd)); // no data
+        assert!(!history.should_skip(EnrichStep::Briefs)); // no data
     }
 
     #[test]
@@ -1186,11 +1186,11 @@ mod tests {
     #[test]
     fn step_outcome_history_success_rate() {
         let mut history = StepOutcomeHistory::new();
-        history.record(EnrichStep::Prd, true);
-        history.record(EnrichStep::Prd, true);
-        history.record(EnrichStep::Prd, false);
+        history.record(EnrichStep::Briefs, true);
+        history.record(EnrichStep::Briefs, true);
+        history.record(EnrichStep::Briefs, false);
 
-        let rate = history.success_rate(EnrichStep::Prd).unwrap();
+        let rate = history.success_rate(EnrichStep::Briefs).unwrap();
         assert!((rate - 2.0 / 3.0).abs() < 0.01);
 
         assert!(history.success_rate(EnrichStep::Research).is_none());

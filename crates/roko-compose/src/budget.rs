@@ -4,7 +4,7 @@
 //! and [`budget_for`](crate::templates::common::budget_for) with:
 //!
 //! - Complexity-based budget scaling (Fast/Standard/Complex)
-//! - Section dropping for trivial tasks (PRD, research, decomposition)
+//! - Section dropping for trivial tasks (cross-plan context, skills)
 //! - Prefix cache alignment markers (hints for LLM cache break points)
 //!
 //! The base per-role budgets live in `templates/common.rs` and are re-used
@@ -21,7 +21,7 @@ use roko_core::AgentRole;
 /// oriented toward prompt budget decisions rather than task routing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Complexity {
-    /// Single-file, trivial change. Drop PRD, research, decomposition sections.
+    /// Single-file, trivial change. Drop the cross-plan context and skills sections.
     Trivial,
     /// Standard multi-file task. Full budget at role defaults.
     #[default]
@@ -32,7 +32,7 @@ pub enum Complexity {
 
 /// A complexity-adjusted budget derived from the base per-role budget.
 ///
-/// Contains the 9 section caps from [`PromptBudget`] plus metadata about
+/// Contains the 8 section caps from [`PromptBudget`] plus metadata about
 /// which sections were dropped and where cache breaks should go.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdjustedBudget {
@@ -56,7 +56,7 @@ pub struct AdjustedBudget {
 ///
 /// 1. Start with the base per-role budget from `budget_for(role)`.
 /// 2. Apply complexity adjustments:
-///    - **Trivial**: zero out `prd2`, `context`, `skills`; halve `workspace_map`
+///    - **Trivial**: zero out `context` and `skills`; halve `workspace_map`
 ///      and `brief`. These sections add noise to simple single-file tasks.
 ///    - **Standard**: use the base budget as-is.
 ///    - **Complex**: inflate `workspace_map` by 50%, `context` by 100%,
@@ -91,10 +91,6 @@ fn adjusted_budget_from_base(
     match complexity {
         Complexity::Trivial => {
             // Drop heavy context sections that add noise for trivial tasks.
-            if budget.prd2 > 0 {
-                budget.prd2 = 0;
-                dropped.push("prd2");
-            }
             if budget.context > 0 {
                 budget.context = 0;
                 dropped.push("context");
@@ -141,7 +137,7 @@ fn adjusted_budget_from_base(
     }
 }
 
-/// Total character budget across all 9 sections.
+/// Total character budget across all 8 sections.
 ///
 /// Useful for estimating whether a prompt will fit in a model's context window
 /// when fully populated.
@@ -149,7 +145,6 @@ fn adjusted_budget_from_base(
 pub const fn total_budget(budget: &PromptBudget) -> usize {
     budget.plan
         + budget.workspace_map
-        + budget.prd2
         + budget.context
         + budget.brief
         + budget.reviews
@@ -178,12 +173,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trivial_drops_prd_context_skills() {
+    fn trivial_drops_context_and_skills() {
         let adj = adjusted_budget_for(AgentRole::Implementer, Complexity::Trivial);
-        assert_eq!(adj.budget.prd2, 0);
         assert_eq!(adj.budget.context, 0);
         assert_eq!(adj.budget.skills, 0);
-        assert!(adj.dropped_sections.contains(&"prd2"));
         assert!(adj.dropped_sections.contains(&"context"));
         assert!(adj.dropped_sections.contains(&"skills"));
     }
@@ -218,7 +211,7 @@ mod tests {
     #[test]
     fn auto_fixer_trivial_drops_nothing_already_zero() {
         let adj = adjusted_budget_for(AgentRole::AutoFixer, Complexity::Trivial);
-        // AutoFixer already has prd2=0, context=0, skills=0.
+        // AutoFixer already has context=0, skills=0.
         assert!(adj.dropped_sections.is_empty());
         // Plan and brief are already 0 for AutoFixer.
         assert_eq!(adj.budget.plan, 0);
@@ -242,7 +235,6 @@ mod tests {
             total,
             b.plan
                 + b.workspace_map
-                + b.prd2
                 + b.context
                 + b.brief
                 + b.reviews
@@ -264,8 +256,8 @@ mod tests {
         let rev_budget = adjusted_budget_for(AgentRole::QuickReviewer, Complexity::Standard);
         // Implementer gets more file_context than QuickReviewer.
         assert!(impl_budget.budget.file_context > rev_budget.budget.file_context);
-        // QuickReviewer has no prd2 or context.
-        assert_eq!(rev_budget.budget.prd2, 0);
+        // QuickReviewer has no cross-plan context.
+        assert_eq!(rev_budget.budget.context, 0);
     }
 
     #[test]

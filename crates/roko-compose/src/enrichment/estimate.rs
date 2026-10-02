@@ -19,7 +19,6 @@ use super::step::EnrichStep;
 const fn step_token_estimate(step: EnrichStep) -> (u32, u32) {
     // Returns (input_tokens, output_tokens).
     match step {
-        EnrichStep::Prd => (500, 2_000),
         EnrichStep::Briefs => (1_000, 3_000),
         EnrichStep::Tasks | EnrichStep::Invariants | EnrichStep::Scribe => (1_500, 2_500),
         EnrichStep::Decompose => (2_000, 4_000),
@@ -246,7 +245,7 @@ mod tests {
             est.estimated_duration_secs > 0.0,
             "duration should be positive"
         );
-        assert_eq!(est.step_count, 13);
+        assert_eq!(est.step_count, 12);
         assert_eq!(est.llm_step_count, 6); // 6 LLM steps in ALL_ORDERED
         assert!(!est.batch_mode);
     }
@@ -383,13 +382,13 @@ mod tests {
         let est = estimate_enrichment(
             &default_plan_info(),
             TaskComplexityBand::Standard,
-            &[EnrichStep::Prd],
+            &[EnrichStep::Briefs],
             "claude-sonnet-4-6",
             false,
         );
 
         assert_eq!(est.step_count, 1);
-        assert_eq!(est.llm_step_count, 0); // Prd is non-LLM
+        assert_eq!(est.llm_step_count, 0); // Briefs is non-LLM
         assert!(est.estimated_tokens > 0);
         assert!(est.estimated_cost_usd > 0.0);
     }

@@ -134,16 +134,13 @@ impl FeedbackSink for RoutingObservationSink {
             ),
         };
 
-        // Audit #84: always record category-level stats (even for
-        // overrides) so confidence_scores can adjust per-category.
-        self.router
-            .record_category_outcome(&outcome.model, ctx.task_category, succeeded);
-
         if let Some(journal) = &self.journal {
             // Journaled, then applied, with the reward and weight the paths
             // below give it (an override's weight is dampened), so a replay
-            // repeats it exactly. The WAL write syncs to disk, so it runs
-            // off the reactor.
+            // repeats it exactly. The journal moves the category counts under
+            // the same lock, so a save cannot split them from the journaled
+            // observation (bug-a83a6e). The WAL write syncs to disk, so it
+            // runs off the reactor.
             let journal = Arc::clone(journal);
             let router = Arc::clone(&self.router);
             let model = outcome.model.clone();
@@ -173,6 +170,11 @@ impl FeedbackSink for RoutingObservationSink {
             .await?;
             return Ok(());
         }
+
+        // Audit #84: always record category-level stats (even for
+        // overrides) so confidence_scores can adjust per-category.
+        self.router
+            .record_category_outcome(&outcome.model, ctx.task_category, succeeded);
 
         // Audit #90: manual overrides must not pollute the bandit signal.
         // Route them through the dampened `record_override_outcome` path

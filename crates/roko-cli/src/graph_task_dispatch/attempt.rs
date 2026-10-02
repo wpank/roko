@@ -648,6 +648,7 @@ fn executed_model(
         executed.model_mismatch = served.mismatch;
         executed.turns = reported_turns(dispatch);
         executed.sampling = request_sampling(&dispatch.target);
+        executed.tool_policy = dispatch.tool_policy.clone();
     }
     executed
 }

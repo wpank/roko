@@ -1231,6 +1231,98 @@ printf '%s\n' '{"type":"result","session_id":"s","total_cost_usd":0,"usage":{"in
         assert!(reason.contains("cannot enforce the resolved agent contract"), "{reason}");
     }
 
+    /// gap-baab0a: an implementer may not search the web, so the broker stops
+    /// a Codex run at its first `web_search`, and the attempt's verdict
+    /// records the policy the contract asked for, what the broker enforced,
+    /// and the denial.
+    #[tokio::test]
+    async fn a_denied_codex_operation_is_recorded_with_the_tool_policy() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().join("work");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        let codex = temp.path().join("fake-codex.sh");
+        write_executable(
+            &codex,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"item.started","item":{"id":"item_0","type":"web_search","query":"rust"}}'
+exec sleep 5
+"#,
+        );
+        let provider = |kind, command: Option<&Path>, key_env: Option<&str>| ProviderConfig {
+            kind,
+            base_url: None,
+            api_key_env: key_env.map(str::to_string),
+            command: command.map(|path| path.display().to_string()),
+            args: None,
+            timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+        };
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "codex-model".to_string();
+        let codex_cli = provider(ProviderKind::CodexCli, Some(&codex), None);
+        config.providers.insert("codex_cli".to_string(), codex_cli);
+        let profile = ModelProfile {
+            provider: "codex_cli".to_string(),
+            slug: "gpt-5-codex".to_string(),
+            ..ModelProfile::default()
+        };
+        config.models.insert("codex-model".to_string(), profile);
+        // Keys in the environment must not synthesize other usable providers.
+        for (id, kind) in [
+            ("anthropic", ProviderKind::AnthropicApi),
+            ("openai", ProviderKind::OpenAiCompat),
+            ("gemini", ProviderKind::GeminiApi),
+            ("perplexity", ProviderKind::PerplexityApi),
+        ] {
+            let keyless = provider(kind, None, Some("ROKO_TEST_FAILOVER_KEY_NEVER_SET"));
+            config.providers.insert(id.to_string(), keyless);
+        }
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = GraphTaskDispatcher::new(factory, Arc::clone(&config), workdir.clone())
+            .with_feedback(recording_feedback(&workdir));
+        let task = TaskDef {
+            id: "T10".to_string(),
+            title: "Implement without the web".to_string(),
+            model_hint: Some("codex-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let run = "graph-codex-denial-run";
+        let dispatched = dispatcher
+            .dispatch(
+                &make_spec(&task),
+                Vec::new(),
+                &CellContext::new().with_run_id(run.to_string()),
+            )
+            .await;
+        assert!(dispatched.is_err(), "the denied run fails the task");
+        drop(dispatcher);
+
+        let verdicts = jsonl_rows_where(
+            &workdir.join(".roko/runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let policy = &verdicts[0]["executed"]["tool_policy"];
+        assert_eq!(policy["enforcement"], "broker", "{policy}");
+        let forbidden = policy["forbidden_tools"].as_array().expect("forbidden tools");
+        assert!(forbidden.contains(&serde_json::json!("web_search")), "{policy}");
+        assert_eq!(policy["denied_operations"], serde_json::json!(["web_search"]));
+        assert_eq!(policy["network_off"], true);
+        assert_eq!(policy["denial"], "web_search denied by policy: rust");
+    }
+
     /// `roko init` workspaces configure only `claude_cli` and the default
     /// model; a hint naming another model must never fail the task.
     #[tokio::test]

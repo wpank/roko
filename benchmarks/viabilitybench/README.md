@@ -43,13 +43,14 @@ benchmarks/viabilitybench/
   driver/vb.py                                              # vb run | estimate | materialize | ledger | report
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
   driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
+  driver/egress.py                                          # the Claude Code arm's egress allowlist proxy
   driver/{disturb, vb_verify}.py                            # H6's disturbances, and the visible-verify wrapper
   driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
   analysis/{metrics, passk, report}.py                      # vb report
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
   manifest.json  order-<seed>.json  records.jsonl  ledger.jsonl  reservations.jsonl  errors.jsonl  metrics.json
-  proxy.jsonl  s01/  archives/  private/  transcripts/ (opt-in)
+  proxy.jsonl  egress.jsonl  s01/  archives/  private/  transcripts/ (opt-in)
 ```
 
 Tests sit beside the code they test (`test_*.py`), plus `tests/test_plan_slice.py`, and `driver/testdata/` holds a
@@ -99,8 +100,10 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   secret file, the key file and the run's private task directories. The direct loop's shell gets no network at all,
   since the driver makes every model call. The Roko arm's process tree, whose tools run the agent's commands, reaches
   only the loopback port of the endpoint Roko calls (the metering proxy's) and Unix sockets in its workspace. The
-  record names the rule and the confinement that applied (`provenance.network_policy`). Off macOS the rule is not
-  applied, and the record says "none" (gap-29ac83).
+  Claude Code arm reaches the network only through an egress proxy of its own (`driver/egress.py`), which admits the
+  targets of `[cli] egress_allow` (default `api.anthropic.com:443`) and logs every request to `egress.jsonl`. The
+  record names the rule and the confinement that applied (`provenance.network_policy`), and for Claude Code every
+  refused request. Off macOS the rule is not applied, and the record says "none" (gap-29ac83).
 - **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the
   agent's repo, then archives it (a git bundle, a tarball and the diff). The census (`census.py`) re-runs the visible
   checks on a clean export with the test files restored, runs the family's `hidden.py --secret-file` and the integrity

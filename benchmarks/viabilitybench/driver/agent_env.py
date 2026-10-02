@@ -24,6 +24,11 @@ Canaries catch reads of benchmark files, and the tripwire catches a read of the 
 must be chmod'ed first while agents run (`census`, gap-308373). A container per task is the stronger option (S08
 decision 4).
 
+**Proxies** (gap-0bd49a, 3305). `build` passes no proxy variable of the operator's. A runner whose agent reaches the
+network only through the egress proxy (`egress`, the Claude Code arm) adds `proxy_env(url)`: HTTPS_PROXY, HTTP_PROXY
+and ALL_PROXY name the proxy, in upper and lower case (curl reads only a lower-case `http_proxy`), and NO_PROXY keeps
+the loopback direct, where the sandbox admits only the ports its rule names.
+
 **The driver's own environment** (bug-32eb77). An agent can read the environment the driver started with, so any
 credential the operator's shell exports would reach every agent: `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, cloud keys.
 - **Scrub.** A `vb run` process starts itself again once its checks have passed, with its environment cut to an
@@ -43,7 +48,8 @@ API:
     forbid(values: Iterable[str]) -> None           # values refused in every later build and check (the secret)
     driver_env(env: Mapping[str, str] | None = None) -> dict        # the allowlisted driver environment
     exec_scrubbed() -> None                         # start again with `driver_env()`, once; returns if already done
-    FORBIDDEN_NAME, PASSTHROUGH, SYSTEM_PATH, DRIVER_PASSTHROUGH, DRIVER_SCRUBBED
+    proxy_env(url: str) -> dict                     # the variables that send HTTP clients through the egress proxy
+    FORBIDDEN_NAME, PASSTHROUGH, SYSTEM_PATH, DRIVER_PASSTHROUGH, DRIVER_SCRUBBED, PROXY_NAMES, NO_PROXY
 """
 
 from __future__ import annotations
@@ -70,6 +76,8 @@ _forbidden: tuple[str, ...] = ()  # set by `forbid`: the benchmark secret and it
 DRIVER_PASSTHROUGH = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
                       "CLAUDE_CONFIG_DIR", "VB_SECRET_FILE", "VB_KEY_FILE", "VB_RESULTS", "VB_WORK")
 DRIVER_SCRUBBED = "VB_DRIVER_ENV"  # "scrubbed" in the environment `exec_scrubbed` starts the driver with
+PROXY_NAMES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
+NO_PROXY = "127.0.0.1,localhost,::1"  # NO_PROXY and no_proxy under `proxy_env`: the loopback stays direct
 
 
 class AgentEnvError(ValueError):
@@ -121,6 +129,11 @@ def forbid(values: Iterable[str]) -> None:
     """
     global _forbidden
     _forbidden = tuple(value for value in values if value)
+
+
+def proxy_env(url: str) -> dict:
+    """The variables that send an agent's HTTP clients through the egress proxy at `url` (module docstring)."""
+    return {**dict.fromkeys(PROXY_NAMES, url), "NO_PROXY": NO_PROXY, "no_proxy": NO_PROXY}
 
 
 def driver_env(env: Mapping[str, str] | None = None) -> dict:

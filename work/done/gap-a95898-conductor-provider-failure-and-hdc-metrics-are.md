@@ -2,7 +2,7 @@
 id = "gap-a95898"
 kind = "gap"
 title = "Conductor, provider-failure and HDC metrics are tracing-only and never reach /metrics"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["roko-serve", "roko-cli"]
 created = 2026-10-01
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "c7560e213"
+last_verified_rev = "4dc345a29"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "gap-d8c39a"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/gate_learning.rs", "crates/roko-serve/src/lib.rs"]
@@ -20,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["gap-d8c39a"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn metrics_include_conductor_and_provider_failures' crates/roko-serve/src/ && grep -rqw 'fn conductor_counts_evaluations_in_attached_registry' crates/roko-conductor/src/ && cargo test -p roko-serve --lib metrics_include_conductor_and_provider_failures && cargo test -p roko-conductor --lib conductor_counts_evaluations_in_attached_registry"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T00:39:03Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-01T22:34:25Z"
+forced = false
+evidence = "Gate 6e on ddf47dbd6 plus its fixes, re-run at 3ac297a00 and merged as 4dc345a29 (crates and Cargo.lock identical to the gated tree): cargo check --workspace --tests, nightly fmt and clippy -D warnings clean on 10 crates; lib tests pass (roko-cli 3420, roko-agent 2289, roko-core 1984, roko-learn 1230, roko-serve 1013, roko-graph 488, roko-conductor 316, roko-acp 220, roko-execution 193, roko-dreams 101); all eight canaries, golden_path_suite, secret_canary and C2 pass; roko-acp integration, smoke, graph_plan_callers, graph_timeout_matrix and plan_conversion pass; bin 445; scripts/test_run_evidence_graph.py 9/9 against the gate binary; Cargo.lock unchanged. Implemented in this round; the item's notes name the change and its test."
 +++
 
 ## Problem

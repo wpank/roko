@@ -9,9 +9,9 @@ size = "M"
 goal = "learning"
 subsystem = ["roko-learn"]
 created = 2026-09-06
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "f8906b3c0"
 source = "tmp/archive/cybernetic-audit/30-master-checklist.md#P0 -- Close Broken Feedback Loops"
 discovered_from = "audit:tmp/archive/cybernetic-audit/30-master-checklist.md#P0 -- Close Broken Feedback Loops"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/knowledge_helpers.rs::apply_neuro_gate_hints", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets::with_neuro_gate_hints", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs::update_bidders_with_cost", "crates/roko-cli/src/dispatch/factory.rs", "crates/roko-learn/src/cascade_router.rs::select_tier_with_active_inference", "crates/roko-learn/src/efficiency.rs::PromptEfficiencyScore", "crates/roko-learn/src/tool_metrics_store.rs", "crates/roko-learn/src/tool_recommendation.rs", "crates/roko-learn/src/hindsight.rs::HindsightRelabeler", "crates/roko-compose/src/attention.rs::ModelAttentionCurves"]
@@ -153,6 +153,12 @@ This finding is an umbrella. Resolve it by giving every lost closure a home, and
       proposals need a product decision.
   - Plan steps 3 and 4 (file the new items, link them back here) are left to the coordinator: this round's brief
     leaves filing to them and rules out editing other items.
+
+- 2026-10-02 (wk-learn2): the closures left without an item, on work/gap-14f08e; cargo verification deferred to
+  the batch check. Each is deleted, since none can be wired on the Graph path as it stands:
+  - P0-13: deleted `PromptEfficiencyScore` and `Grade` (`roko-learn/src/efficiency.rs`). Nothing built a score,
+    and its main input, the share of prompt tokens that help, needs the per-section effects nothing on the Graph
+    path writes (P0-01).
 
 ## Original notes
 

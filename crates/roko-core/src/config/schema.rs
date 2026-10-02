@@ -1481,14 +1481,11 @@ impl RokoConfig {
         let _ = writeln!(out, "[serve.deploy]");
         let _ = writeln!(out, "provider = \"{}\"", c.serve.deploy.provider);
         let _ = writeln!(out, "environment = {:?}", c.serve.deploy.environment);
-        let _ = writeln!(out, "\n[[serve.deploy.webhooks]]");
-        let _ = writeln!(out, "provider = \"github\"");
-        let _ = writeln!(out, "owner = \"nunchi\"");
-        let _ = writeln!(out, "repo = \"roko\"");
-        let _ = writeln!(out, "\n[[serve.deploy.webhooks]]");
-        let _ = writeln!(out, "provider = \"github\"");
-        let _ = writeln!(out, "owner = \"nunchi\"");
-        let _ = writeln!(out, "repo = \"collaboration\"");
+        // Commented: a live table would register a webhook on that repository.
+        let _ = writeln!(out, "\n# [[serve.deploy.webhooks]]");
+        let _ = writeln!(out, "# provider = \"github\"");
+        let _ = writeln!(out, "# owner = \"<your-github-owner>\"");
+        let _ = writeln!(out, "# repo = \"<your-repo>\"");
     }
     fn write_example_scheduler(out: &mut String, _c: &Self) {
         let _ = writeln!(out, "\n# -- Cron scheduler --");

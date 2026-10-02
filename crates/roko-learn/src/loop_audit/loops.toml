@@ -382,21 +382,16 @@ layer = "holdout"
 opportunity = "a settled Graph task outcome"
 default_policy = "no learning update from the outcome"
 receipt = "params_digest"
+lifecycle = { retired = { by = "4101" } }
 notes = [
-    "Pending retirement: S02.P1-14's ArmSet replaces it (R.S03-6); loop_audit::assign supersedes its partition.",
+    "Retired from Graph runs by 4101: no learner read its learning gate. S02.P1-14's ArmSet replaces it (R.S03-6); loop_audit::assign supersedes its partition.",
 ]
 
 [[loop.static_findings]]
-claim = "The Graph verify path only logs should_update_learning: no learner is gated by the partition."
-pointer = "crates/roko-cli/src/graph_task_dispatch/verification.rs::should_update_learning"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+claim = "should_update_learning gates no learner: Graph runs only ever logged it, and its outcomes were recorded with cost 0.0."
+pointer = "crates/roko-learn/src/holdout.rs::HoldoutExperiment::should_update_learning"
+verified_at = "e9f81ad1ec8ba8f4ed8a719033e18d3a1c8cdd7c"
 reason = "dormant:write_only"
-
-[[loop.static_findings]]
-claim = "Each outcome is recorded with cost 0.0 (record_outcome(.., 0.0)), so the holdout's cost accounting is empty."
-pointer = "crates/roko-cli/src/graph_task_dispatch/verification.rs::record_outcome"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
-qualifier = "misspecified"
 
 [[loop.static_findings]]
 claim = "The partition hashes each task key once with a seeded DefaultHasher, so a task never changes arm."

@@ -176,12 +176,6 @@ impl GraphTaskDispatcher {
                 "attempt-scoped prompt treatments from `learn/experiments.json`",
             ),
             component(
-                "store.holdout",
-                WiringKind::Store,
-                feedback.holdout_experiment.is_some(),
-                "holdout assignment gating learning updates",
-            ),
-            component(
                 "store.decision_writer",
                 WiringKind::Store,
                 feedback.runs_dir.is_some(),

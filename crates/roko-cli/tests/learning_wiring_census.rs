@@ -33,7 +33,9 @@ use roko_learn::telemetry::DecisionSource;
 use roko_learn::telemetry::report::{RunRecords, route_report};
 use serde_json::Value;
 
-/// Every learning component of S01 §5.8, in census order.
+/// Every learning component of S01 §5.8, in census order. The legacy
+/// holdout split is not one: it gated nothing, and S03's registry lists it
+/// (L-holdout) as retired (4101).
 const S01_COMPONENTS: &[&str] = &[
     "sink.episode",
     "sink.routing",
@@ -43,7 +45,6 @@ const S01_COMPONENTS: &[&str] = &[
     "sink.section_effect",
     "store.attempt_log",
     "store.prompt_experiment",
-    "store.holdout",
     "store.decision_writer",
     "store.exposure_writer",
     "store.record_access",

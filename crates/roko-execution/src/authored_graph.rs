@@ -314,9 +314,10 @@ impl ControllerLifecycle for AuthoredGraphController {
             });
         }
 
-        // 4. Structural graph validation
+        // 4. Structural graph validation. Stub cells are left to the start,
+        // which knows whether the run allows test stubs.
         let registry = roko_graph::default_registry();
-        let engine = roko_graph::GraphEngine::new(graph, registry);
+        let engine = roko_graph::GraphEngine::new(graph, registry).with_allow_test_stubs(true);
         let issues = engine.validate();
         for issue in &issues {
             errors.push(PreflightError {
@@ -604,6 +605,22 @@ cell_type = "task-executor"
         let controller = AuthoredGraphController::new(workspace_all());
         let config = AuthoredGraphConfig::for_test(path);
         let errors = controller.preflight(&config);
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+    }
+
+    /// Preflight checks the graph's structure; a stub cell is refused at the
+    /// start, which knows whether the run allows test stubs (bug-147b45).
+    #[test]
+    fn preflight_leaves_stub_cells_to_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stub.toml");
+        std::fs::write(
+            &path,
+            "[graph]\nname = \"stub\"\n\n[[nodes]]\nid = \"root\"\ncell_type = \"noop\"\n",
+        )
+        .unwrap();
+        let controller = AuthoredGraphController::new(workspace_all());
+        let errors = controller.preflight(&AuthoredGraphConfig::for_test(path));
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 

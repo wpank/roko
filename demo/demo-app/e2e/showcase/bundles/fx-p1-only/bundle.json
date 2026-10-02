@@ -1,0 +1,34 @@
+{
+  "schema": "showcase-bundle/1",
+  "bundle_id": "fx-p1-only",
+  "kind": "fixture",
+  "simulated": false,
+  "title": "Fixture: P1 only, no audits yet",
+  "created_at": "2026-09-30T12:00:00Z",
+  "featured": false,
+  "experiment_ids": ["FIXTURE"],
+  "run_ids": ["run-fx-p1-only-01", "run-fx-p1-only-02", "run-fx-p1-only-03"],
+  "harness_commit": "0000000fixture",
+  "dirty": false,
+  "analysis_commit": "0000000fixture",
+  "config_hashes": ["b3:fixture"],
+  "price_snapshot_id": "prices-2026-09-28",
+  "models": ["cerebras/gpt-oss-120b", "claude-opus-5-5", "claude-sonnet-5"],
+  "views": ["overview", "p1-head-to-head"],
+  "cost_usd": 0.0,
+  "redaction": {
+    "transcripts": "excluded",
+    "prompts": "sha256",
+    "hidden_tests": "sha256",
+    "diffs": "included"
+  },
+  "files": [
+    {
+      "path": "data/metrics.jsonl",
+      "schema": "vb.metric_record/1",
+      "sha256": "a2cb90d6f78505d8f87cae686f50f014d3b88feee508e9ec724645cc781cf6d7",
+      "rows": 36
+    }
+  ],
+  "reproduce": ["fixture: hand-written test data for the showcase specs, not a measurement"]
+}

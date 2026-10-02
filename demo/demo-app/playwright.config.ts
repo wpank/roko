@@ -13,7 +13,17 @@ export default defineConfig({
   },
   projects: [
     {
+      // The legacy specs. Showcase specs run in their own projects.
       name: 'chromium',
+      testIgnore: ['**/showcase/**'],
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      // S10 §7: the dev server with VITE_ALLOW_FIXTURES=1, serving the fixture bundles of
+      // e2e/showcase/bundles at /bundles/. Projects that need another web server (vite
+      // preview, roko serve, a remote URL) get their own config file.
+      name: 'showcase-fixture',
+      testDir: './e2e/showcase',
       use: { ...devices['Desktop Chrome'] },
     },
   ],
@@ -22,5 +32,7 @@ export default defineConfig({
     port: 5173,
     reuseExistingServer: true,
     timeout: 30_000,
+    // The legacy pages ignore the flag; the showcase-fixture project needs it.
+    env: { VITE_ALLOW_FIXTURES: '1' },
   },
 });

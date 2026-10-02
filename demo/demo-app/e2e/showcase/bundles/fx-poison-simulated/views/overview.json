@@ -1,0 +1,188 @@
+{
+  "schema": "showcase-view/overview/1",
+  "tiles": [
+    {
+      "id": "p1-usd-per-verified",
+      "pillar": "P1",
+      "mechanism": null,
+      "title": "$/verified success",
+      "hypothesis": "H1",
+      "claim_state": "SUPPORTED",
+      "rows": [
+        {
+          "label": "cheap·roko",
+          "estimate": {"value": 0.083, "ci": [0.072, 0.097], "metric_ref": "m-8c5776a9f0b860ff"}
+        },
+        {
+          "label": "frontier·direct",
+          "estimate": {"value": 1.92, "ci": [1.61, 2.31], "metric_ref": "m-af52d69be690309f"}
+        }
+      ],
+      "planned_in": [],
+      "view": "p1-head-to-head"
+    },
+    {
+      "id": "p1-consistency",
+      "pillar": "P1",
+      "mechanism": null,
+      "title": "consistency pass^3",
+      "hypothesis": "H2",
+      "claim_state": "INCONCLUSIVE",
+      "rows": [
+        {
+          "label": "cheap·roko",
+          "estimate": {"value": 0.55, "ci": [0.47, 0.63], "metric_ref": "m-4a24bbcaa9a645d2"}
+        },
+        {
+          "label": "frontier·direct",
+          "estimate": {"value": 0.64, "ci": [0.56, 0.71], "metric_ref": "m-20ca015e1ceebe2e"}
+        }
+      ],
+      "planned_in": [],
+      "view": "p1-head-to-head"
+    },
+    {
+      "id": "p1-routing",
+      "pillar": "P1",
+      "mechanism": null,
+      "title": "routing saving",
+      "hypothesis": "H4",
+      "claim_state": "NOT_YET_MEASURED",
+      "rows": [],
+      "planned_in": ["R-H4"],
+      "view": null
+    },
+    {
+      "id": "p1-spec-effect",
+      "pillar": "P1",
+      "mechanism": null,
+      "title": "spec effect",
+      "hypothesis": "H3",
+      "claim_state": "NOT_YET_MEASURED",
+      "rows": [],
+      "planned_in": ["LOG1"],
+      "view": null
+    },
+    {
+      "id": "p2-m4-false-green",
+      "pillar": "P2",
+      "mechanism": "M4",
+      "title": "false-green rate",
+      "hypothesis": "H5",
+      "claim_state": "SUPPORTED",
+      "rows": [
+        {
+          "label": "false-green",
+          "estimate": {"value": 0.021, "ci": [0.004, 0.046], "metric_ref": "m-5c87552c44732988"}
+        }
+      ],
+      "planned_in": [],
+      "view": "m4-audits"
+    }
+  ],
+  "negatives": [],
+  "metrics": [
+    {
+      "metric_ref": "m-8c5776a9f0b860ff",
+      "metric": "usd_per_vs",
+      "kind": "usd",
+      "value": 0.083,
+      "ci": [0.072, 0.097],
+      "ci_method": "paired_stratified_bootstrap",
+      "n": 200,
+      "estimator": "CPR = Σcost/Σhidden_pass",
+      "arm": "roko_fixed",
+      "envelope_level": null
+    },
+    {
+      "metric_ref": "m-af52d69be690309f",
+      "metric": "usd_per_vs",
+      "kind": "usd",
+      "value": 1.92,
+      "ci": [1.61, 2.31],
+      "ci_method": "paired_stratified_bootstrap",
+      "n": 200,
+      "estimator": "CPR = Σcost/Σhidden_pass",
+      "arm": "fd_claude",
+      "envelope_level": null
+    },
+    {
+      "metric_ref": "m-4a24bbcaa9a645d2",
+      "metric": "pass_hat_3",
+      "kind": "rate",
+      "value": 0.55,
+      "ci": [0.47, 0.63],
+      "ci_method": "stratified_bootstrap",
+      "n": 40,
+      "estimator": "unbiased pass^3 (tau-bench)",
+      "arm": "roko_fixed",
+      "envelope_level": null
+    },
+    {
+      "metric_ref": "m-20ca015e1ceebe2e",
+      "metric": "pass_hat_3",
+      "kind": "rate",
+      "value": 0.64,
+      "ci": [0.56, 0.71],
+      "ci_method": "stratified_bootstrap",
+      "n": 40,
+      "estimator": "unbiased pass^3 (tau-bench)",
+      "arm": "fd_claude",
+      "envelope_level": null
+    },
+    {
+      "metric_ref": "m-5c87552c44732988",
+      "metric": "false_green_rate",
+      "kind": "rate",
+      "value": 0.021,
+      "ci": [0.004, 0.046],
+      "ci_method": "ht_wilson_eff_n",
+      "n": 31,
+      "estimator": "Hájek (ratio HT)",
+      "arm": null,
+      "envelope_level": null
+    }
+  ],
+  "provenance": {
+    "schema": "showcase-provenance/1",
+    "kind": "fixture",
+    "simulated": true,
+    "bundle_id": "fx-poison-simulated",
+    "experiment_ids": ["FIXTURE"],
+    "run_ids": [
+      "run-fx-poison-simulated-01",
+      "run-fx-poison-simulated-02",
+      "run-fx-poison-simulated-03"
+    ],
+    "sources": [
+      {
+        "path": "data/metrics.jsonl",
+        "schema": "vb.metric_record/1",
+        "sha256": "2287607a263ac3954a327c072b5e8b4365efa300dcb424b88e9226e4d3126c0d",
+        "rows": 43,
+        "simulated": false,
+        "sha256_verified": false
+      }
+    ],
+    "harness_commit": "0000000fixture",
+    "dirty": false,
+    "analysis_commit": "0000000fixture",
+    "config_hashes": ["b3:fixture"],
+    "price_snapshot_id": "prices-2026-09-28",
+    "models": ["cerebras/gpt-oss-120b", "claude-opus-5-5", "claude-sonnet-5"],
+    "n": 200,
+    "seeds": [1, 2, 3],
+    "window": {"from": "2026-10-01T00:00:00Z", "to": "2026-10-01T06:00:00Z"},
+    "estimator": "per tile; see each metric",
+    "record_filter": "true",
+    "ci": {
+      "method": "paired_stratified_bootstrap",
+      "strata": ["family", "ladder"],
+      "level": 0.95,
+      "resamples": 10000
+    },
+    "cost_usd": 0.0,
+    "generated_at": "2026-10-02T00:00:00Z",
+    "reproduce": ["fixture: hand-written test data for the showcase specs, not a measurement"]
+  }
+}

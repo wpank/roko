@@ -131,6 +131,9 @@ pub struct RokoConfig {
     pub pricing: crate::pricing_snapshot::PricingConfig,
     #[serde(default)]
     pub conductor: ConductorConfig,
+    /// M1, the ultrastable controller: its mode and constants (S06 §5).
+    #[serde(default)]
+    pub homeostasis: super::homeostasis::HomeostasisConfig,
     #[serde(default, skip_serializing_if = "WatcherConfig::is_empty")]
     pub watcher: WatcherConfig,
     #[serde(default)]
@@ -450,6 +453,7 @@ impl Default for RokoConfig {
             budget: BudgetConfig::default(),
             pricing: crate::pricing_snapshot::PricingConfig::default(),
             conductor: ConductorConfig::default(),
+            homeostasis: super::homeostasis::HomeostasisConfig::default(),
             watcher: WatcherConfig::default(),
             learning: LearningConfig::default(),
             tui: TuiConfig::default(),
@@ -1491,14 +1495,11 @@ impl RokoConfig {
         let _ = writeln!(out, "[serve.deploy]");
         let _ = writeln!(out, "provider = \"{}\"", c.serve.deploy.provider);
         let _ = writeln!(out, "environment = {:?}", c.serve.deploy.environment);
-        let _ = writeln!(out, "\n[[serve.deploy.webhooks]]");
-        let _ = writeln!(out, "provider = \"github\"");
-        let _ = writeln!(out, "owner = \"nunchi\"");
-        let _ = writeln!(out, "repo = \"roko\"");
-        let _ = writeln!(out, "\n[[serve.deploy.webhooks]]");
-        let _ = writeln!(out, "provider = \"github\"");
-        let _ = writeln!(out, "owner = \"nunchi\"");
-        let _ = writeln!(out, "repo = \"collaboration\"");
+        // Commented: a live table would register a webhook on that repository.
+        let _ = writeln!(out, "\n# [[serve.deploy.webhooks]]");
+        let _ = writeln!(out, "# provider = \"github\"");
+        let _ = writeln!(out, "# owner = \"<your-github-owner>\"");
+        let _ = writeln!(out, "# repo = \"<your-repo>\"");
     }
     fn write_example_scheduler(out: &mut String, _c: &Self) {
         let _ = writeln!(out, "\n# -- Cron scheduler --");

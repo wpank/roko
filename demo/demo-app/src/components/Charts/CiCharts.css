@@ -1,0 +1,256 @@
+/* ═══════════════════════════════════════════════════════════
+   CI-aware showcase charts (S10 §4.1, dataviz guidance)
+   Thin marks, solid hairline grid, a 2px surface ring on dots,
+   10% band washes, and a table twin for every chart.
+   ═══════════════════════════════════════════════════════════ */
+
+.sc-chart {
+  margin: 0;
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4);
+  background: color-mix(in srgb, var(--bg-raised) 85%, transparent);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+}
+
+.sc-chart__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.sc-chart__title {
+  font-family: var(--sans);
+  font-size: var(--text-lg);
+  color: var(--text-primary);
+}
+
+.sc-chart__tools {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.sc-chart__toggle {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.sc-chart__toggle:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.sc-chart__plot {
+  min-width: 0;
+}
+
+.sc-chart__note {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-soft);
+}
+
+/* ── SVG ──────────────────────────────────────────────────── */
+
+.sc-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: hidden;
+}
+
+.sc-grid line {
+  stroke: rgba(255, 255, 255, 0.07);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.sc-axis text {
+  fill: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sc-axis__rule,
+.sc-axis__tick {
+  stroke: rgba(255, 255, 255, 0.18);
+  stroke-width: 1;
+}
+
+.sc-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.sc-band {
+  fill-opacity: 0.1;
+  stroke: none;
+}
+
+.sc-frontier {
+  fill: none;
+  stroke: var(--text-dim);
+  stroke-width: 1.5;
+  stroke-opacity: 0.7;
+}
+
+[data-ci='whisker'] line {
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.sc-dot {
+  stroke: var(--bg-raised);
+  stroke-width: 2;
+}
+
+.sc-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.sc-mark {
+  outline: none;
+  cursor: default;
+}
+
+.sc-mark:hover .sc-dot,
+.sc-mark:focus-visible .sc-dot {
+  stroke: var(--text-primary);
+}
+
+.sc-mark__label {
+  fill: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* ── Legend ───────────────────────────────────────────────── */
+
+.sc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--sp-4);
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+  color: var(--text-soft);
+}
+
+.sc-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sc-legend__key--dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.sc-legend__key--line {
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+/* ── Table twin ───────────────────────────────────────────── */
+
+.sc-chart__table {
+  min-width: 0;
+}
+
+.sc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+  color: var(--text-soft);
+}
+
+.sc-table th,
+.sc-table td {
+  padding: 4px 6px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border-soft);
+  overflow-wrap: anywhere;
+}
+
+.sc-table thead th {
+  color: var(--text-ghost);
+  font-weight: 500;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sc-table tbody th {
+  color: var(--text-primary);
+  font-weight: 400;
+}
+
+.sc-value {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.sc-value--none,
+.sc-dim {
+  color: var(--text-ghost);
+}
+
+.sc-ci {
+  color: var(--text-dim);
+  font-size: var(--text-xs);
+}
+
+.sc-verdict--within_target {
+  color: var(--success);
+}
+
+.sc-verdict--frontier_wins {
+  color: var(--warning);
+}
+
+.sc-verdict--inconclusive,
+.sc-verdict--not_measured {
+  color: var(--text-dim);
+}
+
+.sc-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .sc-chart {
+    padding: var(--sp-2);
+  }
+
+  .sc-table th,
+  .sc-table td {
+    padding: 4px 3px;
+    font-size: var(--text-xs);
+  }
+}

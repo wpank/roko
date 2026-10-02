@@ -92,6 +92,9 @@ pub mod hdc_fingerprint;
 pub mod heuristics;
 /// Append-only hindsight corrections for recent episode outcomes.
 pub mod hindsight;
+/// M1, the ultrastable controller (S06): task resolutions, essential
+/// variables, change detectors and the controller's parts.
+pub mod homeostasis;
 /// Size-based rotation helper for append-only JSONL logs.
 /// Rolling latency EMAs and percentiles for routing feedback.
 pub mod latency;

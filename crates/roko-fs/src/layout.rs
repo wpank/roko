@@ -300,14 +300,6 @@ impl RokoLayout {
         self.root.join("events.jsonl")
     }
 
-    /// `.roko/metrics/telemetry-observations.jsonl` — periodic Lens snapshots.
-    #[must_use]
-    pub fn telemetry_observations_path(&self) -> PathBuf {
-        self.root
-            .join("metrics")
-            .join("telemetry-observations.jsonl")
-    }
-
     /// `.roko/roko.log` — main log file.
     #[must_use]
     pub fn log_path(&self) -> PathBuf {
@@ -945,10 +937,6 @@ mod tests {
         assert_eq!(
             layout.context_pack_cache_dir(),
             PathBuf::from("/c/.roko/cache/context-pack-cache")
-        );
-        assert_eq!(
-            layout.telemetry_observations_path(),
-            PathBuf::from("/c/.roko/metrics/telemetry-observations.jsonl")
         );
     }
 

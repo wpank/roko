@@ -1631,9 +1631,9 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
 
     /// A model ladder of `rungs` (name, model key) over three models:
     /// `cheap-model` and `strong-model` on Claude CLIs that run `claude`, and
-    /// `mid-model` on an OpenAI-compatible API that is never reached. The cheap
-    /// model is also the default and the fallback, where the failover of a
-    /// task the ladder did not route goes.
+    /// `mid-model` on an OpenAI-compatible API that is not reached unless a
+    /// test points it at a mock. The cheap model is also the default and the
+    /// fallback, where the failover of a task the ladder did not route goes.
     fn ladder_failover_config(claude: &Path, rungs: &[(&str, &str)]) -> RokoConfig {
         let claude = claude.display().to_string();
         let mut mid_api = cli_provider(&claude);
@@ -1657,9 +1657,16 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             "cheap-model".to_string(),
             model("cheap_cli", "claude-haiku-4-5", None),
         );
-        config
-            .models
-            .insert("mid-model".to_string(), model("mid_api", "mid-1", None));
+        config.models.insert(
+            "mid-model".to_string(),
+            ModelProfile {
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                tool_format: "openai_json".to_string(),
+                ..model("mid_api", "mid-1", None)
+            },
+        );
         config.models.insert(
             "strong-model".to_string(),
             model("strong_cli", "claude-sonnet-4-6", None),
@@ -1762,6 +1769,63 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         assert!(message.contains("rung `mid`"), "{message}");
         assert!(message.contains("cheaper model"), "{message}");
         assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
+    }
+
+    /// backlog 1121 (decision 1119, 3-A): at plan start each rung model that
+    /// roko's tool loop drives gets one tool-use probe; the CLI rungs bring
+    /// their own tools and get none. The `mid` rung's model answers with
+    /// reasoning only, so the bound ladder leaves `mid` out and the probe
+    /// cache records why. Within a day the cached verdict stands, with no
+    /// second call.
+    #[tokio::test]
+    async fn preflight_skips_rung_that_returns_blank_answer() {
+        use crate::dispatch::RoutingLadder;
+        use crate::dispatch::rung_probe::{RungProbes, probe_ladder};
+
+        let temp = tempdir().expect("tempdir");
+        let reasoning_only = serde_json::json!({
+            "id": "chatcmpl-probe",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "The user wants the echo tool. Thinking."
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 }
+        });
+        let (base_url, requests) = spawn_openai_mock(vec![reasoning_only]);
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &temp.path().join("claude-models.log"));
+        let rungs = [
+            ("cheap", "cheap-model"),
+            ("mid", "mid-model"),
+            ("strong", "strong-model"),
+        ];
+        let mut config = ladder_failover_config(&claude, &rungs);
+        let mid_api = config.providers.get_mut("mid_api").expect("mid_api");
+        mid_api.base_url = Some(base_url);
+        let ladder = RoutingLadder::from_config(&config).expect("every rung can run");
+
+        let failed = probe_ladder(&config, &ladder, temp.path()).await;
+        assert_eq!(requests.lock().len(), 1, "one probe, of the one API rung");
+        let reason = failed.get("mid-1").expect("the mid rung failed its probe");
+        assert!(reason.contains("empty_response"), "{reason}");
+        let bound = ladder.without_models(&failed).expect("two rungs remain");
+        assert_eq!(
+            bound.rung_models(),
+            ["claude-haiku-4-5", "claude-sonnet-4-6"]
+        );
+        let cached = RungProbes::load(&RungProbes::path(temp.path()));
+        let probe = cached.models.get("mid-1").expect("the cached verdict");
+        assert!(!probe.passed);
+        assert!(probe.reason.contains("empty_response"), "{probe:?}");
+
+        let again = probe_ladder(&config, &ladder, temp.path()).await;
+        assert_eq!(again, failed);
+        assert_eq!(requests.lock().len(), 1, "the fresh verdict is reused");
     }
 
     /// gap-baab0a: Codex cannot honour a task's tool allowlist, so failover

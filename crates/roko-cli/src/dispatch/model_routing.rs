@@ -38,7 +38,7 @@
 //!
 //! [`runtime_feedback`]: crate::runtime_feedback
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -400,6 +400,11 @@ impl ModelRouter {
     #[must_use]
     pub fn routing_ladder(&self) -> Option<&RoutingLadder> {
         self.ladder.as_ref()
+    }
+
+    /// Route by `ladder` from now on, or by the router when it is `None`.
+    pub fn replace_routing_ladder(&mut self, ladder: Option<RoutingLadder>) {
+        self.ladder = ladder;
     }
 
     /// Clone the inner cascade router `Arc` (for factory cache swap).
@@ -1077,6 +1082,38 @@ impl RoutingLadder {
                 })
             })
             .collect()
+    }
+
+    /// The models dispatch runs for the ladder's runnable rungs, each once,
+    /// sorted.
+    #[must_use]
+    pub fn rung_models(&self) -> Vec<String> {
+        let models: BTreeSet<&String> = self.runnable.values().collect();
+        models.into_iter().cloned().collect()
+    }
+
+    /// This ladder without the rungs whose model `failed` names, each logged
+    /// with the reason it gives: rungs whose agent-work probe failed (backlog
+    /// 1121). `None` when no rung is left, which leaves routing to the
+    /// router.
+    #[must_use]
+    pub fn without_models(mut self, failed: &BTreeMap<String, String>) -> Option<Self> {
+        self.runnable.retain(|rung_model, model| {
+            let Some(reason) = failed.get(model.as_str()) else {
+                return true;
+            };
+            tracing::warn!(
+                model = %rung_model,
+                reason = %reason,
+                "routing ladder: skipping a rung whose model failed its tool-use probe"
+            );
+            false
+        });
+        if self.runnable.is_empty() {
+            tracing::warn!("routing ladder: no rung passed its probe; the router picks");
+            return None;
+        }
+        Some(self)
     }
 
     /// How many runnable rungs sit above rung `index` on `role`'s ladder.

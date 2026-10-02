@@ -155,7 +155,8 @@ pub struct AgentEfficiencyEvent {
     /// Alias for wall-clock task duration in milliseconds.
     #[serde(default)]
     pub duration_ms: u64,
-    /// Time to first token in milliseconds.
+    /// Time to first token in milliseconds: from the start of the provider
+    /// call to its first streamed model output. 0 when unknown.
     pub time_to_first_token_ms: u64,
     /// Whether this agent was a warm-pool reuse or cold start.
     pub was_warm_start: bool,

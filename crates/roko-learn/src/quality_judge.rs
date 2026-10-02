@@ -1,4 +1,5 @@
-//! STATUS: WIRED — used as oracle gate rung in `gate_dispatch.rs`.
+//! STATUS: UNWIRED — no production caller since `plan run` stopped scoring
+//! failed verifies with it for the gate-gaming detector (S05 F1).
 //!
 //! Lightweight LLM judge for tasks without compilable output.
 //!

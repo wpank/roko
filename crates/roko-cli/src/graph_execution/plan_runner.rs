@@ -2271,15 +2271,6 @@ pub fn build_graph_feedback_context(
     // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
     let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
 
-    // ── P1-01: GateGamingDetector ────────────────────────────────────
-    //
-    // Flags when agents game the gate system by passing gates at an
-    // increasing rate while delivering lower-quality outputs. Alerts are
-    // appended to a JSONL file on disk.
-    let gate_gaming_detector = std::sync::Arc::new(tokio::sync::Mutex::new(
-        roko_learn::GateGamingDetector::new(graph_learn_dir.join("gate-gaming-alerts.jsonl")),
-    ));
-
     // ── P1-04: HoldoutExperiment ─────────────────────────────────────
     //
     // Deterministic 80/20 train/holdout split for detecting overfitting
@@ -2332,7 +2323,6 @@ pub fn build_graph_feedback_context(
         post_gate_reflection_path: Some(graph_learn_dir.join("post-gate-reflections.json")),
         replan_on_gate_failure: config.learning.replan_on_gate_failure,
         coding_oracle: Some(coding_oracle),
-        gate_gaming_detector: Some(gate_gaming_detector),
         holdout_experiment: Some(holdout_experiment),
         shadow_runner: Some(shadow_runner),
         eval_generation_enabled: true,

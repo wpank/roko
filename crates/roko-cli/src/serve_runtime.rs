@@ -2189,6 +2189,11 @@ command = {script:?}
 provider = "fake-cli"
 slug = "claude-sonnet-4-6"
 context_window = 200000
+
+# One planner call per generation: these tests count cost rows, and the
+# spec-quality gate would ask again for this minimal plan (3218).
+[spec_quality]
+mode = "off"
 "#,
                 script = script.display().to_string()
             ),

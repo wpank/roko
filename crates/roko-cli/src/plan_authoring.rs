@@ -609,7 +609,10 @@ pub fn last_run_failure_context(workdir: &Path, plan_id: &str, budget: usize) ->
 fn failed_task_context(task: &crate::commands::diagnose::TaskDiagnosis) -> String {
     use crate::commands::diagnose::enum_label;
 
-    let mut lines = vec![format!("- task `{}`: {}", task.task_id, task.reason)];
+    // The reason's first line only: its "last error" goes on to carry the
+    // whole gate output, which the failure lines below already show once.
+    let reason = task.reason.lines().next().unwrap_or_default();
+    let mut lines = vec![format!("- task `{}`: {reason}", task.task_id)];
     let mut models: Vec<&str> = Vec::new();
     for attempt in &task.attempts {
         if !models.contains(&attempt.model.as_str()) {
@@ -1301,7 +1304,11 @@ command = "cargo test -p x parse"
             context.contains("    assertion failed: limit.is_err()"),
             "{context}"
         );
-        assert_eq!(context.matches("rejects_an_empty_limit stdout").count(), 1);
+        assert_eq!(
+            context.matches("rejects_an_empty_limit stdout").count(),
+            1,
+            "{context}"
+        );
 
         let prompt = build_revision_prompt("my-plan", &tasks, "split T2", Some(context.as_str()));
         assert!(

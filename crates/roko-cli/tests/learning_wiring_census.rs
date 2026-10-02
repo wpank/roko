@@ -53,7 +53,7 @@ const S01_COMPONENTS: &[&str] = &[
 /// The components nothing on the Graph path provides yet: the S02 backlog.
 /// It only shrinks. The census fails when one of them is wired, so take it
 /// off the list then.
-const EXPECTED_MISSING: &[&str] = &["sink.section_effect", "store.record_access"];
+const EXPECTED_MISSING: &[&str] = &["sink.section_effect"];
 
 /// The stand-in `claude_cli` provider: it ignores its prompt and reports a
 /// finished free turn, so each task's verify step alone decides its outcome.

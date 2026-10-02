@@ -165,8 +165,9 @@ impl GraphTaskDispatcher {
             component(
                 "store.record_access",
                 WiringKind::Store,
-                false,
-                "`KnowledgeStore::record_access` has no production caller (S01 P0-9)",
+                true,
+                "`KnowledgeStore::count_access`: each knowledge entry a planned prompt \
+                 included counts an access",
             ),
             component(
                 "reader.gate_thresholds",

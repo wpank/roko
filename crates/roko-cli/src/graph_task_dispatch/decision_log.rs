@@ -38,7 +38,8 @@ impl GraphTaskDispatcher {
     /// Record what planning decided for `attempt` (S01 P0-8, P0-9): `plan`'s
     /// route decision, keyed to the attempt (its trace id too) and stamped
     /// with `task`'s id and the time it is written, one exposure row per item
-    /// its prompt retrieved, and one content decision per decision point.
+    /// its prompt retrieved, one content decision per decision point, and an
+    /// access to each knowledge entry it included.
     pub(super) fn record_planned_attempt(
         &self,
         attempt: &mut AttemptContext,
@@ -55,6 +56,43 @@ impl GraphTaskDispatcher {
         }
         record_exposures(attempt, plan);
         self.record_content_decisions(attempt, plan);
+        self.record_knowledge_access(plan);
+    }
+
+    /// Count an access to each knowledge entry `plan`'s prompt included (S01
+    /// P0-9), off the reactor: access counts are the store's evidence that a
+    /// prompt used an entry. Cited episodes are not knowledge entries. A
+    /// failed count is logged, and the attempt goes on.
+    fn record_knowledge_access(&self, plan: &RunnerDispatchPlan) {
+        let included: Vec<String> = plan
+            .prompt
+            .diagnostics
+            .items
+            .iter()
+            .filter(|item| item.kind == ExposureItemKind::Knowledge && item.included)
+            .map(|item| item.id.clone())
+            .collect();
+        if included.is_empty() {
+            return;
+        }
+        let store = roko_neuro::KnowledgeStore::for_workdir(&self.workdir);
+        let path = store.path().to_path_buf();
+        crate::background_writes::spawn(&path, async move {
+            let counted = tokio::task::spawn_blocking(move || {
+                let ids: Vec<&str> = included.iter().map(String::as_str).collect();
+                store.count_access(&ids)
+            })
+            .await;
+            match counted {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "knowledge access count failed (best-effort)");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "knowledge access count task failed (best-effort)");
+                }
+            }
+        });
     }
 
     /// One content decision per decision point at which `plan`'s prompt
@@ -508,6 +546,54 @@ mod tests {
         assert_eq!(digests.len(), 2, "{playbooks:?}");
         assert_ne!(digests[0], digests[1], "the playbook changed");
         assert_eq!(playbooks[0].chosen, ["pb-1"]);
+    }
+
+    /// The store counts an access to each knowledge entry a prompt included
+    /// (S01 P0-9): an included entry's count is 1, a dropped one's stays 0,
+    /// and a cited episode is no knowledge entry, whatever its id.
+    #[tokio::test]
+    async fn included_knowledge_records_access() {
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        seed_knowledge(
+            temp.path(),
+            &[
+                ("kn-1", "first entry"),
+                ("kn-2", "second entry"),
+                ("ep-1", "an entry an episode's id names"),
+            ],
+        );
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let episode = PromptItemDiagnostic {
+            kind: ExposureItemKind::Episode,
+            ..knowledge_item("ep-1", 3, true)
+        };
+        let plan = planned(vec![
+            knowledge_item("kn-1", 1, true),
+            knowledge_item("kn-2", 2, false),
+            episode,
+        ]);
+        let mut attempt = dispatcher.open_attempt(&spec, &task, &ctx);
+        dispatcher.record_planned_attempt(&mut attempt, &task, &plan);
+        crate::background_writes::settled(&roko).await;
+
+        let store = roko_neuro::KnowledgeStore::for_workdir(temp.path());
+        let entries = store.read_all().expect("read the knowledge store");
+        let accesses: Vec<(&str, u64)> = entries
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.access_count))
+            .collect();
+        assert_eq!(accesses, [("kn-1", 1), ("kn-2", 0), ("ep-1", 0)]);
+        assert!(entries[0].last_accessed.is_some());
+        let passed = Settlement::verified(&Ok(TaskGateVerdict::Passed));
+        attempt.settle(passed, "stream-model", None);
     }
 
     /// G29: a dispatch whose prompt retrieved a matching knowledge entry logs

@@ -135,8 +135,6 @@ pub enum ContextSource {
     Invariants,
     /// Cross-plan context.
     CrossPlanContext,
-    /// PRD extract.
-    PrdExtract,
     /// Decomposition artifact.
     Decomposition,
     /// IDs and titles of sibling tasks in the same plan.
@@ -1770,7 +1768,6 @@ fn context_source_label(source: &ContextSource) -> String {
         ContextSource::ResearchMemo => "directive:research_memo".to_string(),
         ContextSource::Invariants => "directive:invariants".to_string(),
         ContextSource::CrossPlanContext => "directive:cross_plan_context".to_string(),
-        ContextSource::PrdExtract => "directive:prd_extract".to_string(),
         ContextSource::Decomposition => "directive:decomposition".to_string(),
         ContextSource::SiblingTasks => "directive:sibling_tasks".to_string(),
         ContextSource::Pheromone { kind, source } => format!("pheromone:{kind}:{source}"),

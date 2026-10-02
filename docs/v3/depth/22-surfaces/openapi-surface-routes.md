@@ -117,7 +117,6 @@ The `projection_version()` function resolves aliases before lookup:
 | `"trace"` or `"proof"` | `"execution_trace"` |
 | `"feedback"` | `"runtime_feedback"` |
 | `"jobs"` | `"marketplace_jobs"` |
-| `"atelier"` | `"prds"` |
 | `"knowledge_entries"` | `"knowledge"` |
 | `"watchers"`, `"circuit_breakers"`, or `"observations"` | `"telemetry"` |
 

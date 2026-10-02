@@ -376,7 +376,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -s /bin/bash -d /data roko \
-    && mkdir -p /data/.roko/state /data/.roko/prd \
+    && mkdir -p /data/.roko/state \
     && chown -R roko:roko /data
 
 COPY target/x86_64-unknown-linux-musl/release/roko-cli /usr/local/bin/roko
@@ -472,7 +472,7 @@ background service that:
 
 - Watches repositories for changes (filesystem events, git push
   webhooks, cron schedules)
-- Triggers plan execution automatically when PRDs change or on schedule
+- Triggers plan execution automatically when plans change or on schedule
 - Maintains state across reboots (launchd restarts it automatically)
 - Accepts commands via a Unix domain socket IPC interface
 - Streams events to connected clients (TUI, web dashboard, CI hooks)
@@ -675,7 +675,7 @@ triggers plan execution automatically. Subscriptions are defined in
 | Trigger | When it fires | Use case |
 |---|---|---|
 | **Cron** | Time schedule (cron expression) | Periodic builds, nightly consolidation |
-| **Watch** | File changes (fsnotify) | Reactive to PRD edits, code changes |
+| **Watch** | File changes (fsnotify) | Reactive to plan edits, code changes |
 | **Webhook** | HTTP POST arrives | GitHub push events, CI triggers |
 
 ### Configuration format
@@ -692,13 +692,13 @@ repo = "/Users/will/dev/nunchi/roko/roko"
 [subscriptions.cron]
 schedule = "*/30 * * * *"
 plan_dirs = ["plans/"]
-changed_paths = [".roko/prd/**/*.md", "plans/**/*.toml"]
+changed_paths = ["plans/**/*.toml"]
 
 [[subscriptions]]
 repo = "/Users/will/dev/project-b"
 
 [subscriptions.watch]
-paths = [".roko/prd/"]
+paths = ["plans/"]
 debounce_ms = 5000
 
 [[subscriptions]]
@@ -1098,7 +1098,7 @@ resume.
 ### Multi-project management
 
 One roko-serve instance manages multiple projects, each with its own
-git repo, PRDs, plans, config, run history, and Signal/episode logs.
+git repo, plans, config, run history, and Signal/episode logs.
 Projects are isolated.
 
 ### Cost tracking

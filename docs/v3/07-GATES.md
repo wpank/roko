@@ -279,7 +279,7 @@ token (`todo!()`, `unimplemented!()`, `Ok(())`, `return Ok(())`).
 
 **LlmJudgeGate (Rung 6, auxiliary).** The only gate that consults a model
 rather than a deterministic tool. Used when properties are too nuanced for
-automated checking ("does this implementation match the PRD's intent?").
+automated checking ("does this implementation match the task's intent?").
 
 **FactCheckGate (Rung 5).** Verifies factual claims against a search oracle.
 Pairs with `PropertyTestGate` for combined assertion and fact verification.

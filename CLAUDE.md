@@ -2,7 +2,7 @@
 
 Roko is a Rust toolkit for building agents that build themselves. 36 workspace members, ~1.2M LOC, 11,000+ tests.
 
-**Goal**: roko develops itself — it reads PRDs, generates implementation plans, executes tasks
+**Goal**: roko develops itself — it turns requests into plans, executes their tasks
 via Claude agents, validates with gates, and persists results. The core loop is wired. Your job
 is to use it and improve it.
 
@@ -32,7 +32,7 @@ What each subsystem is and where it lives. The table makes no maturity or status
 | Learning | Model routing (CascadeRouter), bandits, playbooks, prompt experiments, efficiency events | `crates/roko-learn/`; state in `.roko/learn/` (`cascade-router.json`, `gate-thresholds.json`, `efficiency.jsonl`) |
 | Knowledge and dreams | Durable knowledge store, distillation, tiers; offline Dream consolidation | `crates/roko-neuro/`, `crates/roko-dreams/` |
 | Affect | Daimon affect engine and dispatch modulation | `crates/roko-daimon/` |
-| PRDs and research | `roko prd` (idea/draft/plan) and `roko research` | `crates/roko-cli/src/prd.rs`, `crates/roko-cli/src/commands/prd.rs`, `crates/roko-cli/src/research.rs`; data in `.roko/prd/`, `.roko/research/` |
+| Plan authoring and research | `roko run --plan` / `roko plan generate` (prompt -> plan; the one plan generator) and `roko research` | `crates/roko-cli/src/plan_generate/`, `crates/roko-cli/src/plan_authoring.rs`, `crates/roko-cli/src/commands/run_cmd.rs`, `crates/roko-cli/src/research.rs`; data in `plans/`, `.roko/research/` |
 | HTTP control plane | REST, SSE and WebSocket API on :6677 | `crates/roko-serve/` (`src/routes/`) |
 | Per-agent sidecar | HTTP sidecar for a single agent | `crates/roko-agent-server/` |
 | ACP server | Agent Client Protocol server for editors | `crates/roko-acp/` |
@@ -72,8 +72,9 @@ The primary protocol noun is `Signal`, backed by the `Engram` struct and its
 (Store, ColdStore, Score, Verify, Route, Compose, React, Bus, Observe, Connect, Trigger,
 Substrate). Missing or unknown safety contracts fail closed: unsupported tool use is denied.
 The conceptual workflow is query -> score -> route -> compose -> act -> verify -> write ->
-react. Production ownership is explicit: `roko run` writes a one-task plan and runs it with
-`run_graph_plan` (backlog #276 retired `WorkflowEngine`), plans use the Graph engine,
+react. Production ownership is explicit: `roko run` sizes a prompt and runs it as a one-task plan,
+or as a plan it writes first, with `run_graph_plan` (backlog #276 retired `WorkflowEngine`); plans
+use the Graph engine,
 which is the only plan executor, and the core `select_compose_verify_persist` helper covers only
 the non-ACT/non-BROADCAST signal-selection subset. Backlog #260 made Graph the default. The
 Runner-v2 event loop was deleted on 2026-09-06 (`6b5da8616`); `--engine legacy` and
@@ -83,33 +84,40 @@ Runner-v2 event loop was deleted on 2026-09-06 (`6b5da8616`); `--engine legacy` 
 
 ## Self-hosting workflow
 
-This is how roko develops itself. Each step is a CLI command that exists today:
+This is how roko develops itself. Plans are the unit of work: a request (a prompt, or a written
+spec passed with `--from-file`) becomes a plan, a person can review and edit it, and then it runs.
+Each step is a CLI command that exists today:
 
 ```bash
-# 1. Capture a work item
-cargo run -p roko-cli -- prd idea "Wire SystemPromptBuilder into runner"
+# 1. Write a plan from a request: plans/<slug>/tasks.toml + plan.md (nothing runs yet)
+cargo run -p roko-cli -- run --plan --dry-run "Wire SystemPromptBuilder into runner"
+#    (the same as: cargo run -p roko-cli -- plan generate "Wire SystemPromptBuilder into runner")
 
-# 2. Draft a PRD from the idea (agent-driven)
-cargo run -p roko-cli -- prd draft new "system-prompt-wiring"
+# 2. Optional: improve the plan with research-backed decomposition
+cargo run -p roko-cli -- research enhance-plan wire-systempromptbuilder-into-runner
 
-# 3. Research the topic for context
-cargo run -p roko-cli -- research enhance-prd system-prompt-wiring
+# 3. Review or edit plans/<slug>/, then lint it
+cargo run -p roko-cli -- plan validate plans/wire-systempromptbuilder-into-runner
 
-# 4. Generate implementation plan + tasks from the PRD
-cargo run -p roko-cli -- prd plan system-prompt-wiring
+# 4. Execute the plan (agents run tasks, gates validate, state persists)
+cargo run -p roko-cli -- run plans/wire-systempromptbuilder-into-runner
 
-# 5. Execute the plan (agents run tasks, gates validate, state persists)
-cargo run -p roko-cli -- plan run plans/
+# 5. Resume if interrupted
+cargo run -p roko-cli -- run plans/wire-systempromptbuilder-into-runner --resume-plan
 
-# 6. Resume if interrupted
-cargo run -p roko-cli -- plan run plans/ --resume-plan
-
-# 7. Watch progress
+# 6. Watch progress
 cargo run -p roko-cli -- dashboard
 
-# 8. Check status
+# 7. Check status
 cargo run -p roko-cli -- status
 ```
+
+`roko run --plan "<prompt>"` does steps 1 and 4 in one go: it writes the plan, shows it, and asks
+before running it (`--yes` skips the question). A small change needs no plan:
+`roko run "<prompt>"` sizes the prompt and runs a small one as one checked task. The PRD pipeline
+(`roko prd`) and `roko do` were removed on 2026-10-02 (`tmp/workflow-audit/`); for one release
+they still parse and exit 1 with their replacement. `roko develop` (an error since 2026-09-04) is
+gone.
 
 ### Opt-in FAST self-development
 
@@ -135,13 +143,14 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 |---|---|
 | `roko init` | Create `.roko/` directory and `roko.toml` |
 | `roko setup` | Interactive setup wizard: detect providers, init workspace, verify |
-| `roko run "<prompt>"` | Single prompt through graph templates (compose -> provider -> gate -> persist) |
-| `roko do "<prompt>"` | Execute a task via agent dispatch (used internally by `roko run`) |
+| `roko run "<prompt>"` | Size the prompt: one checked task, or a plan written first and then run (`commands/run_cmd.rs`) |
+| `roko run --plan "<prompt>"` | Always write a plan first (`--dry-run`: write it and stop; on a terminal it asks before running) |
+| `roko run plans/<dir>` | Run an existing plan directory, as `roko plan run` does (`--fresh`, `--resume-plan`) |
 | `roko show [subject]` | Inspect workspace state: costs, agents, knowledge, plans, learning, history |
 | `roko status` | Query signals, report counts and episodes |
 | `roko doctor` | Diagnose workspace bootstrap state |
 | `roko doctor disk/network` | Report free space, stale targets, worktrees, or network reachability |
-| `roko diagnose <plan-id>` | Diagnose why a plan failed (structured JSON output) |
+| `roko diagnose <plan-id>` | Diagnose why a plan failed: a readable report (`--json` for JSON, `--verbose` adds the tasks that completed) |
 | `roko resume [run-id]` | Resume a plan execution from its last checkpoint |
 | `roko github status` | Inspect GitHub config, authentication, plan PR/CI state, and failure issues |
 | `roko think "<question>"` | Research a question without executing agents or changing files |
@@ -153,24 +162,19 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | `roko history [id]` | List or show past chat session summaries |
 | `roko cache status/prune` | Inspect and safely prune workspace-local build/evidence caches |
 
-### Planning & PRDs
+### Planning
 | Command | What it does |
 |---|---|
 | `roko plan list/show/create` | Manage plans |
 | `roko plan run <dir>` | Execute plans through the Graph engine (the only engine; `--engine legacy`/`runner-v2` exits with an error) |
-| `roko plan generate/regenerate` | Generate or regenerate plans from prompts/PRDs |
+| `roko plan generate/regenerate` | Generate a plan from a prompt, file, notes or backlog spec (runs nothing), or regenerate one in place |
 | `roko plan index` | Rebuild or verify the deterministic plans index |
 | `roko plan pause/resume/cancel` | Pause, resume, or cancel a running plan |
 | `roko plan retry <dir>` | Retry failed tasks in a plan |
 | `roko plan status <dir>` | Show execution status for a plan |
 | `roko plan queue show/validate/init` | Queue manifest operations |
 | `roko plan validate <dir>` | Lint tasks.toml without executing |
-| `roko backlog import/list/audit/mark-done` | Import `tmp/backlog` specs as PRD ideas, list items, reconcile status, record closure evidence. `audit` does not read Graph checkpoints, and `import --check` still writes |
-| `roko prd idea "<text>"` | Capture a work item idea |
-| `roko prd list/status` | List PRDs, coverage report. Not read-only: every `roko prd` subcommand also rebuilds `plans/INDEX.md` and the `.roko/` INDEX files |
-| `roko prd draft new/edit/promote/list` | Draft lifecycle |
-| `roko prd plan <slug>` | Generate implementation plan from PRD |
-| `roko prd consolidate` | Scan PRDs for gaps and duplicates |
+| `roko backlog list/audit/mark-done` | List `tmp/backlog` items, reconcile plan status against Graph runs, record closure evidence (`roko plan generate --from-backlog <ids>` turns specs into plans) |
 
 ### Agents
 | Command | What it does |
@@ -189,7 +193,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 |---|---|
 | `roko research topic "<topic>"` | Deep research with citations |
 | `roko research search "<query>"` | Direct web search (Perplexity) |
-| `roko research enhance-prd/plan/tasks` | Enhance documents with research |
+| `roko research enhance-plan/tasks` | Improve a plan (or its tasks) with research |
 | `roko research analyze` | Analyze execution data |
 | `roko research list` | List all research artifacts |
 
@@ -321,7 +325,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | **Frozen gap log** | `/Users/will/dev/nunchi/roko/roko/.roko/GAPS.md` |
 | **Roko data dir** | `/Users/will/dev/nunchi/roko/roko/.roko/` |
 | **Graph checkpoints** | `/Users/will/dev/nunchi/roko/roko/.roko/state/graph/` |
-| **PRD storage** | `/Users/will/dev/nunchi/roko/roko/.roko/prd/` |
+| **Plans** | `/Users/will/dev/nunchi/roko/roko/plans/` |
 | **Research artifacts** | `/Users/will/dev/nunchi/roko/roko/.roko/research/` |
 | **Signal log** | `/Users/will/dev/nunchi/roko/roko/.roko/signals.jsonl` |
 | **Episode log** | `/Users/will/dev/nunchi/roko/roko/.roko/episodes.jsonl` |

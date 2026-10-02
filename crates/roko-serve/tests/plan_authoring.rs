@@ -11,9 +11,10 @@
 //!    200; `errors` and `warnings` are arrays.
 //! 4. `POST /api/plans` — 201 with the slug derived from the title; 409 when the
 //!    stub reports the slug already exists.
-//! 5. `POST /api/plans/generate` — `{}` and `{"prompt":"x","slug":"y"}` give 422.
-//!    `{"prompt":"a rust app that prints hello world"}` gives 202 with `plan_id`,
-//!    and the PRD draft exists at `.roko/prd/drafts/<plan_id>.md`.
+//! 5. `POST /api/plans/generate` — `{}`, `{"slug":"y"}` and `{"prompt":"x","slug":"y"}`
+//!    give 422 (the PRD slug was removed). `{"prompt":"a rust app that prints
+//!    hello world"}` gives 202 with `plan_id`, and the runtime plans from the
+//!    prompt; nothing is written under `.roko/prd`.
 //! 6. `GET /api/operations/{id}` — reports running, then completed with
 //!    `result.slug`; failed when generation writes no plan; 404 for an unknown
 //!    id.
@@ -64,7 +65,7 @@ struct RecordedCall {
 /// A `CliRuntime` stub that:
 /// - Records every call in `calls`.
 /// - Returns pre-configured fixtures for each authoring method.
-/// - Blocks `generate_plan_from_prd` until a `Notify` fires so the
+/// - Blocks `generate_plan_from_prompt` until a `Notify` fires so the
 ///   running/completed operation lifecycle can be tested.
 struct StubAuthoringRuntime {
     calls: Arc<Mutex<Vec<RecordedCall>>>,
@@ -81,13 +82,13 @@ struct StubAuthoringRuntime {
     // slug → CreatePlanOutcome (for create_plan)
     create_outcomes: HashMap<String, CreatePlanOutcome>,
 
-    // Notify gating generate_plan_from_prd; None = return immediately
+    // Notify gating generate_plan_from_prompt; None = return immediately
     generate_gate: Option<Arc<tokio::sync::Notify>>,
 
-    // Slugs generate_plan_from_prd has written; load_plan_summary knows them
+    // Slugs generate_plan_from_prompt has written; load_plan_summary knows them
     generated: Mutex<HashSet<String>>,
 
-    // When true, generate_plan_from_prd reports success but writes no plan
+    // When true, generate_plan_from_prompt reports success but writes no plan
     writes_no_plan: bool,
 }
 
@@ -145,14 +146,14 @@ impl StubBuilder {
         self
     }
 
-    /// Make generate_plan_from_prd block until the returned Notify is notified.
+    /// Make generate_plan_from_prompt block until the returned Notify is notified.
     fn with_generate_gate(mut self) -> (Self, Arc<tokio::sync::Notify>) {
         let notify = Arc::new(tokio::sync::Notify::new());
         self.generate_gate = Some(Arc::clone(&notify));
         (self, notify)
     }
 
-    /// Make generate_plan_from_prd return a plan target without writing the plan.
+    /// Make generate_plan_from_prompt return a plan target without writing the plan.
     fn writing_no_plan(mut self) -> Self {
         self.writes_no_plan = true;
         self
@@ -347,15 +348,15 @@ impl CliRuntime for StubAuthoringRuntime {
 
     // ── plan generation ────────────────────────────────────────────
 
-    async fn generate_plan_from_prd(
+    async fn generate_plan_from_prompt(
         &self,
         workdir: &Path,
         slug: &str,
-        _prd_path: &Path,
+        prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
         self.calls.lock().await.push(RecordedCall {
-            method: "generate_plan_from_prd",
-            arg: Some(workdir.display().to_string()),
+            method: "generate_plan_from_prompt",
+            arg: Some(format!("{} {prompt}", workdir.display())),
         });
 
         // Optionally block until the test signals us.
@@ -981,10 +982,10 @@ async fn generate_plan_both_prompt_and_slug_returns_422() {
     );
 }
 
-/// 5c. A valid prompt gives 202 with `plan_id`, and the PRD draft is written
-///     to `.roko/prd/drafts/<plan_id>.md`.
+/// 5c. A valid prompt gives 202 with `plan_id`; the runtime plans from the
+///     prompt and nothing is written under `.roko/prd`.
 #[tokio::test]
-async fn generate_plan_valid_prompt_returns_202_and_writes_prd_draft() {
+async fn generate_plan_valid_prompt_returns_202_and_plans_from_the_prompt() {
     let stub = StubAuthoringRuntime::builder().build();
     let (dir, state) = make_state(stub).await;
     let workdir = dir.path().to_path_buf();
@@ -1014,16 +1015,39 @@ async fn generate_plan_valid_prompt_returns_202_and_writes_prd_draft() {
         .expect("202 response must contain plan_id");
     assert!(!plan_id.is_empty(), "plan_id must not be empty");
 
-    // PRD draft must exist at the expected path.
-    let draft_path = workdir
-        .join(".roko")
-        .join("prd")
-        .join("drafts")
-        .join(format!("{plan_id}.md"));
+    // The PRD pipeline is gone: no draft is written for the prompt.
     assert!(
-        draft_path.exists(),
-        "PRD draft must exist at {}: path not found",
-        draft_path.display()
+        !workdir.join(".roko").join("prd").exists(),
+        "generation must not write a PRD draft"
+    );
+}
+
+/// 5d. `{"slug":"y"}`, the removed PRD path, returns 422 with a message that
+///     names `prompt`.
+#[tokio::test]
+async fn generate_plan_with_a_prd_slug_returns_422() {
+    let stub = StubAuthoringRuntime::builder().build();
+    let (_dir, state) = make_state(stub).await;
+    let app = build_app(state);
+
+    let body = serde_json::json!({ "slug": "y" }).to_string();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/plans/generate")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .expect("build request"),
+        )
+        .await
+        .expect("send request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let payload = body_json(response).await;
+    assert!(
+        payload.to_string().contains("prompt"),
+        "the refusal must say to send a prompt: {payload}"
     );
 }
 
@@ -1119,7 +1143,7 @@ async fn get_operation_reports_running_then_completed_with_slug() {
         "operation must be running before gate: {s1_payload}"
     );
 
-    // Release the gate so generate_plan_from_prd returns.
+    // Release the gate so generate_plan_from_prompt returns.
     gate.notify_one();
 
     // Give the background task time to update the operation handle.

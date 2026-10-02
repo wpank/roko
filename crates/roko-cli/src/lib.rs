@@ -194,8 +194,6 @@ pub mod plan_generate;
 pub mod plan_generator;
 pub mod plan_policy;
 pub mod plan_validate;
-pub mod prd;
-pub mod prd_prompt;
 pub mod projection;
 pub mod prompting;
 pub mod repl;

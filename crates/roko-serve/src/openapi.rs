@@ -57,7 +57,6 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         (name = "research", description = "Research and enhancement endpoints"),
         (name = "config", description = "Configuration endpoints"),
         (name = "subscriptions", description = "Subscription endpoints"),
-        (name = "prds", description = "PRD endpoints"),
         (name = "webhooks", description = "Webhook ingress endpoints"),
         (name = "providers", description = "Provider and routing endpoints"),
         (name = "learning", description = "Learning and cascade endpoints"),
@@ -135,7 +134,6 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         issue_token,
         list_research,
         research_topic,
-        enhance_prd,
         enhance_plan,
         enhance_tasks,
         analyze,
@@ -149,14 +147,6 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         delete_subscription,
         enable_subscription,
         disable_subscription,
-        list_prds,
-        post_idea,
-        get_prd,
-        draft_prd,
-        promote_prd,
-        plan_from_prd,
-        prds_coverage,
-        consolidate_prds,
         github_webhook,
         slack_webhook,
         generic_webhook,
@@ -457,7 +447,6 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         validate_plan,
         list_platforms,
         get_platform,
-        prds_consolidate_prds,
         prediction_calibration,
         rate_limits,
         issue_relay_token_handler,
@@ -546,7 +535,6 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         RelayStreamBinding,
         ServeRelayConnectionStatus,
         SubscriptionRelayStatus,
-        PrdIdeaRequest,
         DeploymentCallbackRequest,
         WebhookPayload,
         SearchQueryRequest
@@ -834,7 +822,6 @@ doc_post_value!(issue_token, "/agents/{id}/token", "agents");
 
 doc_get!(list_research, "/research", "research");
 doc_post_value!(research_topic, "/research/topic", "research");
-doc_post_value!(enhance_prd, "/research/enhance-prd/{slug}", "research");
 doc_post_value!(enhance_plan, "/research/enhance-plan/{plan}", "research");
 doc_post_value!(enhance_tasks, "/research/enhance-tasks/{plan}", "research");
 doc_post_value!(analyze, "/research/analyze", "research");
@@ -868,15 +855,6 @@ doc_post_value!(
     "/subscriptions/{id}/disable",
     "subscriptions"
 );
-
-doc_get!(list_prds, "/prds", "prds");
-doc_post_value!(post_idea, "/prds/ideas", "prds");
-doc_get_param!(get_prd, "/prds/{slug}", "prds", "slug");
-doc_post_value!(draft_prd, "/prds/{slug}/draft", "prds");
-doc_post_value!(promote_prd, "/prds/{slug}/promote", "prds");
-doc_post_value!(plan_from_prd, "/prds/{slug}/plan", "prds");
-doc_get!(prds_coverage, "/prds/status", "prds");
-doc_post_value!(consolidate_prds, "/prds/consolidate", "prds");
 
 doc_post_value!(github_webhook, "/webhooks/github", "webhooks");
 doc_post_value!(slack_webhook, "/webhooks/slack", "webhooks");
@@ -1741,9 +1719,6 @@ doc_post_value!(validate_plan, "/plans/{id}/validate", "plans");
 doc_get!(list_platforms, "/platforms", "platforms");
 doc_get_param!(get_platform, "/platforms/{id}", "platforms", "id");
 
-// ── prds (gap-c50b85) ──────────────────────────────────────────────────────────────
-doc_post_value!(prds_consolidate_prds, "/prd/consolidate", "prds");
-
 // ── rpc_proxy (gap-c50b85) ─────────────────────────────────────────────────────────
 doc_get!(rpc_ws_upgrade, "/rpc", "rpc_proxy");
 doc_post_value!(rpc_post, "/rpc", "rpc_proxy");
@@ -2003,11 +1978,6 @@ pub struct SubscriptionCreateRequest {
 pub struct SubscriptionUpdateRequest {
     #[serde(flatten)]
     pub value: Value,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct PrdIdeaRequest {
-    pub idea: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

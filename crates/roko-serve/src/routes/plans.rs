@@ -96,7 +96,7 @@ fn plan_to_json(plan: &Plan) -> Value {
 /// [`roko_fs::workspace_plans::workspace_plans_dir`]).
 ///
 /// roko-cli's `plan::plans_dir` calls the same resolver, so the runtime writes
-/// new plans (`create_plan`, `generate_plan_from_prd`) where `list_plans` /
+/// new plans (`create_plan`, `generate_plan_from_prompt`) where `list_plans` /
 /// `get_plan` read them and where these handlers run them.
 ///
 /// Note: this function only *probes* the filesystem — it never creates the

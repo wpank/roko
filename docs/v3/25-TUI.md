@@ -1,7 +1,7 @@
 # 25 -- Terminal User Interface
 
 > **Implementation status**: WIRED -- `roko-cli/src/tui/` (22K+ LOC) delivers a ratatui-based
-> interactive dashboard with 11 tabs (F1-F11), StateHub bridge, file system watcher
+> interactive dashboard with 10 tabs (F1-F10), StateHub bridge, file system watcher
 > (`notify::RecommendedWatcher`), git watcher, headless snapshot engine, post-processing
 > pipeline, hit-test mouse support, ROSEDUST v2 theme, and 20 widget modules. The TUI
 > is the primary real-time operational surface during plan execution.
@@ -37,7 +37,7 @@ latest state the runtime has published.
 
 ## 2. Tab Architecture
 
-The TUI organizes its interface into **11 tabs** accessed via function keys. Each tab
+The TUI organizes its interface into **10 tabs** accessed via function keys. Each tab
 is a self-contained view that renders in the same ratatui frame.
 
 ### Tab Architecture Overview
@@ -53,8 +53,8 @@ block-beta
     F6["F6 Config\nViewer\nEditor\nEffective config"]:1
     F7["F7 Inspect\nSignal DAG\nEpisode replay\nKnowledge"]:1
     F8["F8 Marketplace\nJob browser\nCreation\nMatching"]:1
-    F9["F9 Atelier\nPRD workshop\nIdea capture\nDraft lifecycle"]:1
-    F10["F10 Learning\nCascade router\nModel routing\nExperiments"]:1
+    F9["F9 Learning\nCascade router\nModel routing\nExperiments"]:1
+    F10["F10 Providers\nHealth\nCost and latency\nCircuit state"]:1
 
     style F1 fill:#b97894,color:#fff
     style F2 fill:#6b8fbd,color:#fff
@@ -80,9 +80,8 @@ block-beta
 | **F6** | Config | Effective configuration viewer and editor | `config_view.rs` |
 | **F7** | Inspect | Signal DAG inspector, episode replay, knowledge browser | `context_view.rs` |
 | **F8** | Marketplace | Job browser, creation, assignment, matching | `marketplace_view.rs` |
-| **F9** | Atelier | PRD workshop: idea capture, draft lifecycle, plan generation | `atelier_view.rs` |
-| **F10** | Learning | Cascade router state, model routing, efficiency metrics, experiments | `learning_view.rs` |
-| **-** | Providers | NERV provider health, cost breakdown, latency, circuit state | `providers_view.rs` |
+| **F9** | Learning | Cascade router state, model routing, efficiency metrics, experiments | `learning_view.rs` |
+| **F10** | Providers | NERV provider health, cost breakdown, latency, circuit state | `providers_view.rs` |
 
 Navigation between tabs uses `Tab`/`Shift+Tab` for sequential cycling and function keys
 for direct access. The active tab is highlighted in the header bar, which also shows the
@@ -104,7 +103,7 @@ Tabs map to the v2 named-surface system (E37) for StateHub integration:
 
 This mapping ensures that the same projection data drives both TUI rendering and
 HTTP/SSE consumers. Tabs without a named surface mapping (Git, Logs, Marketplace,
-Atelier, Learning, Providers) render from direct state queries rather than named
+Learning, Providers) render from direct state queries rather than named
 projections.
 
 ---
@@ -350,7 +349,7 @@ FILTER  [↑/↓] results   [Enter] select  [Esc] cancel          filter: _
 
 | Key | Action |
 |---|---|
-| `F1`-`F10`, `-` | Jump to tab |
+| `F1`-`F10` | Jump to tab |
 | `Tab` / `Shift+Tab` | Cycle focus between panels |
 | `j`/`k` or `Up`/`Down` | Navigate within focused list |
 | `Enter` | Expand detail / enter view |
@@ -1055,7 +1054,7 @@ cargo run -p roko-cli -- dashboard
 cargo run -p roko-cli -- show dashboard --width 120 --height 30
 ```
 
-The dashboard renders all 11 tabs from live workspace state. Each tab displays
+The dashboard renders all 10 tabs from live workspace state. Each tab displays
 real-time data from the StateHub bridge, file system watcher, and git watcher.
 
 ---

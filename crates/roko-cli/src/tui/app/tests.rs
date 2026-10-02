@@ -912,7 +912,10 @@ fn keybinding_f_keys_switch_tabs() {
     assert_eq!(app.tui_state.active_tab, Tab::Marketplace);
 
     app.handle_key(KeyEvent::new(KeyCode::F(9), KeyModifiers::NONE));
-    assert_eq!(app.tui_state.active_tab, Tab::Atelier);
+    assert_eq!(app.tui_state.active_tab, Tab::Learning);
+
+    app.handle_key(KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE));
+    assert_eq!(app.tui_state.active_tab, Tab::Providers);
 
     app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
     assert_eq!(app.tui_state.active_tab, Tab::Dashboard);

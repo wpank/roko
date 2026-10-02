@@ -41,7 +41,7 @@ Every high-frequency workflow maps to one of nine canonical verbs. The CLI is th
 |---|---|---|---|
 | `ask` | `roko ask <prompt>` | Cognitive Loop (single iteration) | Compose -> Execute -> Verify |
 | `plan` | `roko plan ...` | Plan generation Graph | Route (select strategy) |
-| `do` | `roko do ...` or `roko plan run ...` | Executor Graph with gates | Execute (full DAG) |
+| `do` | `roko run ...` or `roko plan run ...` | Executor Graph with gates | Execute (full DAG) |
 | `watch` | `roko watch <session>` | Lens Graph over `active_tasks` | Observe (subscribe) |
 | `inspect` | `roko inspect <id>` | Lens Graph over Store | Observe + Store query |
 | `replay` | `roko replay <episode>` | Replay Graph | Store query -> Execute |
@@ -49,7 +49,7 @@ Every high-frequency workflow maps to one of nine canonical verbs. The CLI is th
 | `tune` | `roko tune ...` or `roko config ...` | Config mutation Graph | React (emit config Pulses) |
 | `connect` | `roko connect ...` or `roko plugin ...` | Integration Graph | Connect protocol |
 
-The exact command tree is broader than the verb set. `roko prd`, `roko research`, `roko knowledge`, `roko agent` are all specialized sub-trees. But every help page teaches the adjacent verb, not an isolated silo. A user who runs `roko plan run` should learn that `roko watch` exists for live progress.
+The exact command tree is broader than the verb set. `roko research`, `roko knowledge`, `roko agent` are all specialized sub-trees. But every help page teaches the adjacent verb, not an isolated silo. A user who runs `roko plan run` should learn that `roko watch` exists for live progress.
 
 ### Slash Commands
 
@@ -58,7 +58,7 @@ The interactive shell, TUI chat pane, and web surface all accept slash commands 
 | Slash Command | Verb | CLI Equivalent |
 |---|---|---|
 | `/edit <file>` | ask | `roko ask --context <file> ...` |
-| `/run <cmd>` | do | `roko do --cmd "<cmd>"` |
+| `/run <cmd>` | do | `roko run "<cmd>"` |
 | `/plan` | plan | `roko plan create` |
 | `/watch` | watch | `roko watch <session>` |
 | `/inspect <id>` | inspect | `roko inspect <kind> <id>` |

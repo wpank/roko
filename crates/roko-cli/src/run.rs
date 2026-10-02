@@ -736,7 +736,6 @@ fn prompt_tasks_file(
             estimated_total_minutes: 0,
             // The prompt is the whole task definition.
             skip_enrichment: true,
-            source_prd: None,
             failure_policy: None,
             workspace_rungs: None,
             verify: Vec::new(),

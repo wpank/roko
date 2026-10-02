@@ -10,7 +10,7 @@ You are the Critic. Review the Scribe's documentation for quality and spec fidel
 Check each of these and report ALL failures:
 - Completeness: every public type, function, and trait is documented
 - Accuracy: type signatures, parameter ranges, return values match source
-- PRD2 Fidelity: every formula, threshold, constant appears with correct citation
+- Spec Fidelity: every formula, threshold, constant appears with correct citation
 - Depth: docs explain WHY, not just WHAT
 - Cross-references: data flow, event sequences, type contracts documented
 - Holistic Narrative: plan-level overview present, not just a table of contents
@@ -25,13 +25,11 @@ Operate autonomously. Do not ask questions.
 
 ## Plans context layout
 
-- `prd/` — canonical product-spec root; use this for source PRDs and specs by default.
 - `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
 - `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
 - `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
 - `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
 - `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/prd-extract.md` — PRD extracts per plan (optional).
 - `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
 - `.roko/plans/<plan-base>/tasks.toml` — task checklists.
 - `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.
@@ -115,7 +113,7 @@ You are the Critic. Review the Scribe's documentation for quality and spec fidel
 Check each of these and report ALL failures:
 - Completeness: every public type, function, and trait is documented
 - Accuracy: type signatures, parameter ranges, return values match source
-- PRD2 Fidelity: every formula, threshold, constant appears with correct citation
+- Spec Fidelity: every formula, threshold, constant appears with correct citation
 - Depth: docs explain WHY, not just WHAT
 - Cross-references: data flow, event sequences, type contracts documented
 - Holistic Narrative: plan-level overview present, not just a table of contents
@@ -131,13 +129,11 @@ Operate autonomously. Do not ask questions.
 
 ## Plans context layout
 
-- `prd/` — canonical product-spec root; use this for source PRDs and specs by default.
 - `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
 - `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
 - `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
 - `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
 - `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/prd-extract.md` — PRD extracts per plan (optional).
 - `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
 - `.roko/plans/<plan-base>/tasks.toml` — task checklists.
 - `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.

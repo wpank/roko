@@ -1495,9 +1495,9 @@ dump_pipeline_workspace() {
   fi
   echo ""
 
-  echo "--- prd ---"
-  if [ -d "$ws/.roko/prd" ]; then
-    find "$ws/.roko/prd" -type f 2>/dev/null | while read -r f; do
+  echo "--- plans/ ---"
+  if [ -d "$ws/plans" ]; then
+    find "$ws/plans" -type f -name "*.toml" 2>/dev/null | while read -r f; do
       echo "  ${f#$ws/}"
     done
   fi
@@ -1553,56 +1553,38 @@ preflight_check() {
 
 # ── Pipeline definitions ────────────────────────────────────
 
-pipeline_prd() {
+pipeline_plan() {
   local keep="$1"
-  create_pipeline_workspace "prd-pipeline" || return 1
+  create_pipeline_workspace "plan-pipeline" || return 1
   preflight_check "$PIPELINE_WORKSPACE" || return 1
 
-  local total=7
+  local total=4
   local failed=0
   local start_time=$SECONDS
 
   echo ""
-  echo "${BOLD}PRD Pipeline${RESET}: idea → draft → promote → plan → validate → execute → status"
+  echo "${BOLD}Plan Pipeline${RESET}: prompt → plan → validate → execute → status"
   echo "${DIM}Workspace: $PIPELINE_WORKSPACE${RESET}"
   echo ""
 
-  run_step 1 $total "Capture work item" \
-    'prd idea "Build a CLI that fetches BTC funding rates from Binance, calculates average funding over 7 days, and alerts when funding exceeds 0.1%"' \
-    30 || failed=1
+  run_step 1 $total "Write a plan from a prompt" \
+    'plan generate "Build a CLI that fetches BTC funding rates from Binance, calculates average funding over 7 days, and alerts when funding exceeds 0.1%"' \
+    300 || failed=1
 
   if [ "$failed" -eq 0 ]; then
-    run_step 2 $total "Generate PRD via LLM" \
-      'prd draft new "BTC Funding Alert CLI"' \
-      180 || failed=1
-  fi
-
-  if [ "$failed" -eq 0 ]; then
-    run_step 3 $total "Promote to published" \
-      'prd draft promote btc-funding-alert-cli' \
+    run_step 2 $total "Lint the generated plan" \
+      'plan validate plans' \
       30 || failed=1
   fi
 
   if [ "$failed" -eq 0 ]; then
-    run_step 4 $total "Generate implementation plan" \
-      'prd plan btc-funding-alert-cli' \
-      300 || failed=1
-  fi
-
-  if [ "$failed" -eq 0 ]; then
-    run_step 5 $total "Lint the generated plan" \
-      'plan validate .roko/plans' \
-      30 || failed=1
-  fi
-
-  if [ "$failed" -eq 0 ]; then
-    run_step 6 $total "Execute: agents + gates" \
-      'plan run .roko/plans --max-retries 1' \
+    run_step 3 $total "Execute: agents + gates" \
+      'plan run plans --max-retries 1' \
       600 || failed=1
   fi
 
   # Always run status even if earlier steps failed
-  run_step 7 $total "View results and costs" \
+  run_step 4 $total "View results and costs" \
     'status' \
     30 || true
 
@@ -1617,37 +1599,39 @@ pipeline_research() {
   local total=8
   local failed=0
   local start_time=$SECONDS
+  local request="Add config validation with schema checking and helpful error messages"
+  local slug="add-config-validation-with-schema-checking-and-helpful-error-messages"
 
   echo ""
-  echo "${BOLD}Research Loop${RESET}: idea → draft → research → plan → execute → gates → learn → summary"
+  echo "${BOLD}Research Loop${RESET}: research → plan → research-enhance → execute → gates → learn → summary"
   echo "${DIM}Workspace: $PIPELINE_WORKSPACE${RESET}"
   echo ""
 
-  run_step 1 $total "Capture idea" \
-    'prd idea "Add config validation with schema checking and helpful error messages"' \
-    30 || failed=1
+  run_step 1 $total "Research the topic" \
+    "research topic \"$request\"" \
+    180 || failed=1
 
   if [ "$failed" -eq 0 ]; then
-    run_step 2 $total "Draft PRD" \
-      'prd draft new cli-config-validation' \
-      120 || failed=1
+    run_step 2 $total "Generate plan (research-informed)" \
+      "plan generate --context .roko/research \"$request\"" \
+      300 || failed=1
   fi
 
   if [ "$failed" -eq 0 ]; then
-    run_step 3 $total "Research enhance PRD" \
-      'research enhance-prd cli-config-validation' \
+    run_step 3 $total "Research enhance the plan" \
+      "research enhance-plan $slug" \
       180 || failed=1
   fi
 
   if [ "$failed" -eq 0 ]; then
-    run_step 4 $total "Generate plan (research-informed)" \
-      'prd plan cli-config-validation' \
-      180 || failed=1
+    run_step 4 $total "Lint the plan" \
+      'plan validate plans' \
+      30 || failed=1
   fi
 
   if [ "$failed" -eq 0 ]; then
     run_step 5 $total "Execute plan" \
-      'plan run .roko/plans --max-retries 1' \
+      'plan run plans --max-retries 1' \
       300 || failed=1
   fi
 
@@ -1953,8 +1937,11 @@ cmd_pipeline() {
   $PIPELINE_DRY_RUN && info "Dry-run mode: showing commands without executing"
 
   case "$scenario" in
+    plan|plan-pipeline)
+      pipeline_plan $keep ;;
     prd|prd-pipeline)
-      pipeline_prd $keep ;;
+      err "The prd pipeline went with roko prd (2026-10-02); use: ./dev.sh pipeline plan"
+      return 1 ;;
     research|research-loop)
       pipeline_research $keep ;;
     race|cost-race)
@@ -1965,7 +1952,7 @@ cmd_pipeline() {
       pipeline_providers $keep ;;
     all)
       local any_failed=0
-      for s in prd research race gate providers; do
+      for s in plan research race gate providers; do
         echo ""
         echo "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
         echo "${BOLD}  Pipeline: $s${RESET}"
@@ -1987,8 +1974,8 @@ cmd_pipeline() {
     list|"")
       echo "${BOLD}Available pipelines${RESET}"
       echo ""
-      echo "  ${CYAN}prd${RESET}         PRD Pipeline: idea → draft → promote → plan → validate → execute → status"
-      echo "  ${CYAN}research${RESET}    Research Loop: idea → draft → research-enhance → plan → execute → learn"
+      echo "  ${CYAN}plan${RESET}        Plan Pipeline: prompt → plan → validate → execute → status"
+      echo "  ${CYAN}research${RESET}    Research Loop: research → plan → research-enhance → execute → learn"
       echo "  ${CYAN}race${RESET}        Cost Race: naive (no replan) vs cascade (full pipeline)"
       echo "  ${CYAN}gate${RESET}        Gate Retry: run → fail gates → classify → replan → retry"
       echo "  ${CYAN}providers${RESET}   Provider Test: same prompt to N providers"
@@ -2003,15 +1990,15 @@ cmd_pipeline() {
       echo "  --dry-run, -n              Show commands without executing"
       echo ""
       echo "${BOLD}Examples${RESET}"
-      echo "  ./dev.sh pipeline prd                              Run with default model"
-      echo "  ./dev.sh pipeline prd --model glm-4-plus           Run with specific model"
-      echo "  ./dev.sh pipeline prd --provider anthropic         Force anthropic for run steps"
+      echo "  ./dev.sh pipeline plan                             Run with default model"
+      echo "  ./dev.sh pipeline plan --model glm-4-plus          Run with specific model"
+      echo "  ./dev.sh pipeline plan --provider anthropic        Force anthropic for run steps"
       echo "  ./dev.sh pipeline gate --model gpt-4o --keep       Gate retry with GPT-4o, keep workspace"
       echo "  ./dev.sh pipeline race --model claude-sonnet-4-20250514   Compare naive vs cascade with Sonnet"
       echo "  ./dev.sh pipeline providers --providers anthropic,openai  Test only 2 providers"
       echo "  ./dev.sh pipeline all --model glm-4-plus           Full suite with one model"
-      echo "  ./dev.sh pipeline prd --dry-run                    Preview commands without running"
-      echo "  ./dev.sh pipeline prd --model gpt-4o 2>&1 | tee run.log   Capture output"
+      echo "  ./dev.sh pipeline plan --dry-run                   Preview commands without running"
+      echo "  ./dev.sh pipeline plan --model gpt-4o 2>&1 | tee run.log   Capture output"
       ;;
     *)
       die "Unknown pipeline: $scenario (run ./dev.sh pipeline list)"
@@ -2167,8 +2154,8 @@ COMMANDS
   help                                     This message
 
 PIPELINES (./dev.sh pipeline <name>)
-  prd           PRD Pipeline: idea → draft → promote → plan → validate → execute → status
-  research      Research Loop: idea → draft → research-enhance → plan → execute → learn
+  plan          Plan Pipeline: prompt → plan → validate → execute → status
+  research      Research Loop: research → plan → research-enhance → execute → learn
   race          Cost Race: naive vs cascade routing
   gate          Gate Retry: fail → classify → replan → retry
   providers     Provider Test: same prompt to N providers
@@ -2194,12 +2181,12 @@ EXAMPLES
   ./dev.sh benchmark history                            Refresh history; exit 1 on regressions
   ./dev.sh cache prune                                  Preview safe cache reclamation
   ./dev.sh cache prune --apply --target-budget-gb 64    Apply a reviewed plan
-  ./dev.sh pipeline prd                                Run PRD pipeline (default model)
-  ./dev.sh pipeline prd --model gpt-4o                 Run with GPT-4o
+  ./dev.sh pipeline plan                               Run the plan pipeline (default model)
+  ./dev.sh pipeline plan --model gpt-4o                Run with GPT-4o
   ./dev.sh pipeline gate --provider anthropic --keep   Gate retry via Anthropic
   ./dev.sh pipeline providers --providers anthropic,openai  Test 2 providers
   ./dev.sh pipeline all --model glm-4-plus             Full suite with one model
-  ./dev.sh pipeline prd --dry-run                      Preview commands
+  ./dev.sh pipeline plan --dry-run                     Preview commands
 HELP
 }
 

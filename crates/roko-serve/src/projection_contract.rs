@@ -652,15 +652,6 @@ pub fn projection_policies() -> Vec<ProjectionCatalogEntry> {
             },
         },
         ProjectionCatalogEntry {
-            name: "prds".into(),
-            version: 1,
-            policy: InvalidationPolicy {
-                max_age_secs: 60,
-                incremental: true,
-                invalidation_triggers: vec!["prds_updated".into()],
-            },
-        },
-        ProjectionCatalogEntry {
             name: "knowledge".into(),
             version: 1,
             policy: InvalidationPolicy {
@@ -706,7 +697,6 @@ pub fn projection_version(name: &str) -> Option<u32> {
         "trace" | "proof" => "execution_trace",
         "feedback" => "runtime_feedback",
         "jobs" => "marketplace_jobs",
-        "atelier" => "prds",
         "knowledge_entries" => "knowledge",
         "watchers" | "circuit_breakers" | "observations" => "telemetry",
         _ => name,
@@ -1400,12 +1390,6 @@ impl RuntimeProjectionSet {
                 "source": "state_hub",
                 "items": self.snapshot.marketplace_jobs,
                 "total": self.snapshot.marketplace_jobs.len(),
-            })),
-            "prds" => Ok(json!({
-                "source": "state_hub",
-                "items": self.snapshot.atelier_prds,
-                "tasks": self.snapshot.atelier_tasks,
-                "total": self.snapshot.atelier_prds.len(),
             })),
             "knowledge" => Ok(json!({
                 "source": "state_hub_and_neuro_store",
@@ -2525,7 +2509,6 @@ pub fn canonical_projection_name(name: &str) -> &str {
         "trace" | "proof" => "execution_trace",
         "feedback" => "runtime_feedback",
         "jobs" => "marketplace_jobs",
-        "atelier" => "prds",
         "knowledge_entries" => "knowledge",
         "watchers" | "circuit_breakers" | "observations" => "telemetry",
         _ => name,
@@ -2719,7 +2702,6 @@ pub fn projection_accepts_event(
                 | DashboardEvent::GateResult { .. }
         ),
         "marketplace_jobs" => matches!(event, DashboardEvent::MarketplaceJobsUpdated { .. }),
-        "prds" => matches!(event, DashboardEvent::AtelierPrdsUpdated { .. }),
         "knowledge" => matches!(event, DashboardEvent::KnowledgeEntriesUpdated { .. }),
         "telemetry" => matches!(
             event,
@@ -3982,7 +3964,6 @@ mod tests {
         assert_eq!(projection_version("task_outputs"), Some(1));
         assert_eq!(projection_version("cost_meter"), Some(1));
         assert_eq!(projection_version("executor_state"), Some(1));
-        assert_eq!(projection_version("atelier"), Some(1));
         assert_eq!(projection_version("knowledge_entries"), Some(1));
         assert_eq!(projection_version("nonexistent"), None);
     }

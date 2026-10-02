@@ -94,10 +94,10 @@ execution.
 **Status:** Migrated for routed and no-routing paths. Uses the shared
 factory.
 
-### 3. `prd.rs` -- PRD draft/plan generation
+### 3. `plan_generate/` -- plan generation
 
-The `roko prd draft` and `roko prd plan` commands construct agents for
-PRD-related tasks.
+`roko plan generate` and the plan-writing path of `roko run` (`--plan`, or a
+prompt sized as standard or complex) construct an agent that writes the plan.
 
 **Status:** Partially migrated. The main path uses
 `create_agent_for_model`.

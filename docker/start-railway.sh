@@ -260,7 +260,7 @@ roko_pid="${CHILD_PIDS[-1]}"
 wait_http roko "http://127.0.0.1:${PUBLIC_PORT}/health" "${roko_pid}" 60
 
 # ---------- ISFR agent fleet gate ----------
-# The ISFR agent fleet uses `roko do` which generates plans, runs agents that
+# The ISFR agent fleet uses `roko run` which generates plans, runs agents that
 # write Rust code, and validates with cargo gates. This requires the full source
 # tree + Rust toolchain in the container. The Railway image is a deployment
 # target with only compiled binaries — the fleet always fails.
@@ -278,7 +278,7 @@ fi
 
 # ---------- ISFR agent fleet (fire-and-forget, serialized) ----------
 # Agents run one-at-a-time to avoid OOM on small Railway containers.
-# Each `roko do` loads the full config + creates an LLM client; 15 at once
+# Each `roko run` loads the full config + creates an LLM client; 15 at once
 # easily exceeds the container memory limit and OOM-kills core processes.
 if [ "${ISFR_AGENTS_ENABLED:-1}" != "0" ]; then
   log "spawning ISFR agent fleet (15 agents, 5 roles, serialized)"
@@ -316,7 +316,7 @@ if [ "${ISFR_AGENTS_ENABLED:-1}" != "0" ]; then
       prompt="${entry#*|}"
       agent_idx=$((agent_idx + 1))
       log "isfr-agent [${agent_idx}/${total}] starting: ${name}"
-      app_cmd roko do "${prompt}" --workdir "${WORKDIR}" || \
+      app_cmd roko run "${prompt}" --workdir "${WORKDIR}" || \
         log "isfr-agent/${name} failed (non-fatal)"
       log "isfr-agent [${agent_idx}/${total}] finished: ${name}"
     done

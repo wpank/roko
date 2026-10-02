@@ -1217,7 +1217,6 @@ const fn bidder_for_context_source(source: &ContextSource) -> AttentionBidder {
         | ContextSource::PlanBrief
         | ContextSource::Invariants
         | ContextSource::CrossPlanContext
-        | ContextSource::PrdExtract
         | ContextSource::Decomposition
         | ContextSource::SiblingTasks => AttentionBidder::TaskContext,
     }
@@ -1366,12 +1365,6 @@ impl PlanArtifacts {
     #[must_use]
     pub fn invariants(&self) -> Option<String> {
         self.read_artifact("rubric.md")
-    }
-
-    /// Read the PRD extract (prd-extract.md).
-    #[must_use]
-    pub fn prd_extract(&self) -> Option<String> {
-        self.read_artifact("prd-extract.md")
     }
 
     /// Read the decomposition (decomposition.md).
@@ -1969,24 +1962,6 @@ impl ContextProvider {
                 "focused context includes outputs from declared dependencies",
             ));
         }
-
-        // 5. PRD extract (scoped: only paragraphs mentioning this task's files)
-        if let Some(prd) = plan_artifacts.prd_extract() {
-            let scoped = scope_text_to_files(&prd, &task.files);
-            if !scoped.is_empty() {
-                sections.push(ContextSection::scoped(
-                    PromptSection::new("prd_extract", format!("## PRD context\n{scoped}"))
-                        .with_priority(SectionPriority::Low)
-                        .with_cache_layer(CacheLayer::Workspace)
-                        .with_placement(Placement::Middle)
-                        .with_hard_cap(2_000),
-                    ContextSource::PrdExtract,
-                    ContextPurpose::TaskGuidance,
-                    task_scope.clone(),
-                    "PRD extract was scoped to files touched by the task",
-                ));
-            }
-        }
     }
 
     fn add_pheromone_context(&self, sections: &mut Vec<ContextSection>, scope: &str) {
@@ -2260,7 +2235,6 @@ const fn context_source_type(source: &ContextSource) -> &'static str {
         ContextSource::ResearchMemo => "research_memo",
         ContextSource::Invariants => "invariants",
         ContextSource::CrossPlanContext => "cross_plan",
-        ContextSource::PrdExtract => "prd_extract",
         ContextSource::Decomposition => "decomposition",
         ContextSource::SiblingTasks => "sibling_tasks",
         ContextSource::Pheromone { .. } => "pheromone",
@@ -2302,7 +2276,6 @@ fn context_source_id(source: &ContextSource) -> Option<String> {
         | ContextSource::ResearchMemo
         | ContextSource::Invariants
         | ContextSource::CrossPlanContext
-        | ContextSource::PrdExtract
         | ContextSource::Decomposition
         | ContextSource::SiblingTasks => None,
     }
@@ -2485,37 +2458,6 @@ fn extract_line_range(content: &str, range: &str) -> String {
         .unwrap_or(lines.len())
         .min(lines.len());
     lines[start..end].join("\n")
-}
-
-/// Scope a text document to paragraphs that mention any of the given file paths.
-/// Returns the full paragraph for each match. If no matches, returns empty string.
-fn scope_text_to_files(text: &str, files: &[String]) -> String {
-    if files.is_empty() {
-        return String::new();
-    }
-
-    // Split into paragraphs (double newline separated)
-    let paragraphs: Vec<&str> = text.split("\n\n").collect();
-    let mut matched = Vec::new();
-
-    for para in paragraphs {
-        let lower = para.to_ascii_lowercase();
-        for file in files {
-            // Match the filename or the path
-            let basename = Path::new(file)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(file);
-            if lower.contains(&file.to_ascii_lowercase())
-                || lower.contains(&basename.to_ascii_lowercase())
-            {
-                matched.push(para);
-                break;
-            }
-        }
-    }
-
-    matched.join("\n\n")
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -2829,32 +2771,6 @@ mod tests {
                 .iter()
                 .any(|section| section.section.name.starts_with("pheromone_signal"))
         );
-    }
-
-    #[test]
-    fn scope_text_to_files_finds_relevant_paragraphs() {
-        let text = "This paragraph talks about src/main.rs and how it works.\n\n\
-                     This paragraph is about unrelated things.\n\n\
-                     Here we discuss config.rs and settings.";
-        let files = vec!["src/main.rs".into()];
-        let scoped = scope_text_to_files(text, &files);
-        assert!(scoped.contains("src/main.rs"));
-        assert!(!scoped.contains("unrelated"));
-    }
-
-    #[test]
-    fn scope_text_to_files_matches_basename() {
-        let text = "This talks about main.rs changes.\n\nUnrelated paragraph.";
-        let files = vec!["crates/roko-cli/src/main.rs".into()];
-        let scoped = scope_text_to_files(text, &files);
-        assert!(scoped.contains("main.rs"));
-    }
-
-    #[test]
-    fn scope_text_empty_files_returns_empty() {
-        let text = "Some content here.";
-        let scoped = scope_text_to_files(text, &[]);
-        assert!(scoped.is_empty());
     }
 
     #[test]

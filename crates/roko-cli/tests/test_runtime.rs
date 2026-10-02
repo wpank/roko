@@ -392,7 +392,6 @@ impl TestRuntimeBuilder {
         let roko_dir = workdir.path().join(".roko");
         fs::create_dir_all(roko_dir.join("learn")).expect("create .roko/learn/");
         fs::create_dir_all(roko_dir.join("state")).expect("create .roko/state/");
-        fs::create_dir_all(roko_dir.join("prd")).expect("create .roko/prd/");
 
         // Write a minimal roko.toml so config loading doesn't fail.
         let roko_toml = "[meta]\nversion = 1\n\n[agent]\nmodel = \"mock-model\"\nbackend = \"mock\"\n\

@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn run_workspace_check_with_roko_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
-        for sub in ["state", "learn", "memory", "prd"] {
+        for sub in ["state", "learn", "memory"] {
             std::fs::create_dir_all(dir.path().join(".roko").join(sub)).expect("create dir");
         }
         let mut selected = BTreeSet::new();

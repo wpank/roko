@@ -358,8 +358,12 @@ async fn execute_coding_job(
     let brief = render_coding_job_brief(job);
     tokio::fs::write(&brief_path, &brief).await?;
 
-    let prd_path = materialize_coding_job_prd(&state.workdir, job, &brief).await?;
-    let plan = prepare_coding_plan(state, job, &prd_path).await?;
+    // The spec the plan is generated from: the brief with the job's
+    // requirements and acceptance criteria.
+    let spec = render_coding_job_spec(job, &brief);
+    let spec_path = artifact_dir.join("job-spec.md");
+    tokio::fs::write(&spec_path, &spec).await?;
+    let plan = prepare_coding_plan(state, job, &spec_path, &spec).await?;
     let before = snapshot_workspace_files(&state.workdir);
 
     let mut summaries = Vec::new();
@@ -408,9 +412,9 @@ async fn execute_coding_job(
         ),
         artifact_value(
             &state.workdir,
-            &prd_path,
-            "prd",
-            Some("Materialized PRD brief for coding job planning"),
+            &spec_path,
+            "spec",
+            Some("Coding job spec the plan was generated from"),
         ),
     ];
     artifacts.extend(
@@ -628,23 +632,11 @@ fn render_coding_job_brief(job: &MarketplaceJob) -> String {
     )
 }
 
-async fn materialize_coding_job_prd(
-    workdir: &Path,
-    job: &MarketplaceJob,
-    brief: &str,
-) -> anyhow::Result<PathBuf> {
-    let slug = coding_job_slug(job);
-    let prd_dir = workdir.join(".roko").join("prd").join("published");
-    tokio::fs::create_dir_all(&prd_dir).await?;
-    let prd_path = prd_dir.join(format!("{slug}.md"));
-    tokio::fs::write(&prd_path, render_coding_job_prd(job, brief)).await?;
-    Ok(prd_path)
-}
-
 async fn prepare_coding_plan(
     state: &AppState,
     job: &MarketplaceJob,
-    prd_path: &Path,
+    spec_path: &Path,
+    spec: &str,
 ) -> anyhow::Result<PlanGenerationResult> {
     if !job.plan_id.trim().is_empty() {
         let targets = resolve_plan_targets(&state.workdir, &job.plan_id);
@@ -663,13 +655,13 @@ async fn prepare_coding_plan(
             plan_id = %job.plan_id,
             "referenced coding job plan was not found; synthesizing fallback plan"
         );
-        return synthesize_coding_plan(&state.workdir, job, prd_path).await;
+        return synthesize_coding_plan(&state.workdir, job, spec_path).await;
     }
 
     let slug = coding_job_slug(job);
     match state
         .runtime
-        .generate_plan_from_prd(&state.workdir, &slug, prd_path)
+        .generate_plan_from_prompt(&state.workdir, &slug, spec)
         .await
     {
         Ok(mut plan) => {
@@ -682,9 +674,9 @@ async fn prepare_coding_plan(
             warn!(
                 job_id = %job.id,
                 error = %err,
-                "runtime PRD planning unavailable; synthesizing fallback coding plan"
+                "runtime plan generation unavailable; synthesizing fallback coding plan"
             );
-            synthesize_coding_plan(&state.workdir, job, prd_path).await
+            synthesize_coding_plan(&state.workdir, job, spec_path).await
         }
     }
 }
@@ -692,7 +684,7 @@ async fn prepare_coding_plan(
 async fn synthesize_coding_plan(
     workdir: &Path,
     job: &MarketplaceJob,
-    prd_path: &Path,
+    spec_path: &Path,
 ) -> anyhow::Result<PlanGenerationResult> {
     let slug = coding_job_slug(job);
     // Where every new plan goes, so plan listings and discovery find it.
@@ -701,8 +693,8 @@ async fn synthesize_coding_plan(
     tokio::fs::create_dir_all(&plan_dir).await?;
     let plan_md = plan_dir.join("plan.md");
     let tasks_toml = plan_dir.join("tasks.toml");
-    tokio::fs::write(&plan_md, render_coding_plan_markdown(job, prd_path)).await?;
-    tokio::fs::write(&tasks_toml, render_coding_tasks_toml(job, &slug, prd_path)).await?;
+    tokio::fs::write(&plan_md, render_coding_plan_markdown(job, spec_path)).await?;
+    tokio::fs::write(&tasks_toml, render_coding_tasks_toml(job, &slug, spec_path)).await?;
     Ok(PlanGenerationResult {
         plans_root,
         plan_targets: vec![plan_dir],
@@ -754,9 +746,9 @@ fn collect_plan_artifact_paths(targets: &[PathBuf]) -> Vec<PathBuf> {
     artifacts
 }
 
-fn render_coding_job_prd(job: &MarketplaceJob, brief: &str) -> String {
+fn render_coding_job_spec(job: &MarketplaceJob, brief: &str) -> String {
     format!(
-        "# PRD: {}\n\n## Problem\n\n{}\n\n## Requirements\n\n- REQ-001: Implement the coding job described below.\n- REQ-002: Preserve existing behavior outside the requested scope.\n- REQ-003: Collect changed files and gate results as submission evidence.\n\n## Acceptance Criteria\n\n- The requested code change is implemented in the workspace.\n- Relevant project gates are run and reported.\n- The job submission includes plan, result, gate, and changed-file artifacts.\n\n## Source Job Brief\n\n{}\n",
+        "# Spec: {}\n\n## Problem\n\n{}\n\n## Requirements\n\n- REQ-001: Implement the coding job described below.\n- REQ-002: Preserve existing behavior outside the requested scope.\n- REQ-003: Collect changed files and gate results as submission evidence.\n\n## Acceptance Criteria\n\n- The requested code change is implemented in the workspace.\n- Relevant project gates are run and reported.\n- The job submission includes plan, result, gate, and changed-file artifacts.\n\n## Source Job Brief\n\n{}\n",
         job.title,
         if job.description.trim().is_empty() {
             "Complete the requested coding work."
@@ -767,17 +759,17 @@ fn render_coding_job_prd(job: &MarketplaceJob, brief: &str) -> String {
     )
 }
 
-fn render_coding_plan_markdown(job: &MarketplaceJob, prd_path: &Path) -> String {
+fn render_coding_plan_markdown(job: &MarketplaceJob, spec_path: &Path) -> String {
     format!(
-        "---\nplan: {}\ntitle: {}\npriority: 0\n---\n\n# {}\n\nSource PRD: `{}`\n\nImplement the marketplace coding job, then run the configured gates and preserve submission evidence.\n",
+        "---\nplan: {}\ntitle: {}\npriority: 0\n---\n\n# {}\n\nSource spec: `{}`\n\nImplement the marketplace coding job, then run the configured gates and preserve submission evidence.\n",
         coding_job_slug(job),
         toml_escape(&job.title),
         job.title,
-        prd_path.display()
+        spec_path.display()
     )
 }
 
-fn render_coding_tasks_toml(job: &MarketplaceJob, slug: &str, prd_path: &Path) -> String {
+fn render_coding_tasks_toml(job: &MarketplaceJob, slug: &str, spec_path: &Path) -> String {
     let title = if job.title.trim().is_empty() {
         "Implement coding job"
     } else {
@@ -788,15 +780,15 @@ fn render_coding_tasks_toml(job: &MarketplaceJob, slug: &str, prd_path: &Path) -
     } else {
         job.description.trim()
     };
-    let prd_rel = prd_path
+    let spec_rel = spec_path
         .strip_prefix(Path::new("."))
-        .unwrap_or(prd_path)
+        .unwrap_or(spec_path)
         .to_string_lossy();
     format!(
         "[meta]\nplan = \"{}\"\niteration = 1\ntotal = 1\ndone = 0\nstatus = \"ready\"\nmax_parallel = 1\nestimated_total_minutes = 30\n\n[[task]]\nid = \"T1\"\ntitle = \"{}\"\nrole = \"implementer\"\nstatus = \"ready\"\ntier = \"focused\"\nmodel_hint = \"claude-sonnet-4-6\"\nmax_loc = 500\nfiles = []\nallowed_tools = []\ndepends_on = []\nverify = [{{ phase = \"runtime\", command = \"cargo check\", fail_msg = \"cargo check failed\", timeout_ms = 120000 }}]\n\n[task.context]\nread_files = [{{ path = \"{}\" }}]\nrequirements = [\"{}\"]\nanti_patterns = [\"Do not make unrelated refactors.\"]\n",
         toml_escape(slug),
         toml_escape(title),
-        toml_escape(&prd_rel),
+        toml_escape(&spec_rel),
         toml_escape(description)
     )
 }
@@ -918,7 +910,7 @@ fn should_skip_artifact_path(rel: &Path) -> bool {
             .next()
             .and_then(|component| component.as_os_str().to_str())
             .unwrap_or_default();
-        return !matches!(second, "jobs" | "plans" | "prd" | "research");
+        return !matches!(second, "jobs" | "plans" | "research");
     }
     false
 }
@@ -1084,9 +1076,9 @@ mod tests {
             description: "Write the widget module.".into(),
             ..Default::default()
         };
-        let prd_path = workdir.path().join("job-42.md");
+        let spec_path = workdir.path().join("job-42.md");
 
-        let plan = synthesize_coding_plan(workdir.path(), &job, &prd_path)
+        let plan = synthesize_coding_plan(workdir.path(), &job, &spec_path)
             .await
             .expect("synthesize the fallback plan");
 

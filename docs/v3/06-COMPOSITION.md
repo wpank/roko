@@ -7,7 +7,7 @@
 > highest-value content, ordered for the U-shaped attention curve.
 
 > **Implementation status (2026-09):** The Composer trait, PromptComposer,
-> 9-layer SystemPromptBuilder (12+ tests), 11 role templates, 13-step
+> 9-layer SystemPromptBuilder (12+ tests), 11 role templates, 12-step
 > enrichment pipeline, 9 AttentionBidder variants, VCG allocation with
 > LearningBidder + Thompson sampling, SymbolResolver, cache alignment markers,
 > affect-guided PAD modulation, complexity-adaptive budgets, and U-shape
@@ -23,7 +23,7 @@
 | PromptComposer | `crates/roko-compose/src/prompt.rs` | Greedy budget-fitting, U-shape placement, AttentionBidder enum, VCG auto-select, 18+ tests |
 | SystemPromptBuilder | `crates/roko-compose/src/system_prompt_builder.rs` | 9 layers, cache alignment markers, PAD affect guidance, budget profiles, section-effectiveness learning |
 | Role templates | `crates/roko-compose/src/templates/` | 11 templates: implementer, strategist, scribe, reviewer, conductor, researcher, refactorer, integration, quick, task_impl, common |
-| Enrichment pipeline | `crates/roko-compose/src/enrichment/` | 13-step pipeline, staleness checking, TOML repair, continue-on-failure |
+| Enrichment pipeline | `crates/roko-compose/src/enrichment/` | 12-step pipeline, staleness checking, TOML repair, continue-on-failure |
 | VCG auction | `crates/roko-compose/src/auction.rs` | `vcg_allocate`, `LearningBidder`, `AuctionDiagnostics`, `FairnessConfig`, Pareto check |
 | Symbol resolver | `crates/roko-compose/src/symbol_resolver.rs` | Workspace-rooted Rust symbol resolution, 7 SymbolKind variants |
 | Context bidders | `crates/roko-compose/src/context_provider.rs`, `group_context_bidder.rs` | Neuro/Task/Research/Daimon/PlaybookRules/CodeIntelligence/IterationMemory/Oracles/GroupContext |
@@ -100,7 +100,7 @@ targets a different cache-stability tier:
 |-------|------|-----------|----------------|---------|
 | 1 | Role Identity | System | `role_prompts.rs` | Who the agent is, what it specializes in |
 | 2 | Conventions | System | CLAUDE.md / project config | Project patterns, style rules, safety constraints |
-| 3 | Domain Context | Session | PRD extracts, workspace map | Domain-specific knowledge |
+| 3 | Domain Context | Session | Project knowledge, workspace map | Domain-specific knowledge |
 | 3c | Pheromone Signals | Session | Stigmergic signals | Active environmental signals |
 | 4 | Task Context | Task | Task TOML, brief, gate errors | What the agent should do now |
 | 4b | Gate Feedback | Dynamic | Prior verification failures | Retry-specific error digest |
@@ -200,7 +200,7 @@ block-beta
 
   block:session["SESSION CACHE TIER (stable within plan execution)"]
     columns 3
-    L3["Layer 3\nDomain Context\n\nPRD extracts, workspace map.\nDomain-specific knowledge."]
+    L3["Layer 3\nDomain Context\n\nProject knowledge, workspace map.\nDomain-specific knowledge."]
     L3a["Layer 3a\nOrientation Cache\n(PEEK - target design)\n\nDistiller / Cartographer / Evictor\n2048 token budget"]
     L3c["Layer 3c\nPheromone Signals\n\nStigmergic signals.\nActive environmental state."]
   end
@@ -307,12 +307,12 @@ Each receives a distinct identity, per-role token budget, and section emphasis:
 | 3 | **Architect** | Review implementation for quality | Sonnet | Moderate across all sections |
 | 4 | **Auditor** | Security and correctness audit | Sonnet | Same as Architect, narrowly scoped |
 | 5 | **QuickReviewer** | Fast-turnaround code review | Haiku | Minimal budgets, designed for low cost |
-| 6 | **Scribe** | Technical documentation | Sonnet | Largest prd2 (16K) for specification citations |
+| 6 | **Scribe** | Technical documentation | Sonnet | Moderate budgets; the plan and brief carry the spec it cites |
 | 7 | **Critic** | Devil's advocate, challenge assumptions | Sonnet | Emphasis on anti-patterns |
 | 8 | **AutoFixer** | Mechanical compilation/lint fixes | Haiku | Minimal: error output + relevant file |
 | 9 | **IntegrationTester** | Validate cross-crate interactions | Sonnet | Moderate workspace_map + file_context |
 | 10 | **Refactorer** | Restructure code, preserve behavior | Sonnet | Large file_context + workspace_map |
-| 11 | **Researcher** | Deep research with citations | Opus | Large prd2, moderate skills |
+| 11 | **Researcher** | Deep research with citations | Opus | Default budgets, moderate skills |
 | 12 | **Conductor** | Coordinate multi-agent execution | Opus | Large plan visibility |
 
 Template files: `crates/roko-compose/src/templates/{implementer,strategist,scribe,reviewer,conductor,researcher,refactorer,integration,quick,task_impl,common}.rs`
@@ -323,29 +323,28 @@ Template files: `crates/roko-compose/src/templates/{implementer,strategist,scrib
 pub const fn budget_for(role: AgentRole) -> PromptBudget {
     match role {
         AgentRole::Implementer => PromptBudget {
-            plan: 50_000, workspace_map: 20_000, prd2: 12_000,
+            plan: 50_000, workspace_map: 20_000,
             context: 4_000, brief: 8_000, reviews: 3_000,
             instructions: 4_000, file_context: 8_000, skills: 8_000,
         },
         AgentRole::Strategist => PromptBudget {
-            plan: 50_000, workspace_map: 20_000, prd2: 12_000,
+            plan: 50_000, workspace_map: 20_000,
             context: 4_000, brief: 6_000, reviews: 3_000,
             instructions: 4_000, file_context: 0, skills: 4_000,
         },
         AgentRole::Scribe => PromptBudget {
-            plan: 50_000, workspace_map: 6_000, prd2: 16_000,
+            plan: 50_000, workspace_map: 6_000,
             context: 4_000, brief: 6_000, reviews: 3_000,
             instructions: 4_000, file_context: 6_000, skills: 4_000,
         },
-        // Architect | Auditor: 6K workspace, 6K prd2, 6K file_context
-        // Default: 8K workspace, 6K prd2, 6K file_context
+        // Architect | Auditor: 6K workspace, 6K file_context
+        // Default: 8K workspace, 6K file_context
     }
 }
 ```
 
 Key asymmetries: Implementer gets the most file_context (it writes code).
-Strategist gets zero file_context (it plans, never codes). Scribe gets the most
-prd2 (documentation must cite specifications accurately). Implementer gets the
+Strategist gets zero file_context (it plans, never codes). Implementer gets the
 most skills (playbook rules directly prevent repeated mistakes).
 
 ### Complexity-adaptive budgets
@@ -354,7 +353,7 @@ Base budgets are adjusted by task complexity:
 
 ```rust
 pub enum Complexity {
-    Trivial,   // Two-line fix. Drop PRD, context, skills. ~70% reduction.
+    Trivial,   // Two-line fix. Drop context and skills; halve workspace_map and brief.
     Standard,  // Base budgets unchanged.
     Complex,   // 50% more workspace_map, 100% more context, 50% more file_context.
 }
@@ -368,56 +367,54 @@ and `NITS_FORMAT` (review output format).
 
 ---
 
-## 4. Enrichment Pipeline -- 13 Steps
+## 4. Enrichment Pipeline -- 12 Steps
 
 The enrichment pipeline pre-computes context artifacts before agent sessions
 begin. Rather than having agents spend tokens discovering what they need, the
-pipeline generates 13 typed artifacts using the cheapest appropriate model for
+pipeline generates 12 typed artifacts using the cheapest appropriate model for
 each step:
 
 | # | Step | Output File | Default Model | Purpose |
 |---|------|------------|---------------|---------|
-| 1 | Prd | `prd-extract.md` | Haiku | Extract plan-relevant PRD sections |
-| 2 | Briefs | `brief.md` | Sonnet | Generate What/Why/How task summaries |
-| 3 | Tasks | `tasks.toml` | Sonnet | Generate task specifications |
-| 4 | Decompose | `decomposition.md` | Sonnet | Step-by-step subtask breakdown |
-| 5 | Research | `research.md` | Opus | Deep research with citations |
-| 6 | Dependencies | `dependency-manifest.toml` | Haiku | External dependency list |
-| 7 | Fixtures | `fixture-manifest.toml` | Haiku | Test fixture requirements |
-| 8 | Integration | `integration.md` | Sonnet | Cross-crate integration notes |
-| 9 | Verify | `verify.sh` | Haiku | Invariant verification script |
-| 10 | Reviews | `review-tasks.toml` | Haiku | Review task assignments |
-| 11 | Tests | `test-tasks.toml` | Haiku | Test task assignments |
-| 12 | Invariants | `invariants.md` | Sonnet | Invariant specifications |
-| 13 | Scribe | `scribe-tasks.toml` | Haiku | Documentation task assignments |
+| 1 | Briefs | `brief.md` | Sonnet | Generate What/Why/How task summaries |
+| 2 | Tasks | `tasks.toml` | Sonnet | Generate task specifications |
+| 3 | Decompose | `decomposition.md` | Sonnet | Step-by-step subtask breakdown |
+| 4 | Research | `research.md` | Opus | Deep research with citations |
+| 5 | Dependencies | `dependency-manifest.toml` | Haiku | External dependency list |
+| 6 | Fixtures | `fixture-manifest.toml` | Haiku | Test fixture requirements |
+| 7 | Integration | `integration.md` | Sonnet | Cross-crate integration notes |
+| 8 | Verify | `verify.sh` | Haiku | Invariant verification script |
+| 9 | Reviews | `review-tasks.toml` | Haiku | Review task assignments |
+| 10 | Tests | `test-tasks.toml` | Haiku | Test task assignments |
+| 11 | Invariants | `invariants.md` | Sonnet | Invariant specifications |
+| 12 | Scribe | `scribe-tasks.toml` | Haiku | Documentation task assignments |
 
 ```mermaid
 flowchart LR
   subgraph Cheap["Haiku Steps (low cost)"]
     direction TB
-    S1["1. Prd\nprd-extract.md"]
-    S6["6. Dependencies\ndependency-manifest.toml"]
-    S7["7. Fixtures\nfixture-manifest.toml"]
-    S9["9. Verify\nverify.sh"]
-    S10["10. Reviews\nreview-tasks.toml"]
-    S11["11. Tests\ntest-tasks.toml"]
-    S13["13. Scribe\nscribe-tasks.toml"]
+    S5["5. Dependencies\ndependency-manifest.toml"]
+    S6["6. Fixtures\nfixture-manifest.toml"]
+    S8["8. Verify\nverify.sh"]
+    S9["9. Reviews\nreview-tasks.toml"]
+    S10["10. Tests\ntest-tasks.toml"]
+    S12["12. Scribe\nscribe-tasks.toml"]
   end
 
   subgraph Mid["Sonnet Steps (mid cost)"]
     direction TB
-    S2["2. Briefs\nbrief.md"]
-    S3["3. Tasks\ntasks.toml"]
-    S4["4. Decompose\ndecomposition.md"]
-    S8["8. Integration\nintegration.md"]
-    S12["12. Invariants\ninvariants.md"]
+    S1["1. Briefs\nbrief.md"]
+    S2["2. Tasks\ntasks.toml"]
+    S3["3. Decompose\ndecomposition.md"]
+    S7["7. Integration\nintegration.md"]
+    S11["11. Invariants\ninvariants.md"]
   end
 
   subgraph Deep["Opus Steps (high cost)"]
-    S5["5. Research\nresearch.md"]
+    S4["4. Research\nresearch.md"]
   end
 
-  S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10 --> S11 --> S12 --> S13
+  S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10 --> S11 --> S12
 
   subgraph Controls["Pipeline Controls"]
     direction TB
@@ -434,7 +431,7 @@ flowchart LR
     AUP["auditor-pack.md\n(Auditor)"]
   end
 
-  S13 --> Output
+  S12 --> Output
 
   style Cheap fill:#2a4a2a,color:#fff
   style Mid fill:#1a3a5c,color:#fff
@@ -450,18 +447,18 @@ flowchart LR
 - **TOML repair**: steps producing TOML output get one repair retry -- the parse
   error is sent back to the LLM for correction. If repair also fails, the step
   is marked failed and the pipeline continues.
-- **Continue-on-failure**: all 13 steps run regardless of individual failures.
+- **Continue-on-failure**: all 12 steps run regardless of individual failures.
   Missing artifacts are simply absent from the prompt; the PromptComposer's
   priority-based dropping handles this gracefully.
-- **Step selection**: not every task needs all 13 steps. Trivial tasks run only
-  Prd + Briefs. Complex tasks run all 13. Scribe tasks run Prd + Scribe + Research.
+- **Step selection**: not every task needs all 12 steps. Trivial tasks run only
+  Briefs. Complex tasks run all 12. Scribe tasks run Scribe + Research.
 
 ### Cost analysis
 
 | Approach | Cost per plan | Agent success rate |
 |----------|---------------|-------------------|
 | No enrichment | $0 | ~45% |
-| All 13 steps (Haiku/Sonnet mix) | ~$0.15 | ~78% |
+| All 12 steps (Haiku/Sonnet mix) | ~$0.15 | ~78% |
 | Manual context assembly | $0 (human time) | ~72% |
 
 The $0.15 enrichment investment produces a ~33% improvement in agent success rate.
@@ -511,7 +508,7 @@ Each layer has a default budget share, adjustable by role:
 Two truncation strategies manage sections exceeding their budget:
 
 - `truncate(content, max_chars)` -- truncate from end, preserving beginning.
-  Used for workspace_map, prd_extract, file_context (headers/imports are most
+  Used for workspace_map and file_context (headers/imports are most
   important).
 - `truncate_tail(content, max_chars)` -- truncate from beginning, preserving
   end. Used for gate_errors (most recent errors are most relevant).
@@ -583,7 +580,6 @@ The `Placement` enum (Start/Middle/End) drives U-shape ordering:
 | Conventions | **Start** | Safety rules need primacy attention |
 | Task description | **Start** | Core task at the beginning |
 | Workspace map | **Middle** | Supporting context |
-| PRD extract | **Middle** | Reference material |
 | Cross-plan context | **Middle** | Background information |
 | Gate errors | **End** | Most recent failure needs recency |
 | Anti-patterns | **End** | Prohibitions need recency attention |
@@ -923,7 +919,7 @@ Where:
 | 4 | **CodeIntelligence** | Symbols, files, structural context | 0.5-0.9 |
 | 5 | **PlaybookRules** | Skills, playbooks, distilled rules | 0.3-0.7 |
 | 6 | **Research** | Research memos, external domain context | 0.3-0.7 |
-| 7 | **TaskContext** | Task brief, plan, PRD slices, directives | 0.7-1.0 |
+| 7 | **TaskContext** | Task brief, plan, task description, directives | 0.7-1.0 |
 | 8 | **Oracles** | Predictions, warnings, forecast outputs | 0.2-0.6 |
 | 9 | **GroupContext** | Mesh knowledge, cross-agent context | 0.2-0.6 |
 
@@ -1157,7 +1153,7 @@ block-beta
   block:primary:1
     columns 1
     P["PRIMARY BIDDERS"]
-    TC["TaskContext\n(0.7-1.0)\nTask brief, plan,\nPRD slices"]
+    TC["TaskContext\n(0.7-1.0)\nTask brief, plan,\ntask description"]
     CI["CodeIntelligence\n(0.5-0.9)\nSymbols, files,\nstructural context"]
     N["Neuro\n(0.4-0.9)\nDurable knowledge,\ninsights, heuristics"]
   end
@@ -1217,7 +1213,7 @@ pub enum AttentionBidder {
     CodeIntelligence,  // Symbols, files, structural context
     PlaybookRules,     // Skills, playbooks, distilled rules
     Research,          // Research memos, external domain context
-    TaskContext,       // Task brief, plan, PRD slices (default)
+    TaskContext,       // Task brief, plan, task description (default)
     Oracles,           // Predictions, warnings, forecasts
     GroupContext,       // Membership-scoped group knowledge
 }
@@ -1232,7 +1228,7 @@ bidders for task execution are:
   knowledge. Modulated by low_pleasure (boost warnings) and low_dominance
   (boost exploratory knowledge).
 
-- **TaskContext**: provides the task brief, plan content, PRD slices, and
+- **TaskContext**: provides the task brief, plan content, task description, and
   verification criteria. Always the highest-priority bidder -- task context is
   Critical priority and never dropped. Modulated by urgency and deadline signals.
 
@@ -1364,7 +1360,7 @@ Detailed treatments of each subsystem are in `docs/v3/depth/06-composition/`:
 | `01-composer-trait.md` | Compose trait signature, Budget struct, scorer-in-signature rationale |
 | `02-system-prompt-builder.md` | 10-layer architecture, builder API, cache alignment, PEEK orientation cache |
 | `03-role-templates.md` | 11 role templates, PromptBudget, complexity-adaptive budgets |
-| `04-enrichment-pipeline.md` | 13-step pipeline, staleness, TOML repair, continue-on-failure |
+| `04-enrichment-pipeline.md` | 12-step pipeline, staleness, TOML repair, continue-on-failure |
 | `05-token-budget-management.md` | Per-layer allocation, truncation, compression strategies |
 | `06-u-shape-attention.md` | Lost-in-the-middle, Placement enum, position-aware scoring, attention sinks |
 | `07-active-inference.md` | EFE formula, track record, belief change, softmax selection |

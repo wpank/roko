@@ -1,8 +1,10 @@
-//! `roko backlog` — batch import, listing, and reconciliation audit.
+//! `roko backlog` — listing, status marking, and reconciliation audit.
 //!
-//! Reads markdown specs from `tmp/backlog/<N>-*.md` files and records each as
-//! a PRD idea in `.roko/prd/ideas.md`. Optionally chains through draft, plan,
-//! and execution steps.
+//! `list` reads the markdown specs in `tmp/backlog/<N>-*.md` (and its
+//! `archive/`) with their status lines, and `mark-done` writes a status line.
+//! `roko plan generate --from-backlog <ids>` turns specs into plans; the old
+//! `import`, which recorded each spec as a PRD idea, went with the PRD
+//! pipeline (2026-10-02).
 //!
 //! The `audit` subcommand reconciles plan TOML status against the Graph runs
 //! on record (`.roko/state/graph/`), reporting each mismatch with a stable
@@ -25,32 +27,12 @@ use roko_graph::cells::task_executor::TaskGateVerdict;
 use crate::{Cli, resolve_workdir};
 
 // -----------------------------------------------------------------------
-// Backlog import
+// Backlog commands
 // -----------------------------------------------------------------------
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum BacklogCmd {
-    /// Import backlog spec(s) as plan artifacts with eligibility checks.
-    Import {
-        /// Path to a single backlog .md file or a directory containing them.
-        path: PathBuf,
-        /// Create/update the plan artifact without execution.
-        #[arg(long)]
-        draft: bool,
-        /// Alias for --draft (deprecated; use --draft).
-        #[arg(long)]
-        plan: bool,
-        /// Create then start an eligible packet (fails on blocked packets).
-        #[arg(long)]
-        execute: bool,
-        /// Dry-run: check eligibility without side effects.
-        #[arg(long)]
-        check: bool,
-        /// Working directory (default: cwd / --repo).
-        #[arg(long)]
-        workdir: Option<PathBuf>,
-    },
-    /// List backlog items with their status and import state.
+    /// List backlog items with their status.
     List {
         /// Backlog directory (default: tmp/backlog); its archive/ is listed too.
         path: Option<PathBuf>,
@@ -95,17 +77,6 @@ pub(crate) enum BacklogCmd {
 /// Dispatch backlog subcommands.
 pub(crate) async fn cmd_backlog(cli: &Cli, cmd: BacklogCmd) -> Result<i32> {
     match cmd {
-        BacklogCmd::Import {
-            path,
-            draft,
-            plan,
-            execute,
-            check,
-            workdir,
-        } => {
-            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            cmd_backlog_import(&wd, &path, draft, plan, execute, check).await
-        }
         BacklogCmd::List { path, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_backlog_list(&wd, path.as_deref())
@@ -147,7 +118,7 @@ struct BacklogSpec {
     status: Option<String>,
 }
 
-/// List backlog specs with their status and import state.
+/// List backlog specs with their status.
 fn cmd_backlog_list(workdir: &Path, path: Option<&Path>) -> Result<i32> {
     let backlog_dir = resolve_backlog_dir(workdir, path);
     if !backlog_dir.is_dir() {
@@ -156,13 +127,10 @@ fn cmd_backlog_list(workdir: &Path, path: Option<&Path>) -> Result<i32> {
     }
 
     let specs = list_backlog_specs(&backlog_dir)?;
-    // `backlog import` records each spec as an idea in the PRD ideas file.
-    let ideas =
-        std::fs::read_to_string(roko_cli::workspace_paths::ideas_path(workdir)).unwrap_or_default();
 
     println!("Backlog specs ({} items):", specs.len());
-    println!("{:<6} {:<50} {:<9} {}", "ID", "Slug", "Imported", "Status");
-    println!("{}", "-".repeat(90));
+    println!("{:<6} {:<50} {}", "ID", "Slug", "Status");
+    println!("{}", "-".repeat(80));
 
     for spec in &specs {
         let slug = if spec.archived {
@@ -170,13 +138,8 @@ fn cmd_backlog_list(workdir: &Path, path: Option<&Path>) -> Result<i32> {
         } else {
             spec.slug.clone()
         };
-        let imported = if has_imported_idea(&ideas, spec.id) {
-            "imported"
-        } else {
-            "-"
-        };
         let status = spec.status.as_deref().unwrap_or("-");
-        println!("#{:<5} {:<50} {:<9} {}", spec.id, slug, imported, status);
+        println!("#{:<5} {:<50} {}", spec.id, slug, status);
     }
 
     Ok(0)
@@ -218,123 +181,6 @@ fn spec_status(content: &str) -> Option<String> {
         .filter(|status| !status.is_empty())
 }
 
-/// Whether `ideas`, the PRD ideas file that `backlog import` appends to,
-/// holds the idea imported from backlog spec `backlog_num`.
-fn has_imported_idea(ideas: &str, backlog_num: u32) -> bool {
-    ideas.contains(&format!("[backlog#{backlog_num}]"))
-}
-
-/// The PRD idea `backlog import` records for spec `num`; `backlog list`
-/// finds the import by its `[backlog#N]` marker.
-fn backlog_idea_text(num: u32, title: &str) -> String {
-    format!("[backlog#{num}] {title}")
-}
-
-/// Import backlog spec(s) as PRD ideas. With `check`, print the ideas an
-/// import would record and write nothing.
-async fn cmd_backlog_import(
-    workdir: &Path,
-    path: &Path,
-    draft: bool,
-    plan: bool,
-    execute: bool,
-    check: bool,
-) -> Result<i32> {
-    let files = collect_backlog_files(workdir, path)?;
-
-    if files.is_empty() {
-        println!("No backlog spec files found at {}", path.display());
-        return Ok(1);
-    }
-
-    if check {
-        let ideas_path = roko_cli::workspace_paths::ideas_path(workdir);
-        let ideas = std::fs::read_to_string(&ideas_path).unwrap_or_default();
-        println!(
-            "Would import {} backlog spec(s) as ideas in {} (--check: nothing written):\n",
-            files.len(),
-            ideas_path.display()
-        );
-        for (num, slug, filepath) in &files {
-            let content = std::fs::read_to_string(filepath)
-                .with_context(|| format!("read {}", filepath.display()))?;
-            let title = extract_title(&content).unwrap_or_else(|| slug.clone());
-            let note = if has_imported_idea(&ideas, *num) {
-                " (already imported)"
-            } else {
-                ""
-            };
-            println!("  #{num}: {}{note}", backlog_idea_text(*num, &title));
-        }
-        return Ok(0);
-    }
-
-    println!("Importing {} backlog spec(s)...\n", files.len());
-
-    let mut imported = 0;
-    let mut skipped = 0;
-
-    for (num, slug, filepath) in &files {
-        // Read the spec title from the first heading
-        let content = std::fs::read_to_string(filepath)
-            .with_context(|| format!("read {}", filepath.display()))?;
-        let title = extract_title(&content).unwrap_or_else(|| slug.clone());
-
-        // Create the PRD idea
-        let idea_text = backlog_idea_text(*num, &title);
-        match roko_cli::prd::cmd_idea(workdir, &idea_text, false) {
-            Ok(()) => {
-                imported += 1;
-                println!("  #{}: {}", num, title);
-            }
-            Err(e) => {
-                tracing::error!(num, error = %e, "failed to import backlog item as PRD idea");
-                skipped += 1;
-                continue;
-            }
-        }
-
-        if draft || plan || execute {
-            println!(
-                "    note: --draft/--plan/--execute require agent dispatch; \
-                 use `roko prd draft new` or `roko develop` for each imported idea"
-            );
-        }
-    }
-
-    println!(
-        "\nImported: {}, Skipped: {}, Total: {}",
-        imported,
-        skipped,
-        files.len()
-    );
-
-    if imported > 0 {
-        crate::commands::util::print_next_step_hint(
-            "Next: roko prd list (or roko develop 'your idea' to plan+execute)",
-        );
-    }
-
-    Ok(0)
-}
-
-/// Collect backlog files from a path (single file or directory).
-fn collect_backlog_files(workdir: &Path, path: &Path) -> Result<Vec<(u32, String, PathBuf)>> {
-    let resolved = if path.is_relative() {
-        workdir.join(path)
-    } else {
-        path.to_path_buf()
-    };
-
-    if resolved.is_file() {
-        return Ok(parse_backlog_filename(&resolved).into_iter().collect());
-    }
-    if resolved.is_dir() {
-        return backlog_files_in(&resolved);
-    }
-    Ok(Vec::new())
-}
-
 /// The backlog spec files directly in `dir`, by id.
 fn backlog_files_in(dir: &Path) -> Result<Vec<(u32, String, PathBuf)>> {
     let mut files = Vec::new();
@@ -368,17 +214,6 @@ fn parse_backlog_filename(path: &Path) -> Option<(u32, String, PathBuf)> {
         return None;
     }
     Some((num, slug.to_string(), path.to_path_buf()))
-}
-
-/// Extract the title from a markdown file (first # heading).
-fn extract_title(content: &str) -> Option<String> {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(heading) = trimmed.strip_prefix("# ") {
-            return Some(heading.trim().to_string());
-        }
-    }
-    None
 }
 
 // -----------------------------------------------------------------------
@@ -1070,21 +905,6 @@ mod tests {
         assert!(parse_backlog_filename(&path).is_none());
     }
 
-    #[test]
-    fn test_extract_title() {
-        let content = "# CLI Verb Consolidation\n\nReduce verb sprawl...";
-        assert_eq!(
-            extract_title(content),
-            Some("CLI Verb Consolidation".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_title_no_heading() {
-        let content = "No heading here\nJust text";
-        assert_eq!(extract_title(content), None);
-    }
-
     // ── List tests ───────────────────────────────────────────────────
 
     /// bug-053644: `backlog list` reads the backlog and its `archive/`, takes
@@ -1127,68 +947,6 @@ mod tests {
             find_backlog_spec(&backlog_dir, 1).unwrap(),
             backlog_dir.join("archive/01-t0-reflex.md")
         );
-    }
-
-    /// bug-053644: `backlog list` finds an import where `backlog import`
-    /// writes it, the PRD ideas file.
-    #[tokio::test]
-    async fn backlog_list_sees_ideas_written_by_import() {
-        let tmp = tempfile::tempdir().unwrap();
-        let backlog_dir = tmp.path().join("tmp/backlog");
-        std::fs::create_dir_all(&backlog_dir).unwrap();
-        std::fs::write(backlog_dir.join("58-perf.md"), "# Perf hot path\n").unwrap();
-
-        let path = Path::new("tmp/backlog");
-        let code = cmd_backlog_import(tmp.path(), path, false, false, false, false)
-            .await
-            .unwrap();
-        assert_eq!(code, 0);
-
-        let ideas =
-            std::fs::read_to_string(roko_cli::workspace_paths::ideas_path(tmp.path())).unwrap();
-        assert!(has_imported_idea(&ideas, 58), "{ideas}");
-        assert!(!has_imported_idea(&ideas, 5), "{ideas}");
-    }
-
-    // ── Import tests ─────────────────────────────────────────────────
-
-    /// bug-255765: `backlog import --check` reports what it would import and
-    /// changes no file.
-    #[tokio::test]
-    async fn backlog_import_check_writes_nothing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let backlog_dir = tmp.path().join("tmp/backlog");
-        std::fs::create_dir_all(&backlog_dir).unwrap();
-        std::fs::write(backlog_dir.join("58-perf.md"), "# Perf hot path\n").unwrap();
-        let before = tree_snapshot(tmp.path());
-
-        let path = Path::new("tmp/backlog");
-        let code = cmd_backlog_import(tmp.path(), path, false, false, false, true)
-            .await
-            .unwrap();
-
-        assert_eq!(code, 0);
-        assert_eq!(tree_snapshot(tmp.path()), before);
-        assert!(!tmp.path().join(".roko").exists());
-    }
-
-    /// Every file under `root` with its contents, by path.
-    fn tree_snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
-        let mut files = Vec::new();
-        let mut dirs = vec![root.to_path_buf()];
-        while let Some(dir) = dirs.pop() {
-            for entry in std::fs::read_dir(&dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    dirs.push(path);
-                } else {
-                    let content = std::fs::read(&path).unwrap();
-                    files.push((path, content));
-                }
-            }
-        }
-        files.sort();
-        files
     }
 
     // ── Audit tests ──────────────────────────────────────────────────

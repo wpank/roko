@@ -142,26 +142,28 @@ roko learn reflexes
 ### Plan-First Development
 
 ```bash
-# Generate a plan from a prompt
-roko develop "Add pagination to the API"
-# 1. Generates implementation plan
-# 2. Asks for approval
-# 3. Executes plan via Graph engine
-# 4. Validates with gates
+# Write a plan, review it, run it
+roko run --plan "Add pagination to the API"
+# 1. Writes plans/<slug>/ (tasks.toml + plan.md)
+# 2. Shows the plan and asks for approval (--yes skips the question)
+# 3. Executes the plan via the Graph engine
+# 4. Validates each task with its gates
 # 5. Reports results
+
+# Or in steps: write the plan, edit it, then run it
+roko plan generate "Add pagination to the API"
+roko run plans/<slug>
 ```
 
 ### Direct Task Execution
 
 ```bash
-# Simple task (no plan)
-roko do "Fix the typo in README" --complexity trivial
+# Small change: runs as one checked task
+roko run "Fix the typo in README"
 
-# Standard task with planning
-roko do "Refactor the auth module" --complexity medium
-
-# Complex architectural task
-roko do "Add WebSocket support" --complexity complex
+# Force the size: trivial/simple run one task; standard/complex write a plan first
+roko run "Refactor the auth module" --complexity standard
+roko run "Add WebSocket support" --complexity complex
 ```
 
 ### Research Before Coding
@@ -173,8 +175,8 @@ roko think "What's the best way to implement rate limiting?"
 # Deep research with citations
 roko research topic "WebSocket authentication patterns"
 
-# Enhance a PRD with research
-roko research enhance-prd auth-improvements
+# Improve a generated plan with research before running it
+roko research enhance-plan auth-improvements
 ```
 
 ## Diagnostic Tools

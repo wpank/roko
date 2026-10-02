@@ -42,8 +42,8 @@ The TUI (`roko dashboard`) retains its existing ten tabs (F1-F10). E37 adds a se
 | **F6 Config** | System | Compatibility shell for system/autonomy controls |
 | **F7 Inspect** | Knowledge | Existing knowledge inspector |
 | **F8 Marketplace** | *(none)* | Existing rendering-target-specific view |
-| **F9 Atelier** | *(none)* | Existing rendering-target-specific view |
-| **F10 Learning** | *(none)* | Existing rendering-target-specific view |
+| **F9 Learning** | *(none)* | Existing rendering-target-specific view |
+| **F10 Providers** | *(none)* | Existing rendering-target-specific view |
 
 ### 1.2 Surface-to-StateHub Projection Cross-Reference
 

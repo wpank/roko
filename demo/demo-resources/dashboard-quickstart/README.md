@@ -51,8 +51,7 @@ npm run dev                 # opens http://localhost:5173
 
 1. Open http://localhost:5173
 2. Navigate to **Network → Agents** — should show seeded agents
-3. Navigate to **Atelier → Chat** — type `/coding build a relay` — should show agent quote
-4. Navigate to **Atelier → PRDs** — type an idea in the quick-input field
+3. Open the chat — type `/coding build a relay` — should show agent quote
 
 ## Dashboard environment
 
@@ -68,14 +67,14 @@ The Vite dev proxy automatically forwards `/roko-api/*` → `http://localhost:66
 ## What works without roko-serve
 
 - Chat interface (localStorage only)
-- Mock demos (`/mock`, `/mockcode`, `/mockresearch`, `/mockprd`)
+- Mock demos (`/mock`, `/mockcode`, `/mockresearch`)
 - Settings page (shows env vars)
 - Theme toggle
 
 ## What needs roko-serve
 
-- All real commands (`/idea`, `/draft`, `/plan`, `/run`, `/coding`, `/research`, `/job`)
-- Plans tab, PRDs tab, Jobs board
+- All real commands (`/run`, `/coding`, `/research`, `/job`)
+- Plans tab, Jobs board
 - Learning/metrics pages
 - Agent fleet management
 

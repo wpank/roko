@@ -1801,7 +1801,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_knowledge_kind_names_deserialize_to_prd_variants() {
+    fn legacy_knowledge_kind_names_deserialize_to_current_variants() {
         #[derive(Deserialize)]
         struct Wrapper {
             kind: KnowledgeKind,

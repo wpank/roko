@@ -1,4 +1,4 @@
-//! Project and PRD configuration sections.
+//! The `[project]` configuration section.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,22 +44,5 @@ impl Default for ProjectConfig {
             fresh_base_branch: default_fresh_base_branch(),
             default_domain: None,
         }
-    }
-}
-
-// ---- [prd] ---------------------------------------------------------------
-
-/// PRD lifecycle settings.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PrdConfig {
-    /// Automatically generate a plan when a PRD is promoted.
-    #[serde(default)]
-    pub auto_plan: bool,
-}
-
-impl Default for PrdConfig {
-    fn default() -> Self {
-        Self { auto_plan: false }
     }
 }

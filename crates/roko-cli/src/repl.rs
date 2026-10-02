@@ -42,8 +42,6 @@ pub enum ReplCommand {
 pub struct WorkspaceContext {
     /// Path to the discovered `.roko/` directory, if any.
     pub roko_dir: Option<PathBuf>,
-    /// Recent PRD slugs found in `.roko/prd/`.
-    pub recent_prds: Vec<String>,
     /// Recent plan directories found in `plans/` or `.roko/plans/`.
     pub recent_plans: Vec<String>,
     /// Path to an interrupted executor snapshot, if any.
@@ -61,22 +59,6 @@ impl WorkspaceContext {
             let candidate = dir.join(".roko");
             if candidate.is_dir() {
                 ctx.roko_dir = Some(candidate.clone());
-
-                // Enumerate recent PRDs (up to 3)
-                let prd_dir = candidate.join("prd");
-                if let Ok(entries) = std::fs::read_dir(&prd_dir) {
-                    let mut prds: Vec<_> = entries
-                        .filter_map(|e| e.ok())
-                        .filter(|e| e.path().is_dir())
-                        .filter_map(|e| {
-                            let name = e.file_name().to_string_lossy().to_string();
-                            let mtime = e.metadata().ok()?.modified().ok()?;
-                            Some((name, mtime))
-                        })
-                        .collect();
-                    prds.sort_by(|a, b| b.1.cmp(&a.1));
-                    ctx.recent_prds = prds.into_iter().take(3).map(|(n, _)| n).collect();
-                }
 
                 // Check for interrupted executor snapshot
                 let snapshot = candidate.join("state").join("executor.json");
@@ -123,10 +105,6 @@ impl WorkspaceContext {
                 writer,
                 "no .roko/ workspace found (run `roko init` to create one)"
             )?;
-        }
-
-        if !self.recent_prds.is_empty() {
-            writeln!(writer, "recent PRDs: {}", self.recent_prds.join(", "))?;
         }
 
         if !self.recent_plans.is_empty() {
@@ -677,8 +655,7 @@ mod tests {
         let mut output = Vec::new();
         let ws = WorkspaceContext {
             roko_dir: Some(PathBuf::from("/tmp/test/.roko")),
-            recent_prds: vec!["my-feature".to_string()],
-            recent_plans: vec![],
+            recent_plans: vec!["my-feature".to_string()],
             interrupted_snapshot: None,
         };
         let mut repl = ReplMode::new_with_workspace("ws-test".into(), ws);
@@ -695,7 +672,7 @@ mod tests {
     fn workspace_discover_returns_default_for_nonexistent() {
         let ctx = WorkspaceContext::discover(Path::new("/nonexistent/path"));
         assert!(ctx.roko_dir.is_none());
-        assert!(ctx.recent_prds.is_empty());
+        assert!(ctx.recent_plans.is_empty());
         assert!(ctx.interrupted_snapshot.is_none());
     }
 
@@ -712,23 +689,20 @@ mod tests {
     fn workspace_banner_with_workspace() {
         let ctx = WorkspaceContext {
             roko_dir: Some(PathBuf::from("/home/user/project/.roko")),
-            recent_prds: vec!["auth-system".to_string(), "logging".to_string()],
-            recent_plans: vec!["sprint-1".to_string()],
+            recent_plans: vec!["sprint-1".to_string(), "auth-system".to_string()],
             interrupted_snapshot: None,
         };
         let mut out = Vec::new();
         ctx.render_banner(&mut out).unwrap();
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("/home/user/project"));
-        assert!(s.contains("auth-system, logging"));
-        assert!(s.contains("sprint-1"));
+        assert!(s.contains("sprint-1, auth-system"));
     }
 
     #[test]
     fn workspace_banner_with_interrupted_snapshot() {
         let ctx = WorkspaceContext {
             roko_dir: Some(PathBuf::from("/tmp/.roko")),
-            recent_prds: vec![],
             recent_plans: vec![],
             interrupted_snapshot: Some(PathBuf::from("/tmp/.roko/state/executor.json")),
         };

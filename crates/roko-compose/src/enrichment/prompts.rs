@@ -1,4 +1,4 @@
-//! Prompt dispatch for all 13 enrichment steps.
+//! Prompt dispatch for all 12 enrichment steps.
 //!
 //! Roko-owned enrichment prompt dispatch, adapted from the legacy support
 //! enrichment pipeline.
@@ -45,10 +45,6 @@ pub fn build_prompt(step: EnrichStep, inputs: &StepInputs) -> (String, String) {
     use crate::templates::prompts as p;
 
     match step {
-        EnrichStep::Prd => (
-            p::PRD_SYSTEM.to_string(),
-            p::prd_user(&inputs.plan_content, &[]),
-        ),
         EnrichStep::Briefs => (
             p::BRIEF_SYSTEM.to_string(),
             p::brief_user(
@@ -159,7 +155,6 @@ pub fn build_repair_prompt(
 /// Generate deterministic enrichment output without calling a model.
 pub fn generate_without_llm(step: EnrichStep, inputs: &StepInputs) -> Result<String, String> {
     match step {
-        EnrichStep::Prd => Ok(extract_prd(&inputs.plan_content)),
         EnrichStep::Briefs => Ok(extract_brief(&inputs.plan_content)),
         EnrichStep::Tasks => Ok(extract_tasks(&inputs.plan_content)),
         EnrichStep::Research => Ok(generate_research(inputs)),
@@ -171,29 +166,6 @@ pub fn generate_without_llm(step: EnrichStep, inputs: &StepInputs) -> Result<Str
 }
 
 // ── Pure extraction helpers ─────────────────────────────────────────────────
-
-/// Extract PRD references from plan content.
-fn extract_prd(plan: &str) -> String {
-    // Simple extraction: pull lines that reference PRD, RFC, or spec documents.
-    let mut out = String::from("# PRD Context\n\n");
-    let mut found = false;
-    for line in plan.lines() {
-        let lower = line.to_lowercase();
-        if lower.contains("prd")
-            || lower.contains("rfc")
-            || lower.contains("spec")
-            || lower.contains("requirement")
-        {
-            out.push_str(line);
-            out.push('\n');
-            found = true;
-        }
-    }
-    if !found {
-        out.push_str("No PRD references found in plan.\n");
-    }
-    out
-}
 
 /// Extract a brief from plan content.
 fn extract_brief(plan: &str) -> String {
@@ -429,7 +401,6 @@ mod tests {
         };
 
         let non_llm = [
-            EnrichStep::Prd,
             EnrichStep::Briefs,
             EnrichStep::Tasks,
             EnrichStep::Research,

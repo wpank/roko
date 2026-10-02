@@ -42,22 +42,25 @@ elif isinstance(data, dict):
 " 2>/dev/null || echo "   (no artifacts or endpoint not available)"
 pause
 
-echo "3. CAPTURE RELATED IDEAS"
-$ROKO prd idea "Implement reputation-weighted agent matching" 2>&1 || true
-$ROKO prd idea "Add skill-overlap scoring to matchmaking" 2>&1 || true
+echo "3. WRITE A PLAN THAT DRAWS ON THE RESEARCH"
+$ROKO plan generate "Implement reputation-weighted agent matching" --context .roko/research 2>&1 || true
 echo ""
 
-echo "4. CREATE RESEARCH JOBS"
+echo "4. OPTIMIZE THE PLAN WITH RESEARCH"
+$ROKO research enhance-plan implement-reputation-weighted-agent-matching 2>&1 || true
+echo ""
+
+echo "5. CREATE RESEARCH JOBS"
 $ROKO job create "Research decentralized matchmaking" --type research --description "Survey agent-to-task matching algorithms: capability-based, reputation-weighted, auction-based" 2>&1
 
 echo ""
-echo "5. LIST JOBS (research + coding)"
+echo "6. LIST JOBS (research + coding)"
 $ROKO job list 2>&1
 
 echo ""
 echo "═══════════════════════════════════════════"
 echo "  Done. Dashboard tabs to check:"
-echo "  • Atelier → Research bounty"
-echo "  • Atelier → PRDs (new ideas)"
+echo "  • Research bounty"
+echo "  • Plans (the research-backed plan)"
 echo "  • Network → Jobs (research job)"
 echo "═══════════════════════════════════════════"

@@ -721,7 +721,7 @@ pub enum FailureStrategy {
     },
 
     /// Generate a new plan from the failure context and execute it.
-    /// Uses the same plan-generation pipeline as `roko prd plan`.
+    /// Uses the same plan-generation pipeline as `roko plan generate`.
     Replan {
         max_replans: u32,
     },
@@ -1280,7 +1280,7 @@ The worktree lifecycle for a parallel plan execution:
 Graphs are serializable data structures, not code. This enables:
 
 1. **TOML authoring** by domain experts (no Rust required).
-2. **Agent-generated plans**: `roko prd plan <slug>` produces a Graph (as `tasks.toml`).
+2. **Agent-generated plans**: `roko plan generate "<prompt>"` (or `roko run --plan`) produces a Graph (as `tasks.toml`).
 3. **Marketplace sharing**: Graphs are portable artifacts with declared schemas.
 4. **Versioning**: Graphs are content-addressed. A frozen copy is stored with each run.
 5. **Validation**: The runtime validates before executing. Type mismatches, missing Cells, and budget insufficiency are caught at load time.

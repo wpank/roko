@@ -50,7 +50,7 @@ and you decide whether it is good enough. Roko turns this into a **closed loop**
 
 The key insight is that software development is a cycle, not a line:
 
-1. **Observe** -- understand what needs to be done (read a PRD, scan the codebase).
+1. **Observe** -- understand what needs to be done (read the request, scan the codebase).
 2. **Plan** -- break the work into tasks with dependencies.
 3. **Execute** -- dispatch an LLM agent to write code for each task.
 4. **Verify** -- run the compiler, tests, linter, and other gates on the output.
@@ -69,37 +69,39 @@ code path. The next section shows exactly how.
 
 ## 3. The Self-Hosting Loop
 
-The loop below is how Roko develops itself. Each node is a real CLI command. The
-arrows marked with a gate failure feed back into the planner, creating a closed loop
-that converges on working code.
+The loop below is how Roko develops itself. Each node is a real CLI command or a step a
+person takes. Work starts from a request, a prompt or a written spec, which becomes a
+plan; the plan is the unit of work. The arrow marked with a gate failure sends the
+gate's findings back into the next attempt, creating a closed loop that converges on
+working code.
 
 ```mermaid
 graph LR
-    IDEA["Idea<br/><code>roko prd idea</code>"]
-    PRD["PRD<br/><code>roko prd draft</code>"]
-    RESEARCH["Research<br/><code>roko research topic</code>"]
-    PLAN["Plan<br/><code>roko prd plan</code>"]
-    EXECUTE["Execute<br/><code>roko plan run</code>"]
+    REQUEST["Request<br/><i>a prompt or<br/>a written spec</i>"]
+    PLAN["Plan<br/><code>roko plan generate</code>"]
+    RESEARCH["Research<br/><code>roko research enhance-plan</code>"]
+    REVIEW["Review<br/><i>edit tasks.toml</i>"]
+    EXECUTE["Execute<br/><code>roko run plans/&lt;slug&gt;</code>"]
     GATE{"Gates<br/>pass?"}
     LEARN["Learn<br/><i>episodes, routing,<br/>knowledge, affect</i>"]
     IMPROVE["Improve<br/><i>playbooks, thresholds,<br/>model selection</i>"]
 
-    IDEA --> PRD
-    PRD --> RESEARCH
-    RESEARCH --> PLAN
-    PLAN --> EXECUTE
+    REQUEST --> PLAN
+    PLAN --> RESEARCH
+    RESEARCH --> REVIEW
+    REVIEW --> EXECUTE
     EXECUTE --> GATE
 
     GATE -- "Yes" --> LEARN
-    GATE -- "No: replan" --> PLAN
+    GATE -- "No: retry with feedback" --> EXECUTE
 
     LEARN --> IMPROVE
-    IMPROVE --> IDEA
+    IMPROVE --> REQUEST
 
-    style IDEA fill:#e8f5e9,stroke:#2e7d32
-    style PRD fill:#e8f5e9,stroke:#2e7d32
-    style RESEARCH fill:#e3f2fd,stroke:#1565c0
+    style REQUEST fill:#e8f5e9,stroke:#2e7d32
     style PLAN fill:#fff3e0,stroke:#e65100
+    style RESEARCH fill:#e3f2fd,stroke:#1565c0
+    style REVIEW fill:#e8f5e9,stroke:#2e7d32
     style EXECUTE fill:#fff3e0,stroke:#e65100
     style GATE fill:#fce4ec,stroke:#b71c1c
     style LEARN fill:#f3e5f5,stroke:#6a1b9a
@@ -110,27 +112,25 @@ Here is the same workflow expanded as CLI commands. Each command is implemented
 and wired to the runtime today.
 
 ```
-    roko prd idea "..."          Capture what you want to build
+    roko plan generate "..."     Write a plan from the request: plans/<slug>/
+         |                        - tasks.toml: tasks, dependencies, verify commands
+         |                        - plan.md: prose context
+         v
+    roko research enhance-plan   Research-backed improvements to the plan (optional)
          |
          v
-    roko prd draft new "..."     Draft a Product Requirements Doc (agent-assisted)
+    review / edit tasks.toml     Read and adjust the plan; roko plan validate lints it
          |
          v
-    roko research topic "..."    Research the topic for context (optional)
-         |
-         v
-    roko prd plan <slug>         Generate an implementation plan with tasks
-         |
-         v
-    roko plan run plans/         Execute the plan through the Graph engine
+    roko run plans/<slug>        Execute the plan through the Graph engine
          |                        - each task dispatches an LLM agent
          |                        - each agent output runs through gates
          |                        - state checkpoints after each task
          |
-         +---> gate fails?        Feed failure info back to the planner
-         |        |               Replan and retry automatically
-         |        v
-         |     roko plan run plans/ --resume-plan
+         +---> gate fails?        Retry the task with the gate's feedback
+         |                        (up to max_retries)
+         |
+         +---> interrupted?       roko plan run plans/<slug> --resume-plan
          |
          v
     roko dashboard               Watch progress in real time (TUI)
@@ -142,36 +142,36 @@ and wired to the runtime today.
 In concrete shell commands:
 
 ```bash
-# 1. Capture a work item
-roko prd idea "Add rate limiting to the API endpoints"
+# 1. Write a plan from a request (an agent writes plans/<slug>/tasks.toml and plan.md)
+roko plan generate "Add rate limiting to the API endpoints"
 
-# 2. Draft a PRD from the idea (an agent writes the requirements doc)
-roko prd draft new "api-rate-limiting"
+# 2. Optional: research-backed improvements to the plan
+roko research enhance-plan <slug>
 
-# 3. Research the topic for grounded context (uses Perplexity for citations)
-roko research topic "rate limiting best practices in Rust"
+# 3. Review and edit plans/<slug>/tasks.toml, then lint it without executing
+roko plan validate plans/<slug>
 
-# 4. Generate an implementation plan from the PRD
-roko prd plan api-rate-limiting
-
-# 5. Execute the plan
+# 4. Execute the plan
 #    The Graph engine runs each task: agent writes code -> gates verify -> state persists
-roko plan run plans/
+roko run plans/<slug>
 
-# 6. If interrupted, resume from the last checkpoint
-roko plan run plans/ --resume-plan
+# 5. If interrupted, resume from the last checkpoint
+roko plan run plans/<slug> --resume-plan
 
-# 7. Watch progress in the terminal dashboard
+# 6. Watch progress in the terminal dashboard
 roko dashboard
 
-# 8. Check the final result
+# 7. Check the final result
 roko status
 ```
 
-For a single quick task that does not need the full planning pipeline:
+`roko run --plan "<prompt>"` does steps 1 and 4 in one command: it writes the plan,
+shows it, and asks before running it. For a quick task, give `roko run` the prompt
+directly:
 
 ```bash
-# One-shot: prompt -> agent -> gates -> persist, all in one command
+# One step: a small change runs as one checked task;
+# a larger one gets a plan written first, which then runs
 roko run "add a health check endpoint to the API"
 ```
 
@@ -764,17 +764,18 @@ roko init
 # Run a single task
 roko run "add error handling to the parser"
 
-# Full planning pipeline
-roko prd idea "Add OAuth2 support"
-roko prd draft new "oauth2"
-roko prd plan oauth2
-roko plan run plans/
+# Plan first: write the plan, review it, run it
+roko run --plan "Add OAuth2 support"
+
+# Or in steps
+roko plan generate "Add OAuth2 support"   # writes plans/<slug>/
+roko run plans/<slug>
 
 # Interactive dashboard
 roko dashboard
 ```
 
-The CLI provides 85+ subcommands organized into groups: core workflow, planning/PRDs,
+The CLI provides 85+ subcommands organized into groups: core workflow, planning,
 agents, research, knowledge, learning, configuration, server/deployment, graph/feeds/
 triggers, and utilities. See the [CLI Reference](../v2/CLI-REFERENCE.md) for the
 complete list.
@@ -801,7 +802,7 @@ curl -X POST http://localhost:6677/api/plans/execute -d '{"path":"plans/"}'
 ```
 
 The server exposes REST routes (counts in `tools/http_route_inventory.snapshot.json`) organized by
-subsystem: health/metrics, plans, PRDs, research, agents, knowledge, learning,
+subsystem: health/metrics, plans, research, agents, knowledge, learning,
 configuration, events, and more.
 
 ### roko-acp: editor integration

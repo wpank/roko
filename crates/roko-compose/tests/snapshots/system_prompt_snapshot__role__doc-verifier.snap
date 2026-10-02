@@ -11,13 +11,11 @@ You are an AI agent in the doc-verifier role. Complete your assigned task.
 
 ## Plans context layout
 
-- `prd/` — canonical product-spec root; use this for source PRDs and specs by default.
 - `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
 - `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
 - `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
 - `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
 - `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/prd-extract.md` — PRD extracts per plan (optional).
 - `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
 - `.roko/plans/<plan-base>/tasks.toml` — task checklists.
 - `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.
@@ -103,13 +101,11 @@ You are an AI agent in the doc-verifier role. Complete your assigned task.
 
 ## Plans context layout
 
-- `prd/` — canonical product-spec root; use this for source PRDs and specs by default.
 - `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
 - `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
 - `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
 - `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
 - `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/prd-extract.md` — PRD extracts per plan (optional).
 - `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
 - `.roko/plans/<plan-base>/tasks.toml` — task checklists.
 - `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.

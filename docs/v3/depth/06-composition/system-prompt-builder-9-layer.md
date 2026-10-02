@@ -24,7 +24,7 @@ inference gateway to place KV-cache breakpoints for maximum prefix reuse.
 |-------|------|-----------|----------------|---------|
 | 1 | Role Identity | System | `role_prompts.rs`, templates | Who the agent is, what it specializes in |
 | 2 | Conventions | System | CLAUDE.md / project config | Project patterns, style rules, safety constraints |
-| 3a | Domain Context | Session | PRD extracts, workspace map | Domain-specific knowledge for this project |
+| 3a | Domain Context | Session | Project knowledge, workspace map | Domain-specific knowledge for this project |
 | 3b | Assembled Context | Session | Knowledge store, enrichment | Task-relevant retrieved context |
 | 3c | Pheromone Signals | Session | Stigmergic signals | Active environmental signals guiding behavior |
 | 4 | Task Context | Task | Task TOML, brief | What the agent should do right now |
@@ -73,7 +73,6 @@ Conventions are System-tier because they do not change between tasks.
 Project-specific knowledge that changes across sessions but not across tasks
 within a session:
 
-- PRD extracts relevant to the current plan
 - Workspace map showing project structure
 - Cross-plan context (what other plans have done, shared type registries)
 
@@ -294,7 +293,7 @@ agent spawn:
 ```rust
 let spec = RoleSystemPromptSpec::for_role(task.role)
     .with_conventions(&conventions)
-    .with_domain_context(&workspace_map, &prd_extract)
+    .with_domain(&domain_context)
     .with_task_context(&task_toml, &brief, &gate_errors)
     .with_tools(&tool_defs)
     .with_anti_patterns(&playbook_rules)

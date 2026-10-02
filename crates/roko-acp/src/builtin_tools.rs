@@ -469,12 +469,12 @@ pub fn tool_permission_request(
 
 /// Returns the set of tool names allowed for a given slash command.
 ///
-/// Returns `None` for commands that should have all tools (do, run, express, full).
+/// Returns `None` for commands that should have all tools (run, express, full).
 /// Returns `Some(vec)` for commands with restricted tools.
 ///
 /// Read-only commands (research, search, knowledge queries) get only safe read tools.
-/// PRD/plan editing commands get read + write tools but no bash.
-/// Implementation commands (do, run, express, full, agent-chat) get all tools (None).
+/// Plan editing commands get read + write tools but no bash.
+/// Implementation commands (run, express, full, agent-chat) get all tools (None).
 /// Unknown commands default to all tools (None) for a safe fallback.
 #[must_use]
 pub fn slash_command_allowed_tools(command: &str) -> Option<Vec<String>> {
@@ -495,14 +495,13 @@ pub fn slash_command_allowed_tools(command: &str) -> Option<Vec<String>> {
     match command {
         // Read-only: research commands don't need file writes or bash
         "research" | "search" | "knowledge" | "explain" | "replay" | "status" | "doctor"
-        | "config" | "models" | "learn" | "prd-list" | "prd-status" | "plan-list" | "plan-show"
-        | "agents" | "learn-router" | "learn-episodes" | "knowledge-stats" | "index"
-        | "analyze" | "affect" | "dream-status" => Some(read_only()),
-        // Read + write: PRD/plan editing but no bash
-        "enhance-prd" | "prd-draft" | "prd-plan" | "prd-consolidate" | "plan-generate"
-        | "plan-regenerate" => Some(read_write()),
+        | "config" | "models" | "learn" | "plan-list" | "plan-show" | "agents" | "learn-router"
+        | "learn-episodes" | "knowledge-stats" | "index" | "analyze" | "affect"
+        | "dream-status" => Some(read_only()),
+        // Read + write: plan editing but no bash
+        "enhance-plan" | "plan-generate" | "plan-regenerate" => Some(read_write()),
         // Full access: implementation commands need bash for verification
-        "do" | "run" | "express" | "full" | "agent-chat" => None,
+        "run" | "express" | "full" | "agent-chat" => None,
         // Default: all tools (safe fallback for unknown commands)
         _ => None,
     }
@@ -514,7 +513,7 @@ pub fn slash_command_allowed_tools(command: &str) -> Option<Vec<String>> {
 /// during a session triggered by the given command. Tools whose required
 /// permissions exceed the ceiling are excluded from the tool set.
 ///
-/// Returns `None` for implementation commands (do, run, express, full, agent-chat)
+/// Returns `None` for implementation commands (run, express, full, agent-chat)
 /// and unknown commands, which should have the full tool set.
 #[must_use]
 pub fn command_tool_ceiling(command: &str) -> Option<ToolPermission> {
@@ -529,18 +528,18 @@ pub fn command_tool_ceiling(command: &str) -> Option<ToolPermission> {
         }),
         // Read-only: status/diagnostic/inspection commands.
         "status" | "doctor" | "config" | "models" | "learn" | "knowledge" | "explain"
-        | "replay" | "prd-list" | "prd-status" | "plan-list" | "plan-show" | "agents"
-        | "learn-router" | "learn-episodes" | "knowledge-stats" | "index" | "analyze"
-        | "affect" | "dream-status" => Some(ToolPermission {
-            read: true,
-            write: false,
-            exec: false,
-            git: false,
-            network: false,
-        }),
-        // Read + write: PRD/plan editing commands.
-        "enhance-prd" | "prd-draft" | "prd-plan" | "prd-consolidate" | "plan-generate"
-        | "plan-regenerate" => Some(ToolPermission {
+        | "replay" | "plan-list" | "plan-show" | "agents" | "learn-router" | "learn-episodes"
+        | "knowledge-stats" | "index" | "analyze" | "affect" | "dream-status" => {
+            Some(ToolPermission {
+                read: true,
+                write: false,
+                exec: false,
+                git: false,
+                network: false,
+            })
+        }
+        // Read + write: plan editing commands.
+        "enhance-plan" | "plan-generate" | "plan-regenerate" => Some(ToolPermission {
             read: true,
             write: true,
             exec: false,
@@ -1565,8 +1564,9 @@ mod tests {
     }
 
     #[test]
-    fn prd_draft_ceiling_is_read_write() {
-        let ceiling = command_tool_ceiling("prd-draft").expect("prd-draft should have a ceiling");
+    fn plan_generate_ceiling_is_read_write() {
+        let ceiling =
+            command_tool_ceiling("plan-generate").expect("plan-generate should have a ceiling");
         assert!(ceiling.read);
         assert!(ceiling.write);
         assert!(!ceiling.exec);
@@ -1575,7 +1575,6 @@ mod tests {
 
     #[test]
     fn implementation_commands_have_no_ceiling() {
-        assert!(command_tool_ceiling("do").is_none());
         assert!(command_tool_ceiling("run").is_none());
         assert!(command_tool_ceiling("express").is_none());
         assert!(command_tool_ceiling("full").is_none());

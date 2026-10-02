@@ -1498,6 +1498,12 @@ const LEGACY_REMOVED_SECTIONS: &[(&str, &str)] = &[
 /// warning, so an old roko.toml that still sets one keeps working.
 const REMOVED_CONFIG_KEYS: &[(&str, &str)] = &[
     (
+        "prd",
+        "the [prd] section was removed with the PRD pipeline (2026-10-02): plans come \
+         straight from a prompt (`roko run --plan` or `roko plan generate`), so nothing \
+         auto-plans on publish",
+    ),
+    (
         "runner.max_concurrent_plans",
         "runner.max_concurrent_plans was removed because nothing read it; \
          conductor.max_parallel_plans (or `roko plan run --max-parallel-plans`) \

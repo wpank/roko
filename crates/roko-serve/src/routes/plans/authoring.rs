@@ -165,58 +165,43 @@ pub(super) async fn plan_chat(
     ))
 }
 
-/// Request body for `POST /api/plans/generate`.
+/// Request body for `POST /api/plans/generate`: the request to plan from.
 ///
-/// Exactly one of `slug` or `prompt` must be supplied:
-/// - `slug` — generate from an existing PRD identified by its slug.
-/// - `prompt` — generate directly from a free-text prompt (used by the portal
-///   "Generate…" field, which never has a pre-existing PRD slug to hand).
-///
-/// Supplying both or neither is a 422 (Unprocessable Entity).  This two-field
-/// design exists because the portal sends `prompt` while the CLI sends `slug`;
-/// T09 will route between the two strategies in the handler body.
+/// `prompt` is required and must not be blank; the portal's "Generate…"
+/// field sends it. A `slug` naming a PRD to plan from is refused with 422:
+/// the PRD pipeline was removed on 2026-10-02, and plans come from a prompt.
 #[derive(Deserialize, Validate)]
 pub(super) struct GenerateRequest {
-    /// An existing PRD slug.  Non-blank when present.
+    /// The removed PRD slug, read only to refuse it with a clear message.
     #[serde(default)]
     pub(super) slug: Option<String>,
-    /// A free-text prompt used to generate the plan directly.  Non-blank when present.
+    /// The request to plan from. Non-blank.
     #[serde(default)]
     pub(super) prompt: Option<String>,
 }
 
 impl RequestPayload for GenerateRequest {
     fn validate_payload(&self) -> Result<(), ApiError> {
-        match (&self.slug, &self.prompt) {
-            (None, None) => Err(ApiError::unprocessable_entity(
-                "exactly one of 'slug' or 'prompt' must be supplied",
-            )),
-            (Some(_), Some(_)) => Err(ApiError::unprocessable_entity(
-                "supply either 'slug' or 'prompt', not both",
-            )),
-            (Some(s), None) => {
-                if s.trim().is_empty() {
-                    Err(ApiError::unprocessable_entity("'slug' must not be blank"))
-                } else {
-                    Ok(())
-                }
+        if self.slug.is_some() {
+            return Err(ApiError::unprocessable_entity(
+                "'slug' is no longer accepted: PRDs were removed; send the request to plan \
+                 from as 'prompt'",
+            ));
+        }
+        match &self.prompt {
+            None => Err(ApiError::unprocessable_entity("'prompt' is required")),
+            Some(prompt) if prompt.trim().is_empty() => {
+                Err(ApiError::unprocessable_entity("'prompt' must not be blank"))
             }
-            (None, Some(p)) => {
-                if p.trim().is_empty() {
-                    Err(ApiError::unprocessable_entity("'prompt' must not be blank"))
-                } else {
-                    Ok(())
-                }
-            }
+            Some(_) => Ok(()),
         }
     }
 }
 
-/// `POST /api/plans/generate` — spawn background plan generation from a PRD slug or prompt.
+/// `POST /api/plans/generate` — spawn background plan generation from a prompt.
 ///
-/// Two paths:
-/// - `slug`: find an existing PRD, then call `runtime.generate_plan_from_prd`.
-/// - `prompt`: derive a slug, write a PRD draft, then call `runtime.generate_plan_from_prd`.
+/// Derives a unique plan slug from the prompt's first line, then runs the
+/// plan generator through `runtime.generate_plan_from_prompt`.
 ///
 /// Responds 202 with `{ "id": op_id, "plan_id": slug }`.  The slug is known
 /// before the background work starts so the portal's generate hook can use it
@@ -234,18 +219,9 @@ pub(super) async fn generate_plan(
     State(state): State<Arc<AppState>>,
     ValidJson(body): ValidJson<GenerateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // `validate_payload` guarantees exactly one of `slug`/`prompt` is Some.
-    let (slug, prd_path) = if let Some(ref s) = body.slug {
-        // Slug path: resolve the PRD that already exists on disk.
-        let (path, _content) = find_prd(&state.workdir, s).await?;
-        (s.clone(), path)
-    } else {
-        // Prompt path: derive a unique slug, write a PRD draft, use its path.
-        let prompt_text = body.prompt.clone().unwrap_or_default();
-        let slug = derive_unique_slug(&state.workdir, &prompt_text).await;
-        let path = write_prompt_prd(&state.workdir, &slug, &prompt_text).await?;
-        (slug, path)
-    };
+    // `validate_payload` guarantees a non-blank prompt.
+    let prompt_text = body.prompt.clone().unwrap_or_default();
+    let slug = derive_unique_slug(&state.workdir, &prompt_text).await;
 
     let op_id = uuid::Uuid::new_v4().to_string();
     let bus = state.event_bus.clone();
@@ -292,7 +268,7 @@ pub(super) async fn generate_plan(
                 )
             };
             let generated = match runtime
-                .generate_plan_from_prd(&workdir, &slug_for_task, &prd_path)
+                .generate_plan_from_prompt(&workdir, &slug_for_task, &prompt_text)
                 .await
             {
                 Ok(gen_result) if gen_result.plan_targets.is_empty() => Err(no_plan()),
@@ -825,33 +801,12 @@ pub(crate) fn slug_from_title(title: &str) -> String {
     slug.trim_end_matches('-').to_string()
 }
 
-pub(super) async fn find_prd(
-    workdir: &std::path::Path,
-    slug: &str,
-) -> Result<(std::path::PathBuf, String), ApiError> {
-    validate_path_segment(slug, "PRD slug")?;
-
-    let prds_dir = workdir.join(".roko").join("prd");
-    for section in ["published", "drafts"] {
-        let path = prds_dir.join(section).join(format!("{slug}.md"));
-        if path.is_file() {
-            let content = tokio::fs::read_to_string(&path)
-                .await
-                .map_err(|e| ApiError::internal(format!("read prd file: {e}")))?;
-            return Ok((path, content));
-        }
-    }
-
-    Err(ApiError::not_found(format!("PRD '{slug}' not found")))
-}
-
 /// Derive a unique plan slug for a free-text prompt.
 ///
 /// Takes the first line of the prompt (up to 80 chars) as the title, converts
-/// it to a kebab-case slug via [`slug_from_title`], then checks whether any
-/// plan directory or PRD file (published or draft) already uses that name.
-/// If there is a collision it appends `-2`, `-3`, and so on until a free
-/// name is found.
+/// it to a kebab-case slug via [`slug_from_title`], then checks whether a
+/// plan directory already uses that name. If there is a collision it appends
+/// `-2`, `-3`, and so on until a free name is found.
 pub(super) async fn derive_unique_slug(workdir: &std::path::Path, prompt: &str) -> String {
     let first_line = prompt.lines().next().unwrap_or("").trim();
     // At most 80 characters: cutting at byte 80 can split a multi-byte
@@ -868,16 +823,7 @@ pub(super) async fn derive_unique_slug(workdir: &std::path::Path, prompt: &str) 
     };
 
     let plans_root = plans_dir(workdir);
-    let prd_root = workdir.join(".roko").join("prd");
-
-    let is_used = |slug: &str| -> bool {
-        plans_root.join(slug).exists()
-            || prd_root
-                .join("published")
-                .join(format!("{slug}.md"))
-                .exists()
-            || prd_root.join("drafts").join(format!("{slug}.md")).exists()
-    };
+    let is_used = |slug: &str| -> bool { plans_root.join(slug).exists() };
 
     if !is_used(&base) {
         return base;
@@ -889,37 +835,4 @@ pub(super) async fn derive_unique_slug(workdir: &std::path::Path, prompt: &str) 
         }
     }
     base // unreachable in practice
-}
-
-/// Write a free-text prompt as a PRD draft at `.roko/prd/drafts/<slug>.md`.
-///
-/// The file has YAML front-matter with `title` (first line, ≤80 chars, no
-/// quotes) and `source: api`, followed by `# <title>` and then the full
-/// prompt verbatim.  `runtime.generate_plan_from_prd` derives the workspace
-/// from the file path, so the file must live exactly at that location.
-pub(super) async fn write_prompt_prd(
-    workdir: &std::path::Path,
-    slug: &str,
-    prompt: &str,
-) -> Result<std::path::PathBuf, ApiError> {
-    let first_line = prompt.lines().next().unwrap_or("").trim();
-    let title = if first_line.len() > 80 {
-        &first_line[..80]
-    } else {
-        first_line
-    };
-
-    let content = format!("---\ntitle: {title}\nsource: api\n---\n# {title}\n\n{prompt}\n");
-
-    let drafts_dir = workdir.join(".roko").join("prd").join("drafts");
-    tokio::fs::create_dir_all(&drafts_dir)
-        .await
-        .map_err(|e| ApiError::internal(format!("create prd drafts dir: {e}")))?;
-
-    let prd_path = drafts_dir.join(format!("{slug}.md"));
-    tokio::fs::write(&prd_path, content)
-        .await
-        .map_err(|e| ApiError::internal(format!("write prd draft for '{slug}': {e}")))?;
-
-    Ok(prd_path)
 }

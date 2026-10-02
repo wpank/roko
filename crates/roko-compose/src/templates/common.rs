@@ -20,8 +20,6 @@ pub struct PromptBudget {
     pub plan: usize,
     /// Workspace map (file tree) cap.
     pub workspace_map: usize,
-    /// PRD2 specification extract cap.
-    pub prd2: usize,
     /// Cross-plan context (CONTEXT.md) cap.
     pub context: usize,
     /// Strategist brief cap.
@@ -53,7 +51,6 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
         AgentRole::Implementer => PromptBudget {
             plan: 50_000,
             workspace_map: 20_000,
-            prd2: 12_000,
             context: 4_000,
             brief: 8_000,
             reviews: 3_000,
@@ -64,7 +61,6 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
         AgentRole::Strategist => PromptBudget {
             plan: 50_000,
             workspace_map: 20_000,
-            prd2: 12_000,
             context: 4_000,
             brief: 6_000,
             reviews: 3_000,
@@ -75,7 +71,6 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
         AgentRole::Architect | AgentRole::Auditor => PromptBudget {
             plan: 50_000,
             workspace_map: 6_000,
-            prd2: 6_000,
             context: 2_000,
             brief: 4_000,
             reviews: 3_000,
@@ -86,7 +81,6 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
         AgentRole::Scribe | AgentRole::Critic => PromptBudget {
             plan: 50_000,
             workspace_map: 6_000,
-            prd2: 16_000,
             context: 4_000,
             brief: 6_000,
             reviews: 3_000,
@@ -97,7 +91,6 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
         AgentRole::QuickReviewer => PromptBudget {
             plan: 50_000,
             workspace_map: 6_000,
-            prd2: 0,
             context: 0,
             brief: 4_000,
             reviews: 3_000,
@@ -108,7 +101,6 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
         AgentRole::AutoFixer => PromptBudget {
             plan: 0,
             workspace_map: 0,
-            prd2: 0,
             context: 0,
             brief: 0,
             reviews: 0,
@@ -119,7 +111,6 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
         _ => PromptBudget {
             plan: 50_000,
             workspace_map: 8_000,
-            prd2: 6_000,
             context: 4_000,
             brief: 4_000,
             reviews: 2_000,
@@ -191,7 +182,6 @@ pub fn adaptive_budget_for(role: AgentRole, model_context_tokens: usize) -> Prom
     PromptBudget {
         plan: scaled(base.plan),
         workspace_map: scaled(base.workspace_map),
-        prd2: scaled(base.prd2),
         context: scaled(base.context),
         brief: scaled(base.brief),
         reviews: scaled(base.reviews),
@@ -223,13 +213,11 @@ pub fn agents_instructions_section(agents_md: &str) -> PromptSection {
 pub const CONTEXT_LAYOUT_STANZA: &str = "\
 ## Plans context layout
 
-- `prd/` — canonical product-spec root; use this for source PRDs and specs by default.
 - `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
 - `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
 - `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
 - `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
 - `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/prd-extract.md` — PRD extracts per plan (optional).
 - `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
 - `.roko/plans/<plan-base>/tasks.toml` — task checklists.
 - `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.
@@ -335,7 +323,6 @@ mod tests {
         let b = budget_for(AgentRole::Implementer);
         assert_eq!(b.plan, 50_000);
         assert_eq!(b.workspace_map, 20_000);
-        assert_eq!(b.prd2, 12_000);
         assert_eq!(b.file_context, 8_000);
         assert_eq!(b.skills, 8_000);
     }
@@ -343,7 +330,6 @@ mod tests {
     #[test]
     fn budget_for_quick_reviewer_is_minimal() {
         let b = budget_for(AgentRole::QuickReviewer);
-        assert_eq!(b.prd2, 0);
         assert_eq!(b.context, 0);
         assert_eq!(b.file_context, 0);
         assert_eq!(b.skills, 0);
@@ -357,15 +343,8 @@ mod tests {
         let b = budget_for(AgentRole::AutoFixer);
         assert_eq!(b.plan, 0);
         assert_eq!(b.workspace_map, 0);
-        assert_eq!(b.prd2, 0);
         assert_eq!(b.brief, 0);
         assert_eq!(b.instructions, 2_000);
-    }
-
-    #[test]
-    fn budget_for_scribe_has_large_prd2() {
-        let b = budget_for(AgentRole::Scribe);
-        assert_eq!(b.prd2, 16_000);
     }
 
     #[test]
@@ -373,14 +352,13 @@ mod tests {
         let b = budget_for(AgentRole::Researcher);
         assert_eq!(b.plan, 50_000);
         assert_eq!(b.workspace_map, 8_000);
-        assert_eq!(b.prd2, 6_000);
         assert_eq!(b.context, 4_000);
         assert_eq!(b.brief, 4_000);
     }
 
     #[test]
     fn context_layout_stanza_contains_key_paths() {
-        assert!(CONTEXT_LAYOUT_STANZA.contains("`prd/`"));
+        assert!(!CONTEXT_LAYOUT_STANZA.contains("prd"));
         assert!(CONTEXT_LAYOUT_STANZA.contains("`.roko/plans/`"));
         assert!(!CONTEXT_LAYOUT_STANZA.contains(".mori"));
         assert!(CONTEXT_LAYOUT_STANZA.contains("workspace-map.md"));
@@ -494,6 +472,6 @@ mod adaptive_tests {
         let scaled = adaptive_budget_for(AgentRole::AutoFixer, 200_000);
         assert_eq!(scaled.plan, 0);
         assert_eq!(scaled.workspace_map, 0);
-        assert_eq!(scaled.prd2, 0);
+        assert_eq!(scaled.brief, 0);
     }
 }

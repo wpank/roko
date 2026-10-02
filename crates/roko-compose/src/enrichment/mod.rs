@@ -1,7 +1,7 @@
 //! Enrichment pipeline — generate plan artifacts (briefs, tasks, verification
 //! checklists, research memos, etc.) from plan documents.
 //!
-//! This module orchestrates a 13-step pipeline where each step either extracts
+//! This module orchestrates a 12-step pipeline where each step either extracts
 //! content from existing artifacts (non-LLM steps) or calls an LLM via the
 //! [`LlmClient`] trait.
 //!

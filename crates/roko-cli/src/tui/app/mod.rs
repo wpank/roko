@@ -850,12 +850,7 @@ fn tab_to_page(tab: Tab) -> Option<PageId> {
         Tab::Agents => Some(PageId::AgentStatus),
         Tab::Logs => Some(PageId::LogView),
         Tab::Config => Some(PageId::ConfigView),
-        Tab::Git
-        | Tab::Inspect
-        | Tab::Marketplace
-        | Tab::Atelier
-        | Tab::Learning
-        | Tab::Providers => None,
+        Tab::Git | Tab::Inspect | Tab::Marketplace | Tab::Learning | Tab::Providers => None,
     }
 }
 

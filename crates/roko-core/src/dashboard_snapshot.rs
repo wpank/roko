@@ -267,11 +267,6 @@ pub enum DashboardEvent {
     MarketplaceJobsUpdated {
         jobs: Vec<crate::job::MarketplaceJob>,
     },
-    /// Atelier PRDs and associated task data were refreshed.
-    AtelierPrdsUpdated {
-        prds: Vec<crate::job::PrdSummary>,
-        tasks: std::collections::HashMap<String, Vec<crate::job::TaskSummary>>,
-    },
     /// Knowledge entries were refreshed from the neuro store.
     KnowledgeEntriesUpdated { entries: Vec<KnowledgeBrowseEntry> },
     /// A job execution started.
@@ -1381,12 +1376,6 @@ pub struct DashboardSnapshot {
     /// Marketplace jobs for the Marketplace (F8) tab.
     #[serde(default)]
     pub marketplace_jobs: Vec<crate::job::MarketplaceJob>,
-    /// PRD summaries for the Atelier (F9) tab.
-    #[serde(default)]
-    pub atelier_prds: Vec<crate::job::PrdSummary>,
-    /// Tasks keyed by PRD slug for the Atelier detail view.
-    #[serde(default)]
-    pub atelier_tasks: HashMap<String, Vec<crate::job::TaskSummary>>,
     /// Knowledge entries for the Inspect (F7) tab.
     #[serde(default)]
     pub knowledge_entries: Vec<KnowledgeBrowseEntry>,
@@ -2264,10 +2253,6 @@ impl DashboardSnapshot {
             }
             DashboardEvent::MarketplaceJobsUpdated { jobs } => {
                 self.marketplace_jobs = jobs.clone();
-            }
-            DashboardEvent::AtelierPrdsUpdated { prds, tasks } => {
-                self.atelier_prds = prds.clone();
-                self.atelier_tasks = tasks.clone();
             }
             DashboardEvent::KnowledgeEntriesUpdated { entries } => {
                 self.knowledge_entries = entries.clone();

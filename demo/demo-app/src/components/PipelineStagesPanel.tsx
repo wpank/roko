@@ -127,9 +127,9 @@ export default function PipelineStagesPanel({
         generate Rust code, then validate with compile, clippy, and test gates — all automated.
       </div>
 
-      <div className="pipeline-command" title={`roko do "${PIPELINE_PROMPT}"`}>
+      <div className="pipeline-command" title={`roko run "${PIPELINE_PROMPT}"`}>
         <span>$</span>
-        <code>roko do "{PIPELINE_PROMPT}"</code>
+        <code>roko run "{PIPELINE_PROMPT}"</code>
       </div>
 
       <div className="pipeline-stage-track">

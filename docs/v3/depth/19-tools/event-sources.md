@@ -40,9 +40,9 @@ Subscriptions are declared in `roko.toml` or `.roko/subscriptions.toml`:
 ```toml
 [[subscription]]
 pattern = "webhook.github.push"
-agent_template = "auto-plan-agent"
+agent_template = "doc-lifecycle"
 filter = { ref = "refs/heads/main" }
-path_filter = ".roko/prd/**"
+path_filter = "notes/**"
 max_concurrent = 1
 cooldown_secs = 300
 enabled = true
@@ -123,7 +123,7 @@ The TUI also uses `notify` for live filesystem watching in
 
 | Event Kind | GitHub Event | Typical Agent |
 |---|---|---|
-| `webhook.github.push` | Push to branch | auto-plan, doc-lifecycle |
+| `webhook.github.push` | Push to branch | doc-lifecycle |
 | `webhook.github.pull_request` | PR opened/updated/closed | pr-review, triage |
 | `webhook.github.pull_request_review` | Review submitted | review-response |
 | `webhook.github.issues` | Issue opened/closed/labeled | triage |

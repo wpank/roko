@@ -26,9 +26,6 @@ use roko_dreams::DreamSchedulePolicy;
 pub struct Config {
     /// Agent subprocess backend (the external CLI invoked via `ExecAgent`).
     pub agent: ExecAgentConfig,
-    /// Automatically generate a plan when a PRD is promoted.
-    #[serde(default)]
-    pub auto_plan: bool,
     /// Automatic dream-cycle settings for daemon mode.
     #[serde(default)]
     pub dreams: DreamsConfig,
@@ -86,7 +83,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             agent: ExecAgentConfig::default(),
-            auto_plan: false,
             dreams: DreamsConfig::default(),
             daimon: DaimonConfig::default(),
             prompt: PromptConfig::default(),
@@ -173,7 +169,6 @@ impl Config {
 
         Ok(Self {
             agent,
-            auto_plan: core.prd.auto_plan,
             dreams,
             daimon,
             prompt: PromptConfig::default(),
@@ -1462,8 +1457,7 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
     let segments: Vec<&str> = key.split('.').collect();
     match segments.as_slice() {
         // Booleans
-        ["auto_plan"]
-        | ["agent", "bare_mode"]
+        ["agent", "bare_mode"]
         | ["agent", "clean_output"]
         | ["dreams", "auto_dream"]
         | ["serve", "auto_start"]
@@ -2162,8 +2156,6 @@ pub struct ResolvedConfig {
 /// from the core loader's provenance records.
 #[derive(Clone, Debug)]
 pub struct ConfigSources {
-    /// Where `auto_plan` came from.
-    pub auto_plan: Source,
     /// Where `agent.command` came from.
     pub agent_command: Source,
     /// Where `agent.args` came from.
@@ -2271,7 +2263,6 @@ impl ConfigSources {
         };
 
         Self {
-            auto_plan: lookup("prd.auto_plan"),
             agent_command: lookup("agent.command"),
             agent_args: lookup("agent.args"),
             agent_model: lookup("agent.default_model"),
@@ -2789,7 +2780,6 @@ contxt_window = 8192
         let text = cfg.to_toml().unwrap();
         let parsed = Config::parse_toml(&text).unwrap();
         assert_eq!(parsed.agent.command, cfg.agent.command);
-        assert_eq!(parsed.auto_plan, cfg.auto_plan);
         assert_eq!(parsed.dreams.auto_dream, cfg.dreams.auto_dream);
         assert_eq!(
             parsed.dreams.idle_threshold_mins,
@@ -3040,8 +3030,6 @@ contxt_window = 8192
         assert!(rendered.contains("context_window = 200000"));
         assert!(rendered.contains("tool_format = \"anthropic_blocks\""));
         assert!(rendered.contains("max_tools = 32"));
-        assert!(rendered.contains("[prd]"));
-        assert!(rendered.contains("auto_plan = false"));
         assert!(rendered.contains("auto_start = false"));
         assert!(rendered.contains("[learning]"));
         assert!(rendered.contains("gate_threshold_flush_interval = 10"));

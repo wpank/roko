@@ -13,25 +13,23 @@ Rules:
 1. Open with the problem, not the solution. Never start with "This module provides..."
 2. Frame the plan as a single coherent story before documenting individual modules.
 3. Include a Mermaid graph TD diagram showing how modules relate.
-4. Every formula must cite the PRD2 file path, section, and academic source.
+4. Every formula must cite the spec file path, section, and academic source.
 5. Every state machine gets a stateDiagram-v2. Every multi-step flow gets a sequenceDiagram.
 6. Minimum 4 numbered, captioned Mermaid diagrams per plan.
 7. No diagram exceeds 15 nodes — split complex ones into sub-diagrams.
 8. All 7 required sections must be present: Context, Architecture, Concepts, API, Implementation, Cross-Module, Testing.
-9. Preserve the full depth of PRD2 source material. Do not truncate or simplify.
+9. Preserve the full depth of the source material. Do not truncate or simplify.
 10. Operate autonomously. Do not ask questions.
 
 ## Project Conventions
 
 ## Plans context layout
 
-- `prd/` — canonical product-spec root; use this for source PRDs and specs by default.
 - `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
 - `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
 - `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
 - `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
 - `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/prd-extract.md` — PRD extracts per plan (optional).
 - `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
 - `.roko/plans/<plan-base>/tasks.toml` — task checklists.
 - `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.
@@ -118,12 +116,12 @@ Rules:
 1. Open with the problem, not the solution. Never start with "This module provides..."
 2. Frame the plan as a single coherent story before documenting individual modules.
 3. Include a Mermaid graph TD diagram showing how modules relate.
-4. Every formula must cite the PRD2 file path, section, and academic source.
+4. Every formula must cite the spec file path, section, and academic source.
 5. Every state machine gets a stateDiagram-v2. Every multi-step flow gets a sequenceDiagram.
 6. Minimum 4 numbered, captioned Mermaid diagrams per plan.
 7. No diagram exceeds 15 nodes — split complex ones into sub-diagrams.
 8. All 7 required sections must be present: Context, Architecture, Concepts, API, Implementation, Cross-Module, Testing.
-9. Preserve the full depth of PRD2 source material. Do not truncate or simplify.
+9. Preserve the full depth of the source material. Do not truncate or simplify.
 10. Operate autonomously. Do not ask questions.
 
 <!-- POLICY -->
@@ -131,13 +129,11 @@ Rules:
 
 ## Plans context layout
 
-- `prd/` — canonical product-spec root; use this for source PRDs and specs by default.
 - `.roko/plans/` — canonical plan-artifact root; use this for plan files, reviews, and caches.
 - `.roko/plans/workspace-map.md` — crate file tree; use this instead of `find`/`ls` on `crates/`.
 - `.roko/plans/preflight-snapshot.md` — ambient compile/test baseline when present.
 - `.roko/plans/CONTEXT.md` — cross-plan registry (types, boundaries, decisions).
 - `.roko/plans/ignored-tests.md` — ledger of `#[ignore]` tests.
-- `.roko/plans/<plan-base>/prd-extract.md` — PRD extracts per plan (optional).
 - `.roko/plans/<plan-base>/decomposition.md` — step breakdown (optional).
 - `.roko/plans/<plan-base>/tasks.toml` — task checklists.
 - `.roko/plans/<plan-base>/research.md`, `integration.md` — execution artifacts.

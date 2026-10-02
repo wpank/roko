@@ -124,10 +124,10 @@ async fn cmd_setup_quick(workdir: &std::path::Path) -> Result<i32> {
     println!("  {total} provider(s) available.");
     println!();
     println!("  Next:");
-    println!("    roko run \"hello world\"          Run a quick test");
-    println!("    roko develop \"describe a task\"  Plan + execute a task");
-    println!("    roko doctor                      Full diagnostics");
-    println!("    roko config models list          See all available models");
+    println!("    roko run \"hello world\"             Run a quick test");
+    println!("    roko run --plan \"describe a task\"  Plan + execute a task");
+    println!("    roko doctor                         Full diagnostics");
+    println!("    roko config models list             See all available models");
 
     Ok(0)
 }
@@ -255,7 +255,7 @@ async fn cmd_setup_interactive(cli: &Cli, workdir: &std::path::Path, yes: bool) 
 
     // ── Step 5: Next steps ──────────────────────────────────────────────
     println!("\n[5/5] Next steps:");
-    println!("  roko develop \"describe your task\"   Plan and execute a task end-to-end");
+    println!("  roko run --plan \"describe your task\" Plan and execute a task end-to-end");
     println!("  roko \"describe your task\"           Run a one-shot task");
     println!("  roko models list                    See available models and routing");
     println!("  roko doctor                         Re-run diagnostics anytime");

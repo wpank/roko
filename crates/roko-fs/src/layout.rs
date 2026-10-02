@@ -198,12 +198,6 @@ impl RokoLayout {
         self.root.join("learn")
     }
 
-    /// `.roko/prd/` — PRD storage.
-    #[must_use]
-    pub fn prd_dir(&self) -> PathBuf {
-        self.root.join("prd")
-    }
-
     /// `.roko/research/` — research artifacts.
     #[must_use]
     pub fn research_dir(&self) -> PathBuf {

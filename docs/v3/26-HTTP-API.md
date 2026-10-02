@@ -195,7 +195,7 @@ Scope hierarchy: `admin` > `agent:write` > `plan:write` > `read`.
 | GET/HEAD/OPTIONS (any) | `read` (always allowed) |
 | `/api/secrets`, `/api/config`, `/api/api-keys` | `admin` |
 | `/api/agents/*` | `agent:write` |
-| `/api/plans/*`, `/api/prd*` | `plan:write` |
+| `/api/plans/*` | `plan:write` |
 | All other POST/PUT/PATCH/DELETE | `read` |
 
 ### 3.3 RBAC middleware
@@ -493,7 +493,6 @@ aliases (both are mounted).
 | GET | `/api/plans/{id}/tasks/{task_id}/diff` | Code diff from task agent |
 | POST | `/api/plans/{id}/chat` | Chat in plan context |
 | POST | `/api/plans/{id}/estimate` | Cost and duration estimate |
-| POST | `/api/plans/generate` | Generate plan from prompt (202 Accepted) |
 
 ### 8.3 One-Shot Runs
 
@@ -530,19 +529,29 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 | GET | `/api/shared/{token}` | Public shared transcript (opaque token) |
 | GET | `/runs/{token}` (no `/api/` prefix) | Self-contained shareable run page |
 
-### 8.5 PRDs
+### 8.5 Plan Authoring
+
+A plan comes straight from a prompt: `generate` writes `plans/<slug>/`, the plan's
+`tasks.toml` is edited as text through `source`, and `execute` (section 8.2) runs it.
+The portal works this way. The PRD routes that used to sit in this section were removed
+with the PRD pipeline; [Removed commands](28-CLI.md#removed-commands) in the CLI
+reference maps each one to its replacement.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/prds` | List all PRDs |
-| GET | `/api/prds/status` | Coverage report by lifecycle stage |
-| POST | `/api/prds/ideas` | Capture a work-item idea |
-| GET | `/api/prds/{slug}` | Get a PRD by slug |
-| POST | `/api/prds/{slug}/draft` | Agent-driven PRD drafting (202) |
-| POST | `/api/prds/{slug}/promote` | Promote to planned/approved status |
-| POST | `/api/prds/{slug}/plan` | Generate implementation plan from PRD (202) |
-| POST | `/api/prds/consolidate` | Scan for duplicates and gaps |
-| POST | `/api/prd/consolidate` | (alias) |
+| POST | `/api/plans/generate` | Write a plan from `{"prompt": "..."}` (202 Accepted with the operation `id` and the new `plan_id`; poll `GET /api/operations/{id}`). Takes `prompt` only: a body with `slug` is rejected with 422 |
+| GET | `/api/plans/{id}/source` | The plan's raw `tasks.toml` as `{ "id", "path", "toml" }` |
+| PUT | `/api/plans/{id}/source` | Replace `tasks.toml` with `{"toml": "..."}`. Validated before writing: 200 `{ "saved": true, ... }`, or 422 `invalid_plan` with the diagnostics and the file untouched; 409 while a run includes the plan |
+| POST | `/api/plans/{id}/validate` | Validate the file on disk, or `{"toml": "..."}` without saving; always 200 with `{ "valid", "errors", "warnings", "diagnostics" }` |
+| POST | `/api/plans/{id}/revise` | An agent revises the plan from `{"feedback": "..."}` (202; 409 while a run includes the plan) |
+
+```bash
+# Write a plan from a prompt, then fetch its tasks.toml
+curl -X POST http://localhost:6677/api/plans/generate \
+  -H 'Content-Type: application/json' -d '{"prompt": "Add rate limiting to the API"}'
+# {"id":"<operation-id>","plan_id":"add-rate-limiting-to-the-api"}
+curl http://localhost:6677/api/plans/add-rate-limiting-to-the-api/source
+```
 
 ### 8.6 Agents -- Control Plane
 
@@ -658,7 +667,6 @@ All routes have both `/learning/` and `/learn/` prefix forms.
 |--------|------|-------------|
 | GET | `/api/research` | List research artifacts |
 | POST | `/api/research/topic` | Deep research on a topic (202) |
-| POST | `/api/research/enhance-prd/{slug}` | Enhance PRD with research |
 | POST | `/api/research/enhance-plan/{plan}` | Enhance plan with research |
 | POST | `/api/research/enhance-tasks/{plan}` | Enhance tasks with research |
 | POST | `/api/research/analyze` | Analyze execution data |

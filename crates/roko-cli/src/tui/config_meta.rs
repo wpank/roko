@@ -505,14 +505,6 @@ pub fn all_fields() -> Vec<ConfigFieldMeta> {
             },
             group: "Learning",
         },
-        // ── PRD ──
-        ConfigFieldMeta {
-            key: "prd.auto_plan",
-            label: "Auto Plan",
-            description: "Automatically generate a plan when a PRD is promoted",
-            kind: ConfigFieldKind::Bool,
-            group: "PRD",
-        },
         // ── Project ──
         ConfigFieldMeta {
             key: "project.name",
@@ -585,7 +577,6 @@ const GROUP_ORDER: &[&str] = &[
     "Conductor",
     "Pipeline",
     "Learning",
-    "PRD",
     "Project",
     "TUI",
     "Server",

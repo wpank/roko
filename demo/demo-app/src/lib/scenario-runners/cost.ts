@@ -7,14 +7,14 @@ const PRIME_TASK = 'build a function that checks if a number is prime';
 export const COST_COMMANDS: CommandDef[] = [
   {
     id: 'naive',
-    command: `roko do "${PRIME_TASK}" --no-cascade`,
+    command: `roko run "${PRIME_TASK}" --no-cascade`,
     description: 'Run the baseline without cascade routing',
     timeout: 180000,
     target: { pane: 0 },
   },
   {
     id: 'cascade',
-    command: `roko do "${PRIME_TASK}"`,
+    command: `roko run "${PRIME_TASK}"`,
     description: 'Run the cascade-routed version',
     timeout: 180000,
     target: { pane: 1 },

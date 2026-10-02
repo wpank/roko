@@ -1107,7 +1107,6 @@ mod tests {
             id: id.to_string(),
             dir: PathBuf::from(id),
             tasks,
-            prd_excerpt: String::new(),
         }
     }
 

@@ -43,7 +43,7 @@ pub const FEEDBACK_EVENT_SCHEMA: &str = "feedback_event/v1";
 /// sections pull their weight.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptSectionMeta {
-    /// Section name (e.g. `"prd2"`, `"workspace_map"`, `"playbook_hits"`).
+    /// Section name (e.g. `"plan_brief"`, `"workspace_map"`, `"playbook_hits"`).
     pub name: String,
     /// Number of tokens this section consumed in the final prompt.
     pub tokens: u64,
@@ -1470,7 +1470,7 @@ mod tests {
     #[test]
     fn efficiency_prompt_section_meta_serialization() {
         let s = PromptSectionMeta {
-            name: "prd2".into(),
+            name: "plan_brief".into(),
             tokens: 500,
             priority: 1,
             was_truncated: false,

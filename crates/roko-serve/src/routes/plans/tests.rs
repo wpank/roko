@@ -309,18 +309,18 @@ impl CliRuntime for RecordingRuntime {
         })
     }
 
-    /// Generate a plan from a PRD; records the call and returns a
+    /// Generate a plan from a prompt; records the call and returns a
     /// synthetic result with one plan target.
-    async fn generate_plan_from_prd(
+    async fn generate_plan_from_prompt(
         &self,
         workdir: &std::path::Path,
         slug: &str,
-        prd_path: &std::path::Path,
+        prompt: &str,
     ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
         self.calls.lock().expect("lock calls").push(RecordedCall {
-            kind: "prd_plan",
+            kind: "plan_generate",
             workdir: workdir.to_path_buf(),
-            arg: prd_path.to_string_lossy().into_owned(),
+            arg: prompt.to_string(),
         });
         self.call_count.fetch_add(1, Ordering::SeqCst);
         self.notify.notify_waiters();
@@ -660,15 +660,6 @@ async fn generate_plan_rejects_blank_prompt() {
 }
 
 #[tokio::test]
-async fn generate_plan_accepts_slug_only() {
-    let req = GenerateRequest {
-        slug: Some("my-plan".into()),
-        prompt: None,
-    };
-    assert!(req.validate_payload().is_ok());
-}
-
-#[tokio::test]
 async fn generate_plan_accepts_prompt_only() {
     let req = GenerateRequest {
         slug: None,
@@ -839,78 +830,35 @@ async fn execute_resume_reports_skippable_tasks() {
     assert_eq!(fresh["skippable_task_ids"], json!([]));
 }
 
-#[tokio::test]
-async fn generate_plan_runs_runtime_with_prd_context() {
-    let runtime = Arc::new(RecordingRuntime {
-        calls: Arc::new(Mutex::new(Vec::new())),
-        notify: Arc::new(Notify::new()),
-        success: true,
-        call_count: Arc::new(AtomicUsize::new(0)),
-        group: None,
-        last_options: Arc::new(Mutex::new(None)),
-        known_plan_id: None,
-        plan_tasks: vec![],
-        summary_estimated_minutes: None,
-    });
-    let notify = Arc::clone(&runtime.as_ref().notify);
-    let calls = Arc::clone(&runtime.as_ref().calls);
-    let (_dir, state) = test_state_with_runtime(runtime);
-
-    let published_dir = state.workdir.join(".roko").join("prd").join("published");
-    tokio::fs::create_dir_all(&published_dir)
-        .await
-        .expect("create published dir");
-    tokio::fs::write(
-        published_dir.join("demo.md"),
-        "---\nstatus: published\n---\n# Demo PRD\nBuild the widget.\n",
-    )
-    .await
-    .expect("write prd");
-
-    let response = generate_plan(
-        State(Arc::clone(&state)),
-        ValidJson(GenerateRequest {
-            slug: Some("demo".into()),
-            prompt: None,
-        }),
-    )
-    .await
-    .expect("generate plan");
-
-    let http_response = response.into_response();
-    assert_eq!(http_response.status(), axum::http::StatusCode::ACCEPTED);
-
-    // Verify the body contains plan_id so the portal generate hook can use it.
-    let body_bytes = to_bytes(http_response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    let body: Value = serde_json::from_slice(&body_bytes).expect("parse body");
-    assert_eq!(
-        body.get("plan_id").and_then(Value::as_str),
-        Some("demo"),
-        "response body must include plan_id"
-    );
-
-    tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
-        .await
-        .expect("runtime should be called");
-
-    let calls = calls.lock().expect("lock calls");
-    assert_eq!(calls.len(), 1);
-    assert_eq!(
-        calls[0].kind, "prd_plan",
-        "must call generate_plan_from_prd, not run_once"
-    );
-    assert_eq!(calls[0].workdir, state.workdir);
-    assert!(
-        calls[0].arg.contains(".roko/prd/published/demo.md"),
-        "generate_plan_from_prd prd_path must be the published PRD: {}",
-        calls[0].arg
-    );
+/// A `slug` (the removed PRD path) is refused before any work starts, with
+/// a message that says to send the request as `prompt`.
+#[test]
+fn generate_request_refuses_a_prd_slug() {
+    let slug_only = GenerateRequest {
+        slug: Some("demo".into()),
+        prompt: None,
+    };
+    let error = slug_only.validate_payload().expect_err("a slug is refused");
+    assert!(format!("{error:?}").contains("'prompt'"), "{error:?}");
+    let both = GenerateRequest {
+        slug: Some("demo".into()),
+        prompt: Some("Build the widget".into()),
+    };
+    assert!(both.validate_payload().is_err());
+    let blank = GenerateRequest {
+        slug: None,
+        prompt: Some("  ".into()),
+    };
+    assert!(blank.validate_payload().is_err());
+    let neither = GenerateRequest {
+        slug: None,
+        prompt: None,
+    };
+    assert!(neither.validate_payload().is_err());
 }
 
 #[tokio::test]
-async fn generate_plan_from_prompt_writes_prd_draft_and_calls_runtime() {
+async fn generate_plan_from_prompt_calls_the_runtime_with_the_prompt() {
     let runtime = Arc::new(RecordingRuntime {
         calls: Arc::new(Mutex::new(Vec::new())),
         notify: Arc::new(Notify::new()),
@@ -956,22 +904,13 @@ async fn generate_plan_from_prompt_writes_prd_draft_and_calls_runtime() {
     let calls = calls.lock().expect("lock calls");
     assert_eq!(calls.len(), 1);
     assert_eq!(
-        calls[0].kind, "prd_plan",
-        "must call generate_plan_from_prd for prompt path"
+        calls[0].kind, "plan_generate",
+        "must call generate_plan_from_prompt"
     );
-    // The prd_path must be the draft we wrote.
-    assert!(
-        calls[0].arg.contains(".roko/prd/drafts/"),
-        "prd_path must be inside drafts/: {}",
-        calls[0].arg
-    );
-    // The draft file must exist on disk.
-    let draft_path = std::path::PathBuf::from(&calls[0].arg);
-    assert!(
-        draft_path.is_file(),
-        "PRD draft must exist on disk: {}",
-        calls[0].arg
-    );
+    assert_eq!(calls[0].workdir, state.workdir);
+    assert_eq!(calls[0].arg, "Build a widget library");
+    // Nothing is written as a PRD draft any more.
+    assert!(!state.workdir.join(".roko").join("prd").exists());
 }
 
 /// A runtime whose plan generation returns without writing a plan.
@@ -1004,11 +943,11 @@ impl CliRuntime for NoPlanRuntime {
         }
     }
 
-    async fn generate_plan_from_prd(
+    async fn generate_plan_from_prompt(
         &self,
         workdir: &std::path::Path,
         _slug: &str,
-        _prd_path: &std::path::Path,
+        _prompt: &str,
     ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
         Ok(crate::runtime::PlanGenerationResult {
             plans_root: workdir.join("plans"),

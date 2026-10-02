@@ -148,7 +148,7 @@ mod tests {
         let selector = StepSelector::new();
         let selected = selector.select_steps(TaskComplexityBand::Fast, ALL_ORDERED);
 
-        // Should keep Prd, Briefs, Tasks, Decompose, Verify, Tests.
+        // Should keep Briefs, Tasks, Decompose, Verify, Tests.
         assert!(!selected.contains(&EnrichStep::Research));
         assert!(!selected.contains(&EnrichStep::Dependencies));
         assert!(!selected.contains(&EnrichStep::Fixtures));
@@ -163,7 +163,6 @@ mod tests {
         let selector = StepSelector::new();
         let selected = selector.select_steps(TaskComplexityBand::Fast, ALL_ORDERED);
 
-        assert!(selected.contains(&EnrichStep::Prd));
         assert!(selected.contains(&EnrichStep::Briefs));
         assert!(selected.contains(&EnrichStep::Tasks));
         assert!(selected.contains(&EnrichStep::Decompose));
@@ -177,7 +176,7 @@ mod tests {
         let selected = selector.select_steps(TaskComplexityBand::Fast, ALL_ORDERED);
 
         assert_eq!(selected.len(), ALL_ORDERED.len() - FAST_SKIP.len());
-        assert_eq!(selected.len(), 6);
+        assert_eq!(selected.len(), 5);
     }
 
     #[test]
@@ -267,7 +266,7 @@ mod tests {
     #[test]
     fn complex_extras_novel_step_appended() {
         // Use a subset of steps and add an extra that isn't in the subset.
-        let subset = &[EnrichStep::Prd, EnrichStep::Briefs, EnrichStep::Tasks];
+        let subset = &[EnrichStep::Briefs, EnrichStep::Tasks, EnrichStep::Tests];
         let selector = StepSelector::new().with_complex_extras(vec![EnrichStep::Verify]);
 
         let selected = selector.select_steps(TaskComplexityBand::Complex, subset);
@@ -284,9 +283,9 @@ mod tests {
         let selected = selector.select_steps(TaskComplexityBand::Fast, &[EnrichStep::Research]);
         assert!(selected.is_empty());
 
-        // Prd is not in the fast skip list.
-        let selected = selector.select_steps(TaskComplexityBand::Fast, &[EnrichStep::Prd]);
+        // Briefs is not in the fast skip list.
+        let selected = selector.select_steps(TaskComplexityBand::Fast, &[EnrichStep::Briefs]);
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0], EnrichStep::Prd);
+        assert_eq!(selected[0], EnrichStep::Briefs);
     }
 }

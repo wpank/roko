@@ -477,7 +477,7 @@ fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
             hints.push("j/k:scroll");
             hints.push("s:sort-cost");
         }
-        Tab::Marketplace | Tab::Atelier | Tab::Learning => {
+        Tab::Marketplace | Tab::Learning => {
             hints.push("j/k:scroll");
             hints.push("Enter:expand");
         }

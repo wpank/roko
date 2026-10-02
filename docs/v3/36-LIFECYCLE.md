@@ -281,7 +281,7 @@ Five curated templates cover common agent patterns:
 
 | Template ID | Domain | Description |
 |------------|--------|-------------|
-| `rust-coding` | Coding | PRDs, implementation plans, task execution, gate verification |
+| `rust-coding` | Coding | Implementation plans, task execution, gate verification |
 | `research` | Research | Deep research with citations, paper retrieval, synthesis |
 | `code-review` | Coding | PR review, bug detection, improvement suggestions |
 | `monitoring` | General | Metric watching, anomaly detection, alerting |

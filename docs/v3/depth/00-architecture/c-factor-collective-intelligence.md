@@ -55,7 +55,7 @@ if the Bus and Substrate are already authoritative.
 
 ### 1.3 The cohort unit
 
-Define a cohort as a set of agents working on a shared plan, task family, PRD, or
+Define a cohort as a set of agents working on a shared plan, task family, or
 parent episode during a bounded window. Cohorts are the unit of measurement because
 c-factor is about group process, not isolated agent skill.
 

@@ -134,63 +134,6 @@ fn ollama_e2e_run_produces_signals() {
 }
 
 // -----------------------------------------------------------------------
-// Test: roko prd idea + prd list
-// -----------------------------------------------------------------------
-
-#[test]
-fn ollama_e2e_prd_idea_and_list() {
-    if !ollama_gate() {
-        return;
-    }
-
-    let tmp = TempDir::new().unwrap();
-    let workdir = tmp.path();
-
-    // Initialize workspace.
-    roko_cmd(workdir)
-        .arg("init")
-        .arg(workdir)
-        .assert()
-        .success();
-
-    write_ollama_config(workdir);
-
-    // Capture an idea.
-    roko_cmd(workdir)
-        .arg("--repo")
-        .arg(workdir)
-        .arg("prd")
-        .arg("idea")
-        .arg("Add Ollama integration tests")
-        .assert()
-        .success();
-
-    // Verify idea appears in the ideas file.
-    let ideas_path = workdir.join(".roko/prd/ideas.md");
-    assert!(ideas_path.exists(), "ideas.md not created");
-    let ideas = fs::read_to_string(&ideas_path).unwrap();
-    assert!(
-        ideas.contains("Add Ollama integration tests"),
-        "idea text not found in ideas.md: {ideas}"
-    );
-
-    // List PRDs — should mention the idea.
-    let list_assert = roko_cmd(workdir)
-        .arg("--repo")
-        .arg(workdir)
-        .arg("prd")
-        .arg("list")
-        .assert()
-        .success();
-
-    let stdout = String::from_utf8_lossy(&list_assert.get_output().stdout).into_owned();
-    assert!(
-        stdout.contains("idea") || stdout.contains("Idea") || stdout.contains("Ollama"),
-        "prd list output does not reference ideas: {stdout}"
-    );
-}
-
-// -----------------------------------------------------------------------
 // Test: roko status
 // -----------------------------------------------------------------------
 

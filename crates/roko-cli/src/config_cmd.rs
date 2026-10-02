@@ -1093,11 +1093,6 @@ pub enum EditTarget {
 fn print_resolved(r: &ResolvedConfig) {
     println!("effective config:");
     println!(
-        "  auto_plan         = {} {}",
-        r.config.auto_plan,
-        r.sources.auto_plan.tag()
-    );
-    println!(
         "  agent.command      = {:?} {}",
         r.config.agent.command,
         r.sources.agent_command.tag()
@@ -1209,7 +1204,6 @@ fn print_resolved(r: &ResolvedConfig) {
         println!("  env    : {} (ROKO_CONFIG)", env.display());
     }
     let fully_default = r.sources.agent_command == Source::Default
-        && r.sources.auto_plan == Source::Default
         && r.sources.prompt_token_budget == Source::Default
         && r.sources.providers == Source::Default
         && r.sources.models == Source::Default

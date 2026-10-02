@@ -24,7 +24,7 @@ is therefore a diagnostic covariate, not a blind optimization target.
 ## Cohort Windows and Observation Units
 
 A **cohort** is the smallest coordination unit: a set of agents working
-together on the same plan, PRD, parent episode, or other shared objective.
+together on the same plan, parent episode, or other shared objective.
 
 A **cohort window** is the time-bounded slice used for measurement. The
 default window is the smallest interval containing the cohort's active work,

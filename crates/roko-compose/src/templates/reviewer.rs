@@ -2,7 +2,7 @@
 //!
 //! Roko-owned architect, auditor, and combined-reviewer prompts in a single
 //! template with enum dispatch. All three share a common context prefix (plan,
-//! workspace map, prd2, brief) and differ only in role identity and instructions.
+//! workspace map, brief) and differ only in role identity and instructions.
 
 use super::common::{self, REFERENCE_CONTEXT_WINDOW_TOKENS, adaptive_budget_for};
 use super::{PlanSlice, RolePromptTemplate, truncate};
@@ -29,8 +29,6 @@ pub struct ReviewerInput {
     pub plan: PlanSlice,
     /// Filtered workspace map (only crates touched by this plan).
     pub filtered_workspace_map: String,
-    /// PRD2 specification extract.
-    pub prd2_extract: String,
     /// Strategist brief.
     pub brief: String,
     /// List of files changed by the implementer.
@@ -79,7 +77,7 @@ You are the Auditor. Verify the implementation matches the specification.\n\
 \n\
 Your focus:\n\
 - Every export listed in the plan exists with the exact visibility stated\n\
-- All formula constants match PRD2 values exactly — no rounding\n\
+- All formula constants match the spec values exactly — no rounding\n\
 - All INV-NNN invariant tests exist and pass\n\
 - All behavioral rules (states, transitions, lifecycle) are implemented\n\
 - Type signatures match the plan's Quick Reference\n\
@@ -151,16 +149,7 @@ impl RolePromptTemplate for ReviewerTemplate {
             .with_hard_cap(budget.workspace_map),
         );
 
-        // 4. prd2_extract — Session / High / hard_cap 6k
-        sections.push(
-            PromptSection::new("prd2_extract", truncate(&input.prd2_extract, budget.prd2))
-                .with_priority(SectionPriority::High)
-                .with_cache_layer(CacheLayer::Workspace)
-                .with_placement(Placement::Middle)
-                .with_hard_cap(budget.prd2),
-        );
-
-        // 5. brief — Session / High / hard_cap 4k
+        // 4. brief — Session / High / hard_cap 4k
         sections.push(
             PromptSection::new("brief", truncate(&input.brief, budget.brief))
                 .with_priority(SectionPriority::High)
@@ -169,7 +158,7 @@ impl RolePromptTemplate for ReviewerTemplate {
                 .with_hard_cap(budget.brief),
         );
 
-        // 6. reviewer_criteria — System / Normal
+        // 5. reviewer_criteria — System / Normal
         // Content varies by variant.
         let criteria = match self.variant {
             Reviewer::Architect => ARCHITECT_CRITERIA,
@@ -183,7 +172,7 @@ impl RolePromptTemplate for ReviewerTemplate {
                 .with_placement(Placement::End),
         );
 
-        // 7. files_changed — Task / High (only when non-empty)
+        // 6. files_changed — Task / High (only when non-empty)
         if !input.files_changed.is_empty() {
             let text = super::format_files_changed(&input.files_changed);
             sections.push(
@@ -194,7 +183,7 @@ impl RolePromptTemplate for ReviewerTemplate {
             );
         }
 
-        // 8. prior_findings — Dynamic / High / hard_cap 15k (only on iteration 2+)
+        // 7. prior_findings — Dynamic / High / hard_cap 15k (only on iteration 2+)
         if let Some(ref findings) = input.prior_findings {
             sections.push(
                 PromptSection::new("prior_findings", truncate(findings, budget.reviews))
@@ -231,7 +220,7 @@ Architect review criteria:\n\
 static AUDITOR_CRITERIA: &str = "\
 Auditor review criteria:\n\
 - All plan exports exist with exact visibility\n\
-- Formula constants match PRD2 exactly\n\
+- Formula constants match the spec exactly\n\
 - All INV-NNN invariant tests exist and pass\n\
 - Behavioral rules implemented (states, transitions, lifecycle)\n\
 - Type signatures match plan Quick Reference\n\
@@ -258,7 +247,6 @@ mod tests {
                 content: "## Plan\nImplement agent lifecycle.".into(),
             },
             filtered_workspace_map: "crates/roko-core/src/lib.rs".into(),
-            prd2_extract: "## PRD2\nLifecycle formula.".into(),
             brief: "Brief content.".into(),
             files_changed: vec!["crates/roko-core/src/lifecycle.rs".into()],
             prior_findings: Some("Fix error handling in compute_rate.".into()),
@@ -270,8 +258,8 @@ mod tests {
         let template = ReviewerTemplate::new(Reviewer::Architect);
         let sections = template.sections(&full_input());
 
-        // 8 sections: 6 base + files_changed + prior_findings
-        assert_eq!(sections.len(), 8);
+        // 7 sections: 5 base + files_changed + prior_findings
+        assert_eq!(sections.len(), 7);
 
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
@@ -280,7 +268,6 @@ mod tests {
                 "agents_instructions",
                 "plan_spec",
                 "workspace_map",
-                "prd2_extract",
                 "brief",
                 "reviewer_criteria",
                 "files_changed",
@@ -292,16 +279,15 @@ mod tests {
         assert_eq!(sections[0].cache_layer, CacheLayer::Role); // agents_instructions
         assert_eq!(sections[1].cache_layer, CacheLayer::Workspace); // plan_spec
         assert_eq!(sections[2].cache_layer, CacheLayer::Workspace); // workspace_map
-        assert_eq!(sections[5].cache_layer, CacheLayer::Role); // reviewer_criteria
+        assert_eq!(sections[4].cache_layer, CacheLayer::Role); // reviewer_criteria
 
         // Hard caps match spec — reviewer budgets are smaller
         assert_eq!(sections[1].hard_cap, Some(50_000)); // plan_spec
         assert_eq!(sections[2].hard_cap, Some(6_000)); // workspace_map
-        assert_eq!(sections[3].hard_cap, Some(6_000)); // prd2_extract
-        assert_eq!(sections[4].hard_cap, Some(4_000)); // brief
+        assert_eq!(sections[3].hard_cap, Some(4_000)); // brief
 
         // Criteria content matches variant
-        assert!(sections[5].content.contains("Architect"));
+        assert!(sections[4].content.contains("Architect"));
     }
 
     #[test]
@@ -328,17 +314,6 @@ mod tests {
     }
 
     #[test]
-    fn budget_capped_render_truncates_oversized_prd2() {
-        let template = ReviewerTemplate::new(Reviewer::Architect);
-        let mut input = full_input();
-        input.prd2_extract = "x".repeat(20_000);
-        let sections = template.sections(&input);
-        let prd2 = sections.iter().find(|s| s.name == "prd2_extract").unwrap();
-        assert!(prd2.content.len() < 7_000);
-        assert!(prd2.content.contains("truncated"));
-    }
-
-    #[test]
     fn empty_ctx_omits_optional_sections() {
         let template = ReviewerTemplate::new(Reviewer::Architect);
         let input = ReviewerInput {
@@ -348,15 +323,14 @@ mod tests {
                 ..Default::default()
             },
             filtered_workspace_map: "map".into(),
-            prd2_extract: "prd2".into(),
             brief: "brief".into(),
             files_changed: vec![],
             prior_findings: None,
         };
         let sections = template.sections(&input);
 
-        // 6 base sections, no files_changed, no prior_findings
-        assert_eq!(sections.len(), 6);
+        // 5 base sections, no files_changed, no prior_findings
+        assert_eq!(sections.len(), 5);
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
         assert!(!names.contains(&"files_changed"));
         assert!(!names.contains(&"prior_findings"));

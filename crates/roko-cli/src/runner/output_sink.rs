@@ -1478,7 +1478,6 @@ pub fn format_dashboard_event(
         | DashboardEvent::CascadeRouterUpdated { .. }
         | DashboardEvent::GateThresholdsUpdated { .. }
         | DashboardEvent::MarketplaceJobsUpdated { .. }
-        | DashboardEvent::AtelierPrdsUpdated { .. }
         | DashboardEvent::KnowledgeEntriesUpdated { .. }
         | DashboardEvent::EfficiencyTrendUpdated { .. }
         | DashboardEvent::FeedTick { .. }
@@ -1562,7 +1561,7 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 ///
 /// Used by both `StderrSink` and `FormattedStderrSink` so the format is
 /// consistent regardless of which sink is active. Matches the output
-/// previously produced by the `plan.rs` and `do_cmd.rs` CLI callers.
+/// previously produced by the `plan.rs` and `run_cmd.rs` CLI callers.
 fn print_run_complete_summary(summary: &RunCompleteSummary) {
     eprintln!(
         "\n\u{25b8} Plan complete: {}/{} tasks, ${:.2}, {}s",

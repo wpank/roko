@@ -1299,6 +1299,7 @@ sibling_settle_secs = 0
             timeout_secs: 30,
             required,
             parallel_with: Vec::new(),
+            ..Default::default()
         };
         gates.custom_rungs = vec![
             rung("check", "make check", true),

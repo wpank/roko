@@ -2602,6 +2602,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
             timeout_secs: 10,
             required,
             parallel_with: Vec::new(),
+            ..Default::default()
         }
     }
 

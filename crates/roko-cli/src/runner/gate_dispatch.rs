@@ -2433,6 +2433,7 @@ mod tests {
             timeout_secs: 30,
             required: false,
             parallel_with: Vec::new(),
+            ..Default::default()
         }];
         assert!(
             canonical_verify_commands(&gates, PlanComplexity::Trivial, &[], None).is_empty(),
@@ -2702,6 +2703,7 @@ path = "src/shared.rs"
                 timeout_secs: 10,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             }],
             ..GatesConfig::default()
         };
@@ -3203,6 +3205,7 @@ path = "src/shared.rs"
                 timeout_secs: 10,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             }],
             ..GatesConfig::default()
         };
@@ -3504,6 +3507,7 @@ path = "src/shared.rs"
                 timeout_secs: 10,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             }],
             ..GatesConfig::default()
         };

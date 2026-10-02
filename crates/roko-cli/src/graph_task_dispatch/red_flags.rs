@@ -1109,6 +1109,7 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
                     timeout_secs: 10,
                     required: true,
                     parallel_with: Vec::new(),
+                    ..Default::default()
                 }];
             },
             GraphFeedbackContext::default(),

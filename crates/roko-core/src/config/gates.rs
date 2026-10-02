@@ -105,13 +105,68 @@ const fn default_convergence_min_observations() -> u64 {
     50
 }
 
+/// What kind of check a gate rung is (`kind` in `[[gates.rungs]]`, 9119).
+///
+/// Only `command` rungs run today. The other kinds parse and are validated;
+/// the verifier packs give them their checks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RungKind {
+    /// A shell command, run under `sh -c`: it passes when it exits 0.
+    #[default]
+    Command,
+    /// Every DOI, arXiv id and URL the rung's artefacts cite resolves.
+    Citations,
+    /// A model judges the rung's artefacts against its rubric, quoting them
+    /// as its evidence. Advisory unless the rung says otherwise.
+    Judge,
+    /// The rung's artefacts validate against its schema.
+    Schema,
+    /// After an action, its target shows the effect the action claims.
+    Receipt,
+    /// The person the work is for confirms the outcome.
+    Confirm,
+}
+
+impl RungKind {
+    /// The kind's name in TOML.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Citations => "citations",
+            Self::Judge => "judge",
+            Self::Schema => "schema",
+            Self::Receipt => "receipt",
+            Self::Confirm => "confirm",
+        }
+    }
+
+    /// Whether this is the `command` kind.
+    #[must_use]
+    pub const fn is_command(&self) -> bool {
+        matches!(self, Self::Command)
+    }
+}
+
+impl std::fmt::Display for RungKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.label())
+    }
+}
+
 /// A single custom gate rung definition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GateRungConfig {
     /// Human-readable rung identifier (e.g. `"compile"`, `"lint"`, `"test"`).
     pub name: String,
-    /// Shell command executed by the gate runner. Runs under `sh -c`.
+    /// What kind of check the rung is; `command` when absent (9119).
+    #[serde(default, skip_serializing_if = "RungKind::is_command")]
+    pub kind: RungKind,
+    /// Shell command executed by the gate runner. Runs under `sh -c`. A
+    /// `command` rung needs one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub command: String,
     /// Maximum seconds the command may run before it is killed. Defaults to 120.
     #[serde(default = "default_gate_rung_timeout")]
@@ -122,15 +177,85 @@ pub struct GateRungConfig {
     /// Names of other rungs that may execute concurrently with this one.
     #[serde(default)]
     pub parallel_with: Vec<String>,
+    /// The files the rung checks: globs relative to the task's workspace. A
+    /// `citations`, `judge` or `schema` rung needs at least one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artefacts: Vec<String>,
+    /// A `schema` rung's schema file, relative to the task's workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    /// A `judge` rung's rubric: its text, or the path of a file holding it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rubric: Option<String>,
+    /// Whether the rung only advises: its verdict is recorded and never
+    /// fails the task. When unset, a `judge` rung advises and the other
+    /// kinds do not ([`Self::is_advisory`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory: Option<bool>,
 }
 
 fn default_gate_rung_timeout() -> u64 {
     120
 }
 
+impl Default for GateRungConfig {
+    /// A required `command` rung with the default timeout, and no name or
+    /// command yet.
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            kind: RungKind::Command,
+            command: String::new(),
+            timeout_secs: default_gate_rung_timeout(),
+            required: true,
+            parallel_with: Vec::new(),
+            artefacts: Vec::new(),
+            schema: None,
+            rubric: None,
+            advisory: None,
+        }
+    }
+}
+
 impl GateRungConfig {
     pub fn timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.timeout_secs)
+    }
+
+    /// Whether the rung runs a shell command: a `command` rung that has one.
+    #[must_use]
+    pub fn runs_command(&self) -> bool {
+        self.kind.is_command() && !self.command.trim().is_empty()
+    }
+
+    /// Whether the rung only advises ([`Self::advisory`]); when unset, a
+    /// `judge` rung does and the other kinds do not.
+    #[must_use]
+    pub fn is_advisory(&self) -> bool {
+        self.advisory.unwrap_or(self.kind == RungKind::Judge)
+    }
+
+    /// What the rung lacks for its kind: a `command` rung needs a command, a
+    /// `schema` rung a schema, and a `citations`, `judge` or `schema` rung
+    /// artefacts to check. Empty when it lacks nothing.
+    #[must_use]
+    pub fn problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if self.kind.is_command() && self.command.trim().is_empty() {
+            problems.push("a command rung needs a command".to_string());
+        }
+        let schema = self.schema.as_deref().map_or("", str::trim);
+        if self.kind == RungKind::Schema && schema.is_empty() {
+            problems.push("a schema rung needs a schema".to_string());
+        }
+        let checks_artefacts = matches!(
+            self.kind,
+            RungKind::Citations | RungKind::Judge | RungKind::Schema
+        );
+        if checks_artefacts && self.artefacts.iter().all(|glob| glob.trim().is_empty()) {
+            problems.push(format!("a {} rung needs artefacts to check", self.kind));
+        }
+        problems
     }
 }
 
@@ -369,42 +494,60 @@ impl GatesConfig {
     }
 
     /// The declared rungs every change must pass: `[[gates.rungs]]` entries
-    /// that are `required` and have a command. Empty when the workspace
-    /// declares none; the built-in defaults of [`Self::effective_rungs`] are
-    /// not declared rungs.
+    /// that are `required`, do not only advise, and run a command
+    /// ([`GateRungConfig::runs_command`]). Empty when the workspace declares
+    /// none; the built-in defaults of [`Self::effective_rungs`] are not
+    /// declared rungs.
     pub fn required_rungs(&self) -> impl Iterator<Item = &GateRungConfig> {
         self.custom_rungs
             .iter()
-            .filter(|rung| rung.required && !rung.command.trim().is_empty())
+            .filter(|rung| rung.required && !rung.is_advisory() && rung.runs_command())
     }
 
-    /// Returns custom rungs if configured, otherwise built-in defaults (compile, lint, test).
+    /// What is wrong with the declared rungs ([`GateRungConfig::problems`]),
+    /// each with the rung's key, such as `gates.rungs.lint`.
+    #[must_use]
+    pub fn rung_problems(&self) -> Vec<(String, String)> {
+        let mut problems = Vec::new();
+        for rung in &self.custom_rungs {
+            for problem in rung.problems() {
+                problems.push((format!("gates.rungs.{}", rung.name), problem));
+            }
+        }
+        problems
+    }
+
+    /// The declared `command` rungs if the workspace declares rungs,
+    /// otherwise built-in defaults (compile, lint, test). Rungs of the other
+    /// kinds run no command, so they are not among them.
     #[must_use]
     pub fn effective_rungs(&self) -> Vec<GateRungConfig> {
         if self.has_custom_rungs() {
-            return self.custom_rungs.clone();
+            return self
+                .custom_rungs
+                .iter()
+                .filter(|rung| rung.kind.is_command())
+                .cloned()
+                .collect();
         }
         vec![
             GateRungConfig {
                 name: "compile".to_string(),
                 command: "cargo build --workspace".to_string(),
                 timeout_secs: 120,
-                required: true,
-                parallel_with: Vec::new(),
+                ..GateRungConfig::default()
             },
             GateRungConfig {
                 name: "lint".to_string(),
                 command: "cargo clippy --workspace --no-deps -- -D warnings".to_string(),
                 timeout_secs: 120,
-                required: true,
-                parallel_with: Vec::new(),
+                ..GateRungConfig::default()
             },
             GateRungConfig {
                 name: "test".to_string(),
                 command: "cargo test --workspace".to_string(),
                 timeout_secs: 300,
-                required: true,
-                parallel_with: Vec::new(),
+                ..GateRungConfig::default()
             },
         ]
     }
@@ -780,6 +923,65 @@ command = "  "
             .map(|rung| rung.name.as_str())
             .collect();
         assert_eq!(names, ["compile"]);
+    }
+
+    /// 9119: a rung's `kind` defaults to `command`. A `citations` rung with
+    /// artefacts parses and is valid, a `judge` rung advises by default, a
+    /// `schema` rung without a schema parses but fails validation, and an
+    /// unknown kind does not parse. Only the `command` rung is a verify step.
+    #[test]
+    fn rung_kind_defaults_to_command() {
+        use super::RungKind;
+
+        let cfg = RokoConfig::from_toml(
+            r#"
+[[gates.rungs]]
+name = "compile"
+command = "cargo check --workspace"
+
+[[gates.rungs]]
+name = "sources"
+kind = "citations"
+artefacts = ["report.md"]
+
+[[gates.rungs]]
+name = "rubric"
+kind = "judge"
+artefacts = ["report.md"]
+rubric = "Every claim cites a source."
+
+[[gates.rungs]]
+name = "table"
+kind = "schema"
+artefacts = ["data/*.json"]
+"#,
+        )
+        .expect("config parses");
+        let rungs = &cfg.gates.custom_rungs;
+        assert_eq!(rungs[0].kind, RungKind::Command);
+        assert!(rungs[0].problems().is_empty());
+        assert_eq!(rungs[1].kind, RungKind::Citations);
+        assert!(rungs[1].problems().is_empty());
+        assert!(!rungs[1].is_advisory());
+        assert!(rungs[2].is_advisory(), "a judge rung advises by default");
+        assert_eq!(rungs[3].problems(), ["a schema rung needs a schema"]);
+
+        let required: Vec<&str> = cfg
+            .gates
+            .required_rungs()
+            .map(|rung| rung.name.as_str())
+            .collect();
+        assert_eq!(required, ["compile"]);
+        assert_eq!(cfg.gates.effective_rungs().len(), 1);
+        let invalid: Vec<String> = crate::config::validate_invariants(&cfg)
+            .into_iter()
+            .filter(|result| result.invariant_id == 11)
+            .map(|result| result.config_path)
+            .collect();
+        assert_eq!(invalid, ["gates.rungs.table"]);
+
+        let unknown = RokoConfig::from_toml("[[gates.rungs]]\nname = \"x\"\nkind = \"vibes\"\n");
+        assert!(unknown.is_err(), "an unknown kind does not parse");
     }
 
     #[test]

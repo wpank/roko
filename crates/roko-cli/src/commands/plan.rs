@@ -112,9 +112,8 @@ pub(crate) enum PlanCmd {
     },
     /// Write a plan's companion documents beside its `tasks.toml`: `brief.md`
     /// (its artifacts, task map and risks), which dispatch adds to each of its
-    /// task prompts, and `prd-extract.md` when `[meta] source_prd` names a
-    /// PRD. No model runs unless `--full`. Documents that exist are kept
-    /// unless `--force`.
+    /// task prompts. No model runs unless `--full`. Documents that exist are
+    /// kept unless `--force`.
     Prepare {
         /// The plan directory, holding `tasks.toml`.
         plan_dir: PathBuf,
@@ -1309,11 +1308,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     // 3220: the one plan generator (gap-2623b2) repairs,
                     // validates, scores and writes the plan to plans/<slug>/,
                     // as every other plan-writing path does.
-                    let request = roko_cli::prd::PlanRequest {
+                    let request = roko_cli::plan_generate::PlanRequest {
                         model: Some(model_key.as_str()),
                         effort: Some("high"),
-                        ..roko_cli::prd::PlanRequest::new(
-                            roko_cli::prd::PlanSource::Text {
+                        ..roko_cli::plan_generate::PlanRequest::new(
+                            roko_cli::plan_generate::PlanSource::Text {
                                 text: &spec.source_text,
                                 kind: "backlog spec",
                             },
@@ -1321,7 +1320,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             &workdir,
                         )
                     };
-                    match roko_cli::prd::generate_plan(request).await {
+                    match roko_cli::plan_generate::generate_plan(request).await {
                         Ok((_, outcome)) if outcome.artifact_valid => {
                             tracing::info!(id, %slug, "plan generated");
                             results.push((*id, slug, "generated"));
@@ -1401,11 +1400,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     let slug = cluster.theme.replace(' ', "-");
                     tracing::info!(%slug, "generating plan for cluster");
 
-                    let request = roko_cli::prd::PlanRequest {
+                    let request = roko_cli::plan_generate::PlanRequest {
                         model: Some(model_key.as_str()),
                         effort: Some("high"),
-                        ..roko_cli::prd::PlanRequest::new(
-                            roko_cli::prd::PlanSource::Text {
+                        ..roko_cli::plan_generate::PlanRequest::new(
+                            roko_cli::plan_generate::PlanSource::Text {
                                 text: &combined,
                                 kind: "notes",
                             },
@@ -1413,7 +1412,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             &workdir,
                         )
                     };
-                    match roko_cli::prd::generate_plan(request).await {
+                    match roko_cli::plan_generate::generate_plan(request).await {
                         Ok(_) => {
                             tracing::info!(%slug, "plan generated from notes cluster");
                         }
@@ -1452,8 +1451,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 .and_then(|path| path.file_stem())
                 .and_then(|stem| stem.to_str())
                 .map_or_else(
-                    || roko_cli::prd::slugify(&source_text),
-                    roko_cli::prd::slugify,
+                    || roko_cli::plan_generate::slugify(&source_text),
+                    roko_cli::plan_generate::slugify,
                 );
             let model_key = roko_cli::model_selection::resolve_planner_model(
                 &workdir,
@@ -1479,12 +1478,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             // The one plan generator (gap-2623b2) validates the plan and
             // writes it to the workspace plans directory, where every other
             // command looks for plans (bug-e3df7d).
-            let request = roko_cli::prd::PlanRequest {
+            let request = roko_cli::plan_generate::PlanRequest {
                 context: Some(context_block.as_str()),
                 model: Some(model_key.as_str()),
                 effort: Some("high"),
-                ..roko_cli::prd::PlanRequest::new(
-                    roko_cli::prd::PlanSource::Text {
+                ..roko_cli::plan_generate::PlanRequest::new(
+                    roko_cli::plan_generate::PlanSource::Text {
                         text: &source_text,
                         kind: source_type,
                     },
@@ -1492,7 +1491,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     &workdir,
                 )
             };
-            let (_, outcome) = roko_cli::prd::generate_plan(request).await?;
+            let (_, outcome) = roko_cli::plan_generate::generate_plan(request).await?;
             if outcome.artifact_valid {
                 Ok(EXIT_SUCCESS)
             } else {
@@ -1516,7 +1515,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             if !tasks_path.exists() {
                 anyhow::bail!("No tasks.toml found in {}", plan_dir.display());
             }
-            let source_path = find_plan_source_document(&plan_dir)?;
+            let source_path = roko_cli::plan_generate::plan_source_document(&plan_dir)?;
             let model_key = roko_cli::model_selection::resolve_planner_model(
                 &workdir,
                 cli.model.clone(),
@@ -1540,18 +1539,18 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             // The one plan generator (gap-2623b2) rewrites tasks.toml only
             // once the regenerated plan passes validation, keeping done
             // tasks done.
-            let slug = roko_cli::prd::plan_dir_slug(&plan_dir);
-            let request = roko_cli::prd::PlanRequest {
+            let slug = roko_cli::plan_generate::plan_dir_slug(&plan_dir);
+            let request = roko_cli::plan_generate::PlanRequest {
                 context: Some(pre_validation_context.as_str()),
                 model: Some(model_key.as_str()),
                 effort: Some("high"),
-                ..roko_cli::prd::PlanRequest::new(
-                    roko_cli::prd::PlanSource::Regenerate(&plan_dir),
+                ..roko_cli::plan_generate::PlanRequest::new(
+                    roko_cli::plan_generate::PlanSource::Regenerate(&plan_dir),
                     &slug,
                     &workdir,
                 )
             };
-            let (_, outcome) = roko_cli::prd::generate_plan(request).await?;
+            let (_, outcome) = roko_cli::plan_generate::generate_plan(request).await?;
             if outcome.artifact_valid {
                 Ok(EXIT_SUCCESS)
             } else {
@@ -2590,20 +2589,6 @@ pub(crate) fn cmd_plan_validate(
         .as_ref()
         .map_or(0, |spec_quality| spec_quality.exit_code(strict));
     Ok(report.exit_code(strict).max(spec_exit))
-}
-
-pub(crate) fn find_plan_source_document(plan_dir: &Path) -> Result<PathBuf> {
-    for candidate in ["source-prd.md", "prd-extract.md", "plan.md"] {
-        let path = plan_dir.join(candidate);
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-
-    anyhow::bail!(
-        "no source PRD found in {} (looked for source-prd.md, prd-extract.md, and plan.md)",
-        plan_dir.display()
-    )
 }
 
 pub(crate) fn read_executor_state(

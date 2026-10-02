@@ -1,13 +1,28 @@
-//! `roko plan generate` — intelligent task decomposition from any input source.
+//! Plan generation: intelligent task decomposition from any request.
 //!
-//! Takes a PRD, prompt, file, or checklist and produces plan directories
-//! with surgically-scoped tasks, executable verification, and model hints.
+//! Takes a prompt, a file (a written spec, a checklist), notes or a backlog
+//! spec and produces plan directories with surgically-scoped tasks,
+//! executable verification, and model hints. This module holds the planner's
+//! prompts and templates; [`pipeline`] runs the one generator,
+//! [`generate_plan`], for every generate path.
 //!
 //! Key principles (from Meta-Harness [Lee et al. 2026]):
 //! - Right context, not more context
 //! - Tasks ≤50 LOC for Tier 1, ≤20 LOC for Tier 0
 //! - Every acceptance criterion is a runnable command
 //! - Feedback from failures feeds into retry context
+
+mod accept_blocks;
+mod dry_run_fs;
+mod pipeline;
+
+pub use pipeline::{
+    ArtifactValidationReport, GenerationOutcome, PlanRequest, PlanSource, generate_plan,
+    plan_dir_slug, plan_source_document, slugify,
+};
+pub(crate) use pipeline::{
+    extract_fenced_block, extract_toml_content_fallback, planner_context_window,
+};
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -26,9 +41,12 @@ const CLAUDE_MD_MAX_LINES: usize = 120;
 
 /// Built-in plan generation template presets.
 ///
-/// The PRD frontmatter selects one of these presets. Each preset controls the
-/// generator's default model tier, gate strictness guidance, and total task
-/// budget. Unknown or missing template names fall back to [`Default`].
+/// Each preset controls the generator's default model tier, gate strictness
+/// guidance, and total task budget. Plan generation uses [`Default`]: the
+/// other presets were picked by PRD frontmatter, which went with the PRD
+/// pipeline (2026-10-02), so only a caller that names one, such as
+/// `DefaultPlanGenerator`'s tests, selects them. Unknown or missing names fall
+/// back to [`Default`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlanTemplateKind {
     /// Current behavior: balanced defaults.
@@ -40,7 +58,7 @@ pub(crate) enum PlanTemplateKind {
 }
 
 impl PlanTemplateKind {
-    /// Resolve a template name from PRD frontmatter.
+    /// Resolve a template name (`compact`, `small`, `strict`).
     #[must_use]
     pub(crate) fn resolve(name: Option<&str>) -> Self {
         let Some(name) = name else {
@@ -135,7 +153,7 @@ Do not include prose, explanations, Rust code, or markdown outside those blocks.
 MINIMUM VALID STRUCTURE (use this as your template):
 ```toml
 [meta]
-plan = "slug-matches-prd"
+plan = "slug-matches-request"
 total = 2
 done = 0
 status = "ready"
@@ -206,7 +224,7 @@ Create plan directories with these files:
 ### tasks.toml
 ```toml
 [meta]
-plan = "add-funding-rate"  # MUST match the PRD slug exactly
+plan = "add-funding-rate"  # MUST match the plan slug exactly
 total = 3
 done = 0
 status = "ready"
@@ -388,7 +406,7 @@ files = [
 ## Quality gates for YOUR output
 
 Before finalizing, verify your tasks against:
-- [ ] `meta.plan` matches the PRD slug exactly (e.g. slug "add-funding-rate" → `plan = "add-funding-rate"`)
+- [ ] `meta.plan` matches the plan slug exactly (e.g. slug "add-funding-rate" → `plan = "add-funding-rate"`)
 - [ ] `meta.max_parallel` is omitted, and two tasks that share a file depend on each other, directly or through other tasks
 - [ ] Every task has ≤ max_loc lines of change for its tier
 - [ ] Every task has exactly one focused verify step and no semantic duplicate exists elsewhere in the plan
@@ -413,7 +431,7 @@ Before finalizing, verify your tasks against:
 3. Never use glob patterns like `*` in file paths.
 4. Never output angle-bracket placeholders like `<path>`, `<crate>`, `<file>`, `<module>`, or `<relevant-lib>`.
 5. Every `files` entry, every `path` in `read_files`, and every `cargo` command must reference actual files and crates that exist in the workspace or that the plan explicitly creates.
-6. If a task creates a NEW crate, list the specific files: `"crates/new-crate/src/lib.rs"`, `"crates/new-crate/Cargo.toml"`. Use the PRD slug as the crate name (e.g., slug "btc-funding-alert" → `"crates/btc-funding-alert/src/lib.rs"`).
+6. If a task creates a NEW crate, list the specific files: `"crates/new-crate/src/lib.rs"`, `"crates/new-crate/Cargo.toml"`. Use the plan slug as the crate name (e.g., slug "btc-funding-alert" → `"crates/btc-funding-alert/src/lib.rs"`).
 7. Researcher tasks that only READ files should still list specific file paths they will inspect.
 
 ## Complete Example (end-to-end)

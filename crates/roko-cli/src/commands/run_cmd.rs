@@ -772,13 +772,13 @@ async fn generate_prompt_plan(
     out: &roko_cli::cli_output::CliOutput,
 ) -> Option<PathBuf> {
     let effort = cli.effort.map(|e| e.to_string());
-    let slug = roko_cli::prd::slugify(prompt);
-    let request = roko_cli::prd::PlanRequest {
+    let slug = roko_cli::plan_generate::slugify(prompt);
+    let request = roko_cli::plan_generate::PlanRequest {
         context: Some(context),
         model: Some(model_key),
         effort: Some(effort.as_deref().unwrap_or("high")),
-        ..roko_cli::prd::PlanRequest::new(
-            roko_cli::prd::PlanSource::Text {
+        ..roko_cli::plan_generate::PlanRequest::new(
+            roko_cli::plan_generate::PlanSource::Text {
                 text: prompt,
                 kind: "prompt",
             },
@@ -786,7 +786,7 @@ async fn generate_prompt_plan(
             workdir,
         )
     };
-    match roko_cli::prd::generate_plan(request).await {
+    match roko_cli::plan_generate::generate_plan(request).await {
         Ok((plans_root, _)) => Some(plans_root.join(&slug)),
         Err(err) => {
             out.error(&format!("Plan generation failed: {err:#}"));

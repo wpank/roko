@@ -99,8 +99,6 @@ pub struct RokoConfig {
     #[serde(default)]
     pub project: ProjectConfig,
     #[serde(default)]
-    pub prd: PrdConfig,
-    #[serde(default)]
     pub agent: AgentConfig,
     /// Plan authoring: the model that generates and revises plans.
     #[serde(default)]
@@ -439,7 +437,6 @@ impl Default for RokoConfig {
             config_version: CURRENT_CONFIG_VERSION,
             schema_version: CURRENT_SCHEMA_VERSION,
             project: ProjectConfig::default(),
-            prd: PrdConfig::default(),
             agent: AgentConfig::default(),
             authoring: AuthoringConfig::default(),
             spec_quality: SpecQualityConfig::default(),
@@ -1215,7 +1212,6 @@ impl RokoConfig {
         let mut out = String::with_capacity(4096);
         Self::write_example_prelude(&mut out);
         Self::write_example_project(&mut out, &cfg);
-        Self::write_example_prd(&mut out, &cfg);
         Self::write_example_agent(&mut out, &cfg);
         Self::write_example_gates(&mut out, &cfg);
         Self::write_example_routing(&mut out, &cfg);
@@ -1253,11 +1249,6 @@ impl RokoConfig {
             "fresh_base_branch = \"{}\"\n",
             c.project.fresh_base_branch
         );
-    }
-    fn write_example_prd(out: &mut String, c: &Self) {
-        let _ = writeln!(out, "# -- PRD lifecycle settings --");
-        let _ = writeln!(out, "[prd]");
-        let _ = writeln!(out, "auto_plan = {}\n", c.prd.auto_plan);
     }
     fn write_example_agent(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Agent / model settings --");
@@ -3526,9 +3517,6 @@ max_output = 16384
     fn demo_resources_config_parses() {
         let example = include_str!("../../../../demo/demo-resources/roko.toml");
         let cfg = RokoConfig::from_toml(example).expect("parse demo/demo-resources/roko.toml");
-        // auto_plan must be in [prd], not at root level.
-        // A successful parse here proves the section placement is correct.
-        assert!(!cfg.prd.auto_plan);
         // [[gates.rungs]] must use the current syntax (not the stale [[gate]]).
         assert!(
             !cfg.gates.custom_rungs.is_empty(),

@@ -231,11 +231,11 @@ fn builtin_integrations() -> Vec<ServiceIntegration> {
                     "github:pr:opened".into(),
                     "github:pr:review".into(),
                     "github:issue:opened".into(),
-                    "prd:plan:approved".into(),
+                    "plan.approved".into(),
                 ],
             }),
             execution: Some(ExecutionDescriptor {
-                trigger_patterns: vec!["github:*".into(), "prd:plan:approved".into()],
+                trigger_patterns: vec!["github:*".into(), "plan.approved".into()],
                 default_templates: vec!["pr-review".into(), "code-implementer".into()],
             }),
             mcp_adapter: Some(McpAdapterDescriptor {

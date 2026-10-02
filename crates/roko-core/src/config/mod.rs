@@ -74,7 +74,7 @@ pub use schema::{
     GateMode, GateProfileConfig, GateRungConfig, GatesConfig, GeminiConfig, GhostTurnConfig,
     GithubWebhookConfig, GraduationConfig, GraduationPolicy, IterationLoopConfig, JwksProvider,
     LearningConfig, ModelProfile, PerplexityConfig, PipelineBandConfig, PipelineConfig,
-    PipelineReviewerMode, PlanFailurePolicy, PrdConfig, ProjectConfig, ProviderConfig,
+    PipelineReviewerMode, PlanFailurePolicy, ProjectConfig, ProviderConfig,
     ProviderRouting, RelayConfig, RepoConfig, ResourcesConfig, RetrievalConfig, RetrievalMode,
     ReviewLoopConfig, RewardWeights, RokoConfig, RoleOverride, RoutingAlgorithm, RoutingConfig,
     RoutingOverrides, RoutingRewardWeightsConfig, SafetySetting, SchedulerConfig,

@@ -124,11 +124,11 @@ mod tests {
             })
         }
 
-        async fn generate_plan_from_prd(
+        async fn generate_plan_from_prompt(
             &self,
             workdir: &Path,
             slug: &str,
-            _prd_path: &Path,
+            _prompt: &str,
         ) -> anyhow::Result<PlanGenerationResult> {
             let plans_root = workdir.join("plans");
             Ok(PlanGenerationResult {

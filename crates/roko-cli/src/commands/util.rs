@@ -2469,7 +2469,7 @@ pub(crate) fn capture_role(task_kind: &str) -> &'static str {
 pub(crate) fn capture_task_category(task_kind: &str) -> &'static str {
     if task_kind.starts_with("research-") {
         "research"
-    } else if task_kind.starts_with("prd-plan") {
+    } else if task_kind.starts_with("plan-") {
         "scaffolding"
     } else {
         "docs"

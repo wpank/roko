@@ -47,19 +47,3 @@ impl Default for ProjectConfig {
     }
 }
 
-// ---- [prd] ---------------------------------------------------------------
-
-/// PRD lifecycle settings.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PrdConfig {
-    /// Automatically generate a plan when a PRD is promoted.
-    #[serde(default)]
-    pub auto_plan: bool,
-}
-
-impl Default for PrdConfig {
-    fn default() -> Self {
-        Self { auto_plan: false }
-    }
-}

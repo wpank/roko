@@ -27,7 +27,7 @@ use roko_serve::runtime::{
 
 use crate::config::{Config, RepoRegistry};
 use crate::graph_execution::plan_runner::{PlanRunInterrupt, PlanRunInterruptHandle};
-use crate::prd;
+use crate::plan_generate;
 use crate::runner::tui_bridge::TuiBridge;
 use crate::state_hub::SharedStateHub;
 use crate::status::collect_session_status;
@@ -213,16 +213,28 @@ impl CliRuntime for RokoCliRuntime {
         }
     }
 
-    async fn generate_plan_from_prd(
+    async fn generate_plan_from_prompt(
         &self,
         workdir: &Path,
         slug: &str,
-        prd_path: &Path,
+        prompt: &str,
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let before = snapshot_plan_artifacts(&plans_root);
-        let generated_root =
-            prd::generate_plan_from_prd_isolated(slug, prd_path, Some(self.spend_bridge())).await?;
+        // The planner model writes the plan; each call's spend reaches the
+        // server's hub as it returns.
+        let request = plan_generate::PlanRequest {
+            live: Some(self.spend_bridge()),
+            ..plan_generate::PlanRequest::new(
+                plan_generate::PlanSource::Text {
+                    text: prompt,
+                    kind: "prompt",
+                },
+                slug,
+                workdir,
+            )
+        };
+        let (generated_root, _) = plan_generate::generate_plan(request).await?;
         let after = snapshot_plan_artifacts(&generated_root);
 
         let mut plan_targets = changed_plan_targets(&generated_root, &before, &after);
@@ -2248,18 +2260,10 @@ mode = "off"
     #[tokio::test]
     async fn generation_spend_reaches_the_server_hub_and_cost_logs() {
         let workspace = fake_provider_workspace();
-        let prd_dir = workspace.path().join(".roko").join("prd").join("published");
-        std::fs::create_dir_all(&prd_dir).expect("create PRD dir");
-        let prd_path = prd_dir.join("demo.md");
-        std::fs::write(
-            &prd_path,
-            "---\nid: demo\ntitle: Demo\nstatus: published\n---\n\n# Demo\n\nPrint hello world.\n",
-        )
-        .expect("write PRD");
         let hub = SharedStateHub::new_in_process();
 
         let generated = runtime_on(&hub)
-            .generate_plan_from_prd(workspace.path(), "demo", &prd_path)
+            .generate_plan_from_prompt(workspace.path(), "demo", "# Demo\n\nPrint hello world.\n")
             .await
             .expect("generate plan");
 
@@ -2365,18 +2369,10 @@ planner_model = "fake-planner"
     #[tokio::test]
     async fn generation_plans_with_the_authoring_planner_model() {
         let workspace = planner_workspace();
-        let prd_dir = workspace.path().join(".roko").join("prd").join("published");
-        std::fs::create_dir_all(&prd_dir).expect("create PRD dir");
-        let prd_path = prd_dir.join("demo.md");
-        std::fs::write(
-            &prd_path,
-            "---\nid: demo\ntitle: Demo\nstatus: published\n---\n\n# Demo\n\nPrint hello world.\n",
-        )
-        .expect("write PRD");
         let hub = SharedStateHub::new_in_process();
 
         let generated = runtime_on(&hub)
-            .generate_plan_from_prd(workspace.path(), "demo", &prd_path)
+            .generate_plan_from_prompt(workspace.path(), "demo", "# Demo\n\nPrint hello world.\n")
             .await
             .expect("generate plan");
 

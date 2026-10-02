@@ -487,7 +487,7 @@ mod tests {
         reg.register(make_signal_match_entry("t1", "github:push", None, None));
         reg.register(make_signal_match_entry(
             "t2",
-            "prd.plan_approved",
+            "plan.approved",
             None,
             None,
         ));

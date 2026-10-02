@@ -54,7 +54,8 @@ pub const GITHUB_DEPLOYMENT_INACTIVE: &str = "github:deployment_status:inactive"
 pub const GITHUB_PR_MERGED: &str = "github:pull_request:merged";
 pub const GITHUB_PR_CLOSED: &str = "github:pull_request:closed";
 pub const GITHUB_CI_FAILED: &str = "github:ci:failed";
-pub const PRD_PLAN_APPROVED: &str = "prd.plan_approved";
+/// A merged pull request from a `plan/` branch: the plan's work was approved.
+pub const PLAN_APPROVED: &str = "plan.approved";
 pub const SLACK_MESSAGE: &str = "slack:message";
 pub const SLACK_REACTION: &str = "slack:reaction_added";
 pub const CRON_TICK: &str = "scheduler:cron";

@@ -645,7 +645,6 @@ mod tests {
                     max_parallel: Some(1),
                     estimated_total_minutes: 10,
                     skip_enrichment: false,
-                    source_prd: None,
                     failure_policy: None,
                     workspace_rungs: None,
                     verify: Vec::new(),

@@ -12,6 +12,9 @@
 //! - [`build_revision_prompt`] — build a prompt for revising an existing plan.
 //! - [`apply_revision_output`] — extract, repair, validate, and write the revised plan.
 //! - [`revise_plan_source`] — run the planning agent and apply the revision.
+//! - [`plan_diff`] — what a revision changed, task by task.
+//! - [`last_run_failure_context`] — how the plan's last run failed, with the
+//!   failed steps' gate output, for a revision prompt.
 //! - [`AuthoringSpend`] — record what the agent calls of a generation or revision cost.
 
 use std::path::{Path, PathBuf};
@@ -274,6 +277,179 @@ pub struct RevisionOutcome {
     pub task_count: usize,
     /// Validation report for the revised plan.
     pub report: PlanSourceReport,
+    /// What the revision changed, task by task; set when it was written.
+    pub diff: Option<PlanDiff>,
+}
+
+// ─── Plan diff ────────────────────────────────────────────────────────────────
+
+/// What a revision changed in a plan, task by task (3216): the tasks it added
+/// and removed, and for each task in both plans every key whose value
+/// changed. A structural diff of the parsed tables, matched by task id, not a
+/// line diff.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct PlanDiff {
+    /// `[meta]` keys whose value changed.
+    pub meta: Vec<KeyChange>,
+    /// Ids of the tasks the new plan adds, in its order.
+    pub added: Vec<String>,
+    /// Ids of the tasks the new plan drops, in the old plan's order.
+    pub removed: Vec<String>,
+    /// The tasks in both plans whose keys changed, in the new plan's order.
+    pub changed: Vec<TaskChange>,
+}
+
+/// One key whose value changed, each side as TOML text (a string as its
+/// text); `None` on the side where the key is absent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct KeyChange {
+    /// The key, such as `verify` or `files`.
+    pub key: String,
+    /// Its value in the old plan.
+    pub before: Option<String>,
+    /// Its value in the new plan.
+    pub after: Option<String>,
+}
+
+/// The keys of one task that a revision changed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TaskChange {
+    /// The task id.
+    pub id: String,
+    /// Its changed keys: the old task's keys in order, then the new ones.
+    pub keys: Vec<KeyChange>,
+}
+
+impl PlanDiff {
+    /// Whether the two plans are the same, key for key.
+    pub fn is_empty(&self) -> bool {
+        self.meta.is_empty()
+            && self.added.is_empty()
+            && self.removed.is_empty()
+            && self.changed.is_empty()
+    }
+
+    /// The diff for a terminal: a count line, `+ T4` for each added task,
+    /// `- T3` for each removed one, then `~ T1` (or `~ [meta]`) with each
+    /// changed key's before and after under it.
+    pub fn render_text(&self) -> String {
+        if self.is_empty() {
+            return "plan diff: no changes".to_string();
+        }
+        let mut lines = vec![format!(
+            "plan diff: {} added, {} removed, {} changed{}",
+            self.added.len(),
+            self.removed.len(),
+            self.changed.len(),
+            if self.meta.is_empty() { "" } else { "; [meta] changed" }
+        )];
+        lines.extend(self.added.iter().map(|id| format!("  + {id}")));
+        lines.extend(self.removed.iter().map(|id| format!("  - {id}")));
+        let meta = (!self.meta.is_empty()).then_some(("[meta]", &self.meta));
+        let tasks = self
+            .changed
+            .iter()
+            .map(|task| (task.id.as_str(), &task.keys));
+        for (name, keys) in meta.into_iter().chain(tasks) {
+            lines.push(format!("  ~ {name}"));
+            for change in keys {
+                lines.push(format!(
+                    "      {}: {} -> {}",
+                    change.key,
+                    change.before.as_deref().unwrap_or("(none)"),
+                    change.after.as_deref().unwrap_or("(none)")
+                ));
+            }
+        }
+        lines.join("\n")
+    }
+}
+
+/// The task-level diff from `old` to `new`, two `tasks.toml` texts. A text
+/// that does not parse counts as an empty plan.
+pub fn plan_diff(old: &str, new: &str) -> PlanDiff {
+    let (old, new) = (parse_plan_table(old), parse_plan_table(new));
+    let (old_tasks, new_tasks) = (plan_tasks(&old), plan_tasks(&new));
+    let added = new_tasks
+        .iter()
+        .filter(|(id, _)| task_by_id(&old_tasks, id).is_none())
+        .map(|(id, _)| id.clone())
+        .collect();
+    let removed = old_tasks
+        .iter()
+        .filter(|(id, _)| task_by_id(&new_tasks, id).is_none())
+        .map(|(id, _)| id.clone())
+        .collect();
+    let changed = new_tasks
+        .iter()
+        .filter_map(|(id, task)| {
+            let keys = key_changes(task_by_id(&old_tasks, id)?, task);
+            (!keys.is_empty()).then(|| TaskChange {
+                id: id.clone(),
+                keys,
+            })
+        })
+        .collect();
+    let meta = |plan: &toml::Table| {
+        let meta = plan.get("meta").and_then(toml::Value::as_table);
+        meta.cloned().unwrap_or_default()
+    };
+    PlanDiff {
+        meta: key_changes(&meta(&old), &meta(&new)),
+        added,
+        removed,
+        changed,
+    }
+}
+
+fn parse_plan_table(text: &str) -> toml::Table {
+    toml::from_str(text).unwrap_or_default()
+}
+
+/// A plan's `[[task]]` tables with their ids, in order.
+fn plan_tasks(plan: &toml::Table) -> Vec<(String, toml::Table)> {
+    plan.get("task")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_table)
+        .map(|task| {
+            let id = task.get("id").and_then(toml::Value::as_str);
+            (id.unwrap_or_default().to_string(), task.clone())
+        })
+        .collect()
+}
+
+fn task_by_id<'a>(tasks: &'a [(String, toml::Table)], id: &str) -> Option<&'a toml::Table> {
+    tasks
+        .iter()
+        .find(|(other, _)| other == id)
+        .map(|(_, task)| task)
+}
+
+/// The keys whose values differ between two tables: the old table's keys in
+/// order, then the keys only the new one has.
+fn key_changes(old: &toml::Table, new: &toml::Table) -> Vec<KeyChange> {
+    let mut keys: Vec<&String> = old.keys().collect();
+    keys.extend(new.keys().filter(|key| !old.contains_key(key.as_str())));
+    keys.into_iter()
+        .filter_map(|key| {
+            let (before, after) = (old.get(key), new.get(key));
+            (before != after).then(|| KeyChange {
+                key: key.clone(),
+                before: before.map(value_text),
+                after: after.map(value_text),
+            })
+        })
+        .collect()
+}
+
+/// A value as TOML text; a string as its text.
+fn value_text(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// Build a revision prompt for an existing plan.
@@ -353,6 +529,8 @@ pub fn apply_revision_output(
     }
 
     let task_count = parsed.tasks.len();
+    // The plan as it was, for the diff (3216).
+    let before = std::fs::read_to_string(tasks_path).unwrap_or_default();
 
     // ── Step 4: Validate and write atomically ─────────────────────────────
     let report = save_plan_source(workdir, tasks_path, &repaired, models)?;
@@ -362,43 +540,129 @@ pub fn apply_revision_output(
         written,
         task_count: if written { task_count } else { 0 },
         report,
+        diff: written.then(|| plan_diff(&before, &repaired)),
     })
 }
 
 /// Most failed tasks a revision prompt lists from the plan's last run.
 const MAX_REVISION_FAILED_TASKS: usize = 5;
 
-/// Longest last-run failure summary a revision prompt carries, in characters.
-const MAX_REVISION_FAILURE_CHARS: usize = 2_000;
+/// Most distinct failed verify steps a revision prompt lists per failed task.
+const MAX_REVISION_FAILED_STEPS: usize = 3;
 
-/// How the plan's last run failed, for a revision prompt: each failed task with
-/// why it failed and its last error, from the report `roko diagnose` prints.
-/// `None` when the plan has no failed run on record.
-fn last_run_failure(workdir: &Path, plan_id: &str) -> Option<String> {
+/// The fewest characters the last-run section of a revision prompt may take,
+/// whatever the planner's context window.
+pub const MIN_REVISION_FAILURE_CHARS: usize = 8_000;
+
+/// The characters the last-run section of a revision prompt may take: a
+/// quarter of the planner's context window at about four characters a token,
+/// as plan generation budgets its source, and at least
+/// [`MIN_REVISION_FAILURE_CHARS`].
+pub fn revision_failure_budget(context_window: Option<u64>) -> usize {
+    context_window
+        .map_or(0, |window| usize::try_from(window).unwrap_or(usize::MAX))
+        .max(MIN_REVISION_FAILURE_CHARS)
+}
+
+/// How the plan's last run failed, for a revision or regeneration prompt
+/// (3215): for each failed task (at most 5), why it failed, its attempts and
+/// the models they ran on, then each distinct failed verify step, newest
+/// first and at most 3, with its command, its failure class and the gate's
+/// output, from the report `roko diagnose` prints. At most `budget`
+/// characters (never fewer than [`MIN_REVISION_FAILURE_CHARS`]), cut with a
+/// visible marker. `None` when the plan has no failed run on record.
+pub fn last_run_failure_context(workdir: &Path, plan_id: &str, budget: usize) -> Option<String> {
     use crate::commands::diagnose::{TaskState, build_report};
 
     let report = build_report(workdir, plan_id, false).ok()?;
     if report.status != "failed" {
         return None;
     }
-    let lines: Vec<String> = report
+    let sections: Vec<String> = report
         .tasks
         .iter()
         .filter(|task| task.state == TaskState::Failed)
         .take(MAX_REVISION_FAILED_TASKS)
-        .map(|task| {
-            let error = task
-                .last_error
-                .as_deref()
-                .map_or_else(String::new, |error| format!("; last error: {error}"));
-            format!("- task `{}`: {}{error}", task.task_id, task.reason)
-        })
+        .map(failed_task_context)
         .collect();
-    if lines.is_empty() {
+    if sections.is_empty() {
         return None;
     }
-    let summary = lines.join("\n");
-    Some(summary.chars().take(MAX_REVISION_FAILURE_CHARS).collect())
+    let text = sections.join("\n");
+    let budget = budget.max(MIN_REVISION_FAILURE_CHARS);
+    if text.chars().count() <= budget {
+        return Some(text);
+    }
+    let marker = format!("\n[... the last-run failure is cut here at {budget} characters ...]");
+    let kept: String = text
+        .chars()
+        .take(budget.saturating_sub(marker.chars().count()))
+        .collect();
+    Some(kept + &marker)
+}
+
+/// One failed task's part of [`last_run_failure_context`].
+fn failed_task_context(task: &crate::commands::diagnose::TaskDiagnosis) -> String {
+    use crate::commands::diagnose::enum_label;
+
+    let mut lines = vec![format!("- task `{}`: {}", task.task_id, task.reason)];
+    let mut models: Vec<&str> = Vec::new();
+    for attempt in &task.attempts {
+        if !models.contains(&attempt.model.as_str()) {
+            models.push(&attempt.model);
+        }
+    }
+    lines.push(format!(
+        "  attempts: {} ({} failed, {} timed out); models tried: {}",
+        task.attempt_count,
+        task.failed_attempts,
+        task.timed_out_attempts,
+        if models.is_empty() {
+            "none recorded".to_string()
+        } else {
+            models.join(", ")
+        }
+    ));
+    // Each distinct failure (by step and output), newest first, with how
+    // often it happened.
+    let mut distinct: Vec<(&crate::commands::diagnose::GateFailureInfo, usize)> = Vec::new();
+    for failure in task.gate_failures.iter().rev() {
+        let step = failure.verify_step.as_ref().map(|step| step.index);
+        let seen = distinct.iter_mut().find(|(other, _)| {
+            other.verify_step.as_ref().map(|step| step.index) == step
+                && other.summary == failure.summary
+        });
+        match seen {
+            Some((_, times)) => *times += 1,
+            None => distinct.push((failure, 1)),
+        }
+    }
+    for (failure, times) in distinct.into_iter().take(MAX_REVISION_FAILED_STEPS) {
+        let step = failure.verify_step.as_ref();
+        let name = step.map_or_else(
+            || "a verify step".to_string(),
+            |step| match &step.phase {
+                Some(phase) => format!("verify step {} ({phase})", step.index + 1),
+                None => format!("verify step {}", step.index + 1),
+            },
+        );
+        let command = step
+            .and_then(|step| step.command.as_deref())
+            .map_or_else(String::new, |command| format!(": `{command}`"));
+        lines.push(format!(
+            "  failed {name}{command}, {times} time{}; class {}, {} failure; gate output:",
+            if times == 1 { "" } else { "s" },
+            enum_label(&failure.primary_class),
+            enum_label(&failure.failure_kind)
+        ));
+        lines.extend(failure.summary.lines().map(|line| format!("    {line}")));
+    }
+    if task.gate_failures.is_empty()
+        && let Some(error) = &task.last_error
+    {
+        lines.push(format!("  last error: {error}"));
+    }
+    lines.join("\n")
 }
 
 /// Run the planning agent to revise an existing plan and write the result.
@@ -455,7 +719,9 @@ pub async fn revise_plan_source(
         }
     };
 
-    let last_failure = last_run_failure(workdir, plan_id);
+    let budget =
+        revision_failure_budget(crate::prd::planner_context_window(models, &planner_model));
+    let last_failure = last_run_failure_context(workdir, plan_id, budget);
 
     // First attempt.
     let first_prompt =
@@ -916,6 +1182,146 @@ command = "echo ok"
         assert!(!plain.contains("last run"), "{plain}");
     }
 
+    /// 3215: the revision prompt carries the failed attempts' gate output,
+    /// not a one-line summary. T2 failed `cargo test -p x parse` twice the
+    /// same way: the prompt names the step's command, its failure class and
+    /// an excerpt of its output, once, with how often it failed. A small
+    /// budget cuts the section with a visible marker.
+    #[test]
+    fn revision_prompt_carries_failed_gate_output() {
+        use crate::graph_checkpoint::{GraphCheckpointStatus, start_plan_checkpoint};
+        use roko_gate::{FailureClass, GateFailureAction, GateFailureKind, GateFailureRecord};
+        use roko_learn::telemetry::CostSource;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workdir = tmp.path();
+        let plan_dir = workdir.join("plans").join("my-plan");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        let tasks = minimal_valid_toml("my-plan").replace("total = 1", "total = 2")
+            + r#"
+[[task]]
+id = "T2"
+title = "Parse the retry limit"
+description = "Parse `retries` in `parse_config`."
+role = "implementer"
+tier = "focused"
+files = ["src/parse.rs"]
+depends_on = ["T1"]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p x parse"
+"#;
+        std::fs::write(plan_dir.join("tasks.toml"), &tasks).expect("write tasks.toml");
+        let plan = crate::runner::plan_loader::Plan {
+            id: "my-plan".to_string(),
+            dir: plan_dir.clone(),
+            tasks: TasksFile::parse(&plan_dir.join("tasks.toml")).expect("parse tasks.toml"),
+            prd_excerpt: String::new(),
+        };
+        let mut checkpoint = start_plan_checkpoint(workdir, &plan).expect("checkpoint");
+        checkpoint
+            .take_cost_ledger()
+            .persist(0, 0)
+            .expect("cost ledger");
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Failed)
+            .expect("finish the run");
+
+        let now = chrono::Utc::now();
+        let attempt = |seconds: i64| CostRecord {
+            timestamp: (now + chrono::Duration::seconds(seconds)).to_rfc3339(),
+            model: "glm-4.7".into(),
+            provider: "openai_compat".into(),
+            role: "implementer".into(),
+            plan_id: "my-plan".into(),
+            task_id: "T2".into(),
+            complexity_band: "focused".into(),
+            input_tokens: 100,
+            output_tokens: 50,
+            cached_tokens: 0,
+            cost_usd: 0.01,
+            duration_ms: 60_000,
+            success: false,
+            session_id: String::new(),
+            cost_source: CostSource::CliUsage,
+        };
+        let output = "verify[0:test] (`cargo test -p x parse`) failed: exit status 101\n\
+                      ---- parse::rejects_an_empty_limit stdout ----\n\
+                      thread 'parse::rejects_an_empty_limit' panicked at src/parse.rs:12:5:\n\
+                      assertion failed: limit.is_err()\n\
+                      test result: FAILED. 3 passed; 1 failed";
+        let failure = |seconds: i64| GateFailureRecord {
+            plan_id: "my-plan".into(),
+            task_id: "T2".into(),
+            gate_name: "graph-verify".into(),
+            rung: 0,
+            failure_kind: GateFailureKind::Permanent,
+            primary_class: FailureClass::TestExpectationFailure,
+            summary: output.into(),
+            recommended_action: GateFailureAction::Retry,
+            cargo_fix_candidate: false,
+            replan_candidate: false,
+            error_count: 1,
+            warning_count: 0,
+            timestamp: now + chrono::Duration::seconds(seconds),
+        };
+        let learn = workdir.join(".roko/learn");
+        std::fs::create_dir_all(&learn).expect("learn dir");
+        let jsonl = |rows: Vec<String>| rows.join("\n") + "\n";
+        let costs = [attempt(10), attempt(20)]
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("serialize"))
+            .collect();
+        std::fs::write(learn.join("costs.jsonl"), jsonl(costs)).expect("costs");
+        let failures = [failure(11), failure(21)]
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("serialize"))
+            .collect();
+        std::fs::write(learn.join("gate-failures.jsonl"), jsonl(failures)).expect("failures");
+
+        let context = last_run_failure_context(workdir, "my-plan", MIN_REVISION_FAILURE_CHARS)
+            .expect("the failed run is on record");
+        assert!(context.starts_with("- task `T2`:"), "{context}");
+        assert!(context.contains("models tried: glm-4.7"), "{context}");
+        assert!(
+            context.contains("failed verify step 1 (test): `cargo test -p x parse`, 2 times"),
+            "{context}"
+        );
+        assert!(
+            context.contains("class test_expectation_failure, permanent failure"),
+            "{context}"
+        );
+        assert!(
+            context.contains("    assertion failed: limit.is_err()"),
+            "{context}"
+        );
+        assert_eq!(context.matches("rejects_an_empty_limit stdout").count(), 1);
+
+        let prompt = build_revision_prompt("my-plan", &tasks, "split T2", Some(context.as_str()));
+        assert!(prompt.contains("test result: FAILED. 3 passed; 1 failed"), "{prompt}");
+
+        // The budget is a quarter of the planner's window, never under the
+        // floor; a section over it is cut with a marker.
+        assert_eq!(revision_failure_budget(None), MIN_REVISION_FAILURE_CHARS);
+        assert_eq!(revision_failure_budget(Some(200_000)), 200_000);
+        let padded = "x".repeat(MIN_REVISION_FAILURE_CHARS * 2);
+        std::fs::write(
+            learn.join("gate-failures.jsonl"),
+            jsonl(vec![
+                serde_json::to_string(&GateFailureRecord {
+                    summary: format!("verify[0:test] failed\n{padded}"),
+                    ..failure(30)
+                })
+                .expect("serialize"),
+            ]),
+        )
+        .expect("failures");
+        let cut = last_run_failure_context(workdir, "my-plan", 0).expect("still failed");
+        assert_eq!(cut.chars().count(), MIN_REVISION_FAILURE_CHARS);
+        assert!(cut.ends_with("characters ...]"), "{}", &cut[cut.len() - 80..]);
+    }
+
     /// A plan with no run on record has no failure to put in a revision
     /// prompt.
     #[test]
@@ -925,11 +1331,97 @@ command = "echo ok"
         std::fs::create_dir_all(&plan_dir).unwrap();
         std::fs::write(plan_dir.join("tasks.toml"), minimal_valid_toml("my-plan")).unwrap();
 
-        assert_eq!(last_run_failure(tmp.path(), "my-plan"), None);
+        assert_eq!(
+            last_run_failure_context(tmp.path(), "my-plan", MIN_REVISION_FAILURE_CHARS),
+            None
+        );
     }
 
     fn wrap_toml(toml: &str) -> String {
         format!("Here is the revised plan:\n\n```toml\n{toml}\n```\n")
+    }
+
+    /// 3216: a revision that removes T3, edits T1's verify command and adds
+    /// T4 answers with a diff listing exactly those three changes, in the
+    /// server's DTO and in the text a terminal prints.
+    #[test]
+    fn revise_response_includes_plan_diff() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workdir = tmp.path().join("workspace");
+        let plan_dir = workdir.join("plans").join("my-plan");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        let tasks_path = plan_dir.join("tasks.toml");
+        let task = |id: &str, command: &str| {
+            format!(
+                r#"
+[[task]]
+id = "{id}"
+title = "Task {id}"
+description = "Detailed description of task {id}."
+role = "implementer"
+tier = "focused"
+files = ["src/{id}.rs"]
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "{command}"
+fail_msg = "must pass"
+"#
+            )
+        };
+        let meta = "[meta]\nplan = \"my-plan\"\ntotal = 3\nmax_parallel = 1\n";
+        let before = [
+            meta.to_string(),
+            task("T1", "test -f src/T1.rs"),
+            task("T2", "test -f src/T2.rs"),
+            task("T3", "test -f src/T3.rs"),
+        ]
+        .concat();
+        std::fs::write(&tasks_path, &before).expect("write the plan");
+        let after = [
+            meta.to_string(),
+            task("T1", "grep -q retries src/T1.rs"),
+            task("T2", "test -f src/T2.rs"),
+            task("T4", "test -f src/T4.rs"),
+        ]
+        .concat();
+
+        let outcome = apply_revision_output(
+            &workdir,
+            "my-plan",
+            &tasks_path,
+            &wrap_toml(&after),
+            &empty_models(),
+        )
+        .expect("apply the revision");
+        assert!(outcome.written, "{:?}", outcome.report.diagnostics);
+        let dto = crate::serve_runtime::revision_to_dto(outcome.clone());
+        assert!(dto.revised);
+        let diff = dto.diff.expect("a written revision has a diff");
+        assert_eq!(diff.added, ["T4"]);
+        assert_eq!(diff.removed, ["T3"]);
+        assert!(diff.meta.is_empty(), "{diff:?}");
+        assert_eq!(diff.changed.len(), 1, "{diff:?}");
+        assert_eq!(diff.changed[0].id, "T1");
+        assert_eq!(diff.changed[0].keys.len(), 1, "{diff:?}");
+        let change = &diff.changed[0].keys[0];
+        assert_eq!(change.key, "verify");
+        let before_text = change.before.as_deref().unwrap_or_default();
+        let after_text = change.after.as_deref().unwrap_or_default();
+        assert!(before_text.contains("test -f src/T1.rs"), "{change:?}");
+        assert!(after_text.contains("grep -q retries src/T1.rs"), "{change:?}");
+
+        let text = outcome.diff.expect("the outcome has the diff").render_text();
+        assert!(
+            text.starts_with("plan diff: 1 added, 1 removed, 1 changed\n"),
+            "{text}"
+        );
+        for line in ["\n  + T4\n", "\n  - T3\n", "\n  ~ T1\n", "\n      verify: "] {
+            assert!(text.contains(line), "{line:?} in {text}");
+        }
+        assert_eq!(plan_diff(&after, &after), PlanDiff::default());
+        assert_eq!(plan_diff(&after, &after).render_text(), "plan diff: no changes");
     }
 
     /// A valid revision is written byte-for-byte as extracted.

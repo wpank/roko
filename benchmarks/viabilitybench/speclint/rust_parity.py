@@ -11,7 +11,10 @@ plans directory and again on each of those directories, and runs speclint on exa
 run scored: ``depends_on_plan`` outputs then resolve over the same plans in both tools. Bands, rule
 scores, verify classes and hard-fail details are compared as well, and fail the run only under
 ``--strict``. The script also checks that the fixtures vendored under
-``crates/roko-gate/tests/fixtures/speclint/`` still match ``fixtures/``.
+``crates/roko-gate/tests/fixtures/speclint/`` still match ``fixtures/``, and runs ``roko plan validate
+--spec-quality --dynamic --fixture`` on a copy of ``fixtures/dynamic/red-on-base`` (3214): every task's
+red-on-base result, outcome, SQ06 and HF3 must match the fixture's ``expected.json``, as speclint's
+``dynamic.py`` does in ``tests/test_dynamic.py``.
 
 Exit 0 when every task matches, 1 on a difference, 2 when a tool fails. Standard library only.
 """
@@ -20,8 +23,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,6 +38,7 @@ import speclint  # noqa: E402
 # The directory names `plan validate` does not descend into (plan_validate.rs collect_tasks_files).
 SKIPPED_DIRS = ("archive", "archived")
 VENDORED_FIXTURES = Path("crates/roko-gate/tests/fixtures/speclint")
+DYNAMIC_FIXTURE = SPECLINT_DIR / "fixtures" / "dynamic" / "red-on-base"
 RULE_TOLERANCE = 1e-3
 
 
@@ -154,6 +161,54 @@ def fixture_drift(root: Path) -> list[str]:
     return drift
 
 
+def expected_dynamic() -> dict[str, dict]:
+    """The dynamic fixture's expected results, by "<plan_path> <task_id>"."""
+    return json.loads((DYNAMIC_FIXTURE / "expected.json").read_text(encoding="utf-8"))["tasks"]
+
+
+def dynamic_records(roko: str, scratch: Path) -> dict[str, dict]:
+    """roko's red-on-base results for a copy of the dynamic fixture, by "<plan_path> <task_id>".
+
+    Runs ``plan validate --spec-quality --dynamic --fixture`` on the copy and again on its
+    ``archive/`` directory, which ``plan validate`` skips, with ``SPECLINT_FLAKY_COUNTER`` set as
+    ``tests/test_dynamic.py`` sets it. Each result has the fields ``expected.json`` pins.
+    """
+    workspace = scratch / DYNAMIC_FIXTURE.name
+    shutil.copytree(DYNAMIC_FIXTURE, workspace)
+    env = dict(os.environ, SPECLINT_FLAKY_COUNTER=str(scratch / "flaky-counter"))
+    found: dict[str, dict] = {}
+    for run_root in (workspace, workspace / "archive"):
+        command = [roko, "--repo", str(workspace), "plan", "validate", str(run_root), "--spec-quality", "--dynamic", "--fixture", "--json"]
+        proc = subprocess.run(command, cwd=workspace, env=env, capture_output=True, text=True)
+        try:
+            report = json.loads(proc.stdout)
+        except json.JSONDecodeError as err:
+            raise ToolError(f"{' '.join(command)} exited {proc.returncode} without JSON ({err}):\n{proc.stderr[-2000:]}") from err
+        if report.get("red_on_base") is None or report.get("spec_quality") is None:
+            raise ToolError(f"{' '.join(command)}: no red_on_base in the JSON; is roko built with 3214?")
+        outcomes = {f"{check['plan_path']} {check['task_id']}": check["outcome"] for check in report["red_on_base"]["checks"]}
+        for record in report["spec_quality"]["tasks"]:
+            key = f"{record['plan_path']} {record['task_id']}"
+            found[key] = {
+                "red_on_base": record["red_on_base"],
+                "outcome": outcomes.get(key),
+                "SQ06": record["rules"].get("SQ06"),
+                "HF3": "HF3" in record["hard_fail"],
+            }
+    return found
+
+
+def compare_dynamic(got: dict[str, dict], expected: dict[str, dict]) -> list[str]:
+    """The differences between roko's red-on-base results and the fixture's expected ones."""
+    failures = [f"{key}: missing from roko's records" for key in sorted(set(expected) - set(got))]
+    failures += [f"{key}: not in expected.json" for key in sorted(set(got) - set(expected))]
+    for key in sorted(set(expected) & set(got)):
+        for name, want in expected[key].items():
+            if got[key].get(name) != want:
+                failures.append(f"{key}: {name} {got[key].get(name)!r} vs {want!r}")
+    return failures
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="rust_parity.py", description=__doc__.split("\n\n")[0])
     parser.add_argument("plans", nargs="?", type=Path, default=Path("plans"), help="plans directory (default: plans)")
@@ -183,10 +238,13 @@ def main(argv: list[str] | None = None) -> int:
             if our_errors != their_errors:
                 result.failures.append(f"{run_root}: parse errors differ: roko {sorted(our_errors)}, speclint {sorted(their_errors)}")
             compare(ours, theirs, args.tolerance, result)
+        with tempfile.TemporaryDirectory(prefix="rust-parity-dynamic-") as scratch:
+            dynamic = dynamic_records(roko, Path(scratch))
     except ToolError as err:
         print(f"rust_parity: {err}", file=sys.stderr)
         return 2
     drift = fixture_drift(root)
+    dynamic_failures = compare_dynamic(dynamic, expected_dynamic())
 
     print(f"rust parity ({speclint.LINTER}): {len(runs)} plan validate runs, {n_files} files, {result.tasks} tasks compared")
     print(f"  score: max |delta| {result.max_delta:.2f} (tolerance {args.tolerance})")
@@ -199,7 +257,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  vendored fixtures: {'in sync' if not drift else f'{len(drift)} differences'}")
     for line in drift[: args.show]:
         print(f"    {line}")
-    ok = not result.failures and not drift and result.tasks > 0 and not (args.strict and result.notes)
+    print(f"  dynamic fixture (red on base): {len(dynamic)} tasks, {len(dynamic_failures)} differences")
+    for line in dynamic_failures[: args.show]:
+        print(f"    {line}")
+    ok = not result.failures and not drift and not dynamic_failures and result.tasks > 0 and not (args.strict and result.notes)
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

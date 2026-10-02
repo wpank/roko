@@ -1658,7 +1658,7 @@ fn mentions_timeout(text: &str) -> bool {
 }
 
 /// The snake_case name a gate failure enum serializes to.
-fn enum_label(value: &impl Serialize) -> String {
+pub(crate) fn enum_label(value: &impl Serialize) -> String {
     serde_json::to_value(value)
         .ok()
         .and_then(|value| value.as_str().map(str::to_string))

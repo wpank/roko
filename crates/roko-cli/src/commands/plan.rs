@@ -82,6 +82,33 @@ pub(crate) enum PlanCmd {
         /// exits 1.
         #[arg(long)]
         spec_quality: bool,
+        /// With `--spec-quality`: first run each implementer task's verify
+        /// steps twice on a clean checkout of its base commit, so the scores
+        /// count SQ06 (red on base) and find HF3 (a check that already
+        /// passes). No step runs in this checkout.
+        #[arg(long, requires = "spec_quality")]
+        dynamic: bool,
+        /// With `--dynamic`: the commit to check every plan against (default:
+        /// HEAD for a plan that has not run; none for the rest).
+        #[arg(long, requires = "dynamic", value_name = "REV")]
+        base: Option<String>,
+        /// With `--dynamic`: the most seconds one verify step may run
+        /// (default: `[spec_quality] red_on_base_timeout_secs`).
+        #[arg(
+            long,
+            requires = "dynamic",
+            value_name = "SECONDS",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        timeout: Option<u64>,
+        /// With `--dynamic`: an existing directory outside every checkout for
+        /// the base checkouts (default: the system temp directory).
+        #[arg(long, requires = "dynamic", value_name = "DIR")]
+        scratch: Option<PathBuf>,
+        /// With `--dynamic`: the workspace is a plain directory; check it
+        /// against a one-commit snapshot of itself.
+        #[arg(long, requires = "dynamic")]
+        fixture: bool,
     },
     /// Write a plan's companion documents beside its `tasks.toml`: `brief.md`
     /// (its artifacts, task map and risks), which dispatch adds to each of its
@@ -853,6 +880,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             json,
             dag,
             spec_quality,
+            dynamic,
+            base,
+            timeout,
+            scratch,
+            fixture,
         } => {
             let workdir = resolve_workdir(cli);
             // Read-only lint: skip the lock when a server owns the workspace;
@@ -863,8 +895,22 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             } else {
                 workdir.join(&dir)
             };
-            let exit =
-                cmd_plan_validate(&plans_dir, &workdir, strict, json || cli.json, spec_quality)?;
+            // 3214: `--dynamic` proves each task's checks red on the base.
+            let dynamic = dynamic.then(|| roko_cli::spec_red_on_base::RedOnBaseOptions {
+                base,
+                timeout: timeout.map(std::time::Duration::from_secs),
+                scratch,
+                fixture,
+                ..Default::default()
+            });
+            let exit = cmd_plan_validate(
+                &plans_dir,
+                &workdir,
+                strict,
+                json || cli.json,
+                spec_quality,
+                dynamic,
+            )?;
 
             if dag {
                 // Run DAG analysis on top of the lint output.
@@ -1214,26 +1260,18 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             tag,
             from_backlog,
         } => {
-            use roko_cli::agent_config::load_gateway_env;
-            use roko_cli::agent_exec::{
-                AgentExecEpisode, AgentExecOpts, run_agent_logged_with_spend,
-            };
-            use roko_cli::plan_authoring::AuthoringSpend;
-
             let workdir = std::env::current_dir().context("resolve cwd")?;
             // Plan generation is read-only on workspace state: it reads source
             // code and writes one plan to the workspace plans directory
             // (per-slug, non-overlapping).
             // No workspace lock needed (#226) — allows generating plans while
             // other plans are running.
-            let gw = load_gateway_env(&workdir);
 
             // --from-backlog: resolve backlog specs by numeric ID and generate
             // plans with deterministic slugs written to plans/ (#227).
             if let Some(ref backlog_ids_str) = from_backlog {
                 use roko_cli::plan_generate::{
-                    DEFAULT_BACKLOG_DIR, build_backlog_generation_prompt,
-                    build_backlog_task_prompt, parse_backlog_ids, resolve_backlog_spec,
+                    DEFAULT_BACKLOG_DIR, parse_backlog_ids, resolve_backlog_spec,
                     slug_from_backlog_stem,
                 };
 
@@ -1268,73 +1306,33 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                     tracing::info!(id, %slug, "generating plan from backlog spec");
 
-                    let system = build_backlog_generation_prompt(&workdir, &spec, &slug);
-                    let task_prompt = build_backlog_task_prompt(&spec, &slug);
-                    let task_id = format!("plan:generate:backlog:{id}");
-                    // The call's spend is recorded against the plan, as every
-                    // other generate path records it (bug-ac5432).
-                    let spend = AuthoringSpend::generation(&workdir, &slug, None);
-
-                    let exit_code = run_agent_logged_with_spend(
-                        AgentExecOpts {
-                            prompt: &task_prompt,
-                            workdir: &workdir,
-                            model: Some(model_key.as_str()),
-                            effort: Some("high"),
-                            system_prompt: Some(&system),
-                            resume_session: None,
-                            env_vars: &gw.vars,
-                            role: Some("strategist"),
-                            allowed_tools: None,
-                        },
-                        AgentExecEpisode {
-                            task_kind: "plan-generate",
-                            task_id: &task_id,
-                        },
-                        &spend,
-                    )
-                    .await;
-
-                    match exit_code {
-                        Ok(code) if code == EXIT_SUCCESS => {
-                            // Validate the generated tasks.toml.
-                            let tasks_path = plan_dir.join("tasks.toml");
-                            if tasks_path.is_file() {
-                                match roko_cli::task_parser::TasksFile::parse(&tasks_path) {
-                                    Ok(tf) => {
-                                        tracing::info!(
-                                            id,
-                                            %slug,
-                                            task_count = tf.tasks.len(),
-                                            "plan generated"
-                                        );
-                                        results.push((*id, slug, "generated"));
-                                    }
-                                    Err(err) => {
-                                        tracing::warn!(
-                                            id,
-                                            %slug,
-                                            error = %err,
-                                            "plan generated but validation failed"
-                                        );
-                                        results.push((*id, slug, "validation-failed"));
-                                    }
-                                }
-                            } else {
-                                tracing::warn!(
-                                    id,
-                                    %slug,
-                                    "agent succeeded but no tasks.toml written"
-                                );
-                                results.push((*id, slug, "no-output"));
-                            }
+                    // 3220: the one plan generator (gap-2623b2) repairs,
+                    // validates, scores and writes the plan to plans/<slug>/,
+                    // as every other plan-writing path does.
+                    let request = roko_cli::prd::PlanRequest {
+                        model: Some(model_key.as_str()),
+                        effort: Some("high"),
+                        ..roko_cli::prd::PlanRequest::new(
+                            roko_cli::prd::PlanSource::Text {
+                                text: &spec.source_text,
+                                kind: "backlog spec",
+                            },
+                            &slug,
+                            &workdir,
+                        )
+                    };
+                    match roko_cli::prd::generate_plan(request).await {
+                        Ok((_, outcome)) if outcome.artifact_valid => {
+                            tracing::info!(id, %slug, "plan generated");
+                            results.push((*id, slug, "generated"));
                         }
-                        Ok(code) => {
-                            tracing::error!(id, %slug, exit_code = code, "agent exited with non-zero code");
-                            results.push((*id, slug, "failed"));
+                        Ok(_) => {
+                            tracing::warn!(id, %slug, "plan generated but validation failed");
+                            results.push((*id, slug, "validation-failed"));
                         }
                         Err(err) => {
-                            tracing::error!(id, %slug, error = %err, "agent failed");
+                            let error = format!("{err:#}");
+                            tracing::error!(id, %slug, %error, "plan generation failed");
                             results.push((*id, slug, "error"));
                         }
                     }
@@ -2422,7 +2420,16 @@ fn spec_gate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
             return Some(1);
         }
     };
-    let red_on_base = std::collections::BTreeMap::new();
+    // gap-0ee70b: prove each task's shell checks red on the base first; a
+    // check that already passes there is HF3. Cargo checks are left to the
+    // batch gate unless `[spec_quality] red_on_base_cargo` is set.
+    let red_on_base = match roko_cli::spec_red_on_base::gate_results(&files, workdir, &config) {
+        Ok(results) => results,
+        Err(interrupted) => {
+            tracing::error!("{interrupted}");
+            return Some(128 + interrupted.signal);
+        }
+    };
     let report = roko_cli::spec_gate::check_plans(&files, workdir, &config, &red_on_base);
     for decision in report.blocked() {
         for finding in &decision.findings {
@@ -2455,6 +2462,8 @@ struct ValidateJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     spec_quality: Option<&'a roko_gate::spec_quality::SpecQualityReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    red_on_base: Option<&'a roko_cli::spec_red_on_base::RedOnBaseReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     workspace_rungs: Option<&'a plan_validate::WorkspaceRungs>,
 }
 
@@ -2464,6 +2473,7 @@ pub(crate) fn cmd_plan_validate(
     strict: bool,
     json_output: bool,
     spec_quality: bool,
+    dynamic: Option<roko_cli::spec_red_on_base::RedOnBaseOptions>,
 ) -> Result<i32> {
     let config_path = workdir.join("roko.toml");
     let config = if config_path.is_file() {
@@ -2494,10 +2504,46 @@ pub(crate) fn cmd_plan_validate(
     };
 
     // S07.9: score every task's spec with the speclint rules. Only the flag adds output.
-    let spec_report = spec_quality
+    let spec_files = spec_quality
         .then(|| plan_validate::collect_tasks_files(dir))
-        .transpose()?
-        .map(|files| roko_gate::spec_quality::lint_files(&files, workdir));
+        .transpose()?;
+    // 3214: with --dynamic, each implementer task's checks first run on its
+    // base, so the scores count SQ06 and find HF3.
+    let red_on_base = match (&spec_files, dynamic) {
+        (Some(files), Some(mut options)) => {
+            let spec_config = config
+                .as_ref()
+                .map(|config| config.spec_quality.clone())
+                .unwrap_or_default();
+            options.timeout = options.timeout.or(Some(std::time::Duration::from_secs(
+                spec_config.red_on_base_timeout_secs,
+            )));
+            // gap-0ee70b: cargo checks are proven at the batch gate unless
+            // `[spec_quality] red_on_base_cargo` is set.
+            if !spec_config.red_on_base_cargo {
+                options.cargo = roko_cli::spec_red_on_base::CargoSteps::Skip;
+            }
+            match roko_cli::spec_red_on_base::check_plans(files, workdir, &options) {
+                Ok(report) => Some(report),
+                Err(error) => {
+                    use roko_cli::spec_red_on_base::Interrupted;
+                    if let Some(interrupted) = error.downcast_ref::<Interrupted>() {
+                        eprintln!("{interrupted}");
+                        return Ok(128 + interrupted.signal);
+                    }
+                    return Err(error.context("plan validate --dynamic"));
+                }
+            }
+        }
+        _ => None,
+    };
+    let spec_report = spec_files.map(|files| {
+        let results = red_on_base
+            .as_ref()
+            .map(|report| report.results())
+            .unwrap_or_default();
+        roko_gate::spec_quality::lint_files_with(&files, workdir, &results)
+    });
 
     // The workspace rungs every plan task runs after its own verify steps.
     let rungs = config
@@ -2510,6 +2556,7 @@ pub(crate) fn cmd_plan_validate(
         let output = ValidateJson {
             report: &report,
             spec_quality: spec_report.as_ref(),
+            red_on_base: red_on_base.as_ref(),
             workspace_rungs: rungs.as_ref(),
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -2533,6 +2580,9 @@ pub(crate) fn cmd_plan_validate(
         println!("{text}");
         if let Some(spec_quality) = &spec_report {
             println!("\n{}", roko_gate::spec_quality::render_text(spec_quality));
+        }
+        if let Some(red_on_base) = &red_on_base {
+            println!("\n{}", red_on_base.render_text());
         }
     }
     // A hard fail fails the run only under --strict; a low score never does.

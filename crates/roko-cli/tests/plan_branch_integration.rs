@@ -49,7 +49,8 @@ fn git(dir: &Path, args: &[&str]) -> String {
 fn seed_repo(repo: &Path, provider: &Path, files: &[(&str, &str)]) {
     let config = format!(
         "[agent]\ndefault_model = \"fake\"\n\n[providers.fake]\nkind = \"claude_cli\"\n\
-         command = {:?}\n\n[models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n",
+         command = {:?}\n\n[models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n\n\
+         [spec_quality]\nred_on_base = false\n",
         provider.display().to_string()
     );
     for (path, contents) in [("roko.toml", config.as_str())]

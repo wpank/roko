@@ -193,6 +193,50 @@ pub struct RevisionDto {
     pub task_count: usize,
     /// Validation report for the revised source.
     pub validation: PlanValidationDto,
+    /// What the revision changed, task by task (3216); absent when nothing
+    /// was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<PlanDiffDto>,
+}
+
+/// What a revision changed in a plan, task by task, mirroring
+/// `roko_cli::plan_authoring::PlanDiff`: a structural diff of the parsed
+/// tables, matched by task id.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanDiffDto {
+    /// `[meta]` keys whose value changed.
+    #[serde(default)]
+    pub meta: Vec<KeyChangeDto>,
+    /// Ids of the tasks the revision added.
+    #[serde(default)]
+    pub added: Vec<String>,
+    /// Ids of the tasks the revision removed.
+    #[serde(default)]
+    pub removed: Vec<String>,
+    /// The tasks in both plans whose keys changed.
+    #[serde(default)]
+    pub changed: Vec<TaskChangeDto>,
+}
+
+/// One key whose value a revision changed, each side as TOML text; `None` on
+/// the side where the key is absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyChangeDto {
+    /// The key, such as `verify` or `files`.
+    pub key: String,
+    /// Its value before the revision.
+    pub before: Option<String>,
+    /// Its value after the revision.
+    pub after: Option<String>,
+}
+
+/// The keys of one task that a revision changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskChangeDto {
+    /// The task id.
+    pub id: String,
+    /// Its changed keys.
+    pub keys: Vec<KeyChangeDto>,
 }
 
 /// Outcome returned by `create_plan`.

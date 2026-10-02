@@ -1497,6 +1497,7 @@ async fn generation_outcome_partial_success_does_not_seed_learning() {
         process_success: true,
         artifact_valid: false,
         validation_report: None,
+        spec_quality: None,
     };
 
     runtime

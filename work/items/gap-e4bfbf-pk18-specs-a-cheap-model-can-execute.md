@@ -93,3 +93,19 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK17 (gap-cb5133).
 - Suggested model: opus.
+
+## Progress
+
+Worker claude-agent on `work/gap-e4bfbf` from `79ba9911f`, 2026-10-02. Rust tasks are implemented, not done: cargo
+verification is deferred to the batch gate. Python checks run: speclint's tests (98 passed, `rust_parity.py` included).
+
+- 3214: implemented at e6558f666 (`spec_red_on_base.rs`, `plan validate --spec-quality --dynamic [--base --timeout --scratch --fixture]`, `runs_program` in roko-gate's shell parser, `rust_parity.py` compares `fixtures/dynamic/red-on-base`)
+- 3215: implemented at 053a96707 (`last_run_failure_context`, budget a quarter of the planner window, 8,000-character floor)
+- 3216: implemented at 943cce681 (`plan_diff`, `RevisionOutcome.diff`, `RevisionDto.diff`)
+- 3217: implemented at 08688a721 (verify passes; `roko config validate` 0 errors with the wave-1 batch binary; the `prd plan --dry-run` planner check not run, as it calls the planner)
+- 3218: implemented at 9432ffcbb (spec hard fails retried, one regeneration for a weak plan, `GenerationOutcome.spec_quality`)
+- 3219: implemented at 501d55fa1 (TSS v1 fields, open questions, checklist; example checks made red on the base)
+- 3220: implemented at 894833848 (verify passes: the two backlog prompt builders are gone)
+- 3221: implemented at e765a734c (`prd/accept_blocks.rs`)
+- 3222: implemented at 1785ec795
+- 3223: blocked: needs a roko built with 3217–3222 (the batch gate) and live planner runs on the Claude CLI subscription; a static worker runs no cargo, and the fixtures must not be hand-written

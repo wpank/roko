@@ -55,6 +55,7 @@ benchmarks/viabilitybench/
   analysis/{metrics, passk, report}.py                      # vb report
   analysis/gates.py                                         # gate pages: G0's go/no-go (go-no-go.md, g0.json)
   analysis/{bootstrap, cs, mcnemar, cuped}.py               # S09 §4.1's toolkit: bootstrap, sequences, McNemar, CUPED
+  analysis/{envelope, holm}.py                              # H1's envelope (E*) and graphical Holm over the primaries
   analysis/models/{glmm, irt}.py                            # the secondaries on numpy and scipy (decision 3336)
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/

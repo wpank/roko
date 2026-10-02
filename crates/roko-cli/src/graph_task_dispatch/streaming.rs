@@ -450,7 +450,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 {
                     let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
                     attempt.verify_started();
-                    let verification = helper_calls
+                    let report = helper_calls
                         .scope(self.settle_task_verification(
                             spec,
                             &task,
@@ -463,7 +463,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                         ))
                         .await;
                     attempt.verify_ended();
-                    Some(verification)
+                    attempt.record_verify_steps(report.steps);
+                    Some(report.result)
                 } else {
                     None
                 };

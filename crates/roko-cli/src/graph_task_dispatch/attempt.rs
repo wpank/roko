@@ -24,7 +24,7 @@
 //! (`reflex_credit`).
 
 use roko_learn::telemetry::records::b3_digest;
-use roko_learn::telemetry::records::{AttemptCost, AttemptUsage, CacheWriteClass};
+use roko_learn::telemetry::records::{AttemptCost, AttemptUsage, CacheWriteClass, VerifyStepVerdict};
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord,
     AttemptOrdinals, AttemptTiming, AttemptVerdictRecord, Blame, CostSource, ExecutedModel,
@@ -236,6 +236,7 @@ impl AttemptBook {
             ladder: None,
             reflex_rule: None,
             live_tool_calls: LiveToolCalls::default(),
+            verify_steps: Vec::new(),
             run,
         }
     }
@@ -260,6 +261,8 @@ pub(super) struct AttemptContext {
     reflex_rule: Option<uuid::Uuid>,
     /// The tool calls the attempt's live output shows (bug-264c41).
     live_tool_calls: LiveToolCalls,
+    /// What each verify step did, once verification settled (backlog 2104).
+    verify_steps: Vec<VerifyStepVerdict>,
     run: Arc<RunAttempts>,
 }
 
@@ -287,6 +290,12 @@ impl AttemptContext {
     /// Verification ended.
     pub(super) fn verify_ended(&mut self) {
         self.timing.verify_ended_at = Some(now_ms());
+    }
+
+    /// Verification found `steps`: what each verify step did, which the
+    /// verdict lists (backlog 2104).
+    pub(super) fn record_verify_steps(&mut self, steps: Vec<VerifyStepVerdict>) {
+        self.verify_steps = steps;
     }
 
     /// Provider failover passed over `failover`'s models before the one
@@ -343,6 +352,7 @@ impl AttemptContext {
         verdict.task_spec_hash = Some(self.task_spec_hash);
         verdict.gate_verdict = gate_verdict;
         verdict.failure_class = failure_class(outcome, failure_reason.as_deref(), rung);
+        verdict.steps = self.verify_steps;
         verdict.timing = self.timing;
         // The call's time to first token, measured from its start
         // (gap-7a8474), places the first token. A call that streamed no
@@ -810,7 +820,7 @@ fn cost_source(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> Co
     CostSource::from_usage_source(&usage.source, is_cli_backend(dispatch.target.provider_kind))
 }
 
-fn sha256_hex(text: &str) -> String {
+pub(super) fn sha256_hex(text: &str) -> String {
     format!("{:x}", sha2::Sha256::digest(text.as_bytes()))
 }
 

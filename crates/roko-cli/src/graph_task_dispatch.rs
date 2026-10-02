@@ -1739,7 +1739,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let attempt_key = attempt.key.attempt_key();
         let helper_calls = HelperCalls::default();
         attempt.verify_started();
-        let verification = helper_calls
+        let report = helper_calls
             .scope(self.settle_task_verification(
                 spec,
                 &task,
@@ -1752,6 +1752,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             ))
             .await;
         attempt.verify_ended();
+        attempt.record_verify_steps(report.steps);
+        let verification = report.result;
         // The helper model calls verification made count toward this
         // attempt, the background ones included (bug-62e3f4).
         attempt.record_helper_calls(

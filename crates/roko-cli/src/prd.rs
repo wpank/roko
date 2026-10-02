@@ -1477,7 +1477,8 @@ fn spec_regeneration_prompt(task_prompt: &str, plan: &str, scores: &SpecScores) 
          lowest task {:.1}). Each weak task lists the spec rules it scored 0 on:\n{}\n\n\
          ```toml\n{plan}\n```\n\n\
          Rewrite the whole plan so every weak task meets those rules, and keep what already \
-         works. Output the complete plan as a single ```toml fenced block.",
+         works. Output the complete plan as a single ```toml fenced block, followed only by \
+         the ```accept:accept/<file> blocks of the tests it pins.",
         scores.mean,
         scores.min,
         scores.weak.join("\n")
@@ -2225,8 +2226,9 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                 let retry_prompt = format!(
                     "Previous attempt produced invalid TOML. Error: {error}\n\n\
                      Invalid output (truncated):\n```\n{truncated_output}\n```\n\n\
-                     Please regenerate a valid tasks.toml. Your ENTIRE response must be \
-                     a single ```toml fenced block with no other text.\n\n\
+                     Please regenerate a valid tasks.toml. Your response must be a single \
+                     ```toml fenced block, followed only by an ```accept:accept/<file> block for \
+                     each test its [task.accept] entries name.\n\n\
                      MINIMUM REQUIRED STRUCTURE:\n\
                      ```toml\n\
                      [meta]\n\

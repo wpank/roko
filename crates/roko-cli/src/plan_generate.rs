@@ -127,8 +127,10 @@ pub(crate) fn render_plan_template_guidance(template: PlanTemplateKind) -> Strin
 /// `{TIER_SIZE_LIMITS}` by [`render_tier_size_limits`].
 const PLAN_GENERATOR_SYSTEM_PROMPT: &str = r#"## CRITICAL: Output format
 
-Your entire response MUST be a single ```toml fenced code block containing ONLY valid TOML.
-Do not include prose, explanations, Rust code, or markdown outside the TOML block.
+Your response MUST be a single ```toml fenced code block containing ONLY valid TOML, followed
+only by one ```accept:accept/<file> block for each acceptance test the plan pins (see
+"Planner-written acceptance tests" below).
+Do not include prose, explanations, Rust code, or markdown outside those blocks.
 
 MINIMUM VALID STRUCTURE (use this as your template):
 ```toml
@@ -347,6 +349,42 @@ Detect the project language and use the right commands:
 - **architect/researcher/strategist**: MUST have only structural checks on files that already exist (e.g. `grep -q ...`). These roles cannot write, so never verify an output file they would have to create, and do NOT add compile/test verify steps.
 - **scribe/quick-reviewer**: structural checks only (verify docs exist, verify reviewed files haven't changed)
 
+## Planner-written acceptance tests ([task.accept])
+
+When a task's outcome can be checked by a test you can write now, write the test yourself and pin it in `[task.accept]`: the run copies your test into place before each check, so the implementer can neither edit nor weaken it.
+
+1. After the tasks.toml block, emit the test as its own fenced block whose info string is `accept:` followed by its path under `accept/` in the plan directory, for example ```accept:accept/test_slug.py on the opening line. At most 8 such blocks, each under 64 KB.
+2. Declare it in the task with the four keys:
+   - `src`: the block's path, relative to the plan directory (`accept/...`).
+   - `dest`: where the run copies the pinned test, relative to the repository root.
+   - `runner`: the command that runs it from the repository root; `{dest}` expands to the copied test's path and `{count}` to `count`.
+   - `count`: exactly how many tests the file holds; the check fails unless the runner reports exactly that many passing.
+
+Rules:
+- The test must fail on the unchanged code: it calls or imports what the task adds.
+- It states outcomes (inputs and the outputs, files, exit codes or messages they produce), not how the code gets there.
+- `count` is the number of tests in the file.
+- The task's own `files` never include `dest`: the run writes it, the implementer does not.
+- Keep the task's own `[[task.verify]]` step as well; the pinned test runs before it.
+
+Rust example, an integration test the run copies into the crate's `tests/`:
+
+```toml
+[task.accept]
+files = [
+    { src = "accept/slug_accept.rs", dest = "crates/roko-core/tests/slug_accept.rs", runner = "cargo test -p roko-core --test slug_accept", count = 3 },
+]
+```
+
+Python example:
+
+```toml
+[task.accept]
+files = [
+    { src = "accept/test_slug.py", dest = "tests/test_slug.py", runner = "python3 -m unittest tests.test_slug", count = 2 },
+]
+```
+
 ## Quality gates for YOUR output
 
 Before finalizing, verify your tasks against:
@@ -366,6 +404,7 @@ Before finalizing, verify your tasks against:
 - [ ] Every test-class verify step has `covers` naming its criteria and `expect = "fail_on_base"` (`"pass_on_base"` only for a regression check)
 - [ ] Every `read_files` entry has a `why`, and `non_goals` says what the task must leave alone
 - [ ] Every choice the source leaves open is an `open_questions` entry, not a guess
+- [ ] Each test you could write now is pinned: an ```accept:accept/<file> block plus a `[task.accept]` entry whose `count` matches the file and whose `dest` is not in the task's `files`
 
 ## File Path Rules
 
@@ -606,6 +645,51 @@ mod template_tests {
         let report = roko_gate::spec_quality::lint_files(&[path], &root);
         assert_eq!(report.tasks.len(), 1, "{report:?}");
         assert!(report.tasks[0].hard_fail.is_empty(), "{:?}", report.tasks[0]);
+    }
+
+    /// 3222: the generator prompt teaches `[task.accept]`: the section, the
+    /// `accept:` block syntax and the four keys, with a Rust and a Python
+    /// example, and the Python example's entry passes `accept_issues`
+    /// against an example test file.
+    #[test]
+    fn generator_prompt_teaches_task_accept() {
+        let prompt = PLAN_GENERATOR_SYSTEM_PROMPT;
+        for needle in [
+            "## Planner-written acceptance tests ([task.accept])",
+            "```accept:accept/test_slug.py",
+            "`src`",
+            "`dest`",
+            "`runner`",
+            "`count`",
+            "`{dest}`",
+            "`{count}`",
+            "The test must fail on the unchanged code",
+            "never include `dest`",
+            "cargo test -p roko-core --test slug_accept",
+            "python3 -m unittest tests.test_slug",
+        ] {
+            assert!(prompt.contains(needle), "the prompt names {needle}");
+        }
+
+        let start = prompt.find("Python example").expect("the Python example");
+        let block = prompt[start..]
+            .split("```toml\n")
+            .nth(1)
+            .and_then(|tail| tail.split("```").next())
+            .expect("its TOML");
+        let plan = format!(
+            "[meta]\nplan = \"p\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Slugs\"\n\
+             role = \"implementer\"\nfiles = [\"src/slug.py\"]\n\
+             verify = [{{ phase = \"test\", command = \"test -f src/slug.py\" }}]\n\n{block}"
+        );
+        let parsed = crate::task_parser::TasksFile::parse_str(&plan).expect("parse the example");
+        let entry = &parsed.tasks[0].accept.as_ref().expect("[task.accept]").files[0];
+        assert!(!parsed.tasks[0].files.contains(&entry.dest));
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("accept")).expect("accept dir");
+        std::fs::write(dir.path().join(&entry.src), "import unittest\n").expect("the test");
+        let issues = crate::task_accept::accept_issues(&parsed.tasks[0], dir.path());
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     #[test]

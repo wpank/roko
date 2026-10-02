@@ -132,14 +132,35 @@ describe('plan_completed', () => {
 // ── run_completed ─────────────────────────────────────────────────────────────
 
 describe('run_completed', () => {
-  it('sets durationMs and outcome, marks running plans completed, cancels active tasks', () => {
+  it('sets durationMs and outcome, marks running plans completed, interrupts active tasks', () => {
     let s = startTask('p1', 't1');
     s = applyEvent(s, { type: 'run_completed', outcome: 'succeeded', duration_ms: 5000 }, 9000);
     expect(s.run.durationMs).toBe(5000);
     expect(s.run.outcome).toBe('succeeded');
     expect(s.plans['p1']!.phase).toBe('completed');
+    // A task still running did not finish: never passed, counted as failed,
+    // as in the server's snapshot (bug-60ccba).
+    expect(s.tasks[taskKey('p1', 't1')]).toMatchObject({ status: 'interrupted', finishedAtMs: 9000 });
+    expect(s.plans['p1']).toMatchObject({ tasksDone: 0, tasksFailed: 1 });
+    // A repeated completion counts nothing more.
+    s = applyEvent(s, { type: 'run_completed', outcome: 'failed', duration_ms: 6000 }, 9100);
+    expect(s.plans['p1']!.tasksFailed).toBe(1);
+  });
+
+  it('cancels active tasks when the run is cancelled, counting nothing', () => {
+    let s = startTask('p1', 't1');
+    s = applyEvent(s, { type: 'run_completed', outcome: 'cancelled', duration_ms: 100 }, 9000);
     expect(s.tasks[taskKey('p1', 't1')]!.status).toBe('cancelled');
-    // agents inactive
+    expect(s.plans['p1']).toMatchObject({ phase: 'cancelled', tasksDone: 0, tasksFailed: 0 });
+  });
+
+  it('takes an interrupted task back out of the failed count when it starts again', () => {
+    let s = startTask('p1', 't1');
+    s = applyEvent(s, { type: 'run_completed', outcome: 'failed', duration_ms: 100 }, 9000);
+    expect(s.plans['p1']!.tasksFailed).toBe(1);
+    s = applyEvent(s, { type: 'task_started', plan_id: 'p1', task_id: 't1', phase: 'impl' }, 9100);
+    expect(s.tasks[taskKey('p1', 't1')]).toMatchObject({ status: 'active', attempts: 2 });
+    expect(s.plans['p1']!.tasksFailed).toBe(0);
   });
 
   it('does not overwrite durationMs when already set', () => {
@@ -252,6 +273,13 @@ describe('task_completed', () => {
     s = applyEvent(s, { type: 'task_started', plan_id: 'p1', task_id: 't1', phase: 'impl' }, 2100);
     expect(s.tasks[taskKey('p1', 't1')]).toMatchObject({ status: 'active', attempts: 2 });
     expect(s.plans['p1']!.tasksDone).toBe(0);
+  });
+
+  it('classifies "interrupted" as its own status, counted as failed', () => {
+    let s = startTask('p1', 't1');
+    s = applyEvent(s, { type: 'task_completed', plan_id: 'p1', task_id: 't1', outcome: 'interrupted' }, 2000);
+    expect(s.tasks[taskKey('p1', 't1')]!.status).toBe('interrupted');
+    expect(s.plans['p1']).toMatchObject({ tasksDone: 0, tasksFailed: 1 });
   });
 
   it('classifies "blocked" as skipped, counted as neither done nor failed', () => {
@@ -658,6 +686,13 @@ describe('fromSnapshot', () => {
     snap.tasks['p1/t2']!.outcome = 'passed_with_preexisting_failures';
     const s = fromSnapshot(snap, 9000);
     expect(s.tasks[taskKey('p1', 't2')]!.status).toBe('passed_with_preexisting_failures');
+  });
+
+  it('keeps an interrupted task apart from a failed one', () => {
+    const snap = makeSnapshot();
+    snap.tasks['p1/t2']!.outcome = 'interrupted';
+    const s = fromSnapshot(snap, 9000);
+    expect(s.tasks[taskKey('p1', 't2')]!.status).toBe('interrupted');
   });
 
   it('keeps the blocker of a blocked task, shown as skipped', () => {

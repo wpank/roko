@@ -42,6 +42,12 @@ export const TASK_OUTCOME_ALREADY_SATISFIED = 'already_satisfied' as const;
  */
 export const TASK_OUTCOME_BLOCKED = 'blocked' as const;
 
+/**
+ * Outcome string of a task that was still running when its run ended other than by cancellation
+ * (bug-60ccba). Counted as failed: it did not finish.
+ */
+export const TASK_OUTCOME_INTERRUPTED = 'interrupted' as const;
+
 // ---------------------------------------------------------------------------
 // Dashboard events
 // ---------------------------------------------------------------------------

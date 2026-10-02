@@ -880,8 +880,8 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix,
-        verify_step,
+        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher,
+        make_test_dispatcher_with, no_auto_fix, verify_step,
     };
 
     /// Save a prompt experiment on the implementer's role section at
@@ -942,6 +942,20 @@ mod tests {
     async fn playbook_counts(playbooks: &PlaybookStore) -> (u64, u64) {
         let playbook = playbooks.load("banner-steps").await.unwrap().unwrap();
         (playbook.success_count, playbook.failure_count)
+    }
+
+    /// A dispatcher on [`FLAKY_PROVIDER`] whose attempts run under a
+    /// `--model` pin of the task's own model. The router learns from a
+    /// pinned attempt through its dampened override path, and from a task
+    /// hint not at all (decision 4111).
+    async fn pinned_dispatcher(
+        temp: &tempfile::TempDir,
+        feedback: GraphFeedbackContext,
+    ) -> (Arc<GraphTaskDispatcher>, TaskDef) {
+        make_test_dispatcher_with(temp, FLAKY_PROVIDER, no_auto_fix, feedback, |dispatcher| {
+            dispatcher.with_cli_model_override(Some("stream-model".to_string()))
+        })
+        .await
     }
 
     /// The router's confidence trials and successes for the dispatched
@@ -1049,7 +1063,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
     /// success from a passing verify step and a failure from a failing one,
     /// and nothing from an attempt without verify steps, a provider transport
     /// error or exhausted usage, although the provider call succeeded or the
-    /// model never got to work.
+    /// model never got to work. The attempts run under a `--model` pin, which
+    /// the router learns from (decision 4111).
     #[tokio::test]
     async fn routing_learns_only_from_gate_verdicts() {
         let temp = tempdir().expect("tempdir");
@@ -1061,8 +1076,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             feedback_facade: Some(Arc::new(facade)),
             ..GraphFeedbackContext::default()
         };
-        let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, FLAKY_PROVIDER, no_auto_fix, feedback).await;
+        let (dispatcher, mut task) = pinned_dispatcher(&temp, feedback).await;
         let ctx = CellContext::new();
 
         task.verify = vec![verify_step("check", "true")];
@@ -1575,7 +1589,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
     /// settled verdict. The provider bridge still records every call's
     /// efficiency row and, in the factory's registry, the provider's health,
     /// but it no longer observes or saves `cascade-router.json` from the
-    /// provider's own success, before any gate ran.
+    /// provider's own success, before any gate ran. The attempts run under a
+    /// `--model` pin, which the router learns from (decision 4111).
     #[tokio::test]
     async fn graph_dispatch_router_learns_only_from_settled_verdicts() {
         let temp = tempdir().expect("tempdir");
@@ -1587,8 +1602,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             feedback_facade: Some(Arc::new(facade)),
             ..GraphFeedbackContext::default()
         };
-        let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, FLAKY_PROVIDER, no_auto_fix, feedback).await;
+        let (dispatcher, mut task) = pinned_dispatcher(&temp, feedback).await;
         let ctx = CellContext::new();
 
         dispatcher
@@ -1630,7 +1644,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
     /// learning label, so none of them moves a learner (router, playbooks,
     /// daimon, prompt experiments, durable knowledge). The first two still
     /// leave episodes, labelled `null`, and all three leave verdicts, so none
-    /// reads as abandoned. A pass then moves every learner.
+    /// reads as abandoned. A pass then moves every learner; the attempts run
+    /// under a `--model` pin, which the router learns from (decision 4111).
     #[tokio::test]
     async fn learning_sinks_skip_attempts_without_a_learning_label() {
         let temp = tempdir().expect("tempdir");
@@ -1659,8 +1674,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             runs_dir: Some(roko.join("runs")),
             ..GraphFeedbackContext::default()
         };
-        let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, FLAKY_PROVIDER, no_auto_fix, feedback).await;
+        let (dispatcher, mut task) = pinned_dispatcher(&temp, feedback).await;
         task.title = "Render the greeting banner".into();
         let ctx = CellContext::new().with_run_id("run-labels".to_string());
         let affect_ticks = || daimon.lock().unwrap().state.tick_count;

@@ -183,8 +183,8 @@ pub enum ModelChoiceSource {
     /// Author intent (`task.model_hint`).
     TaskHint,
     /// The task's start rung on `[routing.ladder]` ([`RoutingLadder`]).
-    /// Feedback records its outcome like a router pick, so the learner
-    /// sees every rung.
+    /// Its outcome teaches the cascade router nothing (decision 4111): the
+    /// router learns only from its own picks.
     Ladder {
         /// Index of the rung among the task's rungs, cheapest first.
         rung: usize,

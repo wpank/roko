@@ -422,7 +422,7 @@ mod tests {
     use super::*;
     use crate::graph_task_dispatch::tests::{
         FIXTURE_PROVIDER_TIMEOUT_MS, VERIFY_PROVIDER, final_turn, jsonl_rows_where, make_spec,
-        make_test_dispatcher, no_auto_fix, recording_feedback, spawn_openai_mock, verify_step,
+        make_test_dispatcher_with, no_auto_fix, recording_feedback, spawn_openai_mock, verify_step,
     };
 
     const RUN: &str = "graph-helper-run";
@@ -440,11 +440,24 @@ mod tests {
         TaskDef,
         Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
     ) {
+        helper_fixture_with(temp, feedback, |dispatcher| dispatcher).await
+    }
+
+    /// Like [`helper_fixture`], finishing the dispatcher with `finish`.
+    async fn helper_fixture_with(
+        temp: &tempfile::TempDir,
+        feedback: GraphFeedbackContext,
+        finish: impl FnOnce(GraphTaskDispatcher) -> GraphTaskDispatcher,
+    ) -> (
+        Arc<GraphTaskDispatcher>,
+        TaskDef,
+        Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
+    ) {
         let mut answer = final_turn("0.5");
         answer["model"] = serde_json::json!("helper-1");
         answer["usage"] = serde_json::json!({ "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120 });
         let (base_url, requests) = spawn_openai_mock(vec![answer; 2]);
-        let (dispatcher, mut task) = make_test_dispatcher(
+        let (dispatcher, mut task) = make_test_dispatcher_with(
             temp,
             VERIFY_PROVIDER,
             |config| {
@@ -486,6 +499,7 @@ mod tests {
                 config.routing.fast_task_model = "helper-model".to_string();
             },
             feedback,
+            finish,
         )
         .await;
         // Fails on its first run, passes on its second.
@@ -593,7 +607,8 @@ mod tests {
     /// router learns from each attempt's settled verdict alone
     /// (`RoutingObservationSink`), and the provider bridge keeps no router
     /// of its own, so after a failed gate and its helper call it holds the
-    /// attempt's failure and nothing for the helper model.
+    /// attempt's failure and nothing for the helper model. The attempt runs
+    /// under a `--model` pin, which the router learns from (decision 4111).
     #[tokio::test]
     async fn helper_calls_give_the_cascade_router_no_credit() {
         let temp = tempdir().expect("tempdir");
@@ -608,7 +623,10 @@ mod tests {
             feedback_facade: Some(Arc::new(facade)),
             ..recording_feedback(temp.path())
         };
-        let (dispatcher, task, requests) = helper_fixture(&temp, feedback).await;
+        let pin = |dispatcher: GraphTaskDispatcher| {
+            dispatcher.with_cli_model_override(Some("stream-model".to_string()))
+        };
+        let (dispatcher, task, requests) = helper_fixture_with(&temp, feedback, pin).await;
         dispatcher
             .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
             .await

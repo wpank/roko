@@ -448,7 +448,9 @@ fn loop_census_fixture_settles_one_record_per_attempt() {
     assert_rows_join(&episodes, "/extra/attempt_key", &settled, "episodes.jsonl");
 
     // T3 carries no label, so the router learns nothing from it: its
-    // model has no routing trials (S01 SC3), while T1 and T2 train theirs.
+    // model has no routing trials (S01 SC3). The router learns only from
+    // its own picks (decision 4111): T1 and T2 pin their model with a hint,
+    // and a guard replaced routed T4's pick, so they train it no more.
     let router: Value = serde_json::from_str(
         &fs::read_to_string(roko.join("learn/cascade-router.json"))
             .expect("the run saved the router"),
@@ -459,15 +461,11 @@ fn loop_census_fixture_settles_one_record_per_attempt() {
             .as_u64()
             .unwrap_or(0)
     };
-    assert!(
-        trials("claude-sonnet-4-6") > 0,
-        "T1 and T2 train the router: {router:#}"
-    );
-    for model in ["census-unverified", "claude-opus-4-1"] {
+    for model in ["claude-sonnet-4-6", "census-unverified", "claude-opus-4-1"] {
         assert_eq!(
             trials(model),
             0,
-            "T3's model {model} gained routing trials: {router:#}"
+            "{model} gained routing trials: {router:#}"
         );
     }
 }

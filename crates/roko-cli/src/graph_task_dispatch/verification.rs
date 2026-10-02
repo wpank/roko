@@ -1337,7 +1337,7 @@ fn verify_cancelled(spec: &TaskExecutionSpec, task: &TaskDef, at: &str) -> RokoE
 /// The verdict record's rung of verify step `index` with `phase` (S01
 /// §5.5): `verify:<index>/<phase>` for a phase the gate pipeline knows
 /// ([`rung_for_gate_name`]), `custom:<phase>` for any other.
-fn verify_step_rung(index: usize, phase: &str) -> String {
+fn verdict_step_rung(index: usize, phase: &str) -> String {
     if rung_for_gate_name(phase).is_some() {
         format!("verify:{index}/{phase}")
     } else {
@@ -1365,7 +1365,7 @@ fn ran_step_verdict(
     exit_code: Option<i32>,
 ) -> VerifyStepVerdict {
     VerifyStepVerdict {
-        rung: verify_step_rung(index, &step.phase),
+        rung: verdict_step_rung(index, &step.phase),
         command_sha256: Some(super::attempt::sha256_hex(&step.command)),
         passed: Some(verdict.passed),
         exit_code,
@@ -1380,7 +1380,7 @@ fn ran_step_verdict(
 /// skipped because an earlier step had failed.
 fn skipped_step_verdict(index: usize, step: &crate::task_parser::VerifyStep) -> VerifyStepVerdict {
     VerifyStepVerdict {
-        rung: verify_step_rung(index, &step.phase),
+        rung: verdict_step_rung(index, &step.phase),
         command_sha256: Some(super::attempt::sha256_hex(&step.command)),
         skipped: true,
         skip_reason: Some("fail_fast".to_string()),

@@ -180,11 +180,6 @@ fn exists(path: &Path) -> impl Fn() -> bool + '_ {
     move || path.exists()
 }
 
-/// Whether `path` is gone, asked when the closure runs.
-fn gone(path: &Path) -> impl Fn() -> bool + '_ {
-    move || !path.exists()
-}
-
 #[test]
 fn pause_holds_next_task_until_resume() {
     // While `hang` exists, T1's agent waits after its edit.
@@ -204,8 +199,8 @@ fn pause_holds_next_task_until_resume() {
     fs::write(&hang, "").expect("hold T1's agent");
     let mut run = BackgroundRun::start(&workspace, PLAN);
 
-    // T1's agent is at work: pause the run, and wait for the run to take
-    // the command.
+    // T1's agent is at work: pause the run. `roko plan pause` returns with
+    // the run's answer (1209).
     run.wait_until(
         "T1's agent started",
         Duration::from_secs(120),
@@ -218,11 +213,10 @@ fn pause_holds_next_task_until_resume() {
         String::from_utf8_lossy(&paused.stderr),
         run.tail()
     );
-    let control = workspace.repo.join(".roko/state/control.json");
-    run.wait_until(
-        "the run took the pause",
-        Duration::from_secs(30),
-        gone(&control),
+    assert!(
+        String::from_utf8_lossy(&paused.stdout).contains("no new task starts until resume"),
+        "roko plan pause did not print the run's answer\n{}",
+        run.tail()
     );
 
     // The running attempt finishes...

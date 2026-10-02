@@ -2779,16 +2779,15 @@ fn route_execution_commands(
             },
             ExecutionCommandKind::Pause => {
                 pause.store(true, Ordering::Release);
-                tracing::info!(
-                    command_id = %cmd.command_id,
-                    "pause: no new task starts until resume; running attempts finish"
-                );
-                (CommandAckStatus::Completed, None)
+                let note = "paused: no new task starts until resume; running attempts finish";
+                tracing::info!(command_id = %cmd.command_id, "{note}");
+                (CommandAckStatus::Completed, Some(note.to_string()))
             }
             ExecutionCommandKind::Resume => {
                 pause.store(false, Ordering::Release);
-                tracing::info!(command_id = %cmd.command_id, "resume: tasks start again");
-                (CommandAckStatus::Completed, None)
+                let note = "resumed: tasks start again";
+                tracing::info!(command_id = %cmd.command_id, "{note}");
+                (CommandAckStatus::Completed, Some(note.to_string()))
             }
             ExecutionCommandKind::SoftRetry
             | ExecutionCommandKind::Repair { .. }

@@ -11,7 +11,10 @@
 //! `ExecutionCommandKind::Inject`, an abort `Cancel`), sends it on the run's
 //! inject command channel, which the plan-set driver routes like a TUI
 //! command, and writes back the run's acknowledgement as an
-//! [`InjectWireReply`]. An accepted request is answered again, not delivered
+//! [`InjectWireReply`]. `roko plan pause`, `resume`, `cancel` and `retry`
+//! send their commands this way too (1209): for those the session is the
+//! plan the command names as given, or empty for the whole run, and the
+//! driver decides. An accepted request is answered again, not delivered
 //! again, when it is sent a second time. A hello, request or acknowledgement
 //! that does not arrive in time ends the exchange, and no side logs the
 //! payload.
@@ -41,9 +44,11 @@ pub fn inject_socket_dir(workdir: &Path) -> PathBuf {
 pub struct InjectWireRequest {
     /// Unique to one `roko inject`, so a resent request is delivered once.
     pub request_id: String,
-    /// The running plan, or its checkpoint run, the request is for.
+    /// The running plan, or its checkpoint run, the request is for. For a
+    /// plan control kind, the plan as named, or empty for the whole run.
     pub session: String,
-    /// `directive`, `context` or `abort`.
+    /// `directive`, `context` or `abort`, or a plan control kind: `pause`,
+    /// `resume`, `cancel` or `retry`.
     pub kind: String,
     /// The text to deliver; empty for an abort.
     pub payload: String,
@@ -318,35 +323,44 @@ mod unix {
             if let Some(reply) = self.answered.get(&request.request_id) {
                 return reply.clone();
             }
-            let Some(plan_id) = (self.target)(&request.session) else {
-                return InjectWireReply::new(
-                    request,
-                    InjectOutcome::UnknownSession,
-                    format!(
-                        "this run has no running plan or checkpoint run '{}'",
-                        request.session
-                    ),
-                );
-            };
-            let kind = match request.kind.as_str() {
-                "directive" => ExecutionCommandKind::Inject {
-                    kind: InjectedKind::Directive,
-                    text: InjectedText::new(request.payload.clone()),
-                },
-                "context" => ExecutionCommandKind::Inject {
-                    kind: InjectedKind::Context,
-                    text: InjectedText::new(request.payload.clone()),
-                },
-                "abort" => ExecutionCommandKind::Cancel,
-                other => {
+            let (kind, plan_id) = if let Some(kind) = plan_control_kind(&request.kind) {
+                // The driver knows best which plan a control command can
+                // reach: a cancel reaches a plan that has not started, and a
+                // retry one that has ended.
+                let plan_id = Some(request.session.clone()).filter(|plan| !plan.is_empty());
+                (kind, plan_id)
+            } else {
+                let Some(plan_id) = (self.target)(&request.session) else {
                     return InjectWireReply::new(
                         request,
-                        InjectOutcome::Rejected,
-                        format!("unknown inject kind '{other}'"),
+                        InjectOutcome::UnknownSession,
+                        format!(
+                            "this run has no running plan or checkpoint run '{}'",
+                            request.session
+                        ),
                     );
-                }
+                };
+                let kind = match request.kind.as_str() {
+                    "directive" => ExecutionCommandKind::Inject {
+                        kind: InjectedKind::Directive,
+                        text: InjectedText::new(request.payload.clone()),
+                    },
+                    "context" => ExecutionCommandKind::Inject {
+                        kind: InjectedKind::Context,
+                        text: InjectedText::new(request.payload.clone()),
+                    },
+                    "abort" => ExecutionCommandKind::Cancel,
+                    other => {
+                        return InjectWireReply::new(
+                            request,
+                            InjectOutcome::Rejected,
+                            format!("unknown inject kind '{other}'"),
+                        );
+                    }
+                };
+                (kind, Some(plan_id))
             };
-            let mut command = self.commands.build_command(kind, Some(plan_id), None, None);
+            let mut command = self.commands.build_command(kind, plan_id, None, None);
             command.command_id.clone_from(&request.request_id);
             if let Err(error) = self.commands.try_send(command) {
                 let reason = match error {
@@ -397,6 +411,18 @@ mod unix {
             }
             self.answered_order.push_back(reply.request_id.clone());
             self.answered.insert(reply.request_id.clone(), reply);
+        }
+    }
+
+    /// The command of a plan control request kind (`roko plan pause`,
+    /// `resume`, `cancel` and `retry`, 1209), or `None` for an inject kind.
+    fn plan_control_kind(kind: &str) -> Option<ExecutionCommandKind> {
+        match kind {
+            "pause" => Some(ExecutionCommandKind::Pause),
+            "resume" => Some(ExecutionCommandKind::Resume),
+            "cancel" => Some(ExecutionCommandKind::Cancel),
+            "retry" => Some(ExecutionCommandKind::SoftRetry),
+            _ => None,
         }
     }
 
@@ -588,6 +614,42 @@ mod unix {
             let ended = deliver(workdir.path(), &after).await.expect("an answer");
             assert_eq!(ended.outcome, InjectOutcome::Rejected);
             assert!(ended.message.contains("finished"), "{}", ended.message);
+        }
+
+        /// 1209: `roko plan pause` reaches the whole run, and a cancel
+        /// reaches the plan it names, running or not: the run's driver
+        /// decides, and its answer comes back.
+        #[tokio::test]
+        async fn plan_control_commands_reach_the_run_without_a_session_lookup() {
+            let workdir = tempdir().expect("tempdir");
+            let (link, mut run) = link(Duration::from_secs(5));
+            let _server = start_inject_server(workdir.path(), link).expect("listen");
+            let accepted = tokio::spawn(async move {
+                let pause = run.accept_next().await;
+                let cancel = run.accept_next().await;
+                (pause, cancel)
+            });
+            let control = |kind: &str, plan: &str| InjectWireRequest {
+                request_id: format!("req-{kind}"),
+                session: plan.to_string(),
+                kind: kind.to_string(),
+                payload: String::new(),
+            };
+
+            let paused = deliver(workdir.path(), &control("pause", ""))
+                .await
+                .expect("an answer");
+            let cancelled = deliver(workdir.path(), &control("cancel", "plan-9"))
+                .await
+                .expect("an answer");
+
+            assert_eq!(paused.outcome, InjectOutcome::Accepted);
+            assert_eq!(cancelled.outcome, InjectOutcome::Accepted);
+            let (pause, cancel) = accepted.await.expect("run");
+            assert_eq!(pause.kind, ExecutionCommandKind::Pause);
+            assert_eq!(pause.plan_id, None, "a pause applies to the whole run");
+            assert_eq!(cancel.kind, ExecutionCommandKind::Cancel);
+            assert_eq!(cancel.plan_id.as_deref(), Some("plan-9"));
         }
 
         /// A client that cannot present the run's token gets no answer, and

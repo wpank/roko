@@ -9,6 +9,7 @@
  *   crates/roko-serve/src/plan_types.rs           — PlanSummaryDto, PlanTaskDto, PlanTasksDto
  *   crates/roko-serve/src/projection_contract.rs  — state_frame (WireStateHubSnapshotResponse)
  *   crates/roko-serve/src/routes/sse.rs           — gap payload (WireGapPayload)
+ *   crates/roko-serve/src/routes/plans/merge.rs   — task reviews and diffs (WireReviews, WireTaskDiff)
  *
  * Types only — no runtime code except the TASK_OUTCOME_* constants.
  */
@@ -480,4 +481,50 @@ export interface WireAccepted {
 export interface WireStatus {
   workdir: string;
   git_branch?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Task reviews — a Graph run holds a verified attempt for approval
+// ---------------------------------------------------------------------------
+
+/** One task of GET /api/plans/{id}/reviews; a held Graph attempt has status 'awaiting_approval'. */
+export interface WireReview {
+  task_id: string;
+  description?: string | null;
+  status: string;
+  attempt_key?: string | null;
+  diff_summary: string;
+  files_changed: string[];
+}
+
+/** Response body from GET /api/plans/{id}/reviews. */
+export interface WireReviews {
+  plan_id: string;
+  reviews: WireReview[];
+}
+
+/** One changed file of a task's diff. */
+export interface WireDiffFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch: string;
+}
+
+/** Response body from GET /api/plans/{id}/tasks/{task_id}/diff ('review_hold' for a held attempt). */
+export interface WireTaskDiff {
+  task_id: string;
+  file_count: number;
+  total_additions: number;
+  total_deletions: number;
+  files: WireDiffFile[];
+  source?: string;
+  status?: string;
+}
+
+/** Request body of POST /api/plans/{id}/tasks/{task_id}/review (ReviewDecision). */
+export interface WireReviewDecision {
+  decision: 'approve' | 'reject' | 'skip';
+  comment?: string;
 }

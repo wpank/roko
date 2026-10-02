@@ -24,6 +24,8 @@
 //!    it (shadow).
 //! 4. **CascadeRouter**. Only consulted when no override, hint or ladder
 //!    rung applies. Returns a [`CascadeModel`] whose `primary` slug is used.
+//!    A guard replaces a pick that cannot run here with the default, and
+//!    labels the choice [`ModelChoiceSource::Fallback`].
 //! 5. **Safe default**. With no router and no hint, fall back to the
 //!    `RunConfig.model` default. The router will eventually populate
 //!    itself from observations.
@@ -188,6 +190,13 @@ pub enum ModelChoiceSource {
     },
     /// Returned by [`CascadeRouter`].
     Router,
+    /// A guard replaced the cascade router's pick with the default: the
+    /// pick had no configured provider, a disabled one, or not the tool use
+    /// the task needs (G55).
+    Fallback {
+        /// Why the guard rejected the pick.
+        reason: FallbackReason,
+    },
     /// Fallback when no other signal was available.
     Default,
 }
@@ -202,6 +211,7 @@ impl ModelChoiceSource {
             Self::TaskHint => DecisionSource::TaskHint,
             Self::Ladder { .. } => DecisionSource::Ladder,
             Self::Router => DecisionSource::Router,
+            Self::Fallback { .. } => DecisionSource::Fallback,
             Self::Default => DecisionSource::Default,
         }
     }
@@ -539,7 +549,7 @@ impl ModelRouter {
             budget_pressure = inputs.budget_pressure,
             "model routed"
         );
-        if choice.source == ModelChoiceSource::Router {
+        if matches!(choice.source, ModelChoiceSource::Router | ModelChoiceSource::Fallback { .. }) {
             tracing::debug!(
                 task_id,
                 stage = %decision.routing_stage,
@@ -602,7 +612,7 @@ impl ModelRouter {
             );
             let choice = ModelChoice {
                 model: ModelSpec::from_slug(&self.default_slug),
-                source: ModelChoiceSource::Router,
+                source: ModelChoiceSource::Fallback { reason },
             };
             return (choice, learned);
         }
@@ -651,9 +661,10 @@ impl ModelRouter {
         for candidate in &mut candidates {
             candidate.p = Some(if candidate.model == chosen { 1.0 } else { 0.0 });
         }
-        let ladder = match choice.source {
-            ModelChoiceSource::Ladder { .. } => Some(chosen.to_string()),
-            _ => None,
+        let (ladder, fallback_reason) = match choice.source {
+            ModelChoiceSource::Ladder { .. } => (Some(chosen.to_string()), None),
+            ModelChoiceSource::Fallback { reason } => (None, Some(reason.as_str().to_string())),
+            _ => (None, None),
         };
         // Knowledge weighting and provider health move the cascade pick when
         // they are attached; the routing bias is not logged (decision 3108
@@ -708,7 +719,7 @@ impl ModelRouter {
                 ladder,
                 aa: None,
             },
-            fallback_reason: None,
+            fallback_reason,
             influences,
             state: None,
         }
@@ -1890,10 +1901,11 @@ mod tests {
             choice.model.slug, "model-a",
             "must fall back to default when cascade picks an unconfigured model"
         );
+        let reason = FallbackReason::ProviderUnconfigured;
         assert_eq!(
             choice.source,
-            ModelChoiceSource::Router,
-            "source must remain Router (the router made the decision, just filtered)"
+            ModelChoiceSource::Fallback { reason },
+            "a guard's replacement of the router's pick is a fallback, not the router's (G55)"
         );
     }
 
@@ -2045,5 +2057,54 @@ mod tests {
         assert_eq!(row.proposals.learned, None);
         assert_eq!(row.proposals.ladder, None);
         assert_eq!(row.candidates.len(), 1);
+    }
+
+    /// G55: each guard that replaces the cascade router's pick with the
+    /// default labels the choice a fallback with its reason, and so does
+    /// the decision row; the pick stays the row's learned proposal.
+    #[test]
+    fn unconfigured_cascade_pick_is_not_labelled_router() {
+        let models = vec!["claude-sonnet-4-6".to_string(), "gpt-5".to_string()];
+        let cascade = Arc::new(CascadeRouter::new(models.clone()));
+        let pick = cascade.route(&routing_context()).primary.slug;
+        let base = ModelRouter::new(Some(cascade)).with_default_slug("model-a");
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+
+        let only_a = HashSet::from(["model-a".to_string()]);
+        let unconfigured = base.clone().with_configured_models(only_a);
+        // Every model the router may land on runs on one provider, disabled.
+        let providers: HashMap<String, String> = models
+            .iter()
+            .chain([&pick])
+            .map(|slug| (slug.clone(), "provider-x".to_string()))
+            .collect();
+        let disabled = base
+            .clone()
+            .with_provider_health(Arc::new(ProviderHealthRegistry::new()), providers)
+            .with_disabled_providers(HashSet::from(["provider-x".to_string()]));
+        let no_tools = HashSet::from([pick.clone()]);
+        let toolless = base.clone().with_tool_capability_filter(no_tools);
+        for (router, reason) in [
+            (unconfigured, FallbackReason::ProviderUnconfigured),
+            (disabled, FallbackReason::ProviderDisabled),
+            (toolless, FallbackReason::NoToolSupport),
+        ] {
+            let (choice, row) = router.decide(&inputs).unwrap();
+            let fallback = ModelChoiceSource::Fallback { reason };
+            assert_eq!(routed(&choice), ("model-a", fallback), "{reason:?}");
+            assert!(!choice.forced());
+            assert_eq!(row.source, Some(DecisionSource::Fallback));
+            assert_eq!(row.fallback_reason.as_deref(), Some(reason.as_str()));
+            assert_eq!(row.selected_model, "model-a");
+            let learned = row.proposals.learned.as_deref().expect("a pick");
+            assert_ne!(learned, "model-a", "{reason:?}");
+        }
+
+        // Without a guard, the pick runs as the router's own.
+        let (choice, row) = base.decide(&inputs).unwrap();
+        assert_eq!(routed(&choice), (pick.as_str(), ModelChoiceSource::Router));
+        assert_eq!(row.source, Some(DecisionSource::Router));
+        assert_eq!(row.fallback_reason, None);
     }
 }

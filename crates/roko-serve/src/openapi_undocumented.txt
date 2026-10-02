@@ -5,39 +5,9 @@
 # The test `openapi_documents_every_registered_route` fails when a registered route is neither
 # documented nor listed here, and when a line here is documented or no longer registered, so this
 # list only shrinks. Document a route in openapi.rs, then delete its line.
-DELETE /relay-tokens/{}
-DELETE /signals/{}
 DELETE /team/members/{}
 DELETE /terminal/sessions/{}
 DELETE /workspaces/{}
-GET /metrics/feedback_latency
-GET /metrics/gate_rate
-GET /metrics/model_efficiency
-GET /metrics/prometheus
-GET /metrics/success_rate
-GET /metrics/velocity
-GET /network/stats
-GET /openapi.json
-GET /parity
-GET /plans/{}/costs
-GET /plans/{}/gates
-GET /plans/{}/reviews
-GET /plans/{}/tasks
-GET /plans/{}/tasks/{}/diff
-GET /platforms
-GET /platforms/{}
-GET /predictions/calibration/{}
-GET /rate-limits
-GET /relay/health
-GET /retention
-GET /rpc
-GET /rpc/events
-GET /rpc/health
-GET /safety/incidents
-GET /safety/quarantine
-GET /shared/{}
-GET /sse
-GET /statehub/events
 GET /statehub/snapshot
 GET /status/disk
 GET /subscriptions/catalog
@@ -59,16 +29,6 @@ GET /workspaces
 GET /workspaces/default
 GET /workspaces/{}
 GET /ws
-PATCH /signals/{}/promote
-POST /plans/{}/estimate
-POST /plans/{}/pause
-POST /plans/{}/resume
-POST /plans/{}/tasks/{}/review
-POST /plans/{}/validate
-POST /prd/consolidate
-POST /relay-tokens
-POST /rpc
-POST /runs/{}/share
 POST /surface-events
 POST /team/invite
 POST /team/join

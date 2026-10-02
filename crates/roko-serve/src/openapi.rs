@@ -434,7 +434,47 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         c_factor_metrics,
         coverage,
         engagement,
-        experiments_metric
+        experiments_metric,
+        feedback_latency,
+        gate_rate,
+        model_efficiency,
+        prometheus_metrics,
+        success_rate,
+        velocity,
+        network_stats,
+        openapi_openapi_json,
+        parity_handler,
+        plan_costs,
+        plan_estimate,
+        plan_gates,
+        pause_plan,
+        resume_plan,
+        list_reviews,
+        plan_tasks,
+        task_diff,
+        submit_review,
+        validate_plan,
+        list_platforms,
+        get_platform,
+        prds_consolidate_prds,
+        prediction_calibration,
+        rate_limits,
+        issue_relay_token_handler,
+        revoke_relay_token,
+        relay_health,
+        retention_handler,
+        rpc_ws_upgrade,
+        rpc_post,
+        rpc_events_ws_upgrade,
+        rpc_health,
+        create_share,
+        incidents_handler,
+        quarantine_handler,
+        get_shared_run,
+        prune_signal,
+        promote_signal,
+        sse_sse_handler,
+        statehub_events
     ),
     components(schemas(
         ApiErrorResponse,
@@ -1601,6 +1641,110 @@ doc_get!(c_factor_metrics, "/metrics/c_factor", "status");
 doc_get!(coverage, "/metrics/coverage", "status");
 doc_get!(engagement, "/metrics/engagement", "status");
 doc_get!(experiments_metric, "/metrics/experiments", "status");
+
+// ── aggregator (gap-c50b85) ────────────────────────────────────────────────────────
+doc_get_param!(
+    prediction_calibration,
+    "/predictions/calibration/{agent_id}",
+    "aggregator",
+    "agent_id"
+);
+
+// ── auth (gap-c50b85) ──────────────────────────────────────────────────────────────
+doc_post_value!(issue_relay_token_handler, "/relay-tokens", "auth");
+doc_delete_param!(
+    revoke_relay_token,
+    "/relay-tokens/{token_id}",
+    "auth",
+    "token_id"
+);
+
+// ── gateway (gap-c50b85) ───────────────────────────────────────────────────────────
+doc_get!(rate_limits, "/rate-limits", "gateway");
+
+// ── heartbeats (gap-c50b85) ────────────────────────────────────────────────────────
+doc_get!(network_stats, "/network/stats", "heartbeats");
+
+// ── openapi (gap-c50b85) ───────────────────────────────────────────────────────────
+doc_get!(openapi_openapi_json, "/openapi.json", "openapi");
+
+// ── plans (gap-c50b85) ─────────────────────────────────────────────────────────────
+doc_get_param!(plan_costs, "/plans/{id}/costs", "plans", "id");
+doc_post_value!(plan_estimate, "/plans/{id}/estimate", "plans");
+doc_get_param!(plan_gates, "/plans/{id}/gates", "plans", "id");
+doc_post_value!(pause_plan, "/plans/{id}/pause", "plans");
+doc_post_value!(resume_plan, "/plans/{id}/resume", "plans");
+doc_get_param!(list_reviews, "/plans/{id}/reviews", "plans", "id");
+doc_get_param!(plan_tasks, "/plans/{id}/tasks", "plans", "id");
+#[utoipa::path(
+    get,
+    path = "/plans/{id}/tasks/{task_id}/diff",
+    tag = "plans",
+    params(
+        ("id" = String, Path, description = "Path parameter"),
+        ("task_id" = String, Path, description = "Path parameter")
+    ),
+    responses(
+        (status = 200, description = "Successful response", body = Value),
+        (status = 400, description = "Bad request", body = ApiErrorResponse),
+        (status = 404, description = "Not found", body = ApiErrorResponse),
+        (status = 500, description = "Internal error", body = ApiErrorResponse)
+    )
+)]
+fn task_diff() {}
+doc_post_value!(submit_review, "/plans/{id}/tasks/{task_id}/review", "plans");
+doc_post_value!(validate_plan, "/plans/{id}/validate", "plans");
+
+// ── platforms (gap-c50b85) ─────────────────────────────────────────────────────────
+doc_get!(list_platforms, "/platforms", "platforms");
+doc_get_param!(get_platform, "/platforms/{id}", "platforms", "id");
+
+// ── prds (gap-c50b85) ──────────────────────────────────────────────────────────────
+doc_post_value!(prds_consolidate_prds, "/prd/consolidate", "prds");
+
+// ── rpc_proxy (gap-c50b85) ─────────────────────────────────────────────────────────
+doc_get!(rpc_ws_upgrade, "/rpc", "rpc_proxy");
+doc_post_value!(rpc_post, "/rpc", "rpc_proxy");
+doc_get!(rpc_events_ws_upgrade, "/rpc/events", "rpc_proxy");
+doc_get!(rpc_health, "/rpc/health", "rpc_proxy");
+
+// ── safety (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(incidents_handler, "/safety/incidents", "safety");
+doc_get!(quarantine_handler, "/safety/quarantine", "safety");
+
+// ── shared_runs (gap-c50b85) ───────────────────────────────────────────────────────
+doc_post_value!(create_share, "/runs/{id}/share", "shared_runs");
+doc_get_param!(get_shared_run, "/shared/{token}", "shared_runs", "token");
+
+// ── sse (gap-c50b85) ───────────────────────────────────────────────────────────────
+doc_get!(sse_sse_handler, "/sse", "sse");
+
+// ── status (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(feedback_latency, "/metrics/feedback_latency", "status");
+doc_get!(gate_rate, "/metrics/gate_rate", "status");
+doc_get!(model_efficiency, "/metrics/model_efficiency", "status");
+doc_get!(prometheus_metrics, "/metrics/prometheus", "status");
+doc_get!(success_rate, "/metrics/success_rate", "status");
+doc_get!(velocity, "/metrics/velocity", "status");
+doc_get!(parity_handler, "/parity", "status");
+doc_get!(relay_health, "/relay/health", "status");
+doc_get!(retention_handler, "/retention", "status");
+doc_delete!(prune_signal, "/signals/{id}", "status");
+#[utoipa::path(
+    patch,
+    path = "/signals/{id}/promote",
+    tag = "status",
+    params(("id" = String, Path, description = "Path parameter")),
+    request_body = Value,
+    responses(
+        (status = 200, description = "Successful response", body = Value),
+        (status = 400, description = "Bad request", body = ApiErrorResponse),
+        (status = 404, description = "Not found", body = ApiErrorResponse),
+        (status = 500, description = "Internal error", body = ApiErrorResponse)
+    )
+)]
+fn promote_signal() {}
+doc_get!(statehub_events, "/statehub/events", "status");
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorResponse {

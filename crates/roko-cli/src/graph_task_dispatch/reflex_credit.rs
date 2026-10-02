@@ -178,7 +178,8 @@ mod tests {
     /// What a verified pass and a reflex-served pass write in the workspace
     /// `temp`, whose `[learning] frozen` is `frozen`: whether the daimon's
     /// affect moved, the access count of the knowledge entry the prompt
-    /// included, and the gate passes of the T0 reflex rule, promoted with 3.
+    /// included, and the gate passes of the T0 reflex rule, promoted with 3
+    /// and matched once more.
     async fn learned_state_writes(temp: &tempfile::TempDir, frozen: bool) -> (bool, u64, u32) {
         let workdir = temp.path();
         // The task is "Streaming graph task": the entry shares its words.
@@ -202,7 +203,6 @@ mod tests {
             },
         };
         assert!(reflexes.try_promote(&candidate, 3));
-        let rule_id = reflexes.snapshot()[0].id;
         let daimon = Arc::new(std::sync::Mutex::new(roko_daimon::DaimonState::new()));
         let roko = workdir.join(".roko");
         let feedback = GraphFeedbackContext {
@@ -228,8 +228,14 @@ mod tests {
             .dispatch(&spec, Vec::new(), &ctx)
             .await
             .expect("the verified attempt passes");
+        // The rule serves an attempt as the reflex check does: its match
+        // counts a hit, without which a pass cannot credit it (a rule never
+        // has more passes than hits).
+        let matched = reflexes
+            .match_observation_with_id(&ReflexObservation::default())
+            .expect("the rule matches");
         let mut served = dispatcher.open_attempt(&spec, &task, &ctx);
-        served.served_by_reflex(rule_id);
+        served.served_by_reflex(matched.rule_id);
         let passed = Settlement::verified(&Ok(TaskGateVerdict::Passed));
         let served = served.settle(passed, "", None);
         dispatcher.publish_settlement(&spec, &task, &served).await;

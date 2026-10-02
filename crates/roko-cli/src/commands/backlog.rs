@@ -1226,8 +1226,10 @@ mod tests {
                 .build(),
         ];
         verdict.stamp(&mut signals);
+        // A run's records name its plan as their graph.
+        let plan_id = checkpoint_dir.file_name().and_then(|name| name.to_str());
         let record = serde_json::json!({
-            "graph_id": "graph",
+            "graph_id": plan_id,
             "run_id": "run-1",
             "node_id": node_id,
             "tick": 0,

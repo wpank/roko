@@ -459,6 +459,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
             step: 0,
             reason: LadderReason::Start,
             exhausted: false,
+            router_pick: None,
         });
         verdict.executed.failover_chain = substitute.map(str::to_string).into_iter().collect();
         SettledAttempt {

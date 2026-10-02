@@ -4,8 +4,8 @@ use super::*;
 use clap::Parser;
 use commands::config_cmd::{
     ModelListRow, ProviderHealthRow, ProviderLatencySummary, ProviderListRow, build_model_list_row,
-    build_provider_health_row, format_model_rows, format_provider_health_rows, format_provider_rows,
-    select_provider_test_model,
+    build_provider_health_row, format_model_rows, format_provider_health_rows,
+    format_provider_rows, select_provider_test_model,
 };
 use commands::dashboard::dashboard_output;
 use commands::knowledge::{
@@ -517,8 +517,8 @@ fn cli_parses_doctor_disk_subreport() {
 
 #[test]
 fn cli_parses_doctor_network_subreport() {
-    let cli = Cli::try_parse_from(["roko", "doctor", "network", "--workdir", "/tmp/project"])
-        .unwrap();
+    let cli =
+        Cli::try_parse_from(["roko", "doctor", "network", "--workdir", "/tmp/project"]).unwrap();
     assert!(matches!(
         cli.command,
         Some(Command::Doctor {
@@ -970,8 +970,8 @@ fn plan_run_rebuild_uses_the_command_workdir() {
 
 #[test]
 fn cli_parses_plan_create() {
-    let cli = Cli::try_parse_from(["roko", "plan", "create", "my-plan", "--title", "My Plan"])
-        .unwrap();
+    let cli =
+        Cli::try_parse_from(["roko", "plan", "create", "my-plan", "--title", "My Plan"]).unwrap();
     assert!(matches!(
         cli.command,
         Some(Command::Plan {
@@ -1128,8 +1128,8 @@ fn cli_parses_plan_parallel_flags() {
 /// the opt-out.
 #[test]
 fn cli_parses_the_worktree_per_task_opt_out() {
-    let cli = Cli::try_parse_from(["roko", "plan", "run", "plans", "--no-worktree-per-task"])
-        .unwrap();
+    let cli =
+        Cli::try_parse_from(["roko", "plan", "run", "plans", "--no-worktree-per-task"]).unwrap();
     assert!(matches!(
         cli.command,
         Some(Command::Plan {
@@ -2388,8 +2388,8 @@ fn format_provider_health_rows_renders_headers_and_rows() {
 
 #[test]
 fn cli_parses_dashboard_subcommand() {
-    let cli = Cli::try_parse_from(["roko", "dashboard", "--page", "plan-view", "--list-pages"])
-        .unwrap();
+    let cli =
+        Cli::try_parse_from(["roko", "dashboard", "--page", "plan-view", "--list-pages"]).unwrap();
     assert!(matches!(
         cli.command,
         Some(Command::Dashboard {
@@ -2748,10 +2748,9 @@ fn backup_neuro_store_writes_canonical_secret_safe_snapshot() {
         b"{\"id\":\"c1\"}\n"
     );
     assert!(report.confirmations_present);
-    let manifest: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(&report.manifest).expect("read generated manifest"),
-    )
-    .expect("parse generated manifest");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report.manifest).expect("read generated manifest"))
+            .expect("parse generated manifest");
     assert_eq!(manifest["version"], 2);
     assert_eq!(manifest["knowledge_format_version"], 2);
     assert_eq!(manifest["entry_count"], 1);

@@ -162,6 +162,8 @@ This finding is an umbrella. Resolve it by giving every lost closure a home, and
   - P4-19: deleted `ToolRecommender` (`roko-learn/src/tool_recommendation.rs`). Nothing called it, and it could not
     read today's efficiency rows: it parsed `tools_used` as a list of tools, which `AgentEfficiencyEvent` writes as a
     count, so it skipped every row.
+  - P4-17: deleted roko-learn's `ToolMetricsStore` (`roko-learn/src/tool_metrics_store.rs`), which nothing used.
+    Graph runs keep their tool metrics through roko-fs's `JsonlMetricsSink` (`.roko/metrics/tool_metrics.jsonl`).
 
 ## Original notes
 

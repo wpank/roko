@@ -50,6 +50,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use roko_core::config::SpecQualityConfig;
 use roko_gate::spec_quality::{RedOnBase, normpath, runs_program};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -117,6 +118,50 @@ pub struct RedOnBaseOptions {
     pub fixture: bool,
     /// What to do with steps that run cargo.
     pub cargo: CargoSteps,
+}
+
+impl RedOnBaseOptions {
+    /// The options `[spec_quality]` sets: its step timeout, and the steps
+    /// that run cargo left to the batch gate unless `red_on_base_cargo` is
+    /// set (gap-0ee70b).
+    pub fn from_config(config: &SpecQualityConfig) -> Self {
+        Self {
+            timeout: Some(Duration::from_secs(config.red_on_base_timeout_secs)),
+            cargo: if config.red_on_base_cargo {
+                CargoSteps::Run
+            } else {
+                CargoSteps::Skip
+            },
+            ..Self::default()
+        }
+    }
+}
+
+/// The red-on-base results the spec gate acts on before `plan run`
+/// (gap-0ee70b): every implementer task's shell checks run on the base, and
+/// a check that passes there is HF3. Empty when `[spec_quality]` turns the
+/// check off, and when it cannot start (a workspace outside git, say), since
+/// a check that is not proven green does not block. An interrupt comes back
+/// as the error, after the check removed what it created.
+pub fn gate_results(
+    files: &[PathBuf],
+    workdir: &Path,
+    config: &SpecQualityConfig,
+) -> std::result::Result<BTreeMap<(String, String), RedOnBase>, Interrupted> {
+    if !config.is_on() || !config.red_on_base {
+        return Ok(BTreeMap::new());
+    }
+    match check_plans(files, workdir, &RedOnBaseOptions::from_config(config)) {
+        Ok(report) => Ok(report.results()),
+        Err(error) => match error.downcast_ref::<Interrupted>() {
+            Some(interrupted) => Err(*interrupted),
+            None => {
+                let error = format!("{error:#}");
+                tracing::warn!(%error, "spec gate: the red-on-base check could not run");
+                Ok(BTreeMap::new())
+            }
+        },
+    }
 }
 
 /// Why a task's red-on-base result is what it is: speclint's `OUTCOMES`.
@@ -1489,5 +1534,71 @@ command = 'n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; te
             .map(|entry| entry.path())
             .collect();
         assert!(left.is_empty(), "{left:?}");
+    }
+
+    /// gap-0ee70b: by default the check runs shell checks on the base and
+    /// skips cargo ones. A shell check that already passes (T1) is HF3 and
+    /// the spec gate refuses the plan; a real one (T2) is red; the cargo one
+    /// (T3) never runs and is `skipped: cargo`. Off, or outside git, the
+    /// gate gets no results and blocks nothing.
+    #[test]
+    fn red_on_base_runs_shell_checks_and_skips_cargo() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join("plans/p")).expect("plan dir");
+        let marker = temp.path().join("cargo-ran");
+        let plan_text = PLAN
+            .replace(
+                "n=$(cat COUNTER 2>/dev/null || echo 0); echo $((n + 1)) > COUNTER; test \"$n\" -eq 0",
+                &format!("cargo test -p demo greet && touch {}", marker.display()),
+            )
+            .replace("[[task]]\nid = \"T1\"", "[[task]]\nid = \"T9\"")
+            .replace("[[task]]\nid = \"T2\"", "[[task]]\nid = \"T1\"")
+            .replace("[[task]]\nid = \"T9\"", "[[task]]\nid = \"T2\"");
+        std::fs::write(repo.join("plans/p/tasks.toml"), plan_text).expect("write the plan");
+        std::fs::write(repo.join("config.ini"), "retries = 3\n").expect("write config.ini");
+        run_git(&repo, &["init", "--quiet"]);
+        run_git(&repo, &["add", "--all"]);
+        run_git(&repo, &["commit", "--quiet", "-m", "base"]);
+        let plan = repo.join("plans/p/tasks.toml");
+
+        let config = SpecQualityConfig::default();
+        assert!(config.red_on_base && !config.red_on_base_cargo);
+        let options = RedOnBaseOptions::from_config(&config);
+        assert_eq!(options.cargo, CargoSteps::Skip);
+        let report = check_plans(&[plan.clone()], &repo, &options).expect("check the plan");
+        let outcome = |id: &str| {
+            let check = report.checks.iter().find(|check| check.task_id == id);
+            let check = check.expect("checked");
+            (check.red_on_base, check.outcome, check.reason.clone())
+        };
+        assert_eq!(outcome("T1").0, RedOnBase::Pass, "{:?}", outcome("T1"));
+        assert_eq!(outcome("T2").0, RedOnBase::Fail, "{:?}", outcome("T2"));
+        let (cargo, cargo_outcome, reason) = outcome("T3");
+        assert_eq!((cargo, cargo_outcome), (RedOnBase::Unknown, Outcome::SkippedCargo));
+        assert!(reason.starts_with("skipped: cargo"), "{reason}");
+        assert!(!marker.exists(), "the cargo step ran");
+
+        let gate = crate::spec_gate::check_plans(
+            &[plan.clone()],
+            &repo,
+            &config,
+            &gate_results(&[plan.clone()], &repo, &config).expect("not interrupted"),
+        );
+        let blocked: Vec<&str> = gate.blocked().map(|decision| decision.task_id.as_str()).collect();
+        assert_eq!(blocked, ["T1"], "{gate:?}");
+
+        let off = SpecQualityConfig {
+            red_on_base: false,
+            ..SpecQualityConfig::default()
+        };
+        let results = gate_results(&[plan.clone()], &repo, &off).expect("not interrupted");
+        assert!(results.is_empty());
+        let plain = tempfile::tempdir().expect("tempdir");
+        let outside = plain.path().join("plans/p");
+        std::fs::create_dir_all(&outside).expect("plan dir");
+        std::fs::copy(&plan, outside.join("tasks.toml")).expect("copy the plan");
+        let results = gate_results(&[outside.join("tasks.toml")], plain.path(), &config);
+        assert!(results.expect("not interrupted").is_empty());
     }
 }

@@ -2420,7 +2420,16 @@ fn spec_gate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
             return Some(1);
         }
     };
-    let red_on_base = std::collections::BTreeMap::new();
+    // gap-0ee70b: prove each task's shell checks red on the base first; a
+    // check that already passes there is HF3. Cargo checks are left to the
+    // batch gate unless `[spec_quality] red_on_base_cargo` is set.
+    let red_on_base = match roko_cli::spec_red_on_base::gate_results(&files, workdir, &config) {
+        Ok(results) => results,
+        Err(interrupted) => {
+            tracing::error!("{interrupted}");
+            return Some(128 + interrupted.signal);
+        }
+    };
     let report = roko_cli::spec_gate::check_plans(&files, workdir, &config, &red_on_base);
     for decision in report.blocked() {
         for finding in &decision.findings {
@@ -2509,6 +2518,11 @@ pub(crate) fn cmd_plan_validate(
             options.timeout = options.timeout.or(Some(std::time::Duration::from_secs(
                 spec_config.red_on_base_timeout_secs,
             )));
+            // gap-0ee70b: cargo checks are proven at the batch gate unless
+            // `[spec_quality] red_on_base_cargo` is set.
+            if !spec_config.red_on_base_cargo {
+                options.cargo = roko_cli::spec_red_on_base::CargoSteps::Skip;
+            }
             match roko_cli::spec_red_on_base::check_plans(files, workdir, &options) {
                 Ok(report) => Some(report),
                 Err(error) => {

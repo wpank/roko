@@ -223,6 +223,15 @@ pub fn setup_sample_plan_workspace(workdir: &Path) {
     } else {
         format!("{updated}\n[runner]\nworktree_per_task = false\n")
     };
+    // gap-0ee70b: these smoke plans are about the run, not the spec gate, so
+    // their checks are not proven red on the base first.
+    let updated = if updated.contains("\nred_on_base = ") {
+        updated.replace("\nred_on_base = true", "\nred_on_base = false")
+    } else if updated.contains("\n[spec_quality]\n") {
+        updated.replace("\n[spec_quality]\n", "\n[spec_quality]\nred_on_base = false\n")
+    } else {
+        format!("{updated}\n[spec_quality]\nred_on_base = false\n")
+    };
     fs::write(&roko_toml, updated).expect("write roko.toml with mock claude");
 
     let plan_dir = workdir.join("plans").join(SAMPLE_PLAN_ID);
@@ -446,6 +455,7 @@ models.scripted.slug = "claude-sonnet-4-6"
 models.scripted.context_window = 200000
 gates.cargo_fix_enabled = false
 runner.worktree_per_task = false
+spec_quality.red_on_base = false
 {extra_config}"#,
                 agent = agent.display().to_string()
             ),

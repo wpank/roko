@@ -110,6 +110,8 @@ pub mod playbook_rules;
 pub mod post_gate_reflection;
 pub mod prediction;
 pub mod prompt_experiment;
+/// Provider failover, the policy every dispatch path shares (gap-28ceb9).
+pub mod provider_failover;
 pub mod provider_health;
 /// Provider/model pass-rate outcome telemetry for future routing bandits.
 pub mod provider_model_outcome;

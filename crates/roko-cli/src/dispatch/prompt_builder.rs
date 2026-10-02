@@ -3689,6 +3689,52 @@ mod tests {
         assert!(collect_episode_knowledge_cached(&task(), &episodes).is_none());
     }
 
+    /// backlog 4214 (decision 4202, option A): a run's prompts come from one
+    /// prompt-cache snapshot. Knowledge and an episode written after it was
+    /// taken reach no later prompt of the run, and its digest stays the same;
+    /// the next run's snapshot holds them.
+    #[test]
+    fn prompt_cache_is_one_snapshot_per_run() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache = Arc::new(PromptCache::load(temp.path()));
+        let digest = cache.digest();
+        let mut dispatch = ctx();
+        dispatch.workdir = temp.path().to_path_buf();
+        let prompt_ctx = PromptContext::from_task(&task(), &dispatch);
+        let assemble = || {
+            PromptAssembler::with_cache(Arc::clone(&cache))
+                .assemble(&task(), &prompt_ctx)
+                .expect("assemble")
+        };
+        let first = assemble();
+
+        write_knowledge(
+            temp.path(),
+            &[("k-late", "Explain the wiring after the snapshot")],
+        );
+        let mut late = roko_learn::episode_logger::Episode::new("implementer", "t-late");
+        late.reasoning_summary = Some("Explain the wiring after the snapshot".into());
+        let episodes = roko_learn::runtime_feedback::resolve_project_episode_path(temp.path());
+        std::fs::create_dir_all(episodes.parent().expect("episode dir")).expect("episode dir");
+        let line = serde_json::to_string(&late).expect("episode json") + "\n";
+        std::fs::write(&episodes, line).expect("write the episode");
+
+        let second = assemble();
+        assert!(
+            !second.system_prompt.contains("after the snapshot"),
+            "{}",
+            second.system_prompt
+        );
+        assert_eq!(
+            second.diagnostics.knowledge_ids,
+            first.diagnostics.knowledge_ids
+        );
+        assert_eq!(cache.digest(), digest);
+        let next_run = PromptCache::load(temp.path()).digest();
+        assert_eq!((next_run.knowledge.count, next_run.episodes.count), (1, 1));
+        assert_ne!(next_run, digest);
+    }
+
     /// The item of `kind` and `id` in `prompt`'s diagnostics.
     fn prompt_item(
         prompt: &AssembledPrompt,

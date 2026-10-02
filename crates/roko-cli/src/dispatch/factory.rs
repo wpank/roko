@@ -94,6 +94,9 @@ pub struct SharedAgentFactory {
     /// Uses `std::sync::RwLock` because `ErrorPatternStore` performs only
     /// brief CPU-bound operations (no I/O under the lock).
     error_pattern_store: Arc<std::sync::RwLock<ErrorPatternStore>>,
+    /// What the run's prompt-cache snapshot holds, when the factory's
+    /// prompts are built from one (backlog 4214).
+    prompt_snapshot: Option<crate::dispatch::prompt_cache::PromptCacheDigest>,
 }
 
 /// Bridge task returned only after its worker reaches the provider boundary.
@@ -161,6 +164,7 @@ impl SharedAgentFactory {
             None => None,
         };
 
+        let prompt_snapshot = prompt_cache.as_deref().map(PromptCache::digest);
         let prompt_assembler = match prompt_cache {
             Some(cache) => PromptAssembler::with_cache(cache),
             None => PromptAssembler::new(),
@@ -265,7 +269,15 @@ impl SharedAgentFactory {
             // Start with an empty in-memory store. Callers should replace it
             // via `with_error_pattern_store` or `with_error_patterns_from_disk`.
             error_pattern_store: Arc::new(std::sync::RwLock::new(ErrorPatternStore::empty())),
+            prompt_snapshot,
         }
+    }
+
+    /// What the run's prompt-cache snapshot holds, when this factory's
+    /// prompts are built from one: the decision records name it (backlog
+    /// 4214).
+    pub fn prompt_snapshot(&self) -> Option<&crate::dispatch::prompt_cache::PromptCacheDigest> {
+        self.prompt_snapshot.as_ref()
     }
 
     /// Read-only access to the shared dispatcher (for plan/route without acting).
@@ -450,62 +462,6 @@ impl SharedAgentFactory {
         self.cli_plugin_mcp_bridge
             .as_ref()
             .and_then(|bridge| bridge.session_config(worktree, immune_root, contract))
-    }
-
-    /// Swap the prompt assembler's cache without rebuilding expensive factory
-    /// components (semaphores, MCP tools, resolver).
-    ///
-    /// Called after gate failures or when the periodic staleness check fires.
-    pub fn update_prompt_cache(&mut self, cache: Arc<PromptCache>) {
-        let learning_bidders = self.dispatcher.prompt_assembler().learning_bidders();
-        let assembler = PromptAssembler::with_cache(cache)
-            .with_composition_strategy(self.config.prompt.composition_strategy)
-            .with_vcg_warmup_observations(self.config.prompt.vcg_warmup_observations)
-            .with_learning_bidders(learning_bidders);
-        let configured_models: HashSet<String> = self
-            .config
-            .available_model_slugs_for_cascade()
-            .into_iter()
-            .collect();
-        let model_providers = crate::config_helpers::routing_model_provider_map(&self.config);
-        let disabled_providers: HashSet<String> = self
-            .config
-            .routing
-            .disabled_providers
-            .iter()
-            .cloned()
-            .collect();
-        let warm_pool_size = self.config.runner.warm_pool_size;
-        let mut dispatcher = Dispatcher::new(
-            self.dispatcher.cascade_router_arc(),
-            assembler,
-            WarmPool::new(warm_pool_size),
-            configured_models.clone(),
-        )
-        .with_provider_health(Arc::clone(&self.health_registry), model_providers);
-        if !disabled_providers.is_empty() {
-            dispatcher = dispatcher.with_disabled_providers(disabled_providers);
-        }
-        // Preserve tool-capability filter across cache updates.
-        let tool_capable: HashSet<String> =
-            self.config.models_supporting_tools().into_iter().collect();
-        let models_without_tools: HashSet<String> = configured_models
-            .iter()
-            .filter(|slug| !tool_capable.contains(*slug))
-            .cloned()
-            .collect();
-        if !models_without_tools.is_empty() {
-            dispatcher = dispatcher.with_tool_capability_filter(models_without_tools);
-        }
-        // Keep the ladder bound at construction rather than logging its
-        // skipped rungs again.
-        if let Some(ladder) = self.dispatcher.routing_ladder() {
-            dispatcher = dispatcher.with_routing_ladder(ladder.clone());
-        }
-        if let Some(store) = self.dispatcher.knowledge_store() {
-            dispatcher = dispatcher.with_knowledge_store(store.clone());
-        }
-        self.dispatcher = dispatcher;
     }
 
     /// Set persisted learning bidders on the prompt assembler.

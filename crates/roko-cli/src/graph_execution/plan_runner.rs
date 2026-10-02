@@ -4603,7 +4603,8 @@ max_retries = 0
     }
 
     /// Write a stand-in `claude_cli` provider and a `roko.toml` that routes
-    /// every task to it, followed by `extra_config`. The provider ignores its
+    /// every task to it, with the spec gate off (its fixture checks, such as
+    /// `true`, can never fail), followed by `extra_config`. The provider ignores its
     /// prompt, appends a line to `provider-calls`, and reports a finished turn
     /// costing `cost_usd`, so each task's verify step alone decides its
     /// outcome.
@@ -4644,6 +4645,11 @@ command = {provider:?}
 provider = "graph-cli"
 slug = "claude-sonnet-4-6"
 context_window = 200000
+
+# These runs test the runner, not the spec gate (3231), and their checks,
+# such as `true`, are fixtures that can never fail (HF2).
+[spec_quality]
+mode = "off"
 
 [gates]
 sibling_settle_secs = 0

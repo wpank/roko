@@ -58,3 +58,17 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: nothing.
 - Existing work items this package covers or touches: dec-39c781. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
+
+## Progress
+
+- 9509: implemented in place on 2026-10-02 in the main checkout's untracked `tmp/cybernetic-harness/paper/sections/`
+  (`05-evaluation-protocol.md`, `D-metrics-statistics.md`), so no commit holds the text; strict paperlint leaves only
+  number findings (8 + 19), the `[[verify]]` command passes, and `claims.py --check` passes after regenerating
+  `CLAIMS-EVIDENCE.md`. Both headers name S09 v1.4 and its sha256 (`8c630d72…be4cea4b`). Picked up v1.4's rule of one
+  `vb run` at a time per secret file (§5.6, §5.8, D.5); `[[TAB T2]]` became the Table 2a/2b captions; the ledger was
+  checked against `budget.toml` and `driver/ledger.py`, and D.1–D.12 against `analysis/metrics.py`, `passk.py` and
+  `report.py`, all at `976220c3e` (D's new "As built" paragraph; ledger rows C5.34, C5.35, CD.27); "first" is gone;
+  D9, D10 and D13 read as confirmed on 2026-10-02 (8102, 5101, 7102); D28–D36 keep their "(default)" labels because
+  dec-39c781 is still open. Open for others: the toolkit's plan-level false greens (gate passed, VF = 0) are broader
+  than S09 §4.9's "whole-feature suite failed"; BL0's $14 cap and `roko_ladder`/BL14 (3301, 3302) are noted in §5.7
+  and D.3 but wait for S09 v1.5, which §5 and D must pick up before the lock.

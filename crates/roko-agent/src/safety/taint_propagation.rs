@@ -260,6 +260,17 @@ impl TaintTracker {
         self.state.lock().audit.clone()
     }
 
+    /// Every tracked hash with its lattice level.
+    #[must_use]
+    pub fn levels(&self) -> Vec<(ContentHash, TaintLevel)> {
+        self.state
+            .lock()
+            .taints
+            .iter()
+            .map(|(hash, entry)| (*hash, entry.level))
+            .collect()
+    }
+
     pub fn clear(&self) {
         *self.state.lock() = TrackerState::default();
     }
@@ -482,6 +493,14 @@ mod tests {
         assert_eq!(restored.get_level(&child), Some(TaintLevel::Untrusted));
         assert_eq!(restored.derived_from(&child), vec![parent]);
         assert_eq!(restored.audit_log(), tracker.audit_log());
+        let mut levels = restored.levels();
+        levels.sort_by_key(|(hash, _)| hash.to_hex());
+        let mut expected = vec![
+            (parent, TaintLevel::Untrusted),
+            (child, TaintLevel::Untrusted),
+        ];
+        expected.sort_by_key(|(hash, _)| hash.to_hex());
+        assert_eq!(levels, expected);
         let error = TaintTracker::from_json(serde_json::json!({"taints": 3}))
             .err()
             .expect("not a snapshot");

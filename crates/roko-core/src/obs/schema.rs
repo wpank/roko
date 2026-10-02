@@ -62,6 +62,11 @@ pub const ROKO_AGENT_SERVER_REQUESTS_TOTAL: &str = "roko_agent_server_requests_t
 /// Total message-bearing requests handled by an agent sidecar.
 pub const ROKO_AGENT_SERVER_MESSAGE_REQUESTS_TOTAL: &str =
     "roko_agent_server_message_requests_total";
+/// Conductor evaluations of a run's live signals.
+pub const ROKO_CONDUCTOR_EVALUATIONS_TOTAL: &str = "roko_conductor_evaluations_total";
+/// Provider failures the provider health registry recorded, by provider and
+/// error type.
+pub const ROKO_PROVIDER_FAILURES_TOTAL: &str = "roko_provider_failures_total";
 
 /// Static descriptor for one canonical metric family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +230,24 @@ pub const ROKO_TARGET_DIR_SIZE_BYTES_DESCRIPTOR: MetricDescriptor = MetricDescri
     help: "Size of the Rust target/ directory in bytes",
     kind: MetricKind::Gauge,
     labels: &[],
+};
+
+/// Descriptor for `roko_conductor_evaluations_total`, which serve's `/metrics`
+/// shows (gap-a95898). Not in [`CANONICAL_METRICS`], which the sidecars share.
+pub const ROKO_CONDUCTOR_EVALUATIONS_TOTAL_DESCRIPTOR: MetricDescriptor = MetricDescriptor {
+    name: ROKO_CONDUCTOR_EVALUATIONS_TOTAL,
+    help: "Conductor evaluations of a run's live signals",
+    kind: MetricKind::Counter,
+    labels: &[],
+};
+
+/// Descriptor for `roko_provider_failures_total`, which serve's `/metrics`
+/// shows (gap-a95898). Not in [`CANONICAL_METRICS`], which the sidecars share.
+pub const ROKO_PROVIDER_FAILURES_TOTAL_DESCRIPTOR: MetricDescriptor = MetricDescriptor {
+    name: ROKO_PROVIDER_FAILURES_TOTAL,
+    help: "Provider failures, by provider and error type",
+    kind: MetricKind::Counter,
+    labels: &[LABEL_PROVIDER, LABEL_ERROR_TYPE],
 };
 
 /// Full canonical metric surface shared across the core registry and sidecars.

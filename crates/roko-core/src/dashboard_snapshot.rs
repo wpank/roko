@@ -1177,6 +1177,11 @@ pub const TASK_OUTCOME_ALREADY_SATISFIED: &str = "already_satisfied";
 /// did not start (gap-f59fe9). Counted as neither done nor failed.
 pub const TASK_OUTCOME_BLOCKED: &str = "blocked";
 
+/// Outcome of a task that was still running when its run ended other than by
+/// cancellation, which `RunCompleted` gives it (bug-60ccba). Counted as
+/// failed: it did not finish.
+pub const TASK_OUTCOME_INTERRUPTED: &str = "interrupted";
+
 /// How a `TaskCompleted` outcome counts in the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskOutcomeClass {
@@ -1203,8 +1208,8 @@ pub enum TaskOutcomeClass {
 /// Only an outcome that names a pass (`passed`,
 /// `passed_with_preexisting_failures`, or a legacy `success` or `succeeded`)
 /// counts as passed. A skipped task is not a pass, a blocked task is neither
-/// done nor failed, a failure is failed, and any other outcome, `unverified`
-/// included, is unverified. Accepted-with-failures, already-satisfied,
+/// done nor failed, a failure (an interrupted or cancelled task included) is
+/// failed, and any other outcome, `unverified` included, is unverified. Accepted-with-failures, already-satisfied,
 /// blocked and the passes are matched exactly before failures: two of them
 /// contain "fail".
 #[must_use]
@@ -1224,7 +1229,7 @@ pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
         || lower.starts_with("success")
     {
         TaskOutcomeClass::Passed
-    } else if ["fail", "error", "cancel", "halt"]
+    } else if ["fail", "error", "cancel", "halt", "interrupt"]
         .iter()
         .any(|word| lower.contains(word))
     {
@@ -1759,6 +1764,27 @@ impl DashboardSnapshot {
                         _ => "failed",
                     }
                     .into();
+                }
+                // A task still running when the run ends did not finish: it
+                // ends with the run, cancelled or interrupted, never passed
+                // (bug-60ccba).
+                let task_outcome = if outcome == "cancelled" {
+                    "cancelled"
+                } else {
+                    TASK_OUTCOME_INTERRUPTED
+                };
+                let mut ended = Vec::new();
+                for task in self.tasks.values_mut() {
+                    if task.outcome.is_none() {
+                        task.phase = task_outcome.into();
+                        task.outcome = Some(task_outcome.into());
+                        task.finished_at_ms = Some(ts);
+                        ended.push(task.plan_id.clone());
+                    }
+                }
+                self.stats.tasks_active = self.stats.tasks_active.saturating_sub(ended.len());
+                for plan_id in ended {
+                    self.count_settled(&plan_id, classify_task_outcome(task_outcome), true);
                 }
                 for agent in self.agents.values_mut() {
                     agent.active =
@@ -4861,6 +4887,68 @@ mod tests {
         // A member that never started has neither time.
         assert_eq!(snap.plans["b"].started_at_ms, None);
         assert_eq!(snap.plans["b"].finished_at_ms, None);
+    }
+
+    /// bug-60ccba: a run that ends while tasks still run ends them too, at its
+    /// time and never as passed: interrupted, or cancelled when the run was
+    /// cancelled. A task that finished keeps its outcome and time.
+    #[test]
+    fn run_completed_ends_running_tasks() {
+        let started = |task_id: &str| DashboardEvent::TaskStarted {
+            plan_id: "p1".into(),
+            task_id: task_id.into(),
+            title: task_id.into(),
+            phase: "implement".into(),
+        };
+        let run_completed = |outcome: &str| DashboardEvent::RunCompleted {
+            outcome: outcome.into(),
+            duration_ms: 2_000,
+            cleanup_degraded: false,
+            surviving_agent_ids: Vec::new(),
+            surviving_agent_pids: Vec::new(),
+        };
+
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(&plan_set_event(&[("p1", 2)]), 500);
+        snap.apply_with_ts(
+            &DashboardEvent::PlanStarted {
+                plan_id: "p1".into(),
+                tasks_total: 2,
+            },
+            1_000,
+        );
+        snap.apply_with_ts(&started("t1"), 1_100);
+        snap.apply_with_ts(&started("t2"), 1_100);
+        snap.apply_with_ts(
+            &DashboardEvent::TaskCompleted {
+                plan_id: "p1".into(),
+                task_id: "t1".into(),
+                outcome: TASK_OUTCOME_PASSED.into(),
+            },
+            2_000,
+        );
+        snap.apply_with_ts(&run_completed("failed"), 3_000);
+
+        let t2 = &snap.tasks["p1/t2"];
+        assert_eq!(t2.outcome.as_deref(), Some(TASK_OUTCOME_INTERRUPTED));
+        assert_eq!(t2.finished_at_ms, Some(3_000));
+        assert_eq!(
+            classify_task_outcome(TASK_OUTCOME_INTERRUPTED),
+            TaskOutcomeClass::Failed
+        );
+        assert_eq!(snap.stats.tasks_active, 0);
+        assert_eq!(snap.plans["p1"].tasks_failed, 1);
+        assert_eq!(snap.plans["p1"].tasks_passed, 1);
+        let t1 = &snap.tasks["p1/t1"];
+        assert_eq!(t1.outcome.as_deref(), Some(TASK_OUTCOME_PASSED));
+        assert_eq!(t1.finished_at_ms, Some(2_000));
+
+        // A cancelled run's running tasks end cancelled.
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(&started("t1"), 1_000);
+        snap.apply_with_ts(&run_completed("cancelled"), 2_000);
+        assert_eq!(snap.tasks["p1/t1"].outcome.as_deref(), Some("cancelled"));
+        assert_eq!(snap.stats.tasks_failed, 1);
     }
 
     #[test]

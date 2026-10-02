@@ -3,13 +3,15 @@ id = "bug-3ba5d8"
 kind = "bug"
 title = "roko-agent's custody hash uses DefaultHasher, unstable across Rust releases and unlike roko-cli's SHA-256 chain"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-agent/safety"]
 created = 2026-10-01
-updated = 2026-10-01
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "c7560e213"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "gap-ff95f5"
 anchors = ["crates/roko-agent/src/safety/"]
@@ -35,3 +37,6 @@ Hash with SHA-256 as documented. Add a test named `custody_hash_is_sha256` that 
 ## Notes
 
 - Reported on 2026-10-01 by wk-tamper, working on gap-ff95f5, during the evening close-out round.
+- 2026-10-02 (wk-guard2): implemented on work/bug-7f15df; cargo verification deferred to the batch check.
+- `Custody::compute_hash` is now the lowercase hex SHA-256 of `prev_hash` (empty for the first record) followed by the record's JSON without `prev_hash` and `hash`. That is roko-cli's custody chain formula (`crates/roko-cli/src/custody.rs::compute_hash`), so `seal`, `verify_hash`, `CustodyLogger::log_chained` and `verify_chain` now agree with the chains `roko knowledge custody` writes, and the link to `prev_hash` is part of the digest. roko-agent gains the workspace `sha2` dependency (Cargo.lock: roko-agent now lists `sha2 0.10.9`). Test `custody_hash_is_sha256` pins two chained digests computed independently, and checks that a chain logged with `log_chained` verifies.
+- Migration: no old chains need converting. roko-agent's `seal`, `log_chained` and `verify_chain` had no callers outside their own module, so no chain on disk carries the old 16-hex-digit `DefaultHasher` digest, and the chains roko-cli wrote already use the SHA-256 form. A record sealed by an old build would fail `verify_chain` at that record (fail closed); it can't be re-verified reliably anyway, because `DefaultHasher` output changes between Rust releases. Follow-up: once gap-ff95f5 lands, roko-cli's `canonical_payload` and `compute_hash` can call `Custody::compute_hash`, leaving one copy of the formula.

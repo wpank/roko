@@ -38,10 +38,10 @@ benchmarks/viabilitybench/
   families/f4_kvtool/{gen, hidden, gaming, instance}.py  ladder.toml  template/  spec/  reference/
   families/plan_slice/{slicekit, runner}.py  features/{pl01_stockroom … pl06_csvclean}/   # PL fixtures (S09 §4.9)
   speclint/{speclint, dynamic}.py  fixtures/
-  streams/pilot.toml
+  streams/{pilot, pilot_fd_api}.toml
   arms/{cheap_direct, fd_api, fd_claude, roko_fixed}.toml
   experiments/budget.toml                                   # budget lines and caps (S09 §4.6)
-  experiments/<experiment>.toml                             # experiment manifests (vb.experiment/1), for vb campaign
+  experiments/{pilot_a}.toml  test_*.py                     # experiment manifests (vb campaign) and their rehearsals
   driver/vb.py                                              # vb run | estimate | materialize | campaign | ledger | …
   driver/campaign.py                                        # vb campaign: an experiment's blocks, validated and run
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm

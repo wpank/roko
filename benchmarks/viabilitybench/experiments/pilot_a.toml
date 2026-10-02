@@ -1,0 +1,39 @@
+# Pilot A (S09 E1a; gap-c33709, 3307): the direct arms on S08's first slice. Approved by decision 3301 (2026-10-02):
+# pilots A and B at most $15 billed (the `pilot` experiment cap in budget.toml), under the macOS network sandbox
+# (3303-3305). Validate and estimate with
+#     benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/driver/vb.py campaign \
+#         --manifest benchmarks/viabilitybench/experiments/pilot_a.toml --dry-run
+# and rehearse offline with `experiments/test_pilot_a.py`. The paid run adds --allow-network and the key file.
+#
+# Planned spend is S09 §3's: $0.06 per direct task, and $1.50 of BL8 for fd_api's five runs. Each block's
+# max_cost_usd, its `vb run --max-cost-usd`, is twice its plan: G0 fails a pilot whose measured $/task passes twice
+# the plan, so spend beyond it buys nothing. The ledger's caps (BL0, BL8, the pilot's $15) bind as well.
+#
+# No block names a secret fingerprint. The campaign log pins each instance to the secret file of its first run, and
+# refuses another secret on it later, in this experiment or any other in the results root (S09 §4.1).
+schema_version = "vb.experiment/1"
+id = "PILOT-A"
+title = "Pilot A: cheap_direct gpt-oss-120b x 3 seeds and fd_api gpt-5.4 x 5 on the pilot slice"
+requires_lock = false          # the pilot is exploratory and comes before the pre-registration lock (S09 G0)
+requires_live = []
+order = { kind = "daily_interleave", seed = 1 }   # S09 §4.1: arms interleaved in randomized daily blocks
+
+[[block]]
+id = "cheap-direct"
+stream = "pilot"               # F1 and F4 at levels 1-5, two instances each: 20 tasks
+arm = "cheap_direct"
+model = "gpt-oss-120b"
+seeds = "1-3"
+line = "BL0"
+planned_usd = 3.60             # 60 runs x $0.06
+max_cost_usd = 7.20
+
+[[block]]
+id = "fd-api"
+stream = "pilot_fd_api"        # five of the pilot's instances, one per level
+arm = "fd_api"
+model = "gpt-5.4"
+seeds = "1"
+line = "BL8"
+planned_usd = 1.50
+max_cost_usd = 3.00

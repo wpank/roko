@@ -7,6 +7,7 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use roko_core::TaskDomain;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
@@ -35,6 +36,11 @@ struct RunRequest {
     prompt: String,
     #[serde(default)]
     workdir: Option<String>,
+    /// The run's work domain label (`code`, `research`, `docs`, `chain` or
+    /// a custom one), which picks its tool policy and verifier pack (9121).
+    /// Default: the project's `default_domain`.
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 impl RequestPayload for RunRequest {
@@ -54,11 +60,16 @@ async fn start_run(
     State(state): State<Arc<AppState>>,
     ValidJson(body): ValidJson<RunRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let domain = body.domain.as_deref().and_then(TaskDomain::from_label);
+    let options = PromptPlanOptions {
+        domain,
+        ..PromptPlanOptions::default()
+    };
     let run_id = start_gated_run(
         &state,
         body.prompt.clone(),
         body.workdir.map(PathBuf::from),
-        PromptPlanOptions::default(),
+        options,
     )
     .await?;
 

@@ -582,6 +582,11 @@ Examples:
         /// Retries after a failed attempt of a task.
         #[arg(long)]
         max_retries: Option<u32>,
+        /// The work domain of a one-task run (`code`, `research`, `docs`,
+        /// `chain` or a custom label), which picks its tool policy and
+        /// verifier pack. Default: the project's `default_domain`.
+        #[arg(long, value_name = "LABEL")]
+        domain: Option<String>,
         /// With a plan directory: archive old run state and start from scratch.
         #[arg(long)]
         fresh: bool,
@@ -1841,6 +1846,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             share,
             provider,
             max_retries,
+            domain,
             fresh,
             resume_plan,
         } => {
@@ -1874,6 +1880,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                     share,
                     provider,
                     max_retries,
+                    domain,
                     fresh,
                     resume_plan,
                 },

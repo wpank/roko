@@ -235,6 +235,13 @@ impl GateRungConfig {
         self.advisory.unwrap_or(self.kind == RungKind::Judge)
     }
 
+    /// Whether every change must pass the rung as a verify step: it is
+    /// required, does not only advise, and runs a command.
+    #[must_use]
+    pub fn is_required_step(&self) -> bool {
+        self.required && !self.is_advisory() && self.runs_command()
+    }
+
     /// What the rung lacks for its kind: a `command` rung needs a command, a
     /// `schema` rung a schema, and a `citations`, `judge` or `schema` rung
     /// artefacts to check. Empty when it lacks nothing.
@@ -517,7 +524,7 @@ impl GatesConfig {
     pub fn required_rungs(&self) -> impl Iterator<Item = &GateRungConfig> {
         self.custom_rungs
             .iter()
-            .filter(|rung| rung.required && !rung.is_advisory() && rung.runs_command())
+            .filter(|rung| rung.is_required_step())
     }
 
     /// What is wrong with the declared rungs ([`GateRungConfig::problems`]),

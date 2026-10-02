@@ -498,7 +498,7 @@ aliases (both are mounted).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/run` | Run the prompt in the background as a gated one-task plan, as `roko run` does (202 Accepted with the run's `id`, which the Graph run takes; 409 while a plan run is live) |
+| POST | `/api/run` | Run the prompt in the background as a gated one-task plan, as `roko run` does (202 Accepted with the run's `id`, which the Graph run takes; 409 while a plan run is live). Body: `prompt`, optional `workdir`, optional `domain` (a work-domain label such as `research`, which picks the task's tool policy and verifier pack; default: the project's `default_domain`) |
 | GET | `/api/run/{id}/status` | Poll run status |
 
 The status is `running`, then the run's verdict: `succeeded` when gates checked

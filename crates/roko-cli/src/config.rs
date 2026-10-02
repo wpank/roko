@@ -1151,6 +1151,7 @@ impl ProviderLayer {
             limits: self.limits,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         })
     }
 }

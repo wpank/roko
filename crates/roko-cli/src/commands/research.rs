@@ -1003,6 +1003,7 @@ async fn run_gemini_grounded(
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         }),
         model_profile,
     );
@@ -1389,6 +1390,7 @@ pub(crate) fn with_perplexity_research_model(
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         }),
         model_profile,
     );

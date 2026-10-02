@@ -703,7 +703,7 @@ impl GraphTaskDispatcher {
                 .max(1)
                 .saturating_mul(1_000),
         };
-        Some(HelperAgent::new(agent, target))
+        Some(HelperAgent::new(agent, target, self.pricing_snapshot()))
     }
 
     /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`
@@ -1500,6 +1500,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     let (dispatch, failover) = interrupted.into_dispatch(
                         &error.to_string(),
                         u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
+                        self.pricing_snapshot().as_deref(),
                     );
                     let cost_usd = f64::from(dispatch.result.usage.cost_usd);
                     self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
@@ -1861,6 +1862,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -2123,6 +2125,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -2311,6 +2314,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -2447,6 +2451,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         }
     }
 
@@ -3096,6 +3101,7 @@ sleep 30
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(

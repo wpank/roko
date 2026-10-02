@@ -10,6 +10,7 @@
 //! plan budgets, a cost row and an efficiency row keyed by the attempt, and
 //! their totals on the attempt's verdict and episode.
 
+use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_learn::efficiency::ExecutedRow;
 use roko_learn::telemetry::{CostSource, HelperCallsUsage};
 
@@ -53,8 +54,13 @@ pub(super) struct SideCall {
 }
 
 impl SideCall {
-    /// The call behind `dispatch`, which took `duration_ms`.
-    pub(super) fn of(dispatch: &crate::dispatch_v2::AgentResultDispatch, duration_ms: u64) -> Self {
+    /// The call behind `dispatch`, which took `duration_ms`, in a run that
+    /// prices from `snapshot`.
+    pub(super) fn of(
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+        duration_ms: u64,
+        snapshot: Option<&PriceSnapshot>,
+    ) -> Self {
         Self::from_result(
             &dispatch.target.provider_id,
             &dispatch.target.model_slug,
@@ -62,11 +68,12 @@ impl SideCall {
             is_cli_backend(dispatch.target.provider_kind),
             &dispatch.result,
             duration_ms,
+            snapshot,
         )
     }
 
     /// The call of `result` to `model_slug` with `profile`, on a CLI agent
-    /// backend when `cli_backend`.
+    /// backend when `cli_backend`, in a run that prices from `snapshot`.
     fn from_result(
         provider_id: &str,
         model_slug: &str,
@@ -74,6 +81,7 @@ impl SideCall {
         cli_backend: bool,
         result: &roko_agent::AgentResult,
         duration_ms: u64,
+        snapshot: Option<&PriceSnapshot>,
     ) -> Self {
         Self {
             provider_id: provider_id.to_string(),
@@ -95,7 +103,12 @@ impl SideCall {
                 .and_then(|turns| turns.parse().ok()),
             duration_ms,
             success: result.success,
-            priced: crate::dispatch_v2::usage_is_priced(&result.usage, profile, model_slug),
+            priced: crate::dispatch_v2::usage_is_priced(
+                &result.usage,
+                snapshot,
+                profile,
+                model_slug,
+            ),
         }
     }
 
@@ -194,6 +207,8 @@ pub(super) struct HelperAgent {
     model_slug: String,
     /// The helper model's profile, which prices its calls.
     model_profile: Option<roko_core::config::schema::ModelProfile>,
+    /// The run's price snapshot, which prices them first (backlog 2114).
+    pricing_snapshot: Option<Arc<PriceSnapshot>>,
     /// The helper model runs on a CLI agent backend.
     cli_backend: bool,
     /// The attempt's helper calls; the agent is out until it is dropped.
@@ -204,6 +219,7 @@ impl HelperAgent {
     pub(super) fn new(
         agent: CheapFactoryAgent,
         target: crate::dispatch_v2::ProviderDispatchSpec,
+        pricing_snapshot: Option<Arc<PriceSnapshot>>,
     ) -> Self {
         let calls = HelperCalls::current();
         if let Some(calls) = &calls {
@@ -215,6 +231,7 @@ impl HelperAgent {
             provider_id: target.provider_id,
             model_slug: target.model_slug,
             model_profile: target.model_profile,
+            pricing_snapshot,
             calls,
         }
     }
@@ -252,6 +269,7 @@ impl roko_agent::Agent for HelperAgent {
                 self.cli_backend,
                 &result,
                 u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                self.pricing_snapshot.as_deref(),
             ));
         }
         result
@@ -471,6 +489,7 @@ mod tests {
                         limits: None,
                         require_confirmation: false,
                         stream_usage: None,
+                        billing: None,
                     },
                 );
                 config.models.insert(

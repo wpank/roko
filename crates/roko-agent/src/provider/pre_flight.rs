@@ -276,6 +276,7 @@ mod tests {
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -319,6 +320,7 @@ mod tests {
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -354,6 +356,7 @@ mod tests {
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         // SAFETY: test is single-threaded; no other thread reads this env var.

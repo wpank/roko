@@ -1669,7 +1669,8 @@ pub fn schema_value_for_path(path: &str) -> Option<toml::Value> {
 fn build_schema_tree() -> toml::Value {
     use super::agent::{AgentBudget, AgentThresholds, RoleOverride, RoutingOverrides};
     use super::provider::{
-        ModelProfile, ProviderConfig, ProviderLimits, ProviderNetworkPolicy, ProviderRouting,
+        ModelProfile, ProviderBilling, ProviderConfig, ProviderLimits, ProviderNetworkPolicy,
+        ProviderRouting,
     };
     use super::routing::RewardWeights;
     use super::schema::{DomainProfile, GateProfileConfig};
@@ -1703,6 +1704,7 @@ fn build_schema_tree() -> toml::Value {
         args: Some(Vec::new()),
         require_confirmation: true,
         stream_usage: Some(true),
+        billing: Some(ProviderBilling::Subscription),
         ..ProviderConfig::default()
     };
     config
@@ -3929,6 +3931,7 @@ default_model = "claude-sonnet"
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
 

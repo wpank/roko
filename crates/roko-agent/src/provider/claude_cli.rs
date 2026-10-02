@@ -465,6 +465,7 @@ mod tests {
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         }
     }
 
@@ -778,6 +779,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let options = AgentOptions {
             safety_layer: None,
@@ -918,6 +920,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(10_000),
@@ -975,6 +978,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"late"}}'
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(100),

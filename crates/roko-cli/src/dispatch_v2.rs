@@ -51,6 +51,7 @@ use roko_agent::safety::contract::AgentContract;
 use roko_agent::{Agent, AgentResult, create_agent_for_model};
 use roko_core::agent::{ProviderKind, resolve_model, try_resolve_model};
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
+use roko_core::pricing_snapshot::{PriceSnapshot, PricingConfig, TokenCounts};
 use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
 use roko_core::{Body, Context, Kind, Signal};
 use roko_learn::model_call_feedback::{ModelCallFeedback, ModelCallFeedbackRecorder};
@@ -1476,14 +1477,21 @@ impl AgentDispatcherV2 {
         self
     }
 
-    /// Attach per-call trace and metrics sinks.
+    /// Attach the per-call trace sink.
     ///
     /// When set, every tool call an agent created by this dispatcher makes
-    /// leaves a closed trace under `.roko/traces/` and a record in
-    /// `.roko/metrics/tool_metrics.jsonl` (find-f489db).
+    /// leaves a closed trace under `.roko/traces/` (find-f489db).
     pub fn with_observability_sinks(mut self, sinks: roko_fs::FsObservabilitySinks) -> Self {
         self.observability = Some(sinks);
         self
+    }
+
+    /// The price snapshot `request`'s calls are priced from (backlog 2114):
+    /// the one decision 2113 picks for its workspace root, which a Graph
+    /// dispatch names as its `immune_root`.
+    fn pricing_snapshot_for(&self, request: &AgentDispatchRequest) -> Option<Arc<PriceSnapshot>> {
+        let root = request.immune_root.as_deref().unwrap_or(&request.workdir);
+        pricing_snapshot(&self.config.pricing, root)
     }
 
     /// Record the tool calls of each dispatch with the safety provenance
@@ -1552,7 +1560,8 @@ impl AgentDispatcherV2 {
         let started = Instant::now();
         let mut result = created.agent.run(&input, &Context::now()).await;
         let latency_ms = started.elapsed().as_millis() as u64;
-        fill_cost_from_profile(&mut result, &created.target);
+        let snapshot = self.pricing_snapshot_for(&request);
+        fill_cost_from_profile(&mut result, &created.target, snapshot.as_deref());
 
         self.record_provider_outcome(&created.target.provider_id, &result);
 
@@ -1630,8 +1639,10 @@ impl AgentDispatcherV2 {
         // Wait for forwarder to drain remaining chunks.
         let _ = forwarder.await;
 
-        // Back-fill cost from model profile pricing before checking cost_usd.
-        fill_cost_from_profile(&mut result, &created.target);
+        // Back-fill cost from the price snapshot or model profile pricing
+        // before checking cost_usd.
+        let snapshot = self.pricing_snapshot_for(&request);
+        fill_cost_from_profile(&mut result, &created.target, snapshot.as_deref());
 
         // Emit terminal events.
         if result.usage.total_tokens() > 0 || result.usage.cost_usd > 0.0 {
@@ -1768,7 +1779,8 @@ impl AgentDispatcherV2 {
         let started = Instant::now();
         let mut result = agent.run(&input, &Context::now()).await;
         let latency_ms = started.elapsed().as_millis() as u64;
-        fill_cost_from_profile(&mut result, &target);
+        let snapshot = self.pricing_snapshot_for(&request);
+        fill_cost_from_profile(&mut result, &target, snapshot.as_deref());
 
         // This must happen before any gate verdict is applied so a provider
         // success followed by a failing code/test gate remains a provider
@@ -2300,28 +2312,107 @@ fn audited_tool_calls(lines: &str, attempt_key: &str) -> Vec<ToolCallRecord> {
 /// Provider-neutral events emitted by dispatch v2.
 pub type DispatchEvent = AgentRuntimeEvent;
 
+/// The dated price snapshot that calls in `workspace_root` are priced from
+/// (backlog 2114): the one decision 2113 picks, `[pricing] snapshot` else the
+/// newest in `config/prices/` else the copy built into the binary. Loaded
+/// once per process and workspace. `None`, with a warning, when it cannot be
+/// read: calls are then priced from roko.toml and the built-in rates.
+pub(crate) fn pricing_snapshot(
+    pricing: &PricingConfig,
+    workspace_root: &Path,
+) -> Option<Arc<PriceSnapshot>> {
+    type Loaded = std::collections::HashMap<(PathBuf, String), Option<Arc<PriceSnapshot>>>;
+    static LOADED: std::sync::LazyLock<parking_lot::Mutex<Loaded>> =
+        std::sync::LazyLock::new(parking_lot::Mutex::default);
+    let key = (
+        workspace_root.to_path_buf(),
+        pricing.snapshot_id().unwrap_or_default().to_string(),
+    );
+    let mut loaded = LOADED.lock();
+    loaded
+        .entry(key)
+        .or_insert_with(|| match PriceSnapshot::for_workspace(pricing, workspace_root) {
+            Ok(snapshot) => Some(Arc::new(snapshot)),
+            Err(error) => {
+                tracing::warn!(
+                    workspace = %workspace_root.display(),
+                    %error,
+                    "no price snapshot: calls are priced from roko.toml and built-in rates"
+                );
+                None
+            }
+        })
+        .clone()
+}
+
+/// Which rates priced a call's usage (backlog 2114).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallPricing {
+    /// The provider reported the cost: no rate applied.
+    Reported,
+    /// The model's row in the dated price snapshot the caller passed, whose
+    /// id the cost records carry.
+    Snapshot,
+    /// The model's profile in roko.toml.
+    Profile,
+    /// roko's built-in registry rates.
+    Registry,
+    /// No rate: the cost stays unknown.
+    Unpriced,
+}
+
+/// `usage` in a price snapshot's token classes. Cache writes count at the
+/// 5-minute TTL, the API default; reasoning is inside the output.
+fn usage_token_counts(usage: &roko_core::Usage) -> TokenCounts {
+    TokenCounts {
+        input: u64::from(usage.input_tokens),
+        cache_read: u64::from(usage.cache_read_tokens),
+        cache_write_5m: u64::from(usage.cache_create_tokens),
+        cache_write_1h: 0,
+        output: u64::from(usage.output_tokens),
+        reasoning: u64::from(usage.reasoning_tokens),
+    }
+}
+
 /// [`fill_usage_cost_from_pricing`] for a dispatch result and its target.
-fn fill_cost_from_profile(result: &mut AgentResult, target: &ProviderDispatchSpec) {
+fn fill_cost_from_profile(
+    result: &mut AgentResult,
+    target: &ProviderDispatchSpec,
+    snapshot: Option<&PriceSnapshot>,
+) {
     fill_usage_cost_from_pricing(
         &mut result.usage,
+        snapshot,
         target.model_profile.as_ref(),
         &target.model_slug,
     );
 }
 
-/// Back-fill `usage.cost_usd` from the model profile's per-million token
-/// pricing when the provider did not report a dollar amount natively.
-///
-/// When the profile carries no pricing (or no profile exists), fall back to
-/// the shared registry rates for known slugs (glm-5.1, kimi-k2.5, sonar,
-/// gpt-5.x, codex, …) so token-bearing usage is not silently recorded as
-/// $0.00. Truly unknown models stay at 0.0, which
-/// `Usage::has_known_cost` reports as "unknown" rather than "free".
+/// Back-fill `usage.cost_usd` when the provider did not report a dollar
+/// amount (backlog 2114): at the dated price `snapshot`'s row for
+/// `model_slug` first, else the model profile's per-million prices, else the
+/// shared registry rates for known slugs (glm-5.1, kimi-k2.5, sonar, gpt-5.x,
+/// codex, …), so token-bearing usage is not silently recorded as $0.00. A
+/// model none of them prices stays at 0.0, which `Usage::has_known_cost`
+/// reports as unknown rather than free. Returns which rates priced the call.
 pub(crate) fn fill_usage_cost_from_pricing(
     usage: &mut roko_core::Usage,
+    snapshot: Option<&PriceSnapshot>,
     profile: Option<&ModelProfile>,
     model_slug: &str,
-) {
+) -> CallPricing {
+    if usage.cost_usd.abs() > f32::EPSILON {
+        return CallPricing::Reported;
+    }
+    if let Some(snapshot) = snapshot
+        && let Some(priced) = snapshot.price(model_slug, &usage_token_counts(usage))
+    {
+        usage.cost_usd = priced.api_equiv_usd as f32;
+        return CallPricing::Snapshot;
+    }
+    let profile = profile.filter(|profile| {
+        profile.cost_input_per_m.is_some() && profile.cost_output_per_m.is_some()
+    });
     if let Some(profile) = profile {
         usage.fill_cost_from_pricing(
             profile.cost_input_per_m,
@@ -2329,27 +2420,41 @@ pub(crate) fn fill_usage_cost_from_pricing(
             profile.cost_cache_read_per_m,
             profile.cost_cache_write_per_m,
         );
+        if usage.cost_usd.abs() > f32::EPSILON {
+            return CallPricing::Profile;
+        }
     }
-    if usage.cost_usd.abs() <= f32::EPSILON
-        && let Some(pricing) = roko_core::config::model_registry::builtin_pricing(model_slug)
-    {
+    if let Some(pricing) = roko_core::config::model_registry::builtin_pricing(model_slug) {
         usage.fill_cost_from_pricing(
             Some(pricing.input_per_m),
             Some(pricing.output_per_m),
             Some(pricing.cache_read_per_m),
             Some(pricing.cache_write_per_m),
         );
+        return CallPricing::Registry;
+    }
+    // A profile priced at 0/0 is free, and still a rate (backlog 2109).
+    if profile.is_some() {
+        CallPricing::Profile
+    } else {
+        CallPricing::Unpriced
     }
 }
 
 /// Whether roko has a rate for `model_slug`, as
-/// [`fill_usage_cost_from_pricing`] applies one: the profile's per-million
-/// prices, or the model's built-in pricing. A rate of 0 is free, and still a
-/// rate (backlog 2109).
-pub(crate) fn model_has_price(profile: Option<&ModelProfile>, model_slug: &str) -> bool {
-    profile.is_some_and(|profile| {
-        profile.cost_input_per_m.is_some() || profile.cost_output_per_m.is_some()
-    }) || roko_core::config::model_registry::builtin_pricing(model_slug).is_some()
+/// [`fill_usage_cost_from_pricing`] applies one: the price snapshot's row,
+/// the profile's per-million prices, or the model's built-in pricing. A rate
+/// of 0 is free, and still a rate (backlog 2109).
+pub(crate) fn model_has_price(
+    snapshot: Option<&PriceSnapshot>,
+    profile: Option<&ModelProfile>,
+    model_slug: &str,
+) -> bool {
+    snapshot.is_some_and(|snapshot| snapshot.row(model_slug).is_some())
+        || profile.is_some_and(|profile| {
+            profile.cost_input_per_m.is_some() || profile.cost_output_per_m.is_some()
+        })
+        || roko_core::config::model_registry::builtin_pricing(model_slug).is_some()
 }
 
 /// Whether a call's `usage` is priced, for its cost row (backlog 2109): its
@@ -2357,21 +2462,26 @@ pub(crate) fn model_has_price(profile: Option<&ModelProfile>, model_slug: &str) 
 /// free call. An unpriced call's `cost_usd` of 0 is unknown, not free.
 pub(crate) fn usage_is_priced(
     usage: &roko_core::Usage,
+    snapshot: Option<&PriceSnapshot>,
     profile: Option<&ModelProfile>,
     model_slug: &str,
 ) -> bool {
-    usage.has_known_cost() || model_has_price(profile, model_slug)
+    usage.has_known_cost() || model_has_price(snapshot, profile, model_slug)
 }
 
 /// What `usage` would have cost with no prompt caching, priced like
-/// [`fill_usage_cost_from_pricing`]: the profile's input and output prices,
-/// else the model's built-in pricing. `None` when neither prices the model
-/// (gap-7a8474).
+/// [`fill_usage_cost_from_pricing`]: the price snapshot's input and output
+/// rates, else the profile's, else the model's built-in pricing. `None` when
+/// none prices the model (gap-7a8474).
 pub(crate) fn usage_cost_without_cache(
     usage: &roko_core::Usage,
+    snapshot: Option<&PriceSnapshot>,
     profile: Option<&ModelProfile>,
     model_slug: &str,
 ) -> Option<f64> {
+    if let Some(row) = snapshot.and_then(|snapshot| snapshot.row(model_slug)) {
+        return Some(usage.cost_without_cache(row.input, row.output));
+    }
     if let Some((input, output)) =
         profile.and_then(|profile| profile.cost_input_per_m.zip(profile.cost_output_per_m))
     {
@@ -3344,6 +3454,7 @@ mod tests {
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         assert!(matches!(
             classify_runtime("gemini", ProviderKind::GeminiCli, Some(&gemini)),
@@ -3370,6 +3481,7 @@ mod tests {
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         assert!(matches!(
             classify_runtime("openclaw", ProviderKind::OpenClaw, Some(&openclaw)),
@@ -3488,6 +3600,7 @@ mod tests {
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             }),
             model_profile: None,
             runtime: ProviderRuntime::AgentResultBridge {
@@ -3556,6 +3669,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -3653,6 +3767,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -4145,7 +4260,7 @@ exit 1
         result.usage.input_tokens = 1_000_000;
         result.usage.output_tokens = 1_000_000;
 
-        fill_cost_from_profile(&mut result, &target);
+        fill_cost_from_profile(&mut result, &target, None);
 
         // glm-5.1 registry rates: $1.40/M input + $4.40/M output.
         assert!(
@@ -4166,7 +4281,7 @@ exit 1
         );
         result.usage.input_tokens = 1_000;
 
-        fill_cost_from_profile(&mut result, &target);
+        fill_cost_from_profile(&mut result, &target, None);
 
         // Unknown model: cost stays 0.0 and reports as unknown, not free.
         assert!(result.usage.cost_usd.abs() <= f32::EPSILON);
@@ -4191,7 +4306,7 @@ exit 1
         result.usage.input_tokens = 1_000_000;
         result.usage.output_tokens = 1_000_000;
 
-        fill_cost_from_profile(&mut result, &target);
+        fill_cost_from_profile(&mut result, &target, None);
 
         // Configured profile rates ($9/$9) beat the registry ($1.40/$4.40).
         assert!(
@@ -4199,5 +4314,92 @@ exit 1
             "profile-priced cost, got {}",
             result.usage.cost_usd
         );
+    }
+
+    /// backlog 2114: a call to a model the dated price snapshot lists is
+    /// priced at the snapshot's rates, even when roko.toml prices it
+    /// otherwise; a model the snapshot lacks falls back to its profile.
+    #[test]
+    fn plan_run_prices_from_the_dated_snapshot() {
+        // Named, not the built-in copy, which a newer snapshot replaces.
+        let snapshot = PriceSnapshot::from_toml(
+            include_str!("../../../config/prices/2026-09-28.toml"),
+            "config/prices/2026-09-28.toml",
+        )
+        .expect("the 2026-09-28 snapshot");
+        let profile = |slug: &str| ModelProfile {
+            provider: "cerebras".to_string(),
+            slug: slug.to_string(),
+            cost_input_per_m: Some(0.5),
+            cost_output_per_m: Some(1.5),
+            ..ModelProfile::default()
+        };
+        let million = |usage: &mut roko_core::Usage| {
+            usage.input_tokens = 1_000_000;
+            usage.output_tokens = 1_000_000;
+        };
+
+        let mut usage = roko_core::Usage::zero();
+        million(&mut usage);
+        let gpt_oss = profile("gpt-oss-120b");
+        let pricing = fill_usage_cost_from_pricing(
+            &mut usage,
+            Some(&snapshot),
+            Some(&gpt_oss),
+            "gpt-oss-120b",
+        );
+        assert_eq!(pricing, CallPricing::Snapshot);
+        assert_eq!(snapshot.id(), "prices-2026-09-28");
+        // 0.35 in + 0.75 out, not the profile's 0.5 + 1.5.
+        let cost = f64::from(usage.cost_usd);
+        assert!((cost - 1.10).abs() < 1e-6, "{cost}");
+        assert!(model_has_price(Some(&snapshot), None, "gpt-oss-120b"));
+        let uncached =
+            usage_cost_without_cache(&usage, Some(&snapshot), Some(&gpt_oss), "gpt-oss-120b");
+        assert!(uncached.is_some_and(|uncached| (uncached - 1.10).abs() < 1e-9));
+
+        let mut usage = roko_core::Usage::zero();
+        million(&mut usage);
+        let unlisted = profile("qwen-3.8-27b");
+        let pricing = fill_usage_cost_from_pricing(
+            &mut usage,
+            Some(&snapshot),
+            Some(&unlisted),
+            "qwen-3.8-27b",
+        );
+        assert_eq!(pricing, CallPricing::Profile, "no snapshot row, so no snapshot id");
+        assert!(snapshot.row("qwen-3.8-27b").is_none());
+        let cost = f64::from(usage.cost_usd);
+        assert!((cost - 2.0).abs() < 1e-6, "{cost}");
+
+        let mut reported = roko_core::Usage::zero();
+        million(&mut reported);
+        reported.cost_usd = 0.25;
+        let pricing =
+            fill_usage_cost_from_pricing(&mut reported, Some(&snapshot), None, "gpt-oss-120b");
+        assert_eq!(pricing, CallPricing::Reported, "a reported cost stands");
+        assert!((f64::from(reported.cost_usd) - 0.25).abs() < 1e-6);
+    }
+
+    /// backlog 2114 (decision 2113): calls are priced from the newest
+    /// snapshot in the workspace's `config/prices/`, else the built-in copy,
+    /// loaded once per workspace.
+    #[test]
+    fn pricing_snapshot_is_the_workspaces_newest_loaded_once() {
+        let empty = tempfile::tempdir().expect("tempdir");
+        let pricing = PricingConfig::default();
+        let builtin = pricing_snapshot(&pricing, empty.path()).expect("the built-in copy");
+        assert_eq!(builtin.id(), roko_core::pricing_snapshot::BUILTIN_SNAPSHOT_ID);
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let prices = workspace.path().join("config/prices");
+        std::fs::create_dir_all(&prices).expect("prices dir");
+        let newer = include_str!("../../../config/prices/2026-09-28.toml")
+            .replace("id = \"prices-2026-09-28\"", "id = \"prices-2026-10-01\"");
+        std::fs::write(prices.join("2026-10-01.toml"), newer).expect("write the snapshot");
+        let first = pricing_snapshot(&pricing, workspace.path()).expect("the newest snapshot");
+        assert_eq!(first.id(), "prices-2026-10-01");
+        let again = pricing_snapshot(&pricing, workspace.path()).expect("the newest snapshot");
+        assert!(Arc::ptr_eq(&first, &again), "loaded once");
     }
 }

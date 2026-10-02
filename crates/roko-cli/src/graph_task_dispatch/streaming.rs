@@ -295,6 +295,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                         let (dispatch, _) = call.into_dispatch(
                             &error.to_string(),
                             u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
+                            self.pricing_snapshot().as_deref(),
                         );
                         let cost_usd = f64::from(dispatch.result.usage.cost_usd);
                         self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);

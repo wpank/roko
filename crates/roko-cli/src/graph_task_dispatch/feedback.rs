@@ -90,6 +90,12 @@ pub struct GraphFeedbackContext {
 struct SettledCostRow<R> {
     outcome: AttemptOutcome,
     learning_label: Option<u8>,
+    /// The verdict's `cost.api_equiv_usd`: the attempt's tokens at the rates
+    /// of `price_snapshot_id`, `null` when that snapshot does not list the
+    /// model or the usage is unknown (backlog 2115).
+    api_equiv_usd: Option<f64>,
+    /// The price snapshot behind `api_equiv_usd` (backlog 2115).
+    price_snapshot_id: Option<String>,
     #[serde(flatten)]
     row: R,
 }
@@ -332,6 +338,7 @@ impl GraphTaskDispatcher {
             // row records none; a price list never undercuts the reported cost.
             let eff_cost_without_cache = crate::dispatch_v2::usage_cost_without_cache(
                 &dispatch.result.usage,
+                self.pricing_snapshot().as_deref(),
                 dispatch.target.model_profile.as_ref(),
                 &dispatch.target.model_slug,
             )
@@ -462,6 +469,7 @@ impl GraphTaskDispatcher {
                 // An unknown cost reads as unknown, not as $0 (backlog 2109).
                 priced: Some(crate::dispatch_v2::usage_is_priced(
                     &dispatch.result.usage,
+                    self.pricing_snapshot().as_deref(),
                     dispatch.target.model_profile.as_ref(),
                     &dispatch.target.model_slug,
                 )),
@@ -471,6 +479,8 @@ impl GraphTaskDispatcher {
                 row: SettledCostRow {
                     outcome: settled.verdict.outcome,
                     learning_label: settled.verdict.learning_label,
+                    api_equiv_usd: settled.verdict.cost.api_equiv_usd,
+                    price_snapshot_id: settled.verdict.cost.price_snapshot_id.clone(),
                     row: roko_learn::efficiency::ExecutedRow::new(
                         &cost_record,
                         &settled.verdict.executed,
@@ -1509,7 +1519,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             cost_output_per_m: Some(15.0),
             ..ModelProfile::default()
         };
-        let uncached = usage_cost_without_cache(&usage, Some(&profile), "unpriced-model")
+        let uncached = usage_cost_without_cache(&usage, None, Some(&profile), "unpriced-model")
             .expect("the profile prices the model");
         assert!(
             uncached > f64::from(usage.cost_usd),
@@ -1517,7 +1527,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             usage.cost_usd
         );
         assert_eq!(
-            usage_cost_without_cache(&usage, None, "unpriced-model"),
+            usage_cost_without_cache(&usage, None, None, "unpriced-model"),
             None
         );
     }

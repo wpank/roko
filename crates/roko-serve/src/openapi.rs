@@ -474,7 +474,40 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         prune_signal,
         promote_signal,
         sse_sse_handler,
-        statehub_events
+        statehub_events,
+        statehub_snapshot,
+        disk_usage,
+        subscriptions_catalog,
+        handle_surface_event,
+        invite_member,
+        team_list_invitations,
+        team_accept_invitation,
+        get_me,
+        list_members,
+        remove_member,
+        update_member,
+        list_sessions,
+        create_session,
+        destroy_session,
+        send_input,
+        truth_map_handler,
+        start_vision_loop,
+        cancel_vision_loop,
+        vision_loop_status,
+        workflow_sse_handler,
+        workflow_ws_upgrade,
+        list_workflows,
+        get_latest_workflow,
+        stream_latest_workflow,
+        get_workflow,
+        stream_workflow,
+        get_workflow_tasks,
+        list_workspaces,
+        create_workspace,
+        get_default_workspace,
+        delete_workspace,
+        get_workspace_state,
+        ws_upgrade
     ),
     components(schemas(
         ApiErrorResponse,
@@ -1745,6 +1778,79 @@ doc_delete!(prune_signal, "/signals/{id}", "status");
 )]
 fn promote_signal() {}
 doc_get!(statehub_events, "/statehub/events", "status");
+
+// ── aggregator (gap-c50b85) ────────────────────────────────────────────────────────
+doc_get!(ws_upgrade, "/ws", "aggregator");
+
+// ── run (gap-c50b85) ───────────────────────────────────────────────────────────────
+doc_post_value!(handle_surface_event, "/surface-events", "run");
+
+// ── status (gap-c50b85) ────────────────────────────────────────────────────────────
+doc_get!(statehub_snapshot, "/statehub/snapshot", "status");
+doc_get!(disk_usage, "/status/disk", "status");
+doc_get!(truth_map_handler, "/truth_map", "status");
+
+// ── subscriptions (gap-c50b85) ─────────────────────────────────────────────────────
+doc_get!(
+    subscriptions_catalog,
+    "/subscriptions/catalog",
+    "subscriptions"
+);
+
+// ── team (gap-c50b85) ──────────────────────────────────────────────────────────────
+doc_post_value!(invite_member, "/team/invite", "team");
+doc_get!(team_list_invitations, "/team/invites", "team");
+doc_post_value!(team_accept_invitation, "/team/join", "team");
+doc_get!(get_me, "/team/me", "team");
+doc_get!(list_members, "/team/members", "team");
+doc_delete_param!(remove_member, "/team/members/{did}", "team", "did");
+doc_put_value!(update_member, "/team/members/{did}", "team");
+
+// ── terminal (gap-c50b85) ──────────────────────────────────────────────────────────
+doc_get!(list_sessions, "/terminal/sessions", "terminal");
+doc_post_value!(create_session, "/terminal/sessions", "terminal");
+doc_delete!(destroy_session, "/terminal/sessions/{id}", "terminal");
+doc_post_value!(send_input, "/terminal/sessions/{id}/input", "terminal");
+
+// ── vision_loop (gap-c50b85) ───────────────────────────────────────────────────────
+doc_post_value!(start_vision_loop, "/vision-loop", "vision_loop");
+doc_post_value!(
+    cancel_vision_loop,
+    "/vision-loop/{run_id}/cancel",
+    "vision_loop"
+);
+doc_get_param!(
+    vision_loop_status,
+    "/vision-loop/{run_id}/status",
+    "vision_loop",
+    "run_id"
+);
+
+// ── workflows (gap-c50b85) ─────────────────────────────────────────────────────────
+doc_get!(workflow_sse_handler, "/workflow/events", "workflows");
+doc_get!(workflow_ws_upgrade, "/workflow/ws", "workflows");
+doc_get!(list_workflows, "/workflows", "workflows");
+doc_get!(get_latest_workflow, "/workflows/latest", "workflows");
+doc_get!(
+    stream_latest_workflow,
+    "/workflows/latest/stream",
+    "workflows"
+);
+doc_get_param!(get_workflow, "/workflows/{id}", "workflows", "id");
+doc_get_param!(stream_workflow, "/workflows/{id}/stream", "workflows", "id");
+doc_get_param!(
+    get_workflow_tasks,
+    "/workflows/{id}/tasks",
+    "workflows",
+    "id"
+);
+
+// ── workspaces (gap-c50b85) ────────────────────────────────────────────────────────
+doc_get!(list_workspaces, "/workspaces", "workspaces");
+doc_post_value!(create_workspace, "/workspaces", "workspaces");
+doc_get!(get_default_workspace, "/workspaces/default", "workspaces");
+doc_delete!(delete_workspace, "/workspaces/{id}", "workspaces");
+doc_get_param!(get_workspace_state, "/workspaces/{id}", "workspaces", "id");
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorResponse {

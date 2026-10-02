@@ -8,9 +8,9 @@ severity = "p2"
 goal = "visibility"
 subsystem = ["roko-serve/openapi"]
 created = 2026-09-28
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "f8906b3c0"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-serve/src/openapi.rs"]
@@ -44,3 +44,15 @@ Re-checked 2026-09-29: unchanged, and the gap has grown. The portal-programme ba
     `openapi_undocumented.txt` to hold no routes, so it passes only when the document is complete.
   - When another branch adds or removes routes, the test names the exact lines to add to or delete from
     `openapi_undocumented.txt`.
+- 2026-10-02 (wk-serve2): the list is empty. All 426 method+path routes the server serves under `/api` are in
+  `ApiDoc` (428 operations, counting the two root-only webhook entries below), documented in five chunks with
+  `doc_*!` stubs grouped by tag. A new `doc_delete_param!` covers DELETE routes whose parameter is not `id`; the
+  two-parameter task diff GET and the signal promote PATCH are hand-written blocks. Cargo verification is deferred to
+  the batch check.
+  - The coverage test is mount-aware. Routers that `build_router` mounts at the server root (`ws`, `relay_proxy`,
+    `terminal`, public share/webhook/trigger routes, `auth_session`, the `/health` `/ready` `/metrics` probes) are not
+    part of this `/api` document unless their literal path starts with `/api/`. That took `/ready`, `/roko-ws`,
+    `/ws/agents`, `/ws/terminal/{id}` and the relay sockets off the list.
+  - Still open from the original Fix: publishing the spec with releases. Suggest a follow-up item.
+  - Found, not changed: `ApiDoc` documents `POST /webhooks/github` and `/webhooks/slack` under the `/api` server, but
+    `webhooks::public_routes` mounts them at the root only, so the documented URLs `/api/webhooks/...` do not exist.

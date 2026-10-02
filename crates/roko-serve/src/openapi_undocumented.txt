@@ -5,36 +5,3 @@
 # The test `openapi_documents_every_registered_route` fails when a registered route is neither
 # documented nor listed here, and when a line here is documented or no longer registered, so this
 # list only shrinks. Document a route in openapi.rs, then delete its line.
-DELETE /team/members/{}
-DELETE /terminal/sessions/{}
-DELETE /workspaces/{}
-GET /statehub/snapshot
-GET /status/disk
-GET /subscriptions/catalog
-GET /team/invites
-GET /team/me
-GET /team/members
-GET /terminal/sessions
-GET /truth_map
-GET /vision-loop/{}/status
-GET /workflow/events
-GET /workflow/ws
-GET /workflows
-GET /workflows/latest
-GET /workflows/latest/stream
-GET /workflows/{}
-GET /workflows/{}/stream
-GET /workflows/{}/tasks
-GET /workspaces
-GET /workspaces/default
-GET /workspaces/{}
-GET /ws
-POST /surface-events
-POST /team/invite
-POST /team/join
-POST /terminal/sessions
-POST /terminal/sessions/{}/input
-POST /vision-loop
-POST /vision-loop/{}/cancel
-POST /workspaces
-PUT /team/members/{}

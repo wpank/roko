@@ -1574,6 +1574,7 @@ async fn wal_replay_on_open_restores_cascade_observations() {
                 model_idx: 0,
                 reward: 0.8,
                 success: i % 2 == 0,
+                category: None,
                 ts_ms: 1000 + i as i64,
             })
             .unwrap();

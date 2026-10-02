@@ -3,6 +3,87 @@
 use crate::*;
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 
+/// Backend selection for grounded research operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum ResearchBackend {
+    /// Automatic selection: configured deep -> Perplexity -> Gemini -> agent fallback.
+    Auto,
+    /// Force Gemini with Google Search grounding.
+    Gemini,
+    /// Force Perplexity search-grounded research.
+    Perplexity,
+    /// Force agent (Claude CLI) fallback.
+    Agent,
+}
+
+/// Validated recency filter for Perplexity search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum SearchRecency {
+    Hour,
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ResearchCmd {
+    /// Deep-dive research on a topic. Produces .roko/research/<slug>.md with citations.
+    Topic {
+        /// The research topic.
+        topic: Vec<String>,
+        /// Use Perplexity deep research (async, 1-10 min).
+        #[arg(long, help = "Use Perplexity deep research (async, 1-10 min)")]
+        deep: bool,
+        /// Backend to use for research. Default: auto (selects best available).
+        #[arg(long, value_enum, default_value_t = ResearchBackend::Auto)]
+        backend: ResearchBackend,
+    },
+    /// Enhance a PRD with academic citations, diagrams, and research-backed improvements.
+    EnhancePrd {
+        /// PRD slug (filename without .md).
+        slug: String,
+    },
+    /// Optimize an implementation plan with research-backed task decomposition techniques.
+    EnhancePlan {
+        /// Plan directory name under plans/.
+        plan: String,
+    },
+    /// Optimize tasks for efficiency, parallelism, and cheapest viable model.
+    EnhanceTasks {
+        /// Plan directory name under plans/.
+        plan: String,
+    },
+    /// Analyze execution episodes for self-learning insights and bandit weight recommendations.
+    Analyze,
+    /// List all research artifacts.
+    List {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Include generated INDEX.md in listing (excluded by default).
+        #[arg(long)]
+        include_generated: bool,
+    },
+    /// Direct web search using Perplexity's pure search API. Returns raw results without synthesis.
+    Search {
+        /// The search query.
+        query: Vec<String>,
+        /// Restrict results to these domains (comma-separated, e.g. "docs.rs,github.com").
+        #[arg(long, value_delimiter = ',')]
+        domains: Vec<String>,
+        /// Recency filter: hour, day, week, month, year.
+        #[arg(long, value_enum)]
+        recency: Option<SearchRecency>,
+        /// Output file path. Default: .roko/research/search-<slug>.md
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Do not save search results to disk.
+        #[arg(long)]
+        no_save: bool,
+    },
+}
+
 /// Maximum number of episode lines to include in analyze context.
 const ANALYZE_MAX_LINES: usize = 2_000;
 

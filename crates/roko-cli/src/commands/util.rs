@@ -7,6 +7,55 @@ use roko_fs::RokoLayout;
 use roko_learn::efficiency::AgentEfficiencyEvent;
 use std::io::IsTerminal;
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum IndexCmd {
+    /// Build a code index for the workspace (or specified directory).
+    Build {
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Drop existing index data and rebuild from source files.
+    Rebuild {
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Search the code index.
+    Search {
+        /// Search query text (symbol name/pattern, never a file path).
+        query: String,
+        /// Restrict to a symbol kind (function, struct, enum, trait, const, type, module, impl).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Search strategy: keyword, structural, hybrid.
+        #[arg(long, default_value = "keyword")]
+        strategy: String,
+        /// Glob filter on file paths (independent of query text).
+        #[arg(long)]
+        file_pattern: Option<String>,
+        /// Maximum number of results (must be > 0).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Show index statistics.
+    Stats {
+        /// Directory to index (default: cwd / --repo).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
 /// Print a dim next-step hint to stderr, only when stdout is a TTY.
 pub(crate) fn print_next_step_hint(msg: &str) {
     if std::io::stdout().is_terminal() {

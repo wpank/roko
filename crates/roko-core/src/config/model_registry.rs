@@ -469,6 +469,11 @@ pub static BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
             tokenizer_ratio: 1.0,
         },
     ),
+    // Sonar Deep Research has no row. Besides $2/M input and $8/M output it
+    // bills citation tokens ($2/M), reasoning tokens ($3/M) and search queries
+    // ($5 per 1K) (https://docs.perplexity.ai/docs/getting-started/pricing,
+    // checked 2026-10-02), which `ModelPricing` cannot express. Its cost is
+    // unknown rather than understated (bug-c0602b).
     // Google Gemini: https://ai.google.dev/gemini-api/docs/pricing, paid
     // tier, checked 2026-10-01. A cache read is the context-caching price;
     // cache storage is billed per hour, which a token rate cannot express.
@@ -838,6 +843,15 @@ mod tests {
         ] {
             assert_eq!(builtin_pricing(other), None, "{other}");
         }
+    }
+
+    /// bug-c0602b: Sonar Deep Research bills charges a price row cannot
+    /// express, so it stays unpriced: its cost is unknown, not Sonar's $1/$1.
+    #[test]
+    fn sonar_deep_research_price() {
+        assert_eq!(builtin_pricing("sonar-deep-research"), None);
+        assert_eq!(model_meta("sonar-deep-research").pricing, None);
+        assert!(builtin_pricing("sonar").is_some());
     }
 
     #[test]

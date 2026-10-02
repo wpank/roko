@@ -1716,9 +1716,11 @@ impl CascadeRouter {
         self.replay_retraction(model_slug);
     }
 
-    /// Apply a WAL-replayed success retraction: the confidence-stats half of
-    /// [`Self::retract_success`], the half a snapshot persists (bug-583e50).
-    /// Does NOT write a WAL entry.
+    /// Apply the confidence-stats half of [`Self::retract_success`]
+    /// (bug-583e50): the replay of a journaled retraction that names no task
+    /// category, as entries written before retractions named one. A replayed
+    /// retraction that names its category applies both halves. Does NOT
+    /// write a WAL entry.
     pub fn replay_retraction(&self, model_slug: &str) {
         let Some(slug) = self
             .model_index_for_slug(model_slug)

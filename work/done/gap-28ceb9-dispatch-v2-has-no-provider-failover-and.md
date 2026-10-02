@@ -2,7 +2,7 @@
 id = "gap-28ceb9"
 kind = "gap"
 title = "dispatch_v2 has no provider failover and no usage-exhausted error class"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "core"
@@ -10,7 +10,7 @@ subsystem = ["roko-cli/dispatch_v2"]
 created = 2026-09-29
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "c58c7c2ba"
+last_verified_rev = "f88210c84"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:e5-failover"
 anchors = ["crates/roko-cli/src/dispatch_v2.rs::classify_provider_error", "crates/roko-cli/src/graph_task_dispatch/failover.rs::run_bridge_with_failover", "crates/roko-learn/src/provider_failover.rs::Failover", "crates/roko-cli/src/serve_runtime.rs::dispatch_bench_prompt", "crates/roko-acp/src/bridge_events/failover.rs::forward_attempt_events"]
@@ -18,6 +18,15 @@ links = { depends_on = [], blocks = [], related = ["bug-35379d", "find-229e9c"],
 
 [[verify]]
 command = "grep -q 'detect_provider_exhaustion' crates/roko-cli/src/dispatch_v2.rs && cargo test -p roko-cli --lib classify_provider_error_detects_usage_exhaustion && cargo test -p roko-learn --lib provider_failover && cargo test -p roko-cli --lib tests_provider_failover && cargo test -p roko-acp --lib bridge_events::failover && cargo test -p roko-acp --test provider_failover"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:27:39Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+claimed_at = "2026-10-01T16:12:25Z"
+forced = false
+evidence = "serve one-shot dispatch and ACP single-agent prompts fail over like Graph runs through the shared roko_learn::provider_failover policy; all listed failover tests pass (wk-tiers d0774aba9; the ACP test mock now has credentials, 09aa7e009); gate 6i passed at f4347b8eb (cargo check, clippy -D warnings, lib tests of roko-acp/cli/core/gate/learn/runtime/serve, canaries C1-C8 and integration tests, roko-acp integration tests, roko-cli doctor, learning_wiring_census and graph_plan_callers tests, 447 bin tests, run_evidence py); two fixes in 09aa7e009 re-tested; merged in f88210c84"
 +++
 
 Graph plan runs switch to a fallback model when the planned provider is blocked or exhausted (`run_bridge_with_failover`). `dispatch_v2` (`AgentDispatcherV2`) has no failover, and its `classify_provider_error` knows only `insufficient_credits`, `rate_limit`, `timeout`, `server_error` and `unknown`, with no class for session or usage-limit exhaustion. Callers that dispatch through it, which the e5 audit identified as the serve chat and ACP paths, fail on an exhausted provider instead of moving to a configured fallback.

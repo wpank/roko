@@ -2,7 +2,7 @@
 id = "bug-a9788a"
 kind = "bug"
 title = "roko serve's StateHub may write unscrubbed agent output to .roko/events.jsonl"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-runtime", "roko-serve"]
 created = 2026-10-02
 updated = 2026-10-02
 last_verified = 2026-10-02
-last_verified_rev = "fa10c24ef"
+last_verified_rev = "f88210c84"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "gap-8a1fb3"
 anchors = ["crates/roko-runtime/src/state_hub.rs", "crates/roko-serve/src/lib.rs"]
@@ -20,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["gap-8a1fb3", "bug-230de6"], 
 
 [[verify]]
 command = "grep -rqw 'fn serve_event_log_is_scrubbed' crates/roko-serve/src/ && cargo test -p roko-serve --lib serve_event_log_is_scrubbed"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:27:39Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "S"
+claimed_at = "2026-10-02T01:40:25Z"
+forced = false
+evidence = "serve's StateHub event log and runtime event log pass every line through scrub_secrets_in_jsonl; serve_event_log_is_scrubbed passes, C2 and secret_canary pass (wk-streams 4fda6db2d); gate 6i passed at f4347b8eb (cargo check, clippy -D warnings, lib tests of roko-acp/cli/core/gate/learn/runtime/serve, canaries C1-C8 and integration tests, roko-acp integration tests, roko-cli doctor, learning_wiring_census and graph_plan_callers tests, 447 bin tests, run_evidence py); two fixes in 09aa7e009 re-tested; merged in f88210c84"
 +++
 
 ## Problem

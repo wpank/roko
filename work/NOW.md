@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 9 anchor gone · 72 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 9 anchor gone · 70 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
 - **P2** [q-bc6cc5](items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md) Confirm licence coverage for another contributor's code in apps/mirage-rs [question] · size S · verified 2026-09-29
 
-_3 more open · on hold: gap-8f8544 · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_3 more open · on hold: gap-8f8544 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -26,7 +26,7 @@ _0 more open · on hold: gap-85f86a · 2 unchecked (`TRIAGE.md`) · `goal = "whi
 
 - nothing checked and open
 
-_0 more open · 1 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -52,7 +52,7 @@ _0 more open · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 - **P1** [gap-af73a8](items/gap-af73a8-fresh-live-dogfood-rerun-of-the-full.md) Fresh live dogfood rerun of the full self-hosting workflow (blocked by SnapshotRebased arm gap) · size M · verified 2026-09-29
 - **P1** [gap-dc1d16](items/gap-dc1d16-p1-ge-1-implement-single-immutable-resume.md) Implement single immutable resume generation · size L · verified 2026-10-02
 
-_14 more open · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_12 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -75,7 +75,7 @@ _0 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 - **P2** [gap-082a14](items/gap-082a14-graph-runs-never-write-task-status-back.md) Graph runs never write task status back to tasks.toml · verified 2026-10-01
 - **P2** [gap-25065c](items/gap-25065c-import-the-rest-of-the-research-programme.md) Import the rest of the research programme's checklist as unverified work items · size M · verified 2026-10-01
 
-_7 more open · 4 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_6 more open · 4 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
@@ -88,9 +88,9 @@ _7 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 ## 12. Hermes and ACP integration
 
 - **P1** [bug-f0f108](items/bug-f0f108-refactor-p0-01-acp-bridge-crash-under.md) ACP bridge crash under sustained load (analyzed, not fixed) [bug] · size M · verified 2026-10-01
-- **P1** [bug-c638a4](items/bug-c638a4-acp-bridge-under-load-no-send-timeouts.md) ACP bridge under load: no send timeouts or backpressure, uncapped assistant_text, and session/prompt blocks the handler loop [bug] · size M · verified 2026-10-01
 - **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
+- **P1** [gap-55eada](items/gap-55eada-provider-f007-agentcontract-tool-policy-not-applied.md) AgentContract tool policy not applied to ACP tool dispatch · size M · verified 2026-10-01
 
-_5 more open · `goal = "hermes"`_
+_4 more open · `goal = "hermes"`_
 
 5 open items have no goal (later); they are listed in `STATUS.md`.

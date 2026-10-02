@@ -2,7 +2,7 @@
 id = "bug-c638a4"
 kind = "bug"
 title = "ACP bridge under load: no send timeouts or backpressure, uncapped assistant_text, and session/prompt blocks the handler loop"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "hermes"
@@ -11,6 +11,7 @@ subsystem = ["roko-acp"]
 created = 2026-10-01
 updated = 2026-10-02
 last_verified = 2026-10-02
+last_verified_rev = "f88210c84"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "bug-f0f108"
 anchors = ["crates/roko-acp/src/acp_adapter.rs", "crates/roko-acp/src/bridge_events/mod.rs", "crates/roko-acp/src/handler.rs"]
@@ -19,6 +20,16 @@ links = { depends_on = [], blocks = [], related = ["bug-f0f108"], supersedes = [
 
 [[verify]]
 command = "cargo test -p roko-acp --lib bridge_under_load"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:27:40Z"
+by = "coordinator (session 7622b882)"
+executor = "claude-agent"
+size = "M"
+claimed_at = "2026-10-01T18:50:53Z"
+forced = false
+evidence = "ACP prompts run as tasks beside the request loop, stdout writes time out, reads survive cancellation; bridge_under_load tests pass (wk-specq adaf590ad); gate 6i passed at f4347b8eb (cargo check, clippy -D warnings, lib tests of roko-acp/cli/core/gate/learn/runtime/serve, canaries C1-C8 and integration tests, roko-acp integration tests, roko-cli doctor, learning_wiring_census and graph_plan_callers tests, 447 bin tests, run_evidence py); two fixes in 09aa7e009 re-tested; merged in f88210c84"
 +++
 
 ## Problem

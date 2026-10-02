@@ -2,14 +2,16 @@
 id = "spec-b7303f"
 kind = "spec"
 title = "Epic: one settled record per attempt"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p0"
 goal = "truth"
 size = "L"
 subsystem = ["roko-learn/telemetry", "roko-cli/graph_task_dispatch", "roko-cli/runtime_feedback", "roko-cli/graph_execution"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-10-02
+last_verified = 2026-10-02
+last_verified_rev = "f88210c84"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #4); specs/S01-instrumentation.md (Phase 0)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent", "crates/roko-learn/src/routing_log.rs::RoutingDecisionLog", "crates/roko-cli/tests/learning_wiring_census.rs"]
@@ -19,6 +21,13 @@ links = { depends_on = ["gap-528762", "gap-96f7ed", "bug-c34782", "bug-35379d", 
 
 [[verify]]
 command = "grep -rqw 'fn loop_census_fixture_settles_one_record_per_attempt' crates/roko-cli/tests/ && cargo test -p roko-cli --test learning_wiring_census"
+
+[closed]
+at = 2026-10-02
+at_ts = "2026-10-02T08:27:43Z"
+by = "coordinator (session 7622b882)"
+forced = false
+evidence = "all children done; its verify (learning_wiring_census) passed in gate 6i at f4347b8eb, merged in f88210c84"
 +++
 ## Problem
 

@@ -191,8 +191,12 @@ impl JsonlLogger {
             RuntimeEventEnvelope::new(event.run_id(), state.seq, "jsonl_logger", event.clone());
         state.seq = state.seq.saturating_add(1);
 
-        let mut json = serde_json::to_string(&envelope)
+        let json = serde_json::to_string(&envelope)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        // The process's secrets are redacted as the runner's event log writer
+        // redacts them (`roko_fs::log_rotation`): a runtime event can carry an
+        // agent's output, and serve keeps this log under `.roko/` (bug-a9788a).
+        let mut json = roko_core::obs::scrub_secrets_in_jsonl(&json).into_owned();
         json.push('\n');
 
         if let Some(ref mut w) = state.writer {

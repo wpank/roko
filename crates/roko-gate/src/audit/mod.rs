@@ -9,12 +9,15 @@
 //! - [`ledger`]: the SHA-256 hash chain of audit events in the vault, and its
 //!   redacted mirror in the workspace (S05 §5);
 //! - [`hidden`]: hidden test suites in the vault and their lifecycle
-//!   (S05 §4.4).
+//!   (S05 §4.4);
+//! - [`canary`]: the scanner that exposes a suite whose canary appears where
+//!   an agent's words go (SC4).
 //!
 //! Plain types other crates read (verify depth, labels, strata, the
 //! `vs.label` row) live in `roko_core::audit_types`, and the vault in
 //! `roko_core::audit_home`.
 
+pub mod canary;
 pub mod estimate;
 pub mod hidden;
 pub mod ledger;

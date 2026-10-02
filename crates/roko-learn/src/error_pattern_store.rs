@@ -551,6 +551,10 @@ impl ErrorPatternStore {
     }
 
     fn repair_loaded_patterns(&mut self) {
+        // A turn cap or a timeout says nothing about the code; older runs
+        // recorded them as patterns (backlog 4208).
+        self.patterns
+            .retain(|pattern| !matches!(pattern.category.as_str(), "turn_cap" | "timeout"));
         for pattern in &mut self.patterns {
             if pattern.key.is_empty() {
                 pattern.key = pattern.digest.clone();
@@ -761,6 +765,32 @@ fn truncate_chars(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// backlog 4208: loading drops the turn-cap and timeout rows older runs
+    /// recorded, and keeps verify failures.
+    #[test]
+    fn load_drops_turn_cap_and_timeout_patterns() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(ERROR_PATTERNS_FILE);
+        let mut store = ErrorPatternStore::empty();
+        for class in ["verify", "turn_cap", "timeout"] {
+            store.observe_gate_failure(GateFailureObservation::new(
+                format!("{class}::digest"),
+                "plan-1",
+                Some("T1".to_string()),
+                class,
+                class,
+                format!("{class} failure"),
+                GateFailureSource::RetryClassifier,
+            ));
+        }
+        assert_eq!(store.len(), 3);
+        store.save(&path).expect("save");
+
+        let loaded = ErrorPatternStore::load(&path);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.top_patterns(1)[0].category, "verify");
+    }
 
     /// backlog 4204: Runner-v2's pattern file is renamed aside, never
     /// deleted or imported, and a second call finds nothing to do.

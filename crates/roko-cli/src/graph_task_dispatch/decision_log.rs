@@ -122,13 +122,25 @@ impl GraphTaskDispatcher {
 
     /// The learned state the prompt's content decisions read (S01 P0-10):
     /// the knowledge store and the playbooks the prompt cache loads from this
-    /// dispatcher's workdir, and the gate thresholds in force.
+    /// dispatcher's workdir, and the gate thresholds in force. A plan run's
+    /// prompts are built from one prompt-cache snapshot, so its decisions name
+    /// that snapshot, not the stores as they are now (backlog 4214).
     fn learned_state(&self) -> LearnedState {
         let roko = self.workdir.join(".roko");
         let thresholds = self.feedback.gate_thresholds_path.as_deref();
+        let (knowledge, playbooks) = match self.factory.prompt_snapshot() {
+            Some(snapshot) => (
+                snapshot_state(&snapshot.knowledge, "kn"),
+                snapshot_state(&snapshot.playbooks, "pb"),
+            ),
+            None => (
+                store_state(&roko.join("neuro"), ".jsonl", "kn", Some(KNOWLEDGE_FILE)),
+                store_state(&roko.join("learn").join("playbooks"), ".json", "pb", None),
+            ),
+        };
         LearnedState {
-            knowledge: store_state(&roko.join("neuro"), ".jsonl", "kn", Some(KNOWLEDGE_FILE)),
-            playbooks: store_state(&roko.join("learn").join("playbooks"), ".json", "pb", None),
+            knowledge,
+            playbooks,
             thresholds: thresholds.and_then(digest_file).map(|file| file.digest),
         }
     }
@@ -246,6 +258,23 @@ fn digest_file(path: &Path) -> Option<DigestedFile> {
         .lock()
         .insert(path.to_path_buf(), file.clone());
     Some(file)
+}
+
+/// The learned state of a prompt-cache snapshot's `part` (S01 P0-10),
+/// labelled `{label}:n={n}`: what the prompts were built from, whatever the
+/// store holds now (backlog 4214).
+fn snapshot_state(
+    part: &crate::dispatch::prompt_cache::SnapshotPart,
+    label: &str,
+) -> DecisionState {
+    let n_obs = u64::try_from(part.count).unwrap_or(u64::MAX);
+    DecisionState {
+        read: n_obs > 0,
+        version: format!("{label}:n={n_obs}"),
+        digest: part.digest.clone(),
+        age_s: None,
+        n_obs,
+    }
 }
 
 /// The learned state of the store in `dir` (S01 P0-10): a `b3:` digest over

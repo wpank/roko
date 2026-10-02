@@ -111,3 +111,23 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK10 (gap-f61823).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-aea13a`; cargo verification deferred to the batch gate. The static part of every verify
+passes. `eaa19b074` hand-formats lines from several tasks to rustfmt defaults.
+
+- 4203: implemented at 33f3dc263
+- 4204: implemented at 9d2eb8e64
+- 4205: implemented at 294ccbc48
+- 4206: implemented at 4833134ee
+- 4207: implemented at 1c08cd953
+- 4208: implemented at fd79f2c10
+- 4209: implemented at dc11ae0da
+- 4210: implemented at 6ed6e5f01
+- 4211: implemented at e00a5b582
+- 4212: implemented at 499334f05
+- 4213: implemented at 8c631e328
+- 4214: implemented at badb7911a
+- 4215: implemented at f864016d7
+- 4216: implemented at d79ee8a1a (test follow-up fe88daaf5)

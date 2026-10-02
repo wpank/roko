@@ -2178,7 +2178,7 @@ impl PromptSectionSource for WorkdirKnowledgeSource {
 impl PromptSectionSource for WorkdirPlaybookSource {
     fn collect(&self, task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection> {
         if let Some(cache) = &self.cache {
-            collect_playbooks_cached(task, ctx, &cache.playbooks)
+            collect_playbooks_cached(task, &cache.playbooks)
                 .into_iter()
                 .collect()
         } else {
@@ -2339,79 +2339,17 @@ fn collect_playbooks(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSectio
     let root = roko_core::Workspace::open(&ctx.workdir)
         .map(|ws| ws.playbooks_dir())
         .unwrap_or_else(|_| ctx.workdir.join(".roko").join("learn").join("playbooks"));
-    let query = query_keywords(&task_query_text(task, ctx));
-    let mut scored = Vec::new();
-    let read_dir = match std::fs::read_dir(&root) {
-        Ok(rd) => rd,
-        Err(_) => return None,
-    };
-    for entry in read_dir {
-        let entry = entry.ok()?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).ok()?;
-        let Ok(playbook) = serde_json::from_str::<roko_learn::playbook::Playbook>(&text) else {
-            continue;
-        };
-        let haystack = playbook_text(&playbook).to_ascii_lowercase();
-        let lexical_score = query
-            .iter()
-            .filter(|keyword| haystack.contains(keyword.as_str()))
-            .count();
-        let outcome_score = playbook
-            .success_count
-            .saturating_sub(playbook.failure_count) as usize;
-        let score = lexical_score
-            .saturating_mul(10)
-            .saturating_add(outcome_score);
-        if score > 0 || scored.len() < 3 {
-            scored.push((score, playbook));
-        }
-    }
-    if scored.is_empty() {
-        return None;
-    }
-    scored.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then_with(|| b.1.success_count.cmp(&a.1.success_count))
-            .then_with(|| a.1.id.cmp(&b.1.id))
-    });
-    scored.truncate(3);
-
-    let ids = scored
-        .iter()
-        .map(|(_, playbook)| playbook.id.clone())
-        .collect::<Vec<_>>();
-    let mut body = String::from("# Relevant playbooks\nReusable proven procedures:\n");
-    let mut items = Vec::new();
-    for (index, (score, playbook)) in scored.iter().enumerate() {
-        let mut text = format!(
-            "- {}: {} (successes {}, failures {})\n",
-            playbook.id, playbook.goal, playbook.success_count, playbook.failure_count
-        );
-        for step in playbook.steps.iter().take(5) {
-            text.push_str(&format!(
-                "  - {} via {}; expect {}\n",
-                step.description,
-                step.action_kind,
-                if step.expected_signals.is_empty() {
-                    "task-local verification".to_string()
-                } else {
-                    step.expected_signals.join(", ")
-                }
-            ));
-        }
-        // The score is the task keywords the playbook holds, ten each, plus
-        // its successes over its failures.
-        let (kind, score) = (ExposureItemKind::Playbook, Some(*score as f64));
-        let item = PromptItem::ranked(kind, &playbook.id, index, score, &text);
-        items.extend(item);
-        body.push_str(&text);
-    }
-    let section = PromptSection::new("playbooks", body, 7).with_playbook_ids(ids);
-    Some(section.with_items(items))
+    let playbooks: Vec<roko_learn::playbook::Playbook> = std::fs::read_dir(&root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .filter_map(|text| serde_json::from_str(&text).ok())
+        .collect();
+    // The uncached path ranks playbooks as a plan run's cache does
+    // (backlog 4212).
+    collect_playbooks_cached(task, &playbooks)
 }
 
 // ─── Cached variants ──────────────────────────────────────────────────
@@ -2569,36 +2507,33 @@ fn collect_episode_knowledge_cached(
 
 fn collect_playbooks_cached(
     task: &TaskDef,
-    ctx: &PromptContext,
     playbooks: &[roko_learn::playbook::Playbook],
 ) -> Option<PromptSection> {
     if playbooks.is_empty() {
         return None;
     }
-    let query = query_keywords(&task_query_text(task, ctx));
-    let mut scored: Vec<(usize, &roko_learn::playbook::Playbook)> = Vec::new();
-    for playbook in playbooks {
-        let haystack = playbook_text(playbook).to_ascii_lowercase();
-        let lexical_score = query
-            .iter()
-            .filter(|keyword| haystack.contains(keyword.as_str()))
-            .count();
-        let outcome_score = playbook
-            .success_count
-            .saturating_sub(playbook.failure_count) as usize;
-        let score = lexical_score
-            .saturating_mul(10)
-            .saturating_add(outcome_score);
-        if score > 0 || scored.len() < 3 {
-            scored.push((score, playbook));
-        }
-    }
+    // A playbook needs `MIN_TOPIC_OVERLAP` of the task's topic terms as whole
+    // words. Its successes over its failures only break ties, and no floor
+    // tops the section up with unrelated playbooks (backlog 4212).
+    let terms = task_topic_terms(task);
+    let mut scored: Vec<(usize, &roko_learn::playbook::Playbook)> = playbooks
+        .iter()
+        .filter_map(|playbook| {
+            let overlap = terms
+                .intersection(&query_words(&playbook_text(playbook)))
+                .count();
+            (overlap >= MIN_TOPIC_OVERLAP).then_some((overlap, playbook))
+        })
+        .collect();
     if scored.is_empty() {
         return None;
     }
+    let net_successes = |playbook: &roko_learn::playbook::Playbook| {
+        playbook.success_count.saturating_sub(playbook.failure_count)
+    };
     scored.sort_by(|a, b| {
         b.0.cmp(&a.0)
-            .then_with(|| b.1.success_count.cmp(&a.1.success_count))
+            .then_with(|| net_successes(b.1).cmp(&net_successes(a.1)))
             .then_with(|| a.1.id.cmp(&b.1.id))
     });
     scored.truncate(3);
@@ -2626,8 +2561,7 @@ fn collect_playbooks_cached(
                 }
             ));
         }
-        // The score is the task keywords the playbook holds, ten each, plus
-        // its successes over its failures.
+        // The score is the task's topic terms the playbook holds.
         let (kind, score) = (ExposureItemKind::Playbook, Some(*score as f64));
         let item = PromptItem::ranked(kind, &playbook.id, index, score, &text);
         items.extend(item);
@@ -2637,8 +2571,8 @@ fn collect_playbooks_cached(
     Some(section.with_items(items))
 }
 
-/// Distinct topic terms ([`task_topic_terms`]) a knowledge entry must share
-/// with a task to reach its prompt (backlog 4211).
+/// Distinct topic terms ([`task_topic_terms`]) a knowledge entry or a
+/// playbook must share with a task to reach its prompt (backlogs 4211, 4212).
 const MIN_TOPIC_OVERLAP: usize = 2;
 
 /// The least confidence of a knowledge entry a prompt shows (backlog 4211).
@@ -3757,6 +3691,29 @@ mod tests {
         );
     }
 
+    /// backlog 4212: a playbook reaches a prompt only when it shares two topic
+    /// words with the task. Three proven playbooks about other work give no
+    /// section, and one about the task's work gives a section with it alone.
+    #[test]
+    fn playbooks_without_overlap_are_not_injected() {
+        let proven = |id: &str, goal: &str| {
+            let mut playbook = roko_learn::playbook::Playbook::new(id, goal);
+            playbook.success_count = 9;
+            playbook
+        };
+        let mut playbooks = vec![
+            proven("pb-deploy", "Deploy the service to staging"),
+            proven("pb-css", "Tidy the stylesheet colours"),
+            proven("pb-sql", "Index the orders table"),
+        ];
+        assert!(collect_playbooks_cached(&task(), &playbooks).is_none());
+
+        playbooks.push(proven("pb-wiring", "Explain the wiring map"));
+        let section = collect_playbooks_cached(&task(), &playbooks).expect("a playbooks section");
+        assert_eq!(section.playbook_ids, ["pb-wiring"]);
+        assert!(!section.body.contains("pb-deploy"), "{}", section.body);
+    }
+
     /// The item of `kind` and `id` in `prompt`'s diagnostics.
     fn prompt_item(
         prompt: &AssembledPrompt,
@@ -3796,7 +3753,7 @@ mod tests {
         );
         let playbooks = temp.path().join(".roko/learn/playbooks");
         std::fs::create_dir_all(&playbooks).expect("playbook dir");
-        let playbook = roko_learn::playbook::Playbook::new("pb-wiring", "Wire the dispatcher");
+        let playbook = roko_learn::playbook::Playbook::new("pb-wiring", "Wire the dispatcher wiring");
         let json = serde_json::to_string(&playbook).expect("playbook json");
         std::fs::write(playbooks.join("pb-wiring.json"), json).expect("write playbook");
         let cache = Arc::new(PromptCache::load(temp.path()));
@@ -3807,7 +3764,7 @@ mod tests {
         let roomy = PromptAssembler::with_cache(Arc::clone(&cache))
             .assemble(&task(), &prompt_ctx)
             .expect("assemble");
-        let line = "- pb-wiring: Wire the dispatcher (successes 0, failures 0)\n";
+        let line = "- pb-wiring: Wire the dispatcher wiring (successes 0, failures 0)\n";
         assert!(
             roomy.system_prompt.contains(line),
             "{}",

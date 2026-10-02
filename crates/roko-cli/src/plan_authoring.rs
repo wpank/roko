@@ -12,6 +12,7 @@
 //! - [`build_revision_prompt`] — build a prompt for revising an existing plan.
 //! - [`apply_revision_output`] — extract, repair, validate, and write the revised plan.
 //! - [`revise_plan_source`] — run the planning agent and apply the revision.
+//! - [`plan_diff`] — what a revision changed, task by task.
 //! - [`last_run_failure_context`] — how the plan's last run failed, with the
 //!   failed steps' gate output, for a revision prompt.
 //! - [`AuthoringSpend`] — record what the agent calls of a generation or revision cost.
@@ -276,6 +277,179 @@ pub struct RevisionOutcome {
     pub task_count: usize,
     /// Validation report for the revised plan.
     pub report: PlanSourceReport,
+    /// What the revision changed, task by task; set when it was written.
+    pub diff: Option<PlanDiff>,
+}
+
+// ─── Plan diff ────────────────────────────────────────────────────────────────
+
+/// What a revision changed in a plan, task by task (3216): the tasks it added
+/// and removed, and for each task in both plans every key whose value
+/// changed. A structural diff of the parsed tables, matched by task id, not a
+/// line diff.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct PlanDiff {
+    /// `[meta]` keys whose value changed.
+    pub meta: Vec<KeyChange>,
+    /// Ids of the tasks the new plan adds, in its order.
+    pub added: Vec<String>,
+    /// Ids of the tasks the new plan drops, in the old plan's order.
+    pub removed: Vec<String>,
+    /// The tasks in both plans whose keys changed, in the new plan's order.
+    pub changed: Vec<TaskChange>,
+}
+
+/// One key whose value changed, each side as TOML text (a string as its
+/// text); `None` on the side where the key is absent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct KeyChange {
+    /// The key, such as `verify` or `files`.
+    pub key: String,
+    /// Its value in the old plan.
+    pub before: Option<String>,
+    /// Its value in the new plan.
+    pub after: Option<String>,
+}
+
+/// The keys of one task that a revision changed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TaskChange {
+    /// The task id.
+    pub id: String,
+    /// Its changed keys: the old task's keys in order, then the new ones.
+    pub keys: Vec<KeyChange>,
+}
+
+impl PlanDiff {
+    /// Whether the two plans are the same, key for key.
+    pub fn is_empty(&self) -> bool {
+        self.meta.is_empty()
+            && self.added.is_empty()
+            && self.removed.is_empty()
+            && self.changed.is_empty()
+    }
+
+    /// The diff for a terminal: a count line, `+ T4` for each added task,
+    /// `- T3` for each removed one, then `~ T1` (or `~ [meta]`) with each
+    /// changed key's before and after under it.
+    pub fn render_text(&self) -> String {
+        if self.is_empty() {
+            return "plan diff: no changes".to_string();
+        }
+        let mut lines = vec![format!(
+            "plan diff: {} added, {} removed, {} changed{}",
+            self.added.len(),
+            self.removed.len(),
+            self.changed.len(),
+            if self.meta.is_empty() { "" } else { "; [meta] changed" }
+        )];
+        lines.extend(self.added.iter().map(|id| format!("  + {id}")));
+        lines.extend(self.removed.iter().map(|id| format!("  - {id}")));
+        let meta = (!self.meta.is_empty()).then_some(("[meta]", &self.meta));
+        let tasks = self
+            .changed
+            .iter()
+            .map(|task| (task.id.as_str(), &task.keys));
+        for (name, keys) in meta.into_iter().chain(tasks) {
+            lines.push(format!("  ~ {name}"));
+            for change in keys {
+                lines.push(format!(
+                    "      {}: {} -> {}",
+                    change.key,
+                    change.before.as_deref().unwrap_or("(none)"),
+                    change.after.as_deref().unwrap_or("(none)")
+                ));
+            }
+        }
+        lines.join("\n")
+    }
+}
+
+/// The task-level diff from `old` to `new`, two `tasks.toml` texts. A text
+/// that does not parse counts as an empty plan.
+pub fn plan_diff(old: &str, new: &str) -> PlanDiff {
+    let (old, new) = (parse_plan_table(old), parse_plan_table(new));
+    let (old_tasks, new_tasks) = (plan_tasks(&old), plan_tasks(&new));
+    let added = new_tasks
+        .iter()
+        .filter(|(id, _)| task_by_id(&old_tasks, id).is_none())
+        .map(|(id, _)| id.clone())
+        .collect();
+    let removed = old_tasks
+        .iter()
+        .filter(|(id, _)| task_by_id(&new_tasks, id).is_none())
+        .map(|(id, _)| id.clone())
+        .collect();
+    let changed = new_tasks
+        .iter()
+        .filter_map(|(id, task)| {
+            let keys = key_changes(task_by_id(&old_tasks, id)?, task);
+            (!keys.is_empty()).then(|| TaskChange {
+                id: id.clone(),
+                keys,
+            })
+        })
+        .collect();
+    let meta = |plan: &toml::Table| {
+        let meta = plan.get("meta").and_then(toml::Value::as_table);
+        meta.cloned().unwrap_or_default()
+    };
+    PlanDiff {
+        meta: key_changes(&meta(&old), &meta(&new)),
+        added,
+        removed,
+        changed,
+    }
+}
+
+fn parse_plan_table(text: &str) -> toml::Table {
+    toml::from_str(text).unwrap_or_default()
+}
+
+/// A plan's `[[task]]` tables with their ids, in order.
+fn plan_tasks(plan: &toml::Table) -> Vec<(String, toml::Table)> {
+    plan.get("task")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_table)
+        .map(|task| {
+            let id = task.get("id").and_then(toml::Value::as_str);
+            (id.unwrap_or_default().to_string(), task.clone())
+        })
+        .collect()
+}
+
+fn task_by_id<'a>(tasks: &'a [(String, toml::Table)], id: &str) -> Option<&'a toml::Table> {
+    tasks
+        .iter()
+        .find(|(other, _)| other == id)
+        .map(|(_, task)| task)
+}
+
+/// The keys whose values differ between two tables: the old table's keys in
+/// order, then the keys only the new one has.
+fn key_changes(old: &toml::Table, new: &toml::Table) -> Vec<KeyChange> {
+    let mut keys: Vec<&String> = old.keys().collect();
+    keys.extend(new.keys().filter(|key| !old.contains_key(key.as_str())));
+    keys.into_iter()
+        .filter_map(|key| {
+            let (before, after) = (old.get(key), new.get(key));
+            (before != after).then(|| KeyChange {
+                key: key.clone(),
+                before: before.map(value_text),
+                after: after.map(value_text),
+            })
+        })
+        .collect()
+}
+
+/// A value as TOML text; a string as its text.
+fn value_text(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// Build a revision prompt for an existing plan.
@@ -355,6 +529,8 @@ pub fn apply_revision_output(
     }
 
     let task_count = parsed.tasks.len();
+    // The plan as it was, for the diff (3216).
+    let before = std::fs::read_to_string(tasks_path).unwrap_or_default();
 
     // ── Step 4: Validate and write atomically ─────────────────────────────
     let report = save_plan_source(workdir, tasks_path, &repaired, models)?;
@@ -364,6 +540,7 @@ pub fn apply_revision_output(
         written,
         task_count: if written { task_count } else { 0 },
         report,
+        diff: written.then(|| plan_diff(&before, &repaired)),
     })
 }
 
@@ -1158,6 +1335,89 @@ command = "cargo test -p x parse"
 
     fn wrap_toml(toml: &str) -> String {
         format!("Here is the revised plan:\n\n```toml\n{toml}\n```\n")
+    }
+
+    /// 3216: a revision that removes T3, edits T1's verify command and adds
+    /// T4 answers with a diff listing exactly those three changes, in the
+    /// server's DTO and in the text a terminal prints.
+    #[test]
+    fn revise_response_includes_plan_diff() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workdir = tmp.path().join("workspace");
+        let plan_dir = workdir.join("plans").join("my-plan");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        let tasks_path = plan_dir.join("tasks.toml");
+        let task = |id: &str, command: &str| {
+            format!(
+                r#"
+[[task]]
+id = "{id}"
+title = "Task {id}"
+description = "Detailed description of task {id}."
+role = "implementer"
+tier = "focused"
+files = ["src/{id}.rs"]
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "{command}"
+fail_msg = "must pass"
+"#
+            )
+        };
+        let meta = "[meta]\nplan = \"my-plan\"\ntotal = 3\nmax_parallel = 1\n";
+        let before = [
+            meta.to_string(),
+            task("T1", "test -f src/T1.rs"),
+            task("T2", "test -f src/T2.rs"),
+            task("T3", "test -f src/T3.rs"),
+        ]
+        .concat();
+        std::fs::write(&tasks_path, &before).expect("write the plan");
+        let after = [
+            meta.to_string(),
+            task("T1", "grep -q retries src/T1.rs"),
+            task("T2", "test -f src/T2.rs"),
+            task("T4", "test -f src/T4.rs"),
+        ]
+        .concat();
+
+        let outcome = apply_revision_output(
+            &workdir,
+            "my-plan",
+            &tasks_path,
+            &wrap_toml(&after),
+            &empty_models(),
+        )
+        .expect("apply the revision");
+        assert!(outcome.written, "{:?}", outcome.report.diagnostics);
+        let dto = crate::serve_runtime::revision_to_dto(outcome.clone());
+        assert!(dto.revised);
+        let diff = dto.diff.expect("a written revision has a diff");
+        assert_eq!(diff.added, ["T4"]);
+        assert_eq!(diff.removed, ["T3"]);
+        assert!(diff.meta.is_empty(), "{diff:?}");
+        assert_eq!(diff.changed.len(), 1, "{diff:?}");
+        assert_eq!(diff.changed[0].id, "T1");
+        assert_eq!(diff.changed[0].keys.len(), 1, "{diff:?}");
+        let change = &diff.changed[0].keys[0];
+        assert_eq!(change.key, "verify");
+        let before_text = change.before.as_deref().unwrap_or_default();
+        let after_text = change.after.as_deref().unwrap_or_default();
+        assert!(before_text.contains("test -f src/T1.rs"), "{change:?}");
+        assert!(after_text.contains("grep -q retries src/T1.rs"), "{change:?}");
+
+        let text = outcome.diff.expect("the outcome has the diff").render_text();
+        assert!(
+            text.starts_with("plan diff: 1 added, 1 removed, 1 changed\n"),
+            "{text}"
+        );
+        for line in ["\n  + T4\n", "\n  - T3\n", "\n  ~ T1\n", "\n      verify: "] {
+            assert!(text.contains(line), "{line:?} in {text}");
+        }
+        assert_eq!(plan_diff(&after, &after), PlanDiff::default());
+        assert_eq!(plan_diff(&after, &after).render_text(), "plan diff: no changes");
     }
 
     /// A valid revision is written byte-for-byte as extracted.

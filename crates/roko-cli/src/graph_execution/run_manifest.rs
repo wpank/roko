@@ -7,8 +7,10 @@
 //! and config it runs under, when a plan's run starts or resumes; a resume
 //! under another build or config marks the run's provenance mixed.
 //! [`RunManifests::close`] records how the run ended and how many attempts it
-//! opened, settled and abandoned. A manifest that cannot be written is
-//! logged; it never stops a run.
+//! opened, settled and abandoned. [`RunManifests::write_census`] writes the
+//! run's `census.json` beside it: which learning components the dispatcher
+//! had (S01 §5.8). A manifest or census that cannot be written is logged; it
+//! never stops a run.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,10 +22,13 @@ use roko_learn::telemetry::records::{
     ConfigHashProvenance, HarnessProvenance, RunClosed, RunInvocation, WorkspaceProvenance,
     b3_digest,
 };
-use roko_learn::telemetry::{AttemptTally, RunProvenanceManifest, TelemetryWriterStats};
+use roko_learn::telemetry::{
+    AttemptTally, CensusComponent, CensusReport, RunProvenanceManifest, TelemetryWriterStats,
+};
 use sha2::Digest as _;
 
 use crate::graph_checkpoint::GraphCheckpointStatus;
+use crate::graph_task_dispatch::WiringReport;
 
 /// `kind` of the manifests a Graph plan run writes.
 const PLAN_RUN_KIND: &str = "plan_run";
@@ -126,6 +131,28 @@ impl RunManifests {
                 tracing::warn!(run_id, %error, "run manifest not written");
                 None
             }
+        }
+    }
+
+    /// Write run `run_id`'s `census.json` (S01 §5.8) from `wiring`, the
+    /// learning components of this process's dispatcher, stamped with this
+    /// harness build. Each start or resume rewrites it, since a resume may
+    /// run another build.
+    pub fn write_census(&self, run_id: &str, wiring: &WiringReport) {
+        let components = wiring
+            .components
+            .iter()
+            .map(|component| CensusComponent {
+                id: component.id.to_string(),
+                kind: component.kind.as_str().to_string(),
+                wired: component.wired,
+                detail: Some(component.detail.to_string()),
+            })
+            .collect();
+        let sha = &self.harness.sha;
+        let census = CensusReport::new(run_id, sha, self.harness.dirty, components);
+        if let Err(error) = census.store(&self.runs_dir.join(run_id)) {
+            tracing::warn!(run_id, %error, "run census not written");
         }
     }
 

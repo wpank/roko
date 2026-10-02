@@ -28,6 +28,18 @@ pub enum WiringKind {
     Reader,
 }
 
+impl WiringKind {
+    /// Wire value, e.g. `sink`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sink => "sink",
+            Self::Store => "store",
+            Self::Reader => "reader",
+        }
+    }
+}
+
 /// One learning component of the census (`roko.census/1`, S01 §5.8).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WiringComponent {

@@ -3,9 +3,9 @@
 //!
 //! Everything here reads files alone and writes nothing.
 //! [`RunRecords::load`] parses one run directory's `attempts.jsonl`,
-//! `decisions.jsonl` (route and content decisions) and `exposures.jsonl`,
-//! and [`LegacyRows::load`] finds the run's attempt keys in the logs that
-//! predate S01 (`learn/efficiency.jsonl`, `learn/costs.jsonl`,
+//! `decisions.jsonl` (route and content decisions), `exposures.jsonl` and
+//! `census.json`, and [`LegacyRows::load`] finds the run's attempt keys in
+//! the logs that predate S01 (`learn/efficiency.jsonl`, `learn/costs.jsonl`,
 //! `episodes.jsonl`). [`check`] validates one run; [`route_report`] counts
 //! routing outcomes per decision source over any number of runs.
 
@@ -19,6 +19,7 @@ use roko_fs::layout::RokoLayout;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::census::{CENSUS_FILE, CensusReport};
 use super::manifest::AttemptTally;
 use super::records::{
     ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, ContentDecisionRecord,
@@ -52,6 +53,8 @@ pub struct RunRecords {
     pub content_decisions: Vec<Stamped<ContentDecisionRecord>>,
     /// Exposure rows, in file order.
     pub exposures: Vec<Stamped<ExposureRecord>>,
+    /// The run's wiring census; `None` for a run that has none.
+    pub census: Option<CensusReport>,
     /// Lines that are not a valid record of their file, as
     /// `file:line: reason`.
     pub invalid: Vec<String>,
@@ -83,6 +86,10 @@ impl RunRecords {
                     records.add_line(file, index + 1, line);
                 }
             }
+        }
+        match CensusReport::load(run_dir) {
+            Ok(census) => records.census = census,
+            Err(error) => records.invalid.push(format!("{CENSUS_FILE}: {error}")),
         }
         Ok(records)
     }
@@ -284,6 +291,11 @@ pub struct CheckReport {
     /// `seq` ordering violations: repeated or decreasing `seq`, and a verdict
     /// that precedes its own attempt's open line, decisions or exposures.
     pub seq_violations: Vec<String>,
+    /// The learning components the run's census lists as unwired; `None`
+    /// when the run has no census.
+    pub unwired_components: Option<Vec<String>>,
+    /// What is worth knowing but fails nothing, e.g. a run with no census.
+    pub warnings: Vec<String>,
     /// Join coverage of the efficiency, cost and episode logs.
     pub coverage: Vec<JoinCoverage>,
     /// Settled attempts per `cost.source`.
@@ -344,7 +356,9 @@ impl CheckReport {
 
 /// Check one run's records: schema validity, one settlement per attempt,
 /// exposures that join an opened attempt, `seq` ordering, join coverage of
-/// the legacy logs and the cost-source mix (S01 §7 criterion 2).
+/// the legacy logs and the cost-source mix (S01 §7 criterion 2). It lists
+/// the components the run's census has unwired, and warns of a run with no
+/// census, since runs before it have none.
 #[must_use]
 pub fn check(records: &RunRecords, legacy: &LegacyRows) -> CheckReport {
     let tally = records.tally();
@@ -402,6 +416,17 @@ pub fn check(records: &RunRecords, legacy: &LegacyRows) -> CheckReport {
     .map(|(file, keys)| join_coverage(file, &settled, keys))
     .collect();
 
+    let unwired_components = records
+        .census
+        .as_ref()
+        .map(|census| census.unwired().into_iter().map(str::to_string).collect());
+    let mut warnings = Vec::new();
+    if records.census.is_none() {
+        warnings.push(format!(
+            "no {CENSUS_FILE}: the run predates the wiring census"
+        ));
+    }
+
     CheckReport {
         run_id: records.run_id.clone(),
         attempts_opened: tally.opened,
@@ -415,6 +440,8 @@ pub fn check(records: &RunRecords, legacy: &LegacyRows) -> CheckReport {
         unopened_verdicts,
         unopened_exposures,
         seq_violations: seq_violations(records),
+        unwired_components,
+        warnings,
         coverage,
         cost_sources,
     }
@@ -688,6 +715,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::telemetry::census::CensusComponent;
     use crate::telemetry::records::{
         AttemptIdentity, AttemptOutcome, ContentCandidate, ContentDecisionPoint, CostSource,
         DecisionSource, ExcludedReason, ExposureItemKind, TelemetryRecord,
@@ -1010,6 +1038,37 @@ mod tests {
         assert_eq!(rows.costs, [ours.clone()]);
         assert_eq!(rows.episodes, [ours]);
         assert!(rows.efficiency.is_empty());
+    }
+
+    /// `check` lists what the run's census has unwired, and only warns of a
+    /// run with no census, since runs before the census have none.
+    #[test]
+    fn check_lists_the_census_unwired_components() {
+        let dir = TempDir::new().expect("tempdir");
+        let legacy = LegacyRows::default();
+        let report = check(&census_run(&dir), &legacy);
+        assert_eq!(report.unwired_components, None);
+        assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+        assert!(report.warnings[0].starts_with("no census.json"));
+
+        let component = |id: &str, wired: bool| CensusComponent {
+            id: id.to_string(),
+            kind: "sink".to_string(),
+            wired,
+            detail: None,
+        };
+        let components = vec![
+            component("sink.routing", true),
+            component("sink.section_effect", false),
+        ];
+        let census = CensusReport::new(RUN, "725f21e05", false, components);
+        census.store(dir.path()).expect("store the census");
+        let run = RunRecords::load(dir.path()).expect("reload the run");
+        assert_eq!(run.census.as_ref(), Some(&census));
+        let report = check(&run, &legacy);
+        let unwired = vec!["sink.section_effect".to_string()];
+        assert_eq!(report.unwired_components, Some(unwired));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     }
 
     /// The knowledge decision of attempt `task`:`attempt`: two retrieved

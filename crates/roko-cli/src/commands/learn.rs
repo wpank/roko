@@ -592,6 +592,23 @@ fn render_telemetry_check(
         report.attempts_opened, report.attempts_settled, report.attempts_abandoned
     );
     let _ = writeln!(out, "  decisions    {}", report.decisions);
+    let _ = writeln!(
+        out,
+        "  content      {} decision(s), {} exposure(s)",
+        report.content_decisions, report.exposures
+    );
+    // The learning components the run's census has unwired (S01 §5.8).
+    if let Some(unwired) = &report.unwired_components {
+        let unwired = if unwired.is_empty() {
+            "none".to_string()
+        } else {
+            unwired.join(", ")
+        };
+        let _ = writeln!(out, "  unwired      {unwired}");
+    }
+    for warning in &report.warnings {
+        let _ = writeln!(out, "  warning      {warning}");
+    }
     let sources: Vec<String> = report
         .cost_sources
         .iter()

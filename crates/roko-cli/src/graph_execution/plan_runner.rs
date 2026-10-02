@@ -3152,6 +3152,10 @@ async fn run_one_plan(
         ctx.graph_task_dispatcher
             .attach_run_invocation(&run_id, inv);
     }
+    // The learning components the run's dispatcher has (S01 §5.8); a resume
+    // rewrites them, since its build may differ.
+    ctx.run_manifests
+        .write_census(&run_id, &ctx.graph_task_dispatcher.wiring_report());
     // A resumed run's attempts continue from the plan branch its earlier
     // process accepted work onto, and re-attach the checkouts it kept
     // (bug-056b40).
@@ -4967,6 +4971,65 @@ max_retries = 0
         );
         let closed = resumed.closed.as_ref().expect("the resumed run closed");
         assert_eq!(closed.attempts_opened, 1);
+    }
+
+    /// S01 §5.8: a plan run writes its run's `census.json` from the
+    /// dispatcher it built: every learning component S01 names, in census
+    /// order, with the attempt log wired, stamped with this harness build.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_run_writes_census_report() {
+        use roko_learn::telemetry::CensusReport;
+
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+
+        let runs_dir = dir.path().join(".roko/runs");
+        let run_dirs: Vec<PathBuf> = std::fs::read_dir(&runs_dir)
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(run_dirs.len(), 1, "one run, one directory: {run_dirs:?}");
+        let census = CensusReport::load(&run_dirs[0])
+            .expect("read the census")
+            .expect("the run wrote a census");
+        let run_id = run_dirs[0].file_name().and_then(|name| name.to_str());
+        assert_eq!(Some(census.run_id.as_str()), run_id);
+        assert_eq!(census.schema_version, "roko.census/1");
+        assert_eq!(census.harness_sha, env!("ROKO_GIT_HASH"));
+        let ids: Vec<&str> = census
+            .components
+            .iter()
+            .map(|component| component.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "sink.episode",
+                "sink.routing",
+                "sink.knowledge_ingestion",
+                "sink.playbook_outcome",
+                "sink.error_pattern",
+                "sink.section_effect",
+                "store.attempt_log",
+                "store.prompt_experiment",
+                "store.holdout",
+                "store.decision_writer",
+                "store.exposure_writer",
+                "store.record_access",
+                "reader.gate_thresholds",
+            ]
+        );
+        let attempt_log = census.component("store.attempt_log");
+        assert!(
+            attempt_log.is_some_and(|component| component.wired),
+            "{census:?}"
+        );
+        assert_eq!(
+            attempt_log.map(|component| component.kind.as_str()),
+            Some("store")
+        );
     }
 
     /// bug-0ba3d9: attempt records carry the invocation ordinal the run's

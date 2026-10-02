@@ -37,8 +37,15 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
     let defaults = RokoConfig::default();
     let (gates, default_gates) = (&config.gates, &defaults.gates);
     let (routing, default_routing) = (&config.routing, &defaults.routing);
+    // Focused mode scopes authored Cargo tests with the impact settings
+    // (gap-1426e4); the other non-default modes stay legacy-only.
+    let focused = gates.mode == roko_core::config::GateMode::Focused;
     let mut checks = vec![
-        (gates.mode != default_gates.mode, "gates.mode", LEGACY_GATES),
+        (
+            gates.mode != default_gates.mode && !focused,
+            "gates.mode",
+            LEGACY_GATES,
+        ),
         (
             gates.clippy_enabled != default_gates.clippy_enabled,
             "gates.clippy_enabled",
@@ -55,17 +62,18 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             LEGACY_GATES,
         ),
         (
-            gates.impact_timeout_ms != default_gates.impact_timeout_ms,
+            gates.impact_timeout_ms != default_gates.impact_timeout_ms && !focused,
             "gates.impact_timeout_ms",
             LEGACY_GATES,
         ),
         (
-            gates.impact_max_reverse_dependents != default_gates.impact_max_reverse_dependents,
+            gates.impact_max_reverse_dependents != default_gates.impact_max_reverse_dependents
+                && !focused,
             "gates.impact_max_reverse_dependents",
             LEGACY_GATES,
         ),
         (
-            gates.impact_max_targets != default_gates.impact_max_targets,
+            gates.impact_max_targets != default_gates.impact_max_targets && !focused,
             "gates.impact_max_targets",
             LEGACY_GATES,
         ),
@@ -253,6 +261,24 @@ mod tests {
             .map(|setting| setting.key)
             .collect::<Vec<_>>();
         assert_eq!(keys, ["gates.max_rung", "runner.warm_pool_size"]);
+
+        // Focused mode and its impact settings scope authored Cargo tests
+        // (gap-1426e4), so they add no inert key; structural mode is still
+        // legacy-only.
+        let mut focused = config.clone();
+        focused.gates.mode = roko_core::config::GateMode::Focused;
+        focused.gates.impact_timeout_ms += 1;
+        let focused_keys = graph_engine_inert_settings(&focused)
+            .iter()
+            .map(|setting| setting.key)
+            .collect::<Vec<_>>();
+        assert_eq!(focused_keys, keys);
+        focused.gates.mode = roko_core::config::GateMode::Structural;
+        assert!(
+            graph_engine_inert_settings(&focused)
+                .iter()
+                .any(|setting| setting.key == "gates.mode")
+        );
 
         config.pipeline.focused.strategist = true;
         assert!(

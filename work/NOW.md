@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 11 anchor gone · 87 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 10 anchor gone · 83 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -26,7 +26,7 @@ _0 more open · on hold: gap-85f86a · 2 unchecked (`TRIAGE.md`) · `goal = "whi
 
 - nothing checked and open
 
-_0 more open · 5 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 7 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -60,7 +60,7 @@ _15 more open · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P1** [gap-c002bb](items/gap-c002bb-wire-tui-recovery-keybindings-to-runner-command.md) Wire TUI Recovery Keybindings to Runner Command Channel · size L · verified 2026-10-01
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
 
-_4 more open · `goal = "visibility"`_
+_4 more open · 3 unchecked (`TRIAGE.md`) · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -68,7 +68,7 @@ _4 more open · `goal = "visibility"`_
 - **P2** [gap-7a8474](items/gap-7a8474-provider-f037-10-of-23-agentefficiencyevent-fields.md) 10 of 23 AgentEfficiencyEvent fields always zero/empty in primary live path · size M · verified 2026-10-01
 - **P2** [q-6b7cca](items/q-6b7cca-graph-plan-runs-never-emit-plancompleted-wire.md) Graph plan runs never emit PlanCompleted: wire the four plan-completion sinks (the dream sink starts claude) or remove them? [question] · size S · verified 2026-09-29
 
-_3 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_1 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
@@ -84,7 +84,7 @@ _8 more open · 6 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 - **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-10-01
 - **P2** [gap-3d5cce](items/gap-3d5cce-provider-f036-actcell-cognitive-loop-llm-dispatch.md) ActCell (cognitive loop LLM dispatch point) is a stub pass-through · verified 2026-10-01
 
-_8 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
+_7 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
 
 ## 12. Hermes and ACP integration
 

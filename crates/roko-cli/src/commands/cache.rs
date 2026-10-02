@@ -1,10 +1,49 @@
 //! Workspace-local target, evidence, log, and context cache lifecycle.
 
-use crate::{CacheCmd, Cli, EXIT_FAILURE, EXIT_SUCCESS, resolve_workdir};
+use crate::{Cli, EXIT_FAILURE, EXIT_SUCCESS, resolve_workdir};
 use anyhow::{Context as _, Result};
+use clap::Subcommand;
 use roko_fs::{CacheCleanupPolicy, CacheCleanupReport, cleanup_workspace_caches};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Workspace-local build and evidence cache lifecycle.
+#[derive(Debug, Subcommand)]
+pub(crate) enum CacheCmd {
+    /// Report cache pressure and protected/eligible entries without deleting.
+    Status {
+        /// Workspace root (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Plan a safe prune; pass --apply to perform it.
+    Prune {
+        /// Perform deletion. Without this flag the command is read-only.
+        #[arg(long)]
+        apply: bool,
+        /// Workspace root (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Combined target budget across linked worktrees.
+        #[arg(long, default_value_t = 96)]
+        target_budget_gb: u64,
+        /// Terminal run-evidence budget.
+        #[arg(long, default_value_t = 2048)]
+        evidence_budget_mb: u64,
+        /// Context-pack cache budget.
+        #[arg(long, default_value_t = 1024)]
+        context_budget_mb: u64,
+        /// Minimum age of incremental partitions selected under pressure.
+        #[arg(long, default_value_t = 6)]
+        min_age_hours: u64,
+        /// Maximum age of terminal evidence and immutable log generations.
+        #[arg(long, default_value_t = 14)]
+        max_evidence_age_days: u64,
+        /// Number of newest terminal evidence runs always retained.
+        #[arg(long, default_value_t = 10)]
+        keep_runs: usize,
+    },
+}
 
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;

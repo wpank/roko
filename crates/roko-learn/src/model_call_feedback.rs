@@ -279,6 +279,16 @@ pub fn observe_model_call_on_router(
     );
 }
 
+/// One outcome [`ModelCallJournal`] journals and applies: its reward, success
+/// and the share of a full observation it carries, and the task category
+/// whose per-category counts the caller moved with it (bug-a6a3cd).
+struct JournaledOutcome {
+    reward: f64,
+    success: bool,
+    weight: f64,
+    category: Option<TaskCategory>,
+}
+
 /// Write-ahead journal for the cascade observations of model-call surfaces
 /// (feedback Path B: chat, direct dispatch, ACP, the vision loop, serve), and
 /// of a Graph run's routing outcomes (bug-dfb28f).
@@ -376,7 +386,13 @@ impl ModelCallJournal {
         duration_ms: u64,
     ) {
         let reward = task_outcome_reward(success, cost_usd, duration_ms);
-        self.observe_weighted(router, model_slug, ctx.to_features(), reward, success, 1.0);
+        let outcome = JournaledOutcome {
+            reward,
+            success,
+            weight: 1.0,
+            category: Some(ctx.task_category),
+        };
+        self.journal_observation(router, model_slug, ctx.to_features(), outcome);
     }
 
     /// Journal the settled outcome of a task that ran on an operator's
@@ -394,14 +410,13 @@ impl ModelCallJournal {
         duration_ms: u64,
     ) {
         let reward = task_outcome_reward(success, cost_usd, duration_ms);
-        self.observe_weighted(
-            router,
-            model_slug,
-            ctx.to_features(),
+        let outcome = JournaledOutcome {
             reward,
             success,
-            OVERRIDE_LEARNING_RATE,
-        );
+            weight: OVERRIDE_LEARNING_RATE,
+            category: Some(ctx.task_category),
+        };
+        self.journal_observation(router, model_slug, ctx.to_features(), outcome);
     }
 
     /// Journal the retraction of a success that a routing outcome credited
@@ -427,6 +442,7 @@ impl ModelCallJournal {
         }
         let entry = WalEntry::SuccessRetraction {
             model_slug: model_slug.to_string(),
+            category: Some(category),
             ts_ms: Utc::now().timestamp_millis(),
         };
         // Journaled and applied under the lock, as an observation is.
@@ -456,10 +472,35 @@ impl ModelCallJournal {
         success: bool,
         weight: f64,
     ) {
+        let outcome = JournaledOutcome {
+            reward,
+            success,
+            weight,
+            category: None,
+        };
+        self.journal_observation(router, model_slug, context_features, outcome);
+    }
+
+    /// [`Self::observe_weighted`], journaling `outcome.category` as well:
+    /// the task category whose per-category counts the caller moved with
+    /// the outcome, so a replay moves them too (bug-a6a3cd).
+    fn journal_observation(
+        &self,
+        router: &CascadeRouter,
+        model_slug: &str,
+        context_features: Vec<f64>,
+        outcome: JournaledOutcome,
+    ) {
         let Some(model_idx) = router.model_index_for_slug(model_slug) else {
             tracing::debug!("model {model_slug} not in cascade router slug list, skipping observe");
             return;
         };
+        let JournaledOutcome {
+            reward,
+            success,
+            weight,
+            category,
+        } = outcome;
         let weight = weight.clamp(0.0, 1.0);
 
         let entry = WalEntry::ModelCallObservation {
@@ -470,6 +511,7 @@ impl ModelCallJournal {
             reward,
             success,
             weight,
+            category,
             ts_ms: Utc::now().timestamp_millis(),
         };
 
@@ -717,6 +759,42 @@ mod tests {
             journaled_entries(&learn_dir),
             0,
             "the replayed segment is removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn journaled_category_counts_survive_a_crash() {
+        // bug-a6a3cd: a Graph run's routing outcome moves its task category's
+        // counts, and so does a hindsight retraction. The journal names the
+        // category, so the replay after a crash moves them as the run did.
+        let tmp = tempdir().expect("tempdir");
+        let learn_dir = tmp.path().join("learn");
+        let models = vec!["model-a".to_string()];
+        let ctx = RoutingContext::default();
+        let category = ctx.task_category;
+        let key = ("model-a".to_string(), category.label().to_string());
+        {
+            let router = CascadeRouter::new(models.clone());
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            // The Graph routing sink moves the counts, then journals.
+            router.record_category_outcome("model-a", category, true);
+            journal.observe_task_outcome(&router, "model-a", &ctx, true, 0.02, 30_000);
+            journal.save(&router).expect("the earlier run saves");
+        }
+        {
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            let router = CascadeRouter::load_or_new(journal.snapshot_path(), models.clone());
+            router.record_category_outcome("model-a", category, false);
+            journal.observe_task_outcome(&router, "model-a", &ctx, false, 0.02, 30_000);
+            journal.retract_success(&router, "model-a", category);
+            assert_eq!(router.category_stats_snapshot()[&key], (2, 0));
+            // The run dies before it saves its router.
+        }
+
+        let runtime = reopen(&learn_dir, models).await;
+        assert_eq!(
+            runtime.cascade_router().category_stats_snapshot()[&key],
+            (2, 0)
         );
     }
 

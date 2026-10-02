@@ -55,3 +55,9 @@ Persist and merge them like the other learned state. Add a test named `category_
 - With bug-583e50 (wk-learn2, gate 6d): its WAL replay of a retraction (`replay_retraction`) restores only the
   confidence half, since category counts weren't persisted then; a crash before the save now loses the category
   half of a journaled retraction.
+- 2026-10-02 (wk-settle): the WAL now carries the category too (after merging gate 6d, `a788dfd8d`). The
+  `CascadeObservation`, `ModelCallObservation` and `SuccessRetraction` entries name the task category whose counts
+  they moved (optional; older entries have none). `LearningRuntime`'s observations and the journal's task and
+  override outcomes and retractions fill it in, and the replay moves the category counts with the observation, or
+  applies both halves of a retraction (`CascadeRouter::retract_success`). Test:
+  `journaled_category_counts_survive_a_crash`.

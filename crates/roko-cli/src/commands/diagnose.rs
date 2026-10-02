@@ -677,7 +677,6 @@ fn resume_info(
         id: plan_id.to_string(),
         dir: definition.dir.clone(),
         tasks: definition.tasks.clone(),
-        prd_excerpt: String::new(),
     };
     match preview_plan_resume(workdir, &plan, 1, &ResumeOptions::default()) {
         Ok(preview) => Some(ResumeInfo {
@@ -2407,7 +2406,6 @@ title = "Tidy the changelog"
             id: PLAN_ID.to_string(),
             tasks: TasksFile::parse(&dir.join("tasks.toml")).expect("parse tasks.toml"),
             dir,
-            prd_excerpt: String::new(),
         };
         let mut checkpoint = start_plan_checkpoint(workdir, &plan).expect("checkpoint");
         let mut recorder = checkpoint.take_recorder();

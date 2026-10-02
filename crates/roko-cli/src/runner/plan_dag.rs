@@ -654,7 +654,6 @@ mod tests {
                 },
                 tasks,
             },
-            prd_excerpt: String::new(),
         }
     }
 

@@ -152,8 +152,6 @@ pub struct PromptContext {
     pub workspace_map: String,
     /// Raw content of this plan's `tasks.toml` (truncated to 10 000 chars).
     pub tasks_toml: String,
-    /// Short excerpt from the plan's PRD document (truncated to 2 000 chars).
-    pub prd_excerpt: String,
     /// Output files from completed dependency tasks.
     /// Each entry is `(task_id, files)`.
     pub dependency_outputs: Vec<(String, Vec<String>)>,
@@ -229,19 +227,6 @@ impl PromptContext {
                 role_limits.tasks_toml,
             )
         };
-        let prd_excerpt = if factor == 0 {
-            String::new()
-        } else {
-            truncate_to_limit(
-                load_prd_excerpt(
-                    &ctx.workdir,
-                    &ctx.plan_id,
-                    task.hints.plan_section.as_deref(),
-                    PRD_EXCERPT_LIMIT * factor,
-                ),
-                role_limits.prd_excerpt,
-            )
-        };
         let workspace_context = if skip_enrichment {
             String::new()
         } else if !ctx.cached_workspace_context.is_empty() {
@@ -276,11 +261,9 @@ impl PromptContext {
             role = %ctx.role,
             workspace_map_limit = role_limits.workspace_map,
             tasks_toml_limit = role_limits.tasks_toml,
-            prd_excerpt_limit = role_limits.prd_excerpt,
             workspace_context_limit = role_limits.workspace_context,
             workspace_map_bytes = workspace_map.len(),
             tasks_toml_bytes = tasks_toml.len(),
-            prd_excerpt_bytes = prd_excerpt.len(),
             workspace_context_bytes = workspace_context.len(),
             cfactor_context_bytes = cfactor_context.len(),
             workspace_map_from_cache = !ctx.cached_workspace_map.is_empty(),
@@ -305,7 +288,6 @@ impl PromptContext {
             prompt_experiment: ctx.prompt_experiment.clone(),
             workspace_map,
             tasks_toml,
-            prd_excerpt,
             dependency_outputs: ctx.dependency_outputs.clone(),
             workspace_context,
             cfactor_context,
@@ -368,15 +350,14 @@ fn declared_impact_context(task: &TaskDef, bounded_context_only: bool) -> String
 
 const WORKSPACE_MAP_LIMIT: usize = 6_000;
 const TASKS_TOML_LIMIT: usize = 4_000;
-const PRD_EXCERPT_LIMIT: usize = 2_000;
 const PLAN_BRIEF_LIMIT: usize = 4_000;
 
 /// Per-role context size limits for prompt enrichment sections.
 ///
 /// Different roles have different information needs:
 /// - `implementer` needs full workspace map and task context to make code changes.
-/// - `researcher` needs larger PRD/knowledge context; workspace map is less useful.
-/// - `strategist` needs larger PRD context to reason about plans; workspace detail less needed.
+/// - `researcher` does broad research; workspace map and task detail are less useful.
+/// - `strategist` needs the full task list to reason about plans; workspace detail less needed.
 /// - `auditor` needs gate/verification context; workspace map less critical.
 /// - All other roles fall back to the defaults matching the global constants above.
 #[derive(Debug, Clone, Copy)]
@@ -385,8 +366,6 @@ pub struct RoleContextLimits {
     pub workspace_map: usize,
     /// Maximum characters for tasks.toml content.
     pub tasks_toml: usize,
-    /// Maximum characters for the PRD excerpt.
-    pub prd_excerpt: usize,
     /// Maximum characters for the workspace context (git + crate descriptions).
     pub workspace_context: usize,
 }
@@ -398,20 +377,18 @@ impl RoleContextLimits {
         Self {
             workspace_map: WORKSPACE_MAP_LIMIT,         // 6 000
             tasks_toml: TASKS_TOML_LIMIT,               // 4 000
-            prd_excerpt: PRD_EXCERPT_LIMIT,             // 2 000
             workspace_context: WORKSPACE_CONTEXT_LIMIT, // 2 000
         }
     }
 
     /// Limits for roles focused on research and knowledge synthesis.
     ///
-    /// Reduces workspace map (less relevant to broad research) and expands
-    /// PRD excerpt so the full requirements document is visible.
+    /// Reduces the workspace map, task list and workspace context, which are
+    /// less relevant to broad research.
     pub const fn researcher_limits() -> Self {
         Self {
             workspace_map: 2_000,
             tasks_toml: 2_000,
-            prd_excerpt: 4_000,
             workspace_context: 1_000,
         }
     }
@@ -419,13 +396,12 @@ impl RoleContextLimits {
     /// Limits for roles focused on planning and strategy (Strategist, Architect,
     /// PrePlanner, Scribe, Critic).
     ///
-    /// Reduces workspace detail and expands PRD/task context so the full
+    /// Reduces workspace detail and keeps the full task list so the whole
     /// plan scope is visible when reasoning about decomposition.
     pub const fn strategist_limits() -> Self {
         Self {
             workspace_map: 2_000,
             tasks_toml: TASKS_TOML_LIMIT, // full task list for planning
-            prd_excerpt: 4_000,
             workspace_context: 1_000,
         }
     }
@@ -440,7 +416,6 @@ impl RoleContextLimits {
         Self {
             workspace_map: 2_000,
             tasks_toml: TASKS_TOML_LIMIT, // full task list for context on what was planned
-            prd_excerpt: 3_000,
             workspace_context: WORKSPACE_CONTEXT_LIMIT,
         }
     }
@@ -451,7 +426,6 @@ impl RoleContextLimits {
         Self {
             workspace_map: self.workspace_map * factor,
             tasks_toml: self.tasks_toml * factor,
-            prd_excerpt: self.prd_excerpt * factor,
             workspace_context: self.workspace_context * factor,
         }
     }
@@ -487,10 +461,10 @@ fn context_limits_for_role(role: &str) -> RoleContextLimits {
         | AgentRole::LifecycleTester
         | AgentRole::CrossSystemTester => RoleContextLimits::default_limits(),
 
-        // Researcher: larger PRD, smaller workspace map.
+        // Researcher: smaller workspace map and task list.
         AgentRole::Researcher => RoleContextLimits::researcher_limits(),
 
-        // Strategist cluster: planning-focused, larger PRD.
+        // Strategist cluster: planning-focused, full task list.
         AgentRole::Strategist
         | AgentRole::Architect
         | AgentRole::PrePlanner
@@ -658,72 +632,6 @@ fn load_plan_brief(workdir: &Path, plan_id: &str) -> String {
         .iter()
         .find_map(|path| std::fs::read_to_string(path).ok())
         .unwrap_or_default()
-}
-
-/// Load a PRD excerpt for `plan_id`.
-///
-/// Searches:
-/// 1. `{workdir}/.roko/prd/published/{plan_id}.md`
-/// 2. `{workdir}/.roko/prd/drafts/{plan_id}.md`
-///
-/// Returns an empty string when neither exists. With `section` (a task's
-/// `plan_section`), the excerpt is the PRD section it names when the PRD has
-/// one ([`markdown_section`]). It is at most `cap` characters.
-fn load_prd_excerpt(workdir: &Path, plan_id: &str, section: Option<&str>, cap: usize) -> String {
-    let prd_base = workdir.join(".roko").join("prd");
-    let candidates = [
-        prd_base.join("published").join(format!("{plan_id}.md")),
-        prd_base.join("drafts").join(format!("{plan_id}.md")),
-        prd_base.join("draft").join(format!("{plan_id}.md")),
-    ];
-    for path in &candidates {
-        match std::fs::read_to_string(path) {
-            Ok(content) => {
-                let content = section
-                    .and_then(|heading| markdown_section(&content, heading))
-                    .unwrap_or(content);
-                return if content.len() > cap {
-                    let mut truncated = content.chars().take(cap).collect::<String>();
-                    truncated.push_str("\n[truncated]");
-                    truncated
-                } else {
-                    content
-                };
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => continue,
-        }
-    }
-    String::new()
-}
-
-/// The section of the markdown `content` under the heading that `heading`
-/// names (`## Parsing` or just `Parsing`, in any case), up to the next heading
-/// of the same or a higher level. `None` when `content` has no such heading.
-fn markdown_section(content: &str, heading: &str) -> Option<String> {
-    let wanted = heading.trim().trim_start_matches('#').trim();
-    if wanted.is_empty() {
-        return None;
-    }
-    let level = |line: &str| line.chars().take_while(|c| *c == '#').count();
-    let mut depth = 0;
-    let mut section = String::new();
-    for line in content.lines() {
-        let hashes = level(line);
-        if depth == 0 {
-            if hashes > 0 && line[hashes..].trim().eq_ignore_ascii_case(wanted) {
-                depth = hashes;
-                section.push_str(line);
-                section.push('\n');
-            }
-        } else if hashes > 0 && hashes <= depth {
-            break;
-        } else {
-            section.push_str(line);
-            section.push('\n');
-        }
-    }
-    (depth > 0).then_some(section)
 }
 
 /// The `## Skills` section of a task that names `skills`: each skill's
@@ -1411,8 +1319,8 @@ fn parse_role_label(role: &str) -> AgentRole {
 /// Build the rich runner context string for the canonical `context_layer`.
 ///
 /// Assembles files-in-scope, acceptance criteria, verify commands, gate retry
-/// feedback, dependency outputs, PRD excerpt, workspace map, tasks toml,
-/// workspace context, and C-factor context into a single markdown block. This
+/// feedback, dependency outputs, workspace map, tasks toml, workspace
+/// context, and C-factor context into a single markdown block. This
 /// block is passed to [`TaskContext::with_context`] so the canonical 9-layer
 /// builder includes it in the "Relevant Context" section.
 fn build_runner_context(
@@ -1526,10 +1434,6 @@ fn build_runner_context(
             plans.push_str(&format!("- `{plan_id}`: {areas}\n"));
         }
         parts.push(plans);
-    }
-
-    if !ctx.prd_excerpt.is_empty() {
-        parts.push(format!("# PRD Requirements\n{}", ctx.prd_excerpt));
     }
 
     if !ctx.workspace_map.is_empty() {
@@ -1848,7 +1752,7 @@ impl PromptAssembler {
     /// [`RoleSystemPromptSpec`] / [`build_role_system_prompt`] path (the
     /// 9-layer [`roko_compose::SystemPromptBuilder`]). Runner-specific context
     /// (files in scope, acceptance criteria, verify commands, gate feedback,
-    /// dependency outputs, PRD excerpt, workspace map, etc.) is mapped into
+    /// dependency outputs, workspace map, etc.) is mapped into
     /// [`TaskContext::with_context`]. Knowledge and playbook sections collected
     /// from the registered sources flow through [`PromptBuildOptions`].
     pub fn assemble(
@@ -1900,7 +1804,7 @@ impl PromptAssembler {
         );
 
         // Rich runner context (files, acceptance, verify, allowed tools,
-        // gate feedback, dep outputs, PRD, workspace map, etc.) injected
+        // gate feedback, dep outputs, workspace map, etc.) injected
         // into the canonical "Relevant Context" section.
         let runner_context = build_runner_context(task, ctx)?;
 
@@ -3949,11 +3853,10 @@ covers = ["AC1"]
         assert!(!context.contains("# Plans Running Beside This One"));
     }
 
-    /// gap-404fdb: the context-depth hints shape the prompt. `plan_section`
-    /// narrows the PRD excerpt to its section, `skills` brings in each named
-    /// skill from the skill library, `research_before_edit` asks for research
-    /// first, and `context_weight` scales the plan context: `slim` drops it
-    /// and `deep` takes twice as much.
+    /// gap-404fdb: the context-depth hints shape the prompt. `skills` brings
+    /// in each named skill from the skill library, `research_before_edit` asks
+    /// for research first, and `context_weight` scales the plan context:
+    /// `slim` drops it and `deep` takes twice as much.
     #[test]
     fn context_depth_hints_shape_the_prompt() {
         let workdir = tempfile::tempdir().expect("tempdir");
@@ -3964,14 +3867,11 @@ covers = ["AC1"]
             std::fs::create_dir_all(dir).expect("create dir");
             std::fs::write(path, text).expect("write fixture");
         };
-        let parsing = "## Parsing\n\nParse the hints.\n\n### Edge cases\n\nEmpty files.\n\n";
-        let routing = "## Routing\n\nRoute them.\n\n";
-        let appendix = "x".repeat(3 * PRD_EXCERPT_LIMIT / 2);
+        let padding = "x".repeat(3 * TASKS_TOML_LIMIT / 2);
         write(
-            ".roko/prd/published/p.md",
-            &format!("# PRD\n\nIntro.\n\n{parsing}{routing}## Appendix\n\n{appendix}\n"),
+            "plans/p/tasks.toml",
+            &format!("[meta]\nplan = \"p\"\n# {padding}\n"),
         );
-        write("plans/p/tasks.toml", "[meta]\nplan = \"p\"\n");
         write(
             ".roko/learn/skills.json",
             r#"[{"name": "serde", "summary": "Derive serde traits.",
@@ -3995,14 +3895,9 @@ covers = ["AC1"]
 
         let (plain, plain_prompt) = prompt("");
         assert!(
-            plain.prd_excerpt.contains("Route them."),
+            plain.tasks_toml.ends_with("[truncated]"),
             "{}",
-            plain.prd_excerpt
-        );
-        assert!(
-            plain.prd_excerpt.ends_with("[truncated]"),
-            "{}",
-            plain.prd_excerpt
+            plain.tasks_toml
         );
         assert!(!plain_prompt.contains("## Skills"), "{plain_prompt}");
         assert!(
@@ -4010,11 +3905,8 @@ covers = ["AC1"]
             "{plain_prompt}"
         );
 
-        let (hinted, hinted_prompt) = prompt(
-            "plan_section = \"## Parsing\"\nskills = [\"serde\", \"tokio\"]\n\
-             research_before_edit = true\n",
-        );
-        assert_eq!(hinted.prd_excerpt, parsing);
+        let (_, hinted_prompt) =
+            prompt("skills = [\"serde\", \"tokio\"]\nresearch_before_edit = true\n");
         let skills = "## Skills\n### serde\nDerive serde traits.\n\n\
                       Default optional keys.\n- tokio\n";
         assert!(hinted_prompt.contains(skills), "{hinted_prompt}");
@@ -4024,14 +3916,13 @@ covers = ["AC1"]
         );
 
         let (slim, _) = prompt("context_weight = \"slim\"\n");
-        assert!(slim.prd_excerpt.is_empty(), "{}", slim.prd_excerpt);
         assert!(slim.tasks_toml.is_empty(), "{}", slim.tasks_toml);
         assert!(slim.workspace_map.is_empty(), "{}", slim.workspace_map);
 
         let (deep, _) = prompt("context_weight = \"deep\"\n");
         assert!(
-            deep.prd_excerpt.ends_with(&format!("{appendix}\n")),
-            "the whole PRD"
+            deep.tasks_toml.ends_with(&format!("{padding}\n")),
+            "the whole tasks.toml"
         );
     }
 
@@ -4129,7 +4020,6 @@ covers = ["AC1"]
             prompt_experiment: None,
             workspace_map: String::new(),
             tasks_toml: String::new(),
-            prd_excerpt: String::new(),
             dependency_outputs: Vec::new(),
             workspace_context: String::new(),
             cfactor_context: String::new(),
@@ -4190,7 +4080,6 @@ covers = ["AC1"]
         let limits = context_limits_for_role("implementer");
         assert_eq!(limits.workspace_map, WORKSPACE_MAP_LIMIT);
         assert_eq!(limits.tasks_toml, TASKS_TOML_LIMIT);
-        assert_eq!(limits.prd_excerpt, PRD_EXCERPT_LIMIT);
     }
 
     #[test]
@@ -4200,10 +4089,6 @@ covers = ["AC1"]
             limits.workspace_map < WORKSPACE_MAP_LIMIT,
             "researcher should have smaller workspace map than implementer"
         );
-        assert!(
-            limits.prd_excerpt > PRD_EXCERPT_LIMIT,
-            "researcher should have larger PRD excerpt than implementer"
-        );
     }
 
     #[test]
@@ -4212,10 +4097,6 @@ covers = ["AC1"]
         assert!(
             limits.workspace_map < WORKSPACE_MAP_LIMIT,
             "strategist should have smaller workspace map than implementer"
-        );
-        assert!(
-            limits.prd_excerpt > PRD_EXCERPT_LIMIT,
-            "strategist should have larger PRD excerpt than implementer"
         );
     }
 
@@ -4234,7 +4115,6 @@ covers = ["AC1"]
         let limits = context_limits_for_role("unknown-custom-role");
         assert_eq!(limits.workspace_map, WORKSPACE_MAP_LIMIT);
         assert_eq!(limits.tasks_toml, TASKS_TOML_LIMIT);
-        assert_eq!(limits.prd_excerpt, PRD_EXCERPT_LIMIT);
     }
 
     #[test]
@@ -4258,22 +4138,6 @@ covers = ["AC1"]
             "researcher workspace_map ({}) should be smaller than implementer ({})",
             pctx_res.workspace_map.len(),
             pctx_impl.workspace_map.len()
-        );
-    }
-
-    #[test]
-    fn from_task_researcher_gets_larger_prd_excerpt_than_implementer() {
-        // Build a big PRD that exceeds both the default and researcher limits so
-        // the difference in PRD budget is visible.  We set it directly on the
-        // PromptContext after construction because load_prd_excerpt reads from
-        // disk; we just verify context_limits_for_role returns the right value.
-        let impl_limits = context_limits_for_role("implementer");
-        let res_limits = context_limits_for_role("researcher");
-        assert!(
-            res_limits.prd_excerpt > impl_limits.prd_excerpt,
-            "researcher prd_excerpt limit ({}) should exceed implementer ({})",
-            res_limits.prd_excerpt,
-            impl_limits.prd_excerpt
         );
     }
 

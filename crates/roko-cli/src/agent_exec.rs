@@ -882,9 +882,8 @@ mode = "off"
         assert_eq!(rows[0]["plan_id"], "demo");
     }
 
-    /// bug-86ff56: a one-off call, as `roko research`, `roko do` and the PRD
-    /// drafting commands make them, records the reported cost under the
-    /// operation's task and role, with no plan id.
+    /// bug-86ff56: a one-off call, as `roko research` makes them, records the
+    /// reported cost under the operation's task and role, with no plan id.
     #[tokio::test]
     async fn research_calls_record_spend() {
         let workspace = fake_planner_workspace();

@@ -319,9 +319,9 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         #[arg(long)]
         fail_fast: bool,
     },
-    /// Generate implementation plans from a prompt, file, or PRD.
+    /// Generate a plan from a prompt or a file (a spec, requirements, notes).
     Generate {
-        /// Source: free-text prompt, or path to a file (PRD, requirements, etc).
+        /// Source: free-text prompt, or path to a file (spec, requirements, etc).
         source: Vec<String>,
         /// Treat source as a file path to read (instead of inline text).
         #[arg(long)]
@@ -403,7 +403,7 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Regenerate an existing plan from its source PRD / plan extract.
+    /// Regenerate an existing plan from its `plan.md`.
     Regenerate {
         /// Path to the plan directory (containing tasks.toml).
         plan_dir: PathBuf,
@@ -2301,7 +2301,7 @@ pub(crate) async fn cmd_plan_dry_run(
 /// Returns `Some(exit_code)` when validation fails, or `None` when the plan
 /// set is valid enough to continue.
 fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
-    // If the plans directory doesn't exist yet (e.g. before `prd plan` runs),
+    // If the plans directory doesn't exist yet (e.g. before `plan generate` runs),
     // skip pre-flight validation — the run path will report "No plans found".
     if !plans_dir.exists() {
         return None;

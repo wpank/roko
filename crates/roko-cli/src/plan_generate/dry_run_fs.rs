@@ -95,7 +95,7 @@ impl DryRunWorkspace {
             .context("compute dry-run workspace timestamp")?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "roko-prd-dry-run-{}-{}",
+            "roko-plan-dry-run-{}-{}",
             std::process::id(),
             unique
         ));

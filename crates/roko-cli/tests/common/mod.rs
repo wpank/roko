@@ -17,7 +17,7 @@ pub const MOCK_FIXTURE: &str = "mock-self-host-fixture";
 pub const SAMPLE_PLAN_ID: &str = "test-wire-xyz";
 
 const SAMPLE_PLAN_MARKDOWN: &str =
-    "# Plan: test-wire-xyz\n\nA single-task smoke-test plan generated from the PRD.\n";
+    "# Plan: test-wire-xyz\n\nA single-task smoke-test plan generated from a prompt.\n";
 
 const SAMPLE_TASKS_TOML: &str = r#"[meta]
 plan = "test-wire-xyz"

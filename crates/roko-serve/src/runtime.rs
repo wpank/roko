@@ -45,7 +45,7 @@ pub struct RunResult {
     pub gate_results: Vec<RuntimeGateResult>,
 }
 
-/// Result of generating an implementation plan from a PRD.
+/// Result of generating an implementation plan from a prompt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanGenerationResult {
     /// Root directory where plan artifacts were generated.

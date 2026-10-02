@@ -734,8 +734,8 @@ impl TaskDef {
 
 /// Roles a plan task may declare in `role`: those with a bundled safety
 /// contract, as a role without one gets no tools at dispatch. Plan
-/// validation, plan generation, PRD planning and `roko run --role` all read
-/// this one list (bug-db607b).
+/// validation, plan generation and `roko run --role` all read this one list
+/// (bug-db607b).
 pub const PLAN_TASK_ROLES: &[&str] = &[
     "implementer",
     "researcher",

@@ -1,4 +1,4 @@
-//! Project and PRD configuration sections.
+//! The `[project]` configuration section.
 
 use serde::{Deserialize, Serialize};
 

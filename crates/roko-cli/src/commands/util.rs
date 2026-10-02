@@ -2386,13 +2386,10 @@ fn print_fish_completions() {
     // Recursive static subcommands at all depths.
     emit_fish_children(&tree);
     println!();
-    // Dynamic completions for workspace items (plan/prd/agent names).
+    // Dynamic completions for workspace items (plan/agent names).
     println!("# Dynamic completions for workspace values.");
     println!(
         "complete -c roko -f -n '__fish_seen_subcommand_from plan' -a '(__roko_dynamic_complete)'"
-    );
-    println!(
-        "complete -c roko -f -n '__fish_seen_subcommand_from prd' -a '(__roko_dynamic_complete)'"
     );
     println!(
         "complete -c roko -f -n '__fish_seen_subcommand_from agent' -a '(__roko_dynamic_complete)'"

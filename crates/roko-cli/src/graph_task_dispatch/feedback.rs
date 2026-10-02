@@ -1524,9 +1524,9 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
 
     /// bug-07bc75: a Graph dispatch teaches the router only through its
     /// settled verdict. The provider bridge still records every call's
-    /// efficiency row and the provider's health, but it no longer observes
-    /// or saves `cascade-router.json` from the provider's own success,
-    /// before any gate ran.
+    /// efficiency row and, in the factory's registry, the provider's health,
+    /// but it no longer observes or saves `cascade-router.json` from the
+    /// provider's own success, before any gate ran.
     #[tokio::test]
     async fn graph_dispatch_router_learns_only_from_settled_verdicts() {
         let temp = tempdir().expect("tempdir");
@@ -1569,7 +1569,11 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             .filter(|line| line.contains(r#""kind":"model_call""#))
             .count();
         assert!(model_calls >= 3, "one efficiency row per provider call");
-        assert!(learn.join("provider-health.json").exists());
+        // The factory's registry is the bridge's one provider-health writer
+        // (backlog 1114).
+        let health = dispatcher.factory.health_registry.get("stream-cli");
+        assert!(health.total_requests >= 3, "{health:?}");
+        assert_eq!(health.total_failures, 1, "{health:?}");
     }
 
     /// S01 §4.1 through the batch dispatch path: an unverified attempt, a

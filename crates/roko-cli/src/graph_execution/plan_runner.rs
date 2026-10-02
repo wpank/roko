@@ -1290,6 +1290,17 @@ async fn run_graph_plan_body(
     if !plugin_catalog.plugin_tools().is_empty() {
         shared_factory = shared_factory.with_local_tool_runtime(plugin_catalog.local_runtime());
     }
+    // Decision 1119 (3-A): give each API rung of the model ladder one
+    // tool-use call at most once a day, and skip a rung that cannot do agent
+    // work (backlog 1121). FAST and `--no-budget` runs never probe.
+    let probe_rungs = roko_config.routing.ladder.probe
+        && !no_budget
+        && super::fast_lane::FastAttemptBounds::from_env(workdir).is_none();
+    if probe_rungs && let Some(ladder) = shared_factory.dispatcher().routing_ladder().cloned() {
+        let failed =
+            crate::dispatch::rung_probe::probe_ladder(&roko_config, &ladder, workdir).await;
+        shared_factory = shared_factory.skip_failed_rungs(&failed);
+    }
     let shared_factory = Arc::new(shared_factory);
     if dangerously_skip_permissions {
         tracing::warn!(

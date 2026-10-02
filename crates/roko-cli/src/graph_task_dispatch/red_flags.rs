@@ -211,6 +211,12 @@ impl GraphTaskDispatcher {
                 attempt_number.saturating_add(1),
             );
         }
+        // A checkout that tampers with its checks, or under `enforce` strays
+        // out of scope, is not resumed: the next attempt starts from the
+        // plan branch, and this checkout stays for review (backlog 1122).
+        if matches!(rejection.check, "tamper" | "scope") {
+            self.restart_from_plan_tip(&spec.plan_id, &task.id, &gate);
+        }
         RokoError::Verify { gate, message }
     }
 
@@ -405,27 +411,44 @@ impl GraphTaskDispatcher {
                 "attempt changed paths outside its task's files"
             );
         }
+        // With per-task worktrees a rejected attempt's checkout is not
+        // resumed: the next attempt starts over from the plan branch
+        // (backlog 1122). In the shared checkout it has to undo the changes.
+        let fresh = self.workspace_provider.is_some();
         if !tamper.is_empty() {
+            let next = if fresh {
+                "The next attempt starts over from the plan branch, in a fresh checkout."
+            } else {
+                "Restore them."
+            };
             return Some(Rejection {
                 check: "tamper",
                 unchanged_tree: false,
                 message: format!(
-                    "Tampering: the task's changes weaken or edit what checks it:\n{}\nRestore \
-                     them. Tests, verify scripts, pinned acceptance tests and gate \
-                     configuration are not the task's to weaken; add new tests instead.",
+                    "Tampering: the task's changes weaken or edit what checks it:\n{}\n{next} \
+                     Do not weaken or edit tests, verify scripts, pinned acceptance tests or \
+                     gate configuration; add new tests instead.",
                     finding_list(&tamper)
                 ),
             });
         }
         (!scope.is_empty() && self.config.gates.diff_scope == DiffScope::Enforce).then(|| {
+            let files = named_files(&task.files);
+            let next = if fresh {
+                format!(
+                    "The next attempt starts over from the plan branch, in a fresh checkout; \
+                     change only {files}."
+                )
+            } else {
+                format!("Change only {files}, and undo the rest.")
+            };
             Rejection {
                 check: "scope",
                 unchanged_tree: false,
                 message: format!(
                     "Out of scope: the task changed paths its files do not name \
-                     ([gates] diff_scope = \"enforce\"):\n{}\nChange only {}, and undo the rest.",
-                    finding_list(&scope),
-                    named_files(&task.files)
+                     ([gates] diff_scope = \"enforce\"):\n{}\n{next}",
+                    finding_list(&scope)
                 ),
             }
         })

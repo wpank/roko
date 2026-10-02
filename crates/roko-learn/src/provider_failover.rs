@@ -20,7 +20,10 @@
 //!
 //! Graph plan runs apply the policy in `GraphTaskDispatcher`'s
 //! `run_bridge_with_failover`, through [`failover_candidates`]; serve's
-//! one-shot dispatch and ACP prompts apply it through [`Failover`].
+//! one-shot dispatch and ACP prompts apply it through [`Failover`]. A Graph
+//! task the model ladder routed takes step 1 ([`same_model_candidates`]),
+//! then the runnable rungs above its own, and never a cheaper model
+//! (decision 1119, backlog 1120).
 
 use std::sync::Arc;
 
@@ -108,50 +111,9 @@ pub fn failover_candidates(
     config: &Arc<RokoConfig>,
     first_refused: Option<&RefusedModel>,
 ) -> Vec<FailoverCandidate> {
-    let mut candidates: Vec<FailoverCandidate> = Vec::new();
-    let push_run_model = |candidates: &mut Vec<FailoverCandidate>, model_key: &str| {
-        if !model_key.trim().is_empty()
-            && !candidates
-                .iter()
-                .any(|candidate| candidate.model_key == model_key)
-        {
-            candidates.push(FailoverCandidate {
-                model_key: model_key.to_string(),
-                config: None,
-            });
-        }
-    };
-    if let Some(first) = first_refused {
-        for (key, profile) in config.effective_models() {
-            if profile.slug == first.model_slug && key != first.model_key {
-                push_run_model(&mut candidates, &key);
-            }
-        }
-        let family = same_family_kinds(first.provider_kind);
-        let base_profile = first.profile.clone().unwrap_or_else(|| ModelProfile {
-            slug: first.model_slug.clone(),
-            supports_tools: true,
-            ..Default::default()
-        });
-        for (provider_id, provider) in config.effective_providers() {
-            if !family.contains(&provider.kind) || provider_id == first.provider_id {
-                continue;
-            }
-            let model_key = format!("{}@{provider_id}", first.model_slug);
-            let mut synthesized = (**config).clone();
-            synthesized.models.insert(
-                model_key.clone(),
-                ModelProfile {
-                    provider: provider_id,
-                    ..base_profile.clone()
-                },
-            );
-            candidates.push(FailoverCandidate {
-                model_key,
-                config: Some(Arc::new(synthesized)),
-            });
-        }
-    }
+    let mut candidates = first_refused
+        .map(|first| same_model_candidates(config, first))
+        .unwrap_or_default();
     for model_key in config
         .routing
         .fallback_models
@@ -162,6 +124,63 @@ pub fn failover_candidates(
         push_run_model(&mut candidates, model_key);
     }
     candidates
+}
+
+/// The first group of [`failover_candidates`]: `first`'s slug under its
+/// other `[models.*]` keys, then on each other configured provider of its
+/// family. A Graph task the model ladder routed fails over to these, then up
+/// its rungs (backlog 1120).
+#[must_use]
+pub fn same_model_candidates(
+    config: &Arc<RokoConfig>,
+    first: &RefusedModel,
+) -> Vec<FailoverCandidate> {
+    let mut candidates: Vec<FailoverCandidate> = Vec::new();
+    for (key, profile) in config.effective_models() {
+        if profile.slug == first.model_slug && key != first.model_key {
+            push_run_model(&mut candidates, &key);
+        }
+    }
+    let family = same_family_kinds(first.provider_kind);
+    let base_profile = first.profile.clone().unwrap_or_else(|| ModelProfile {
+        slug: first.model_slug.clone(),
+        supports_tools: true,
+        ..Default::default()
+    });
+    for (provider_id, provider) in config.effective_providers() {
+        if !family.contains(&provider.kind) || provider_id == first.provider_id {
+            continue;
+        }
+        let model_key = format!("{}@{provider_id}", first.model_slug);
+        let mut synthesized = (**config).clone();
+        synthesized.models.insert(
+            model_key.clone(),
+            ModelProfile {
+                provider: provider_id,
+                ..base_profile.clone()
+            },
+        );
+        candidates.push(FailoverCandidate {
+            model_key,
+            config: Some(Arc::new(synthesized)),
+        });
+    }
+    candidates
+}
+
+/// Append `model_key`, under the caller's config, unless it is blank or
+/// already a candidate.
+fn push_run_model(candidates: &mut Vec<FailoverCandidate>, model_key: &str) {
+    if !model_key.trim().is_empty()
+        && !candidates
+            .iter()
+            .any(|candidate| candidate.model_key == model_key)
+    {
+        candidates.push(FailoverCandidate {
+            model_key: model_key.to_string(),
+            config: None,
+        });
+    }
 }
 
 /// A usage exhaustion a provider refused a call with, as recorded.

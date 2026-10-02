@@ -36,6 +36,7 @@ pub mod outcome;
 mod plugin_mcp;
 pub mod prompt_builder;
 pub mod prompt_cache;
+pub mod rung_probe;
 pub mod warm_pool;
 
 use std::collections::{HashMap, HashSet};
@@ -256,6 +257,12 @@ impl Dispatcher {
     #[must_use]
     pub fn routing_ladder(&self) -> Option<&RoutingLadder> {
         self.router.routing_ladder()
+    }
+
+    /// Route by `ladder` from now on, or by the router when it is `None`
+    /// ([`ModelRouter::replace_routing_ladder`]).
+    pub fn replace_routing_ladder(&mut self, ladder: Option<RoutingLadder>) {
+        self.router.replace_routing_ladder(ladder);
     }
 
     /// Weigh the durable knowledge `store` into the cascade router's pick

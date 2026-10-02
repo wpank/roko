@@ -30,8 +30,8 @@ use roko_learn::telemetry::records::{
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord,
     AttemptOrdinals, AttemptTiming, AttemptVerdictRecord, Blame, ContentDecisionRecord, CostSource,
-    ExecutedModel, ExposureCounts, ExposureRecord, GateVerdictTag, HelperCallsUsage, TelemetryEvent,
-    TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,
+    ExecutedModel, ExposureCounts, ExposureRecord, GateVerdictTag, HelperCallsUsage, LadderReason,
+    TelemetryEvent, TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,
 };
 use sha2::Digest;
 
@@ -305,8 +305,16 @@ impl AttemptContext {
     }
 
     /// Provider failover passed over `failover`'s models before the one
-    /// that ran (bug-35379d).
+    /// that ran (bug-35379d). An attempt the ladder routed then records the
+    /// rung that ran, as a failover, which never exhausts the ladder
+    /// (backlog 1120).
     pub(super) fn record_failover(&mut self, failover: FailoverChain) {
+        if let (Some(rung), Some((ladder, last_chance))) = (&failover.rung, &mut self.ladder) {
+            ladder.rung = Some(rung.name.clone());
+            ladder.index = Some(rung.index);
+            ladder.reason = LadderReason::Failover;
+            *last_chance = false;
+        }
         self.failover = failover;
     }
 

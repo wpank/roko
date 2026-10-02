@@ -1556,7 +1556,15 @@ impl AgentDispatcherV2 {
 
         self.record_provider_outcome(&created.target.provider_id, &result);
 
-        record_agent_dispatch_feedback(&request, &created.target, &result, latency_ms).await;
+        let health_recorded = self.health_registry.is_some();
+        record_agent_dispatch_feedback(
+            &request,
+            &created.target,
+            &result,
+            latency_ms,
+            health_recorded,
+        )
+        .await;
         let events = dispatch_events_from_result(&request, &created.target, &result);
         let tool_calls = match audit_mark {
             Some(mark) => mark.tool_calls().await,
@@ -1661,7 +1669,16 @@ impl AgentDispatcherV2 {
             })
             .await;
 
-        record_agent_dispatch_feedback(&request, &created.target, &result, latency_ms).await;
+        self.record_provider_outcome(&created.target.provider_id, &result);
+        let health_recorded = self.health_registry.is_some();
+        record_agent_dispatch_feedback(
+            &request,
+            &created.target,
+            &result,
+            latency_ms,
+            health_recorded,
+        )
+        .await;
 
         Ok(result)
     }
@@ -1758,7 +1775,9 @@ impl AgentDispatcherV2 {
         // success in the health registry.
         self.record_provider_outcome(&target.provider_id, &result);
 
-        record_agent_dispatch_feedback(&request, &target, &result, latency_ms).await;
+        let health_recorded = self.health_registry.is_some();
+        record_agent_dispatch_feedback(&request, &target, &result, latency_ms, health_recorded)
+            .await;
         let events = dispatch_events_from_result(&request, &target, &result);
         let tool_calls = match audit_mark {
             Some(mark) => mark.tool_calls().await,
@@ -1783,34 +1802,27 @@ impl AgentDispatcherV2 {
         Some(ToolAuditMark::at(audit.path().to_path_buf(), attempt_key).await)
     }
 
-    /// Record a provider run's outcome for the circuit breaker (E48-T05).
-    ///
-    /// - A successful run, or one stopped at its turn cap (a task outcome,
-    ///   not a provider fault), is a provider success.
-    /// - A run killed at its attempt's wall-clock timeout says how long the
-    ///   task took, not how healthy the provider is, so it records nothing
-    ///   (bug-7cdce7): three slow attempts must not open the circuit.
-    /// - Any other unsuccessful run is a provider failure, classified from
-    ///   its text.
+    /// Record a provider run's outcome for the circuit breaker (E48-T05), as
+    /// [`ProviderHealthOutcome::of`] reads it. With a registry attached,
+    /// this is the run's only provider-health record: the feedback recorder
+    /// then leaves health alone (backlog 1114).
     fn record_provider_outcome(&self, provider_id: &str, result: &AgentResult) {
-        use roko_agent::provider::error_classify::{detect_attempt_timeout, detect_turn_cap};
-
         let Some(registry) = &self.health_registry else {
             return;
         };
-        let text = result.output.body.as_text().unwrap_or_default();
-        if result.success || detect_turn_cap(text).is_some() {
-            registry.record_provider_success(provider_id);
-        } else if detect_attempt_timeout(text) {
-            tracing::debug!(
+        match ProviderHealthOutcome::of(result) {
+            ProviderHealthOutcome::Success => registry.record_provider_success(provider_id),
+            ProviderHealthOutcome::Failure(error_kind) => {
+                registry.record_provider_failure(provider_id, error_kind);
+            }
+            ProviderHealthOutcome::ImmuneDenied => tracing::debug!(
+                provider = %provider_id,
+                "an immune denial is host policy; the provider's health is unchanged"
+            ),
+            ProviderHealthOutcome::AttemptTimeout => tracing::debug!(
                 provider = %provider_id,
                 "an attempt timeout is a task outcome; the provider's health is unchanged"
-            );
-        } else {
-            registry.record_provider_failure(
-                provider_id,
-                classify_provider_error(&text.to_ascii_lowercase()),
-            );
+            ),
         }
     }
 
@@ -1959,8 +1971,53 @@ pub(crate) fn classify_provider_error(output_text_lower: &str) -> &'static str {
     roko_agent::provider::error_classify::classify_failure_text(output_text_lower)
 }
 
-/// Record one bridge call's model-call feedback: its efficiency row and the
-/// provider's health.
+/// What one provider run says about its provider's health.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderHealthOutcome {
+    /// The provider served the run: a success, or a run stopped at its turn
+    /// cap (a task outcome, not a provider fault).
+    Success,
+    /// The provider failed, with the error kind its text classifies as.
+    Failure(&'static str),
+    /// The immune boundary denied the run. That is the host's own policy,
+    /// often decided before any model call, so it must not open a healthy
+    /// provider's circuit (backlog 1114).
+    ImmuneDenied,
+    /// The run was killed at its attempt's wall-clock timeout, which says how
+    /// long the task took, not how healthy the provider is (bug-7cdce7):
+    /// three slow attempts must not open the circuit.
+    AttemptTimeout,
+}
+
+impl ProviderHealthOutcome {
+    /// Read `result`'s provider-health outcome. Any unsuccessful run that is
+    /// neither an immune denial, a turn cap nor an attempt timeout is a
+    /// provider failure, classified from its text.
+    fn of(result: &AgentResult) -> Self {
+        use roko_agent::provider::error_classify::{detect_attempt_timeout, detect_turn_cap};
+
+        let text = result.output.body.as_text().unwrap_or_default();
+        if result.output.tag("immune_denied") == Some("true") {
+            Self::ImmuneDenied
+        } else if result.success || detect_turn_cap(text).is_some() {
+            Self::Success
+        } else if detect_attempt_timeout(text) {
+            Self::AttemptTimeout
+        } else {
+            Self::Failure(classify_provider_error(&text.to_ascii_lowercase()))
+        }
+    }
+
+    /// Whether the run says anything about its provider's health.
+    const fn is_provider_outcome(self) -> bool {
+        matches!(self, Self::Success | Self::Failure(_))
+    }
+}
+
+/// Record one bridge call's model-call feedback: its efficiency row and,
+/// unless `health_recorded` says the dispatcher's own registry holds it, the
+/// provider's health. Either way a call leaves one provider-health record,
+/// and an immune denial or an attempt timeout leaves none (backlog 1114).
 ///
 /// The bridge never teaches the cascade router (bug-07bc75). Its callers are
 /// Graph dispatch's attempts and helper calls: the router learns each
@@ -1971,9 +2028,18 @@ async fn record_agent_dispatch_feedback(
     target: &ProviderDispatchSpec,
     result: &AgentResult,
     latency_ms: u64,
+    health_recorded: bool,
 ) {
     let learn_dir = roko_fs::RokoLayout::for_project(&request.workdir).learn_dir();
-    let recorder = ModelCallFeedbackRecorder::without_cascade_router(learn_dir);
+    let outcome = ProviderHealthOutcome::of(result);
+    let mut recorder = ModelCallFeedbackRecorder::without_cascade_router(learn_dir);
+    if health_recorded || !outcome.is_provider_outcome() {
+        recorder = recorder.without_provider_health();
+    }
+    let error_class = match outcome {
+        ProviderHealthOutcome::Failure(error_kind) => Some(error_kind.to_string()),
+        _ => None,
+    };
     if let Err(error) = recorder
         .record(ModelCallFeedback {
             run_id: None,
@@ -1988,8 +2054,8 @@ async fn record_agent_dispatch_feedback(
             cost_usd: f64::from(result.usage.cost_usd),
             latency_ms,
             success: result.success,
-            provider_success: Some(result.success),
-            error_class: None,
+            provider_success: Some(outcome == ProviderHealthOutcome::Success),
+            error_class,
             model_reported: result
                 .usage_obs
                 .as_ref()
@@ -3717,6 +3783,112 @@ exit 1
                 assert_eq!(health.consecutive_failures, 0, "{case}: {health:?}");
             }
         }
+    }
+
+    /// backlog 1114: an immune denial is the host's own policy, here decided
+    /// before any model call, not a provider outcome. A denied bridge run,
+    /// with or without the dispatcher's registry, leaves the registry and
+    /// `provider-health.json` as they were.
+    #[tokio::test]
+    async fn immune_denial_leaves_provider_health_unchanged() {
+        let tmp = tempdir().expect("tempdir");
+        let calls = tmp.path().join("provider-calls.log");
+        let script = write_fake_claude_script(
+            &tmp,
+            &format!(
+                "#!/bin/sh\ncat >/dev/null\necho called >> '{}'\nexit 1\n",
+                calls.display()
+            ),
+        );
+        let config = Arc::new(fake_claude_config(&script));
+        let learn_dir = tmp.path().join(".roko/learn");
+        std::fs::create_dir_all(&learn_dir).expect("create learn dir");
+        let health_path = learn_dir.join("provider-health.json");
+        let registry = Arc::new(ProviderHealthRegistry::new());
+        registry.record_success("dispatch-cli");
+        registry.save(&health_path).expect("save health");
+        let health_before = registry.get("dispatch-cli");
+        let file_before = std::fs::read_to_string(&health_path).expect("read health");
+        // An isolation control on the request's agent makes the immune
+        // boundary deny each run before its provider.
+        roko_agent::isolate_agent(tmp.path(), "dispatch-agent", "test_isolation")
+            .expect("isolate the agent");
+
+        let with_registry =
+            AgentDispatcherV2::new(Arc::clone(&config)).with_health_registry(registry.clone());
+        let without_registry = AgentDispatcherV2::new(config);
+        for dispatcher in [with_registry, without_registry] {
+            let dispatch = dispatcher
+                .run_agent_result_bridge(fake_claude_request(tmp.path(), 10_000))
+                .await
+                .expect("dispatch");
+            assert!(!dispatch.result.success);
+            assert_eq!(dispatch.result.output.tag("immune_denied"), Some("true"));
+            assert_eq!(
+                dispatch.result.output.tag("immune_reason"),
+                Some("agent_isolated")
+            );
+        }
+
+        assert!(!calls.exists(), "the provider must not be called");
+        assert_eq!(registry.get("dispatch-cli"), health_before);
+        assert_eq!(
+            std::fs::read_to_string(&health_path).expect("read health"),
+            file_before
+        );
+    }
+
+    /// backlog 1114: a bridge attempt leaves exactly one provider-health
+    /// record. With the dispatcher's registry attached, the registry holds it
+    /// and the feedback recorder writes no second one to
+    /// `provider-health.json`; without one, the recorder writes it, under the
+    /// failure's classified error rather than `Unknown`.
+    #[tokio::test]
+    async fn bridge_attempt_records_provider_health_once() {
+        use roko_learn::provider_health::ErrorClass;
+
+        let tmp = tempdir().expect("tempdir");
+        let script = write_fake_claude_script(
+            &tmp,
+            r#"#!/bin/sh
+cat >/dev/null
+echo '503 service temporarily unavailable' >&2
+exit 1
+"#,
+        );
+        let config = Arc::new(fake_claude_config(&script));
+        let health_path = tmp.path().join(".roko/learn/provider-health.json");
+
+        let registry = Arc::new(ProviderHealthRegistry::new());
+        let dispatcher =
+            AgentDispatcherV2::new(Arc::clone(&config)).with_health_registry(registry.clone());
+        let dispatch = dispatcher
+            .run_agent_result_bridge(fake_claude_request(tmp.path(), 10_000))
+            .await
+            .expect("dispatch");
+        assert!(!dispatch.result.success);
+        let health = registry.get("dispatch-cli");
+        assert_eq!(health.total_requests, 1, "{health:?}");
+        assert_eq!(health.total_failures, 1, "{health:?}");
+        assert!(
+            !health_path.exists(),
+            "the feedback recorder must not record the attempt a second time"
+        );
+
+        let dispatch = AgentDispatcherV2::new(config)
+            .run_agent_result_bridge(fake_claude_request(tmp.path(), 10_000))
+            .await
+            .expect("dispatch");
+        assert!(!dispatch.result.success);
+        let persisted = ProviderHealthRegistry::load_or_new(&health_path).get("dispatch-cli");
+        assert_eq!(persisted.total_requests, 1, "{persisted:?}");
+        assert_eq!(persisted.total_failures, 1, "{persisted:?}");
+        let classes: Vec<ErrorClass> = persisted
+            .failure_window
+            .iter()
+            .map(|failure| failure.error_class)
+            .collect();
+        assert_eq!(classes, vec![ErrorClass::ServerError]);
     }
 
     /// gap-28ceb9: a usage-window refusal is a class of its own, which the

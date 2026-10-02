@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use roko_core::agent::ProviderKind;
 use roko_learn::provider_failover::{
     FailoverCandidate as DispatchCandidate, format_local_ms, missing_credentials_reason,
-    provider_brings_own_tools,
+    provider_brings_own_tools, same_model_candidates,
 };
 
 use super::helper_calls::SideCall;
@@ -43,6 +43,28 @@ const UNGUARDED_CLI_KINDS: [ProviderKind; 4] = [
 /// `role` of the cost and efficiency rows of a call failover refused.
 const FAILOVER_REFUSED_ROLE: &str = "failover_refused";
 
+/// Failover refusal class of a provider that rejected roko's credentials: a
+/// login does not fix itself within a run, so the refusal is definitive and
+/// the error says how to log in (backlog 1115).
+const AUTH_FAILURE: &str = "auth_failure";
+
+/// `RokoError::Gateway` category of an attempt denied in a way no retry can
+/// change (backlog 1116). The error is non-retryable like
+/// [`PROVIDER_EXHAUSTED_CATEGORY`], so the task fails at once with how to
+/// recover instead of spending its retries on the same denial.
+pub(super) const PROVIDER_DENIED_CATEGORY: &str = "provider_denied";
+
+/// How to recover once the workspace's immune isolation ledger cannot be read
+/// and every agent is denied before dispatch (`isolation_state_unavailable`).
+const UNREADABLE_LEDGER_FIX: &str = "`roko safety controls` says why \
+     .roko/immune/agent-controls.json cannot be read; repair that file, or move it aside to drop \
+     its controls";
+
+/// How to recover from an attempt agent id the immune boundary refuses
+/// (`invalid_agent_identity`), which every attempt of the task shares.
+const INVALID_AGENT_ID_FIX: &str = "the plan or task id makes the attempt's agent id invalid \
+     (over 256 bytes, a control character, or secret-shaped text); rename it";
+
 /// Why the provider behind a model cannot take this dispatch.
 #[derive(Debug, Clone)]
 struct ProviderRefusal {
@@ -56,8 +78,8 @@ struct ProviderRefusal {
     /// When the provider is expected to accept work again (unix ms).
     until_ms: Option<i64>,
     /// Calling the provider again cannot help (missing, not dispatchable, no
-    /// credentials, out of usage, billing), unlike an open circuit that may
-    /// already have recovered.
+    /// credentials, rejected credentials, out of usage, billing), unlike an
+    /// open circuit that may already have recovered.
     definitive: bool,
     /// Why, as a class ([`roko_learn::telemetry::FailoverRefusal::class`]).
     class: &'static str,
@@ -78,6 +100,45 @@ pub(super) struct FailoverChain {
     /// Every refusal, with its class and whether a call was made
     /// (bug-220385).
     pub(super) refusals: Vec<roko_learn::telemetry::FailoverRefusal>,
+    /// The ladder rung of the model that ran, when failover moved an attempt
+    /// the ladder routed (backlog 1120).
+    pub(super) rung: Option<FailoverRung>,
+}
+
+/// The ladder rung failover ran an attempt on in place of the routed one:
+/// the routed rung itself when the same model ran on another provider, else a
+/// rung above it (backlog 1120).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FailoverRung {
+    /// Index of the rung among the role's rungs, cheapest first.
+    pub(super) index: u32,
+    /// The rung's name.
+    pub(super) name: String,
+}
+
+/// Where `[routing.ladder]` routed an attempt. Failover moves such an
+/// attempt to the same model on another provider, then up the role's
+/// runnable rungs, never to a cheaper model (decision 1119, backlog 1120).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LadderRoute {
+    /// The task's role, whose rungs the ladder routes along.
+    pub(super) role: String,
+    /// Index of the routed rung among the role's rungs, cheapest first.
+    pub(super) rung: usize,
+}
+
+impl LadderRoute {
+    /// Where `plan` put `task` on the ladder; `None` for an attempt the
+    /// ladder did not route (a pin, a task hint, the router or a default).
+    pub(super) fn of(task: &TaskDef, plan: &crate::dispatch::RunnerDispatchPlan) -> Option<Self> {
+        match plan.source {
+            ModelChoiceSource::Ladder { rung } => Some(Self {
+                role: task.role.as_deref().unwrap_or("implementer").to_string(),
+                rung,
+            }),
+            _ => None,
+        }
+    }
 }
 
 impl FailoverChain {
@@ -105,6 +166,7 @@ impl FailoverChain {
                     until: refusal.until_ms,
                 })
                 .collect(),
+            rung: None,
         }
     }
 }
@@ -119,8 +181,10 @@ impl GraphTaskDispatcher {
     /// registry until its reported reset (else
     /// `routing.exhaustion_cooldown_secs`). Either way the next candidate from
     /// [`Self::failover_candidates`] runs in the same attempt, so no task
-    /// retry is burned. An explicit `--model` override is a pin and never
-    /// fails over. When nothing usable remains the attempt fails with a
+    /// retry is burned. An attempt the model ladder routed (`ladder`) moves
+    /// only to the same model elsewhere or up its rungs, and records the rung
+    /// that ran (backlog 1120). An explicit `--model` override is a pin and
+    /// never fails over. When nothing usable remains the attempt fails with a
     /// non-retryable error that says how to recover.
     ///
     /// In the operator's shared checkout, a Codex, Cursor or Gemini CLI agent
@@ -140,7 +204,9 @@ impl GraphTaskDispatcher {
         attempt_key: String,
         mut request: AgentDispatchRequest,
         progress: Option<&super::watchdog::AttemptProgress>,
+        ladder: Option<LadderRoute>,
     ) -> Result<(crate::dispatch_v2::AgentResultDispatch, FailoverChain)> {
+        let ladder = ladder.as_ref();
         let pinned = self.cli_model_override.is_some();
         let mut candidate = DispatchCandidate {
             model_key: request.model_key.clone(),
@@ -169,7 +235,7 @@ impl GraphTaskDispatcher {
                 }
                 let definitive = refusal.definitive;
                 refusals.push(refusal);
-                match self.failover_model(spec, task_id, &refusals) {
+                match self.failover_model(spec, task_id, &refusals, ladder) {
                     Ok(next) => {
                         candidate = next;
                         continue;
@@ -187,7 +253,7 @@ impl GraphTaskDispatcher {
             if let Some(progress) = progress {
                 progress.call_started(
                     self.resolve_candidate(&candidate),
-                    FailoverChain::of(&refusals),
+                    self.failover_chain(&refusals, &candidate, ladder),
                 );
             }
             let call_started = Instant::now();
@@ -204,7 +270,8 @@ impl GraphTaskDispatcher {
                 message: error.to_string(),
             })?;
             if dispatch.result.success {
-                return Ok((dispatch, FailoverChain::of(&refusals)));
+                let chain = self.failover_chain(&refusals, &candidate, ladder);
+                return Ok((dispatch, chain));
             }
             let Some(exhaustion) = dispatch
                 .result
@@ -214,7 +281,8 @@ impl GraphTaskDispatcher {
                 .ok()
                 .and_then(roko_agent::provider::error_classify::detect_provider_exhaustion)
             else {
-                return Ok((dispatch, FailoverChain::of(&refusals)));
+                let chain = self.failover_chain(&refusals, &candidate, ladder);
+                return Ok((dispatch, chain));
             };
 
             let cooldown_ms = i64::try_from(
@@ -274,10 +342,45 @@ impl GraphTaskDispatcher {
                 at_ms: chrono::Utc::now().timestamp_millis(),
             });
             if pinned {
-                return Err(self.no_usable_provider(&refusals, &[], true));
+                return Err(self.no_usable_provider(&refusals, &[], true, None));
             }
-            candidate = self.failover_model(spec, task_id, &refusals)?;
+            candidate = self.failover_model(spec, task_id, &refusals, ladder)?;
         }
+    }
+
+    /// The chain of `refusals` before `candidate` ran, with the ladder rung
+    /// it ran on when failover moved an attempt the ladder routed: the routed
+    /// rung when it is the same model elsewhere, else the rung above whose
+    /// model it is (backlog 1120).
+    fn failover_chain(
+        &self,
+        refusals: &[ProviderRefusal],
+        candidate: &DispatchCandidate,
+        ladder: Option<&LadderRoute>,
+    ) -> FailoverChain {
+        let mut chain = FailoverChain::of(refusals);
+        let (Some(route), Some(routed)) = (ladder, refusals.first()) else {
+            return chain;
+        };
+        let Some(routing) = self.factory.dispatcher().routing_ladder() else {
+            return chain;
+        };
+        let index = if self.resolve_candidate(candidate).model_slug == routed.model_slug {
+            Some(route.rung)
+        } else {
+            routing
+                .rung_models_above(&route.role, route.rung)
+                .into_iter()
+                .find(|rung| rung.model == candidate.model_key)
+                .map(|rung| rung.index)
+        };
+        chain.rung = index.and_then(|index| {
+            Some(FailoverRung {
+                index: u32::try_from(index).ok()?,
+                name: routing.rung_name(&route.role, index)?.to_string(),
+            })
+        });
+        chain
     }
 
     fn resolve_candidate(
@@ -386,6 +489,7 @@ impl GraphTaskDispatcher {
         {
             Some(ErrorClass::Exhausted) => ("provider_exhausted", "out of usage", true),
             Some(ErrorClass::Billing) => ("billing", "billing failure", true),
+            Some(ErrorClass::AuthFailure) => (AUTH_FAILURE, "not logged in or key rejected", true),
             _ => (
                 "circuit_open",
                 "circuit open after repeated failures",
@@ -405,7 +509,15 @@ impl GraphTaskDispatcher {
     /// Claude slug), `[routing] fallback_models`, `agent.fallback_model`, and
     /// `agent.default_model`. The order is the shared failover policy's
     /// (`roko_learn::provider_failover`), which serve and ACP apply too.
-    fn failover_candidates(&self, refusals: &[ProviderRefusal]) -> Vec<DispatchCandidate> {
+    ///
+    /// An attempt the model ladder routed (`ladder`) takes the first group,
+    /// then the runnable rungs above its own, and nothing cheaper (decision
+    /// 1119, backlog 1120).
+    fn failover_candidates(
+        &self,
+        refusals: &[ProviderRefusal],
+        ladder: Option<&LadderRoute>,
+    ) -> Vec<DispatchCandidate> {
         let first = refusals
             .first()
             .map(|first| roko_learn::provider_failover::RefusedModel {
@@ -420,7 +532,21 @@ impl GraphTaskDispatcher {
                     })
                     .model_profile,
             });
-        roko_learn::provider_failover::failover_candidates(&self.config, first.as_ref())
+        let routing = self.factory.dispatcher().routing_ladder();
+        let Some((route, routing)) = ladder.zip(routing) else {
+            let first = first.as_ref();
+            return roko_learn::provider_failover::failover_candidates(&self.config, first);
+        };
+        let mut candidates = first
+            .map(|first| same_model_candidates(&self.config, &first))
+            .unwrap_or_default();
+        for rung in routing.rung_models_above(&route.role, route.rung) {
+            candidates.push(DispatchCandidate {
+                model_key: rung.model,
+                config: None,
+            });
+        }
+        candidates
     }
 
     /// The first usable model in [`Self::failover_candidates`], with the
@@ -432,12 +558,13 @@ impl GraphTaskDispatcher {
         spec: &TaskExecutionSpec,
         task_id: &str,
         refusals: &[ProviderRefusal],
+        ladder: Option<&LadderRoute>,
     ) -> Result<DispatchCandidate> {
         let mut skipped = Vec::new();
         let mut only_unguarded = refusals
             .iter()
             .all(|refusal| refusal.class == UNGUARDED_IN_CHECKOUT);
-        for candidate in self.failover_candidates(refusals) {
+        for candidate in self.failover_candidates(refusals, ladder) {
             if let Some(kind) = self.unguarded_in_checkout(&self.resolve_candidate(&candidate)) {
                 log_unguarded_skip(&spec.plan_id, kind);
                 let why = unguarded_reason(kind);
@@ -481,7 +608,7 @@ impl GraphTaskDispatcher {
                 .collect();
             return Err(no_guarded_provider(&passed_over));
         }
-        Err(self.no_usable_provider(refusals, &skipped, false))
+        Err(self.no_usable_provider(refusals, &skipped, false, ladder))
     }
 
     /// The kind of agent `target` runs, when it is one roko cannot guard
@@ -555,12 +682,15 @@ impl GraphTaskDispatcher {
     }
 
     /// Non-retryable error for a task left without a usable provider, naming
-    /// each refusal, each skipped fallback, and how to recover.
+    /// each refusal, each skipped fallback, and how to recover. A task the
+    /// model ladder routed (`ladder`) had only the same model elsewhere and
+    /// the rungs above its own to fall back on (backlog 1120).
     fn no_usable_provider(
         &self,
         refusals: &[ProviderRefusal],
         skipped: &[String],
         pinned: bool,
+        ladder: Option<&LadderRoute>,
     ) -> RokoError {
         let refused = refusals
             .iter()
@@ -576,10 +706,25 @@ impl GraphTaskDispatcher {
             })
             .collect::<Vec<_>>()
             .join("; ");
+        let routed_rung = ladder.and_then(|route| {
+            let routing = self.factory.dispatcher().routing_ladder()?;
+            Some(routing.rung_name(&route.role, route.rung)?.to_string())
+        });
         let fallback = if pinned {
             "The --model override pins this model, so no failover was attempted; drop --model to \
              allow it."
                 .to_string()
+        } else if let Some(rung) = routed_rung {
+            let skipped = if skipped.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", skipped.join("; "))
+            };
+            format!(
+                "The model ladder routed this task to rung `{rung}`, and failover never moves it \
+                 to a cheaper model: neither the same model elsewhere nor a rung above is \
+                 usable{skipped}."
+            )
         } else if skipped.is_empty() {
             format!(
                 "No fallback model is configured: set [routing] fallback_models in roko.toml{} \
@@ -593,21 +738,50 @@ impl GraphTaskDispatcher {
                 skipped.join("; ")
             )
         };
-        let wait = refusals
+        // A provider that rejected roko's credentials needs a login, which
+        // waiting does not bring (backlog 1115).
+        let mut fixes: Vec<String> = refusals
             .iter()
-            .filter_map(|refusal| refusal.until_ms)
-            .min()
-            .map_or_else(
-                || "wait for the provider to recover".to_string(),
-                |ms| format!("wait until {}", format_local_ms(ms)),
-            );
+            .filter(|refusal| refusal.class == AUTH_FAILURE)
+            .map(|refusal| self.credentials_hint(refusal))
+            .collect();
+        let auth_only = !fixes.is_empty() && fixes.len() == refusals.len();
+        fixes.push(fallback);
+        if auth_only {
+            fixes.push("Then re-run.".to_string());
+        } else {
+            let wait = refusals
+                .iter()
+                .filter(|refusal| refusal.class != AUTH_FAILURE)
+                .filter_map(|refusal| refusal.until_ms)
+                .min()
+                .map_or_else(
+                    || "wait for the provider to recover".to_string(),
+                    |ms| format!("wait until {}", format_local_ms(ms)),
+                );
+            fixes.push(format!("Otherwise {wait} and re-run."));
+        }
+        let fixes = fixes.join(" ");
         RokoError::Gateway {
             category: PROVIDER_EXHAUSTED_CATEGORY,
             retryable: false,
-            message: format!(
-                "no usable provider for this task: {refused}. {fallback} Otherwise {wait} and re-run."
-            ),
+            message: format!("no usable provider for this task: {refused}. {fixes}"),
         }
+    }
+
+    /// What to do about `refusal`'s provider rejecting roko's credentials,
+    /// and how to use it again before its skip ends (backlog 1115).
+    fn credentials_hint(&self, refusal: &ProviderRefusal) -> String {
+        let providers = self.config.effective_providers();
+        let key_env = providers
+            .get(&refusal.provider_id)
+            .and_then(|provider| provider.api_key_env.as_deref());
+        format!(
+            "`{}` rejected its credentials: {}, then delete its entry in \
+             .roko/learn/provider-health.json to use it before its skip ends.",
+            refusal.provider_id,
+            credentials_fix(refusal.provider_kind, key_env)
+        )
     }
 
     /// " (e.g. kimi-k2-5 needs MOONSHOT_API_KEY, …)" for configured API-key models.
@@ -630,6 +804,78 @@ impl GraphTaskDispatcher {
         } else {
             format!(" (e.g. {})", examples.join(", "))
         }
+    }
+}
+
+/// The non-retryable error for `dispatch`'s failed result when no retry can
+/// change it, naming the reason and how to recover (backlog 1116):
+/// - an immune preflight denial that holds for every attempt: the
+///   workspace's isolation ledger cannot be read
+///   (`isolation_state_unavailable`), or the attempt's agent id is not a
+///   valid provider identity (`invalid_agent_identity`);
+/// - a provider that rejected roko's credentials.
+///
+/// `None` for any other failure, which stays retryable. That includes
+/// `agent_isolated`: each attempt runs under its own agent id (decision
+/// 1107), so the next attempt is not isolated, and a quarantined output or
+/// the stream cap, which a new call can pass.
+pub(super) fn permanent_provider_denial(
+    dispatch: &crate::dispatch_v2::AgentResultDispatch,
+) -> Option<RokoError> {
+    let output = &dispatch.result.output;
+    let text = output.body.as_text().unwrap_or_default();
+    let class = crate::dispatch_v2::classify_provider_error(&text.to_ascii_lowercase());
+    let (denial, recovery) = if output.tag("immune_denied") == Some("true") {
+        let reason = output.tag("immune_reason").unwrap_or_default();
+        let recovery = match reason {
+            "isolation_state_unavailable" => UNREADABLE_LEDGER_FIX,
+            "invalid_agent_identity" => INVALID_AGENT_ID_FIX,
+            _ => return None,
+        };
+        (
+            format!("the immune boundary denied the attempt before any call ({reason})"),
+            recovery.to_string(),
+        )
+    } else if class == AUTH_FAILURE {
+        let key_env = dispatch
+            .target
+            .provider_config
+            .as_ref()
+            .and_then(|provider| provider.api_key_env.as_deref());
+        (
+            format!(
+                "provider `{}` rejected its credentials ({text})",
+                dispatch.target.provider_id
+            ),
+            credentials_fix(dispatch.target.provider_kind, key_env),
+        )
+    } else {
+        return None;
+    };
+    Some(RokoError::Gateway {
+        category: PROVIDER_DENIED_CATEGORY,
+        retryable: false,
+        message: format!("{denial}, which no retry can change: {recovery}"),
+    })
+}
+
+/// How to restore credentials a provider of `kind` rejected (backlog 1115): a
+/// CLI agent's login, which needs USER and HOME in its environment, or a valid
+/// key in the variable its config names.
+fn credentials_fix(kind: ProviderKind, key_env: Option<&str>) -> String {
+    let login = match kind {
+        ProviderKind::ClaudeCli => Some("claude /login"),
+        ProviderKind::CodexCli => Some("codex login"),
+        ProviderKind::GeminiCli => Some("gemini /auth"),
+        ProviderKind::CursorCli | ProviderKind::CursorAcp => Some("cursor-agent login"),
+        _ => None,
+    };
+    match (login, key_env) {
+        (Some(login), _) => format!("run `{login}`; under `env -i` also pass USER and HOME"),
+        (None, Some(env)) => {
+            format!("put a valid key in {env} (~/.roko/.env is loaded automatically at startup)")
+        }
+        (None, None) => "log its CLI in or give it valid credentials".to_string(),
     }
 }
 
@@ -687,8 +933,9 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, final_turn, jsonl_rows_where,
-        make_spec, make_task_def, recording_feedback, spawn_openai_mock, tool_call_turn,
+        FIXTURE_HANG_GUARD_SECS, FIXTURE_PROVIDER_TIMEOUT_MS, cli_provider, final_turn,
+        jsonl_rows_where, make_bare_dispatcher, make_spec, make_task_def, model,
+        recording_feedback, spawn_openai_mock, tool_call_turn,
     };
 
     // ─── Provider failover on usage exhaustion ──────────────────────────────
@@ -817,13 +1064,22 @@ exit 1
         dispatcher: Arc<GraphTaskDispatcher>,
         model_hint: &str,
     ) -> roko_graph::cells::TaskExecutorCell {
+        failover_cell_with_retries(dispatcher, model_hint, 2)
+    }
+
+    /// [`failover_cell`] with `max_retries` retries.
+    fn failover_cell_with_retries(
+        dispatcher: Arc<GraphTaskDispatcher>,
+        model_hint: &str,
+        max_retries: u32,
+    ) -> roko_graph::cells::TaskExecutorCell {
         let task = TaskDef {
             id: "T08".to_string(),
             title: "Implement with failover".to_string(),
             description: Some("Edit notes and write hello.txt".to_string()),
             model_hint: Some(model_hint.to_string()),
             timeout_secs: FIXTURE_HANG_GUARD_SECS,
-            max_retries: 2,
+            max_retries,
             ..make_task_def("focused")
         };
         let config = toml::Value::Table(toml::map::Map::from_iter([
@@ -836,7 +1092,10 @@ exit 1
                 "timeout_secs".to_string(),
                 toml::Value::Integer(FIXTURE_HANG_GUARD_SECS as i64),
             ),
-            ("max_retries".to_string(), toml::Value::Integer(2)),
+            (
+                "max_retries".to_string(),
+                toml::Value::Integer(i64::from(max_retries)),
+            ),
             (
                 "task_def_json".to_string(),
                 toml::Value::String(serde_json::to_string(&task).expect("serialize task")),
@@ -1176,6 +1435,400 @@ exit 1
             1,
             "max_retries = 2 must not re-run an exhausted provider"
         );
+    }
+
+    /// backlog 1115: one auth failure takes its provider out of the run.
+    /// With no usable alternative the attempt fails non-retryably before any
+    /// call, and the error says how to log in rather than to wait.
+    #[tokio::test]
+    async fn auth_failure_refuses_provider_with_login_hint() {
+        use roko_learn::provider_health::{ErrorClass, ProviderHealthRegistry};
+
+        let temp = tempdir().expect("tempdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        write_executable(
+            &claude,
+            &format!(
+                r#"#!/bin/sh
+cat >/dev/null
+echo called >> '{}'
+echo 'Not logged in' >&2
+exit 1
+"#,
+                calls.display()
+            ),
+        );
+        let config = Arc::new(failover_config(
+            &claude,
+            "http://127.0.0.1:9/v1",
+            &["keyless-model"],
+        ));
+        let health = Arc::new(ProviderHealthRegistry::new());
+        health.record_failure("claude_cli", ErrorClass::AuthFailure);
+        let factory = Arc::new(
+            SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+                .await
+                .with_health_registry(health),
+        );
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        ));
+        let error = failover_cell(dispatcher, "claude-sonnet-4-6")
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T08".to_string()),
+            )
+            .await
+            .expect_err("a provider that rejected its credentials fails the task");
+
+        let RokoError::Gateway {
+            category,
+            retryable,
+            message,
+        } = &error
+        else {
+            panic!("expected a non-retryable gateway error, got {error:?}");
+        };
+        assert_eq!(*category, PROVIDER_EXHAUSTED_CATEGORY);
+        assert!(!retryable);
+        assert!(
+            message.contains("not logged in or key rejected"),
+            "{message}"
+        );
+        assert!(message.contains("run `claude /login`"), "{message}");
+        assert!(message.contains("USER and HOME"), "{message}");
+        assert!(message.contains("Then re-run."), "{message}");
+        assert!(!message.contains("wait until"), "{message}");
+        assert_eq!(invocations(&calls), 0, "no call reaches the provider");
+    }
+
+    /// backlog 1116: a denial no retry can change fails the task at once,
+    /// with how to recover, though five retries are left: a CLI that is not
+    /// logged in is called once, and an isolation ledger the immune boundary
+    /// cannot read denies one attempt before any call, and no other.
+    #[tokio::test]
+    async fn permanent_provider_denial_is_not_retried() {
+        let temp = tempdir().expect("tempdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        write_executable(
+            &claude,
+            &format!(
+                r#"#!/bin/sh
+cat >/dev/null
+echo called >> '{}'
+echo 'Not logged in. Please run /login' >&2
+exit 1
+"#,
+                calls.display()
+            ),
+        );
+        let config = Arc::new(failover_config(&claude, "http://127.0.0.1:9/v1", &[]));
+
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        ));
+        let error = failover_cell_with_retries(dispatcher, "claude-sonnet-4-6", 5)
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T08".to_string()),
+            )
+            .await
+            .expect_err("a CLI that is not logged in fails the task");
+        let RokoError::Gateway {
+            category,
+            retryable,
+            message,
+        } = &error
+        else {
+            panic!("expected a non-retryable gateway error, got {error:?}");
+        };
+        assert_eq!(*category, PROVIDER_DENIED_CATEGORY);
+        assert!(!retryable);
+        assert!(message.contains("rejected its credentials"), "{message}");
+        assert!(message.contains("run `claude /login`"), "{message}");
+        assert_eq!(invocations(&calls), 1, "the denial is not retried");
+
+        // An isolation ledger the immune boundary cannot read denies every
+        // attempt before its call. The new factory's registry does not hold
+        // the CLI's open circuit from above.
+        let immune_dir = temp.path().join(".roko/immune");
+        std::fs::create_dir_all(&immune_dir).expect("create immune dir");
+        std::fs::write(immune_dir.join("agent-controls.json"), "not json").expect("corrupt");
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        ));
+        let error = failover_cell_with_retries(Arc::clone(&dispatcher), "claude-sonnet-4-6", 5)
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T08".to_string()),
+            )
+            .await
+            .expect_err("an unreadable isolation ledger fails the task");
+        let RokoError::Gateway {
+            category,
+            retryable,
+            message,
+        } = &error
+        else {
+            panic!("expected a non-retryable gateway error, got {error:?}");
+        };
+        assert_eq!(*category, PROVIDER_DENIED_CATEGORY);
+        assert!(!retryable);
+        assert!(message.contains("isolation_state_unavailable"), "{message}");
+        assert!(message.contains("roko safety controls"), "{message}");
+        assert_eq!(invocations(&calls), 1, "no call reaches the provider");
+        assert_eq!(
+            dispatcher.task_attempts.lock().get("p-failover/T08"),
+            Some(&1)
+        );
+    }
+
+    // ─── Failover along the model ladder (backlog 1120) ─────────────────────
+
+    /// A fake `claude` that appends the model of each call to `models`, then
+    /// answers.
+    fn model_logging_claude(path: &Path, models: &Path) {
+        write_executable(
+            path,
+            &format!(
+                r#"#!/bin/sh
+cat >/dev/null
+previous=
+for arg in "$@"; do
+  if [ "$previous" = "--model" ]; then
+    printf '%s\n' "$arg" >> '{}'
+  fi
+  previous=$arg
+done
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ran"}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}}'
+"#,
+                models.display()
+            ),
+        );
+    }
+
+    /// The models [`model_logging_claude`] was called with, in order.
+    fn logged_models(models: &Path) -> Vec<String> {
+        std::fs::read_to_string(models)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A model ladder of `rungs` (name, model key) over three models:
+    /// `cheap-model` and `strong-model` on Claude CLIs that run `claude`, and
+    /// `mid-model` on an OpenAI-compatible API that is not reached unless a
+    /// test points it at a mock. The cheap model is also the default and the
+    /// fallback, where the failover of a task the ladder did not route goes.
+    fn ladder_failover_config(claude: &Path, rungs: &[(&str, &str)]) -> RokoConfig {
+        let claude = claude.display().to_string();
+        let mut mid_api = cli_provider(&claude);
+        mid_api.kind = ProviderKind::OpenAiCompat;
+        mid_api.command = None;
+        mid_api.base_url = Some("http://127.0.0.1:9/v1".to_string());
+        // `PATH` is always set, standing in for a key.
+        mid_api.api_key_env = Some("PATH".to_string());
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.bare_mode = false;
+        config
+            .providers
+            .insert("cheap_cli".to_string(), cli_provider(&claude));
+        config
+            .providers
+            .insert("strong_cli".to_string(), cli_provider(&claude));
+        config.providers.insert("mid_api".to_string(), mid_api);
+        config.models.insert(
+            "cheap-model".to_string(),
+            model("cheap_cli", "claude-haiku-4-5", None),
+        );
+        config.models.insert(
+            "mid-model".to_string(),
+            ModelProfile {
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                tool_format: "openai_json".to_string(),
+                ..model("mid_api", "mid-1", None)
+            },
+        );
+        config.models.insert(
+            "strong-model".to_string(),
+            model("strong_cli", "claude-sonnet-4-6", None),
+        );
+        config.agent.default_model = "cheap-model".to_string();
+        config.routing.fallback_models = vec!["cheap-model".to_string()];
+        config.routing.ladder.rungs = rungs
+            .iter()
+            .map(|&(name, model_key)| roko_core::config::routing::LadderRung {
+                name: name.to_string(),
+                model: model_key.to_string(),
+            })
+            .collect();
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        config
+    }
+
+    /// backlog 1120 (decision 1119): the ladder routes a task to its `mid`
+    /// rung, whose provider's circuit is open. Failover runs the task on the
+    /// `strong` rung's model, not on the cheap default and fallback model,
+    /// and the verdict records the rung that ran. With no usable rung above
+    /// `mid`, the attempt fails with the no-usable-provider error, and the
+    /// cheap model still never runs.
+    #[tokio::test]
+    async fn open_circuit_on_rung_fails_over_to_next_rung() {
+        use roko_learn::provider_health::ErrorClass;
+
+        const RUN: &str = "ladder-failover";
+        let temp = tempdir().expect("tempdir");
+        let models = temp.path().join("claude-models.log");
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &models);
+        let mut task = make_task_def("mechanical");
+        task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
+        task.hints.rung = Some("mid".to_string());
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        let rungs = [
+            ("cheap", "cheap-model"),
+            ("mid", "mid-model"),
+            ("strong", "strong-model"),
+        ];
+        let runs_dir = temp.path().join(".roko/runs");
+        let config = ladder_failover_config(&claude, &rungs);
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_feedback(GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            });
+        for _ in 0..3 {
+            dispatcher
+                .factory
+                .health_registry
+                .record_failure("mid_api", ErrorClass::ServerError);
+        }
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the strong rung's model runs the task");
+        assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
+        let attempts = runs_dir.join(RUN).join("attempts.jsonl");
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let verdicts = jsonl_rows_where(&attempts, 1, is_verdict).await;
+        let verdict = &verdicts[0];
+        assert_eq!(verdict["ladder"]["rung"], "strong", "{verdict}");
+        assert_eq!(verdict["ladder"]["reason"], "failover", "{verdict}");
+        assert_eq!(verdict["executed"]["provider"], "strong_cli", "{verdict}");
+        assert_eq!(
+            verdict["executed"]["failover_chain"],
+            serde_json::json!(["mid-1"]),
+            "{verdict}"
+        );
+
+        // `mid` tops this ladder, and its provider rejected roko's
+        // credentials, so no model is left that the ladder allows.
+        let rungs = [("cheap", "cheap-model"), ("mid", "mid-model")];
+        let config = ladder_failover_config(&claude, &rungs);
+        let dispatcher = make_bare_dispatcher(config, temp.path()).await;
+        dispatcher
+            .factory
+            .health_registry
+            .record_failure("mid_api", ErrorClass::AuthFailure);
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("no rung above `mid` can take the task");
+        let RokoError::Gateway {
+            category,
+            retryable,
+            message,
+        } = &error
+        else {
+            panic!("expected a non-retryable gateway error, got {error:?}");
+        };
+        assert_eq!(*category, PROVIDER_EXHAUSTED_CATEGORY);
+        assert!(!retryable);
+        assert!(message.contains("rung `mid`"), "{message}");
+        assert!(message.contains("cheaper model"), "{message}");
+        assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
+    }
+
+    /// backlog 1121 (decision 1119, 3-A): at plan start each rung model that
+    /// roko's tool loop drives gets one tool-use probe; the CLI rungs bring
+    /// their own tools and get none. The `mid` rung's model answers with
+    /// reasoning only, so the bound ladder leaves `mid` out and the probe
+    /// cache records why. Within a day the cached verdict stands, with no
+    /// second call.
+    #[tokio::test]
+    async fn preflight_skips_rung_that_returns_blank_answer() {
+        use crate::dispatch::RoutingLadder;
+        use crate::dispatch::rung_probe::{RungProbes, probe_ladder};
+
+        let temp = tempdir().expect("tempdir");
+        let reasoning_only = serde_json::json!({
+            "id": "chatcmpl-probe",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "The user wants the echo tool. Thinking."
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 }
+        });
+        let (base_url, requests) = spawn_openai_mock(vec![reasoning_only]);
+        let claude = temp.path().join("fake-claude.sh");
+        model_logging_claude(&claude, &temp.path().join("claude-models.log"));
+        let rungs = [
+            ("cheap", "cheap-model"),
+            ("mid", "mid-model"),
+            ("strong", "strong-model"),
+        ];
+        let mut config = ladder_failover_config(&claude, &rungs);
+        let mid_api = config.providers.get_mut("mid_api").expect("mid_api");
+        mid_api.base_url = Some(base_url);
+        let ladder = RoutingLadder::from_config(&config).expect("every rung can run");
+
+        let failed = probe_ladder(&config, &ladder, temp.path()).await;
+        assert_eq!(requests.lock().len(), 1, "one probe, of the one API rung");
+        let reason = failed.get("mid-1").expect("the mid rung failed its probe");
+        assert!(reason.contains("empty_response"), "{reason}");
+        let bound = ladder
+            .clone()
+            .without_models(&failed)
+            .expect("two rungs remain");
+        assert_eq!(
+            bound.rung_models(),
+            ["claude-haiku-4-5", "claude-sonnet-4-6"]
+        );
+        let cached = RungProbes::load(&RungProbes::path(temp.path()));
+        let probe = cached.models.get("mid-1").expect("the cached verdict");
+        assert!(!probe.passed);
+        assert!(probe.reason.contains("empty_response"), "{probe:?}");
+
+        let again = probe_ladder(&config, &ladder, temp.path()).await;
+        assert_eq!(again, failed);
+        assert_eq!(requests.lock().len(), 1, "the fresh verdict is reused");
     }
 
     /// gap-baab0a: Codex cannot honour a task's tool allowlist, so failover

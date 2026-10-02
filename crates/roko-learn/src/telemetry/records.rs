@@ -840,6 +840,10 @@ pub enum LadderReason {
     /// `--model` or a `model_hint` pinned the model; the ladder never moves
     /// it.
     Pinned,
+    /// Failover ran the attempt on this rung's model, because the routed
+    /// rung's provider could not take it: the same model elsewhere, or a rung
+    /// above (backlog 1120).
+    Failover,
 }
 
 /// Where an attempt stood on the model ladder (gap-460230).

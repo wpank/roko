@@ -1022,7 +1022,7 @@ artefacts = ["data/*.json"]
         assert_eq!(cfg.gates.effective_rungs().len(), 1);
         let invalid: Vec<String> = crate::config::validate_invariants(&cfg)
             .into_iter()
-            .filter(|result| result.invariant_id == 11)
+            .filter(|result| result.invariant_id == 12)
             .map(|result| result.config_path)
             .collect();
         assert_eq!(invalid, ["gates.rungs.table"]);

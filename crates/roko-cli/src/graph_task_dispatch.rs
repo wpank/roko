@@ -743,18 +743,21 @@ impl GraphTaskDispatcher {
 
     /// Per-task spend admission against [`task_budget_ceiling_usd`], mirroring
     /// the plan ceiling: a policy that continues on exhaustion only warns, and
-    /// `--no-budget` disables the check.
+    /// `--no-budget` disables the check. M1's B8 knob scales the ceiling down
+    /// for the attempt `ctx` is about to open (8125); no ceiling stays none.
     fn admit_task_budget(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
         task_spend_key: &str,
+        ctx: &CellContext,
     ) -> Result<()> {
         let policy = self.budget_policy;
         if policy.continue_on_exhaustion && policy.ceiling_micro_usd.is_none() {
             return Ok(());
         }
-        let ceiling_usd = task_budget_ceiling_usd(&self.config.budget, task);
+        let scale = self.task_budget_scale(spec, task, ctx);
+        let ceiling_usd = task_budget_ceiling_usd(&self.config.budget, task) * scale;
         let Err(error) = self.task_spend.admit(task_spend_key, ceiling_usd) else {
             return Ok(());
         };
@@ -772,9 +775,10 @@ impl GraphTaskDispatcher {
             plan_id = %spec.plan_id,
             task_id = %task.id,
             ceiling_usd,
+            task_budget_scale = scale,
             %error,
             "per-task budget exhausted (budget.max_task_usd x tier multiplier, \
-             budget.max_task_retry_usd); refusing another attempt"
+             budget.max_task_retry_usd; x M1's task_budget_scale); refusing another attempt"
         );
         Err(error)
     }
@@ -856,7 +860,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             ))
         })?;
         let task_spend_key = format!("{}/{}", spec.plan_id, task.id);
-        self.admit_task_budget(spec, &task, &task_spend_key)?;
+        self.admit_task_budget(spec, &task, &task_spend_key, ctx)?;
 
         // ── Role-enabled check ──────────────────────────────────────────
         //
@@ -1173,6 +1177,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .experiment_store_path
             .as_deref()
             .and_then(|store| prompt_experiment::context(store, &attempt.key));
+        // M1's B4 (8125): the attempt's θ sets how many error patterns its
+        // prompt shows.
+        let error_patterns = self.task_error_patterns(spec, &task, attempt.harness_params());
         let ladder_step = self.ladder_step(spec, &task);
         let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
@@ -1195,7 +1202,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             gate_feedback: prior_gate_feedback,
             routing_context: Some(routing_ctx),
             dependency_outputs: upstream_outputs(&input),
-            error_patterns_context: self.task_error_patterns(spec, &task).text,
+            error_patterns_context: error_patterns.text,
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
@@ -1628,6 +1635,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 attempt_number,
                 &attempt_key,
                 None,
+                attempt.harness_params(),
             ))
             .await;
         attempt.verify_ended();

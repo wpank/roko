@@ -756,7 +756,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
         );
         let sink = HomeostasisSink::new(temp.path(), Some(controller), None);
         // Every chain runs the controller's θ, whatever the day's draws.
-        let sink = Arc::new(sink.without_holdout());
+        let sink = Arc::new(sink.with_holdout(0.0));
         let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
             runs_dir: Some(runs_dir.clone()),
             homeostasis: Some(Arc::clone(&sink)),

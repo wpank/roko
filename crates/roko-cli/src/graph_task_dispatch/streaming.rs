@@ -163,6 +163,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             .experiment_store_path
             .as_deref()
             .and_then(|store| prompt_experiment::context(store, &attempt.key));
+        // M1's B4 (8125): the attempt's θ sets how many error patterns its
+        // prompt shows.
+        let error_patterns = self.task_error_patterns(spec, &task, attempt.harness_params());
         let ladder_step = self.ladder_step(spec, &task);
         let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
@@ -183,7 +186,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             gate_feedback: None,
             routing_context: Some(routing_ctx),
             dependency_outputs: upstream_outputs(&input),
-            error_patterns_context: self.task_error_patterns(spec, &task).text,
+            error_patterns_context: error_patterns.text,
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
@@ -469,6 +472,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                             attempt_number,
                             &attempt_key,
                             Some(&event_tx),
+                            attempt.harness_params(),
                         ))
                         .await;
                     attempt.verify_ended();

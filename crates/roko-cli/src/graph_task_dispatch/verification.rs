@@ -1,13 +1,16 @@
 //! Authored verify steps of a Graph task attempt, and the gate-dependent learning
 //! records their verdict settles.
 
+use roko_core::config::harness_params::HarnessParams;
 use roko_learn::telemetry::{ScopeFinding, VerifyStepVerdict};
 
 use super::tui_forward::append_jsonl_line_async;
 use super::turn_policy::head_and_tail;
 use super::*;
+use crate::runner::promise_tracker::PromiseTracker;
 
-/// The most error patterns a prompt carries.
+/// The most error patterns a prompt carries without M1, θ₀'s
+/// `error_patterns_k`.
 const PROMPT_ERROR_PATTERN_LIMIT: usize = 5;
 
 /// What verifying an attempt found (S01 §4.3): its verdict, and what each
@@ -39,7 +42,8 @@ impl GraphTaskDispatcher {
     /// (`TaskGateVerdict::AlreadySatisfied`, gap-9eb1e1).
     ///
     /// The report lists what each verify step did, for the attempt's verdict
-    /// record (backlog 2104).
+    /// record (backlog 2104). `theta`, the θ the attempt runs, sets the
+    /// promise thresholds that end a doomed verify run early (M1's B6, 8125).
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn settle_task_verification(
         &self,
@@ -51,6 +55,7 @@ impl GraphTaskDispatcher {
         attempt_number: u32,
         attempt_key: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
+        theta: Option<&HarnessParams>,
     ) -> VerificationReport {
         let mut steps = Vec::new();
         let mut scope_findings = Vec::new();
@@ -64,6 +69,7 @@ impl GraphTaskDispatcher {
                 attempt_number,
                 attempt_key,
                 progress_tx,
+                theta,
                 &mut steps,
                 &mut scope_findings,
             )
@@ -98,6 +104,7 @@ impl GraphTaskDispatcher {
         attempt_number: u32,
         attempt_key: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
+        theta: Option<&HarnessParams>,
         steps: &mut Vec<VerifyStepVerdict>,
         scope_findings: &mut Vec<ScopeFinding>,
     ) -> Result<TaskGateVerdict> {
@@ -124,6 +131,7 @@ impl GraphTaskDispatcher {
                 attempt_key,
                 &dispatch.target.model_slug,
                 progress_tx,
+                theta,
                 unchanged_tree,
                 steps,
             )
@@ -178,6 +186,7 @@ impl GraphTaskDispatcher {
         attempt_key: &str,
         executor: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
+        theta: Option<&HarnessParams>,
         unchanged_tree: bool,
         step_verdicts: &mut Vec<VerifyStepVerdict>,
     ) -> Result<TaskGateVerdict> {
@@ -231,8 +240,9 @@ impl GraphTaskDispatcher {
                 .coding_oracle
                 .as_ref()
                 .map(|oracle| oracle.predict_test_pass_rate());
-            // P4-03: PromiseTracker for early termination of doomed attempts.
-            let mut promise_tracker = crate::runner::promise_tracker::PromiseTracker::new();
+            // P4-03: PromiseTracker for early termination of doomed attempts,
+            // with the B6 thresholds of the θ the attempt runs (8125).
+            let mut promise_tracker = promise_tracker_for(theta);
             let mut promise_terminated = false;
             // Steps not run because an earlier step already failed.
             let mut skipped_steps: Vec<String> = Vec::new();
@@ -1255,14 +1265,19 @@ impl GraphTaskDispatcher {
 
     /// The error patterns `task`'s prompt carries (backlog 4210): those of
     /// its own earlier attempts and of the commands its verify steps run, the
-    /// workspace rungs included. None when `[learning]
-    /// knowledge_error_patterns` is off.
+    /// workspace rungs included, at most the `error_patterns_k` of the θ the
+    /// attempt runs (M1's B4, 8125), else [`PROMPT_ERROR_PATTERN_LIMIT`].
+    /// None when `[learning] knowledge_error_patterns` is off or θ shows 0.
     pub(super) fn task_error_patterns(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
+        theta: Option<&HarnessParams>,
     ) -> crate::dispatch::factory::ErrorPatternSelection {
-        if !self.config.learning.knowledge_error_patterns {
+        let limit = theta.map_or(PROMPT_ERROR_PATTERN_LIMIT, |theta| {
+            usize::try_from(theta.error_patterns_k).unwrap_or(usize::MAX)
+        });
+        if !self.config.learning.knowledge_error_patterns || limit == 0 {
             return crate::dispatch::factory::ErrorPatternSelection::default();
         }
         let commands: Vec<String> = self
@@ -1274,7 +1289,7 @@ impl GraphTaskDispatcher {
             &spec.plan_id,
             &task.id,
             &commands,
-            PROMPT_ERROR_PATTERN_LIMIT,
+            limit,
         );
         if !selection.keys.is_empty() {
             tracing::debug!(
@@ -1300,6 +1315,19 @@ impl GraphTaskDispatcher {
         pack_rungs::name_rung_steps(&mut prompt_task.verify, self.task_rungs(spec, task));
         self.lead_with_role_identity(&mut prompt_task);
         prompt_task
+    }
+}
+
+/// The P4-03 tracker of an attempt that runs `theta`: its B6 promise floor
+/// and run of low readings (M1, 8125), else the tracker's defaults, which are
+/// θ₀'s. A floor of 0 is off, since no promise is below it.
+fn promise_tracker_for(theta: Option<&HarnessParams>) -> PromiseTracker {
+    let tracker = PromiseTracker::new();
+    match theta {
+        Some(theta) => tracker
+            .with_min_promise(theta.promise_min)
+            .with_consecutive_threshold(theta.promise_consecutive),
+        None => tracker,
     }
 }
 
@@ -1664,7 +1692,8 @@ mod tests {
                     "error[E0425]: cannot find value `total` in this scope",
                     GateFailureSource::GateClassification,
                 ));
-            let patterns = |task: &TaskDef| dispatcher.task_error_patterns(&make_spec(task), task);
+            let patterns =
+                |task: &TaskDef| dispatcher.task_error_patterns(&make_spec(task), task, None);
 
             let other = patterns(&task_b);
             assert!(other.text.is_empty(), "{enabled}: {}", other.text);
@@ -2849,6 +2878,143 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         );
         for script in ["roko_first_script_line", "roko_second_script_line"] {
             assert!(!message.contains(script), "{script}:\n{message}");
+        }
+    }
+
+    /// S06 B4, B6 and B8 (8125): each attempt reads the θ its chain runs for
+    /// the error patterns its prompt shows, the promise thresholds of its
+    /// verify run and its share of the task's budget, so a θ the controller
+    /// swaps in between two attempts reaches the next one. A held-out chain
+    /// keeps θ₀ throughout.
+    #[tokio::test]
+    async fn b4_b6_b8_knobs_read_per_dispatch() {
+        use roko_core::config::harness_params::{HarnessLadders, Knob, Step};
+        use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
+        use roko_learn::error_pattern_store::{GateFailureObservation, GateFailureSource};
+        use roko_learn::homeostasis::controller::Controller;
+        use roko_learn::homeostasis::detect::Baseline;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+
+        use crate::runner::promise_tracker::PromiseDecision;
+        use crate::runtime_feedback::HomeostasisSink;
+
+        const POLICY: &str = "policy_version = 1\n\
+            ev.pass_rate = { lo = 0.70 }\nev.usd_per_verified_success = { hi = 0.12 }\n\
+            ev.false_green = { hi = 0.10 }\nev.latency_p90_s = { hi = 900 }\n";
+
+        let config = RokoConfig::default();
+        let theta0 = HarnessParams::baseline(&config);
+        let ladders = HarnessLadders::from_config(&config);
+        // θ₁ shows ten error patterns, gives up on a verify run whose promise
+        // stays under 0.3 for three steps, and lets a task spend three
+        // quarters of its ceiling.
+        let moves = [
+            (Knob::ErrorPatternsK, Step::Up),
+            (Knob::PromiseMin, Step::Up),
+            (Knob::PromiseConsecutive, Step::Down),
+            (Knob::TaskBudgetScale, Step::Up),
+        ];
+        let theta1 = moves
+            .into_iter()
+            .try_fold(theta0.clone(), |theta, (knob, step)| {
+                theta.step(knob, step, &ladders)
+            })
+            .expect("every move is on its ladder");
+        let settings = HomeostasisConfig {
+            mode: HomeostasisMode::On,
+            ..HomeostasisConfig::default()
+        };
+        let baseline = Baseline {
+            pass_rate: 0.80,
+            usd_per_resolution: 0.05,
+            wall_ms: 300_000.0,
+        };
+        // A verify run whose steps all fail holds a promise of 0.25: the step
+        // its tracker gives up on, if it does within four.
+        let gives_up_at = |theta: Option<&HarnessParams>| {
+            let mut tracker = promise_tracker_for(theta);
+            (1..=4).find(|_| {
+                let snapshot = TurnSnapshot {
+                    rung: 0,
+                    verdicts: vec![roko_core::Verdict::fail("test", "assertion failed")],
+                    error_count: 1,
+                    diff_lines: 0,
+                };
+                let decision = tracker.record_and_check(snapshot);
+                matches!(decision, PromiseDecision::Terminate { .. })
+            })
+        };
+
+        for held_out in [false, true] {
+            let temp = tempdir().expect("tempdir");
+            let policy = ViabilityPolicy::parse(POLICY).expect("the policy parses");
+            let controller = Controller::new(
+                &settings,
+                policy,
+                theta0.clone(),
+                ladders.clone(),
+                baseline,
+                0,
+            );
+            let sink = HomeostasisSink::new(temp.path(), Some(controller), None);
+            // Every chain on the learned arm, or every chain held out.
+            let sink = Arc::new(sink.with_holdout(if held_out { 1.0 } else { 0.0 }));
+            let feedback = GraphFeedbackContext {
+                homeostasis: Some(Arc::clone(&sink)),
+                ..GraphFeedbackContext::default()
+            };
+            let (dispatcher, task) =
+                make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+            let task = TaskDef {
+                id: "T-K".to_string(),
+                verify: vec![verify_step("test", "cargo test -p crate-k")],
+                ..task
+            };
+            let spec = make_spec(&task);
+            let ctx = CellContext::new().with_run_id("knobs".to_string());
+            // Six error patterns of the task's own verify command.
+            {
+                let store = dispatcher.factory.error_pattern_store();
+                let mut store = store.write().expect("error pattern store");
+                for code in 1..=6 {
+                    store.observe_gate_failure(GateFailureObservation::new(
+                        format!("verify::E000{code}"),
+                        "stream-plan",
+                        Some("T-K".to_string()),
+                        "cargo test -p crate-k",
+                        "verify",
+                        format!("error[E000{code}]: check {code} failed"),
+                        GateFailureSource::GateClassification,
+                    ));
+                }
+            }
+            // $4 of the task's $5 ceiling (`budget.max_task_retry_usd`).
+            let spent = roko_core::Usage {
+                cost_usd: 4.0,
+                ..roko_core::Usage::zero()
+            };
+            dispatcher.record_task_spend(&spec.plan_id, &task.id, &spent);
+            let task_spend_key = format!("{}/{}", spec.plan_id, task.id);
+            // What the next attempt reads, in dispatch's order: its budget
+            // admission, then, once it opens, its prompt and its verify run.
+            let next_attempt = || {
+                let admitted = dispatcher
+                    .admit_task_budget(&spec, &task, &task_spend_key, &ctx)
+                    .is_ok();
+                let attempt = dispatcher.open_attempt(&spec, &task, &ctx);
+                let theta = attempt.harness_params();
+                let shown = dispatcher.task_error_patterns(&spec, &task, theta);
+                (shown.keys.len(), gives_up_at(theta), admitted)
+            };
+
+            assert_eq!(next_attempt(), (5, None, true), "held out: {held_out}");
+            assert_eq!(sink.handle().swap(theta1.clone(), "theta1"), 1);
+            let swapped = if held_out {
+                (5, None, true)
+            } else {
+                (6, Some(4), false)
+            };
+            assert_eq!(next_attempt(), swapped, "held out: {held_out}");
         }
     }
 }

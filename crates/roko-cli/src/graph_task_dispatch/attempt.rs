@@ -247,6 +247,15 @@ impl AttemptBook {
         Arc::clone(run)
     }
 
+    /// The UTC day run `run_id` draws its chains' arms for: the day this
+    /// process opened it, else today, the day its first attempt opens it.
+    fn epoch(&self, run_id: &str) -> String {
+        self.runs.lock().get(run_id).map_or_else(
+            || chrono::Utc::now().format("%Y-%m-%d").to_string(),
+            |run| run.epoch.clone(),
+        )
+    }
+
     /// The arm set of `attempt`'s chain in its run (S02.P1-14): drawn over
     /// `workdir`'s loop registry in the mode `experiments` sets on the chain's
     /// first attempt, and inherited by its retries. `None` when no registry
@@ -860,6 +869,33 @@ impl GraphTaskDispatcher {
             attempt.record_harness_decision(sink, self.model_pinned(task));
         }
         attempt
+    }
+
+    /// The share of `task`'s budget ceiling its next attempt in the run `ctx`
+    /// names may spend (M1's B8, 8125): the `task_budget_scale` of the θ its
+    /// chain runs, read before the attempt opens. Every attempt of a chain
+    /// draws the same arm, so the next attempt's ordinal does not matter.
+    /// Decrease-only: 1 without an M1 sink, and for anything but a share
+    /// below 1.
+    pub(super) fn task_budget_scale(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        ctx: &CellContext,
+    ) -> f64 {
+        let Some(sink) = self.feedback.homeostasis.as_deref() else {
+            return 1.0;
+        };
+        let run_id = self.attempts.run_id(ctx);
+        let plan_id = if spec.plan_id.is_empty() {
+            "-"
+        } else {
+            spec.plan_id.as_str()
+        };
+        let key = AttemptKey::new(run_id, plan_id, &task.id, 1);
+        let decision = sink.decide(&key, &self.attempts.epoch(run_id));
+        let scale = decision.applied.task_budget_scale;
+        if scale > 0.0 && scale < 1.0 { scale } else { 1.0 }
     }
 
     /// Close run `run_id`'s attempt log once its plan has finished: wait

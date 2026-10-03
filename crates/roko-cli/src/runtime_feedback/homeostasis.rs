@@ -213,12 +213,13 @@ impl HomeostasisSink {
         &self.handle
     }
 
-    /// This sink with no holdout and no all-off draw, so every chain is on
-    /// the learned arm whatever the day's draws: for tests of what θ does.
+    /// This sink with a holdout of `h` and no all-off draw, so a test knows
+    /// each chain's arm whatever the day's draws: 0 puts every chain on the
+    /// learned arm, and 1 holds every chain out.
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn without_holdout(mut self) -> Self {
-        self.holdout = HarnessHoldout { h: 0.0, g: 0.0 };
+    pub(crate) fn with_holdout(mut self, h: f64) -> Self {
+        self.holdout = HarnessHoldout { h, g: 0.0 };
         self
     }
 

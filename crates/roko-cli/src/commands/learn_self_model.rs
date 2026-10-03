@@ -699,7 +699,7 @@ fn arm_models(dir: &Path) -> Result<BTreeMap<String, String>> {
 struct CrossFitStatic(BTreeMap<String, String>);
 
 impl RoutingPolicy for CrossFitStatic {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "H4-B0"
     }
 

@@ -1427,6 +1427,8 @@ async fn run_graph_plan_body(
         f64::from(roko_config.budget.max_turn_usd),
         budget_bypassed,
     )
+    // The agent slots below cap the calls in flight at `max_agents`.
+    .with_concurrent_calls(roko_config.conductor.max_agents)
     .with_cli_model_override(cli_model_override)
     .with_dangerously_skip_permissions(dangerously_skip_permissions)
     // FAST lane (`./dev.sh fast`): bound each attempt (gap-4a6dcb).
@@ -1549,6 +1551,9 @@ async fn run_graph_plan_body(
         dispatcher_builder = dispatcher_builder.with_conductor(conductor, ring);
     }
     let graph_task_dispatcher = Arc::new(dispatcher_builder);
+    if !quiet && !json {
+        graph_task_dispatcher.announce_call_reservation();
+    }
     // `budget.max_daily_usd`: today's spend before this run, read once, so a
     // run whose day is already spent starts no task (bug-ae28ac).
     graph_task_dispatcher.prime_daily_budget().await;

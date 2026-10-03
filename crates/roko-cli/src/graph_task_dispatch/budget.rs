@@ -18,7 +18,14 @@ const MICRO_USD_PER_USD: f64 = 1_000_000.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphPlanBudgetPolicy {
     pub(super) ceiling_micro_usd: Option<u64>,
-    reservation_micro_usd: Option<u64>,
+    /// `[budget] max_turn_usd`: what one provider call reserves, never more
+    /// than the ceiling. `None` without a turn cap.
+    turn_cap_micro_usd: Option<u64>,
+    /// How many provider calls of a plan can be in flight at once
+    /// (`[conductor] max_agents`). Without a turn cap a call reserves this
+    /// share of the ceiling, so that many fit beside each other (backlog
+    /// 3102). At least 1.
+    pub(super) concurrent_calls: usize,
     pub(super) continue_on_exhaustion: bool,
 }
 
@@ -30,23 +37,21 @@ impl GraphPlanBudgetPolicy {
     }
 
     /// Construct a policy with a per-call reservation upper bound.
+    ///
+    /// Without a turn cap, a call reserves the whole remaining budget until
+    /// [`Self::with_concurrent_calls`] says how many calls run at once, so
+    /// only one unknown-cost call is in flight and the others wait for it to
+    /// settle (bug-0bc2b4).
     #[must_use]
     pub fn from_limits(ceiling_usd: f64, max_turn_usd: f64, continue_on_exhaustion: bool) -> Self {
         let ceiling_micro_usd = (ceiling_usd.is_finite() && ceiling_usd > 0.0)
             .then(|| usd_to_micro_usd(ceiling_usd).max(1));
+        let turn_cap_micro_usd = (max_turn_usd.is_finite() && max_turn_usd > 0.0)
+            .then(|| usd_to_micro_usd(max_turn_usd).max(1));
         Self {
             ceiling_micro_usd,
-            reservation_micro_usd: ceiling_micro_usd.map(|ceiling| {
-                if max_turn_usd.is_finite() && max_turn_usd > 0.0 {
-                    usd_to_micro_usd(max_turn_usd).max(1).min(ceiling)
-                } else {
-                    // With no configured per-turn bound, conservatively reserve
-                    // all remaining plan capacity so only one unknown-cost call
-                    // can be in flight at a time; the others wait for it to
-                    // settle (bug-0bc2b4).
-                    ceiling
-                }
-            }),
+            turn_cap_micro_usd,
+            concurrent_calls: 1,
             continue_on_exhaustion,
         }
     }
@@ -56,23 +61,46 @@ impl GraphPlanBudgetPolicy {
     pub const fn unlimited() -> Self {
         Self {
             ceiling_micro_usd: None,
-            reservation_micro_usd: None,
+            turn_cap_micro_usd: None,
+            concurrent_calls: 1,
             continue_on_exhaustion: false,
         }
     }
 
+    /// This policy for a run with up to `calls` provider calls of a plan in
+    /// flight at once (`[conductor] max_agents`). Without a turn cap each
+    /// call then reserves its share of the ceiling, so `calls` of them fit
+    /// beside each other instead of each holding the whole remaining budget
+    /// (backlog 3102).
+    #[must_use]
+    pub fn with_concurrent_calls(mut self, calls: usize) -> Self {
+        self.concurrent_calls = calls.max(1);
+        self
+    }
+
+    /// What one provider call reserves in USD: the turn cap, else its share
+    /// of the ceiling; `None` without a ceiling.
+    #[must_use]
+    pub fn call_reservation_usd(self) -> Option<f64> {
+        self.reservation_micro_usd().map(micro_usd_to_usd)
+    }
+
+    /// [`Self::call_reservation_usd`] in micro-USD, never more than the
+    /// ceiling.
+    fn reservation_micro_usd(self) -> Option<u64> {
+        let ceiling = self.ceiling_micro_usd?;
+        let share = ceiling / self.concurrent_calls.max(1) as u64;
+        let reservation = self.turn_cap_micro_usd.unwrap_or(share);
+        Some(reservation.max(1).min(ceiling))
+    }
+
     /// This policy with its ceiling raised to `ceiling_micro_usd` (backlog
-    /// 2118). A call reserves what it reserved before, unless that was the
-    /// whole remaining budget: then it still is.
-    fn with_ceiling(self, ceiling_micro_usd: u64) -> Self {
-        let reservation_micro_usd = match (self.reservation_micro_usd, self.ceiling_micro_usd) {
-            (Some(reservation), Some(ceiling)) if reservation < ceiling => reservation,
-            _ => ceiling_micro_usd,
-        };
+    /// 2118). A call reserves its turn cap, else its share of the raised
+    /// ceiling.
+    const fn with_ceiling(self, ceiling_micro_usd: u64) -> Self {
         Self {
             ceiling_micro_usd: Some(ceiling_micro_usd),
-            reservation_micro_usd: Some(reservation_micro_usd),
-            continue_on_exhaustion: self.continue_on_exhaustion,
+            ..self
         }
     }
 }
@@ -349,20 +377,31 @@ impl GraphPlanBudgetLedger {
     }
 
     /// [`Self::reserve`], waiting while only reservations in flight leave the
-    /// plan no capacity (bug-0bc2b4). Without `max_turn_usd` a call reserves
-    /// the plan's whole remaining budget, so a task that starts beside it
-    /// waits for it to settle instead of failing. It fails once settled spend
-    /// reaches the ceiling, and ends with a cancellation once `stopped`.
+    /// plan no capacity (bug-0bc2b4): a task that starts beside them waits
+    /// for one to settle instead of failing. It fails once settled spend
+    /// reaches the ceiling, and ends with a cancellation once `stopped`. The
+    /// wait is logged when it starts and when the call proceeds (backlog
+    /// 3102), never on each recheck.
     pub(super) async fn reserve_waiting(
         &self,
         plan_id: &str,
         policy: GraphPlanBudgetPolicy,
         stopped: impl Fn() -> bool,
     ) -> Result<GraphPlanBudgetReservation<'_>> {
+        let mut waiting_since: Option<std::time::Instant> = None;
         loop {
             let capacity = self.capacity.notified();
             match self.try_reserve(plan_id, policy) {
-                Ok(reservation) => return Ok(reservation),
+                Ok(reservation) => {
+                    if let Some(since) = waiting_since {
+                        tracing::info!(
+                            plan_id,
+                            waited_ms = since.elapsed().as_millis() as u64,
+                            "plan budget has room again: the waiting provider call proceeds"
+                        );
+                    }
+                    return Ok(reservation);
+                }
                 Err(refusal) if !refusal.blocked => return Err(refusal.error),
                 Err(_) if stopped() => {
                     return Err(RokoError::cancelled(format!(
@@ -370,6 +409,17 @@ impl GraphPlanBudgetLedger {
                     )));
                 }
                 Err(_) => {
+                    if waiting_since.is_none() {
+                        let snapshot = self.snapshot(plan_id, policy);
+                        tracing::info!(
+                            plan_id,
+                            spent_usd = snapshot.spent_usd,
+                            reserved_usd = snapshot.reserved_usd,
+                            ceiling_usd = snapshot.ceiling_usd.unwrap_or_default(),
+                            "a provider call waits for plan budget that calls in flight hold"
+                        );
+                        waiting_since = Some(std::time::Instant::now());
+                    }
                     let _ = tokio::time::timeout(RESERVE_RECHECK_INTERVAL, capacity).await;
                 }
             }
@@ -419,7 +469,7 @@ impl GraphPlanBudgetLedger {
                     });
                 }
                 reserved_micro_usd = policy
-                    .reservation_micro_usd
+                    .reservation_micro_usd()
                     .unwrap_or(available)
                     .min(available);
                 state.reserved_micro_usd =
@@ -929,6 +979,23 @@ impl GraphTaskDispatcher {
         }
     }
 
+    /// Say once, at run start, what each provider call reserves when the
+    /// plan budget has no turn cap, and how many calls fit at once (backlog
+    /// 3102).
+    pub fn announce_call_reservation(&self) {
+        let policy = self.budget_policy;
+        if policy.turn_cap_micro_usd.is_some() || policy.continue_on_exhaustion {
+            return;
+        }
+        if let Some(reserve_usd) = policy.call_reservation_usd() {
+            tracing::info!(
+                reserve_usd,
+                calls_at_once = policy.concurrent_calls,
+                "no [budget] max_turn_usd: each provider call reserves its share of the plan budget"
+            );
+        }
+    }
+
     /// Announce each `budget.alert_at_percent` threshold of `plan_id`'s
     /// ceiling that its settled spend crossed since the last call (backlog
     /// 2116): one warning line and one `budget_alert` Inbox item per
@@ -1319,14 +1386,18 @@ mod tests {
         assert_eq!(ledger.snapshot("plan-a", policy).reserved_usd, 0.0);
     }
 
-    /// bug-0bc2b4: with a plan budget and no `max_turn_usd` a call reserves
-    /// the plan's whole remaining budget. A task dispatched beside it waits
-    /// for that reservation to settle instead of failing, and both run.
+    /// bug-0bc2b4: with a plan budget, no `max_turn_usd` and one call at a
+    /// time, a call reserves the plan's whole remaining budget. A task
+    /// dispatched beside it waits for that reservation to settle instead of
+    /// failing, and both run.
     #[tokio::test]
     async fn concurrent_tasks_wait_for_a_reserved_plan_budget() {
         let temp = tempdir().expect("tempdir");
         let (dispatcher, task) = make_batch_dispatcher(&temp, 0.10, |_| {}).await;
-        let dispatcher = dispatcher.with_plan_budget(1.0, 0.0, false);
+        let dispatcher = dispatcher
+            .with_concurrent_calls(1)
+            .with_plan_budget(1.0, 0.0, false);
+        assert_eq!(dispatcher.budget_policy.call_reservation_usd(), Some(1.0));
         let mut other = task.clone();
         other.id = "T-OTHER".to_string();
         let (spec, other_spec) = (make_spec(&task), make_spec(&other));
@@ -1343,6 +1414,59 @@ mod tests {
         second.expect("the second waits for the budget, then runs");
         let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
         assert!((spent - 0.20).abs() < 1e-6, "{spent}");
+    }
+
+    /// Fake Claude CLI for backlog 3102: a call answers ($0.10) only once
+    /// another call has started beside it, and fails after 20 s alone.
+    const RENDEZVOUS_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+dir=$(dirname -- "$0")
+touch "$dir/started-$$"
+for _ in $(seq 200); do
+  set -- "$dir"/started-*
+  if [ "$#" -ge 2 ]; then
+    printf '%s\n' '{"type":"content_block_delta","delta":{"text":"batch-output"}}'
+    printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6","total_cost_usd":0.10,"usage":{"input_tokens":5,"output_tokens":10}}'
+    exit 0
+  fi
+  sleep 0.1
+done
+echo 'no other call started beside this one' >&2
+exit 1
+"#;
+
+    /// backlog 3102: under a plan budget with no `max_turn_usd`, a run with
+    /// two calls in flight at once reserves half the budget for each, so two
+    /// tasks dispatched together are in flight at the same time (each fake
+    /// agent answers only once the other has started) and spend settles to
+    /// their sum.
+    #[tokio::test]
+    async fn plan_budget_without_turn_cap_runs_tasks_in_parallel() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) =
+            make_scripted_batch_dispatcher(&temp, RENDEZVOUS_PROVIDER, |_| {}).await;
+        let dispatcher = dispatcher
+            .with_plan_budget(1.0, 0.0, false)
+            .with_concurrent_calls(2);
+        assert_eq!(dispatcher.budget_policy.call_reservation_usd(), Some(0.5));
+        let mut other = task.clone();
+        other.id = "T-OTHER".to_string();
+        let (spec, other_spec) = (make_spec(&task), make_spec(&other));
+        let ctx = batch_ctx();
+
+        let first = dispatcher.dispatch(&spec, Vec::new(), &ctx);
+        let second = dispatcher.dispatch(&other_spec, Vec::new(), &ctx);
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .expect("both tasks finish");
+        first.expect("the first task runs beside the second");
+        second.expect("the second task runs beside the first");
+        let snapshot = dispatcher.plan_budget_snapshot(&spec.plan_id);
+        assert!((snapshot.spent_usd - 0.20).abs() < 1e-6, "{snapshot:?}");
+        assert_eq!(snapshot.reserved_usd, 0.0, "{snapshot:?}");
     }
 
     /// backlog 2116: the plan budget raises a `budget_alert` Inbox item at

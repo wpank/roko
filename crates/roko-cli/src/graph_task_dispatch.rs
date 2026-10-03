@@ -508,8 +508,19 @@ impl GraphTaskDispatcher {
         max_turn_usd: f64,
         continue_on_exhaustion: bool,
     ) -> Self {
+        let calls = self.budget_policy.concurrent_calls;
         self.budget_policy =
-            GraphPlanBudgetPolicy::from_limits(ceiling_usd, max_turn_usd, continue_on_exhaustion);
+            GraphPlanBudgetPolicy::from_limits(ceiling_usd, max_turn_usd, continue_on_exhaustion)
+                .with_concurrent_calls(calls);
+        self
+    }
+
+    /// How many provider calls of a plan can be in flight at once
+    /// (`[conductor] max_agents`): without `max_turn_usd`, each call
+    /// reserves that share of the plan budget (backlog 3102).
+    #[must_use]
+    pub fn with_concurrent_calls(mut self, calls: usize) -> Self {
+        self.budget_policy = self.budget_policy.with_concurrent_calls(calls);
         self
     }
 

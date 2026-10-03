@@ -177,7 +177,7 @@ pub fn record_label(
 ) -> std::io::Result<bool> {
     ledger.append(AuditEvent::VsLabel {
         attempt_key: row.attempt_key.clone(),
-        row: row.clone(),
+        row: Box::new(row.clone()),
     })?;
     let path = labels_path(workdir, &row.run_id);
     if let Some(parent) = path.parent() {
@@ -307,7 +307,7 @@ mod tests {
             .expect("the ledger")
             .into_iter()
             .filter_map(|record| match record.event {
-                AuditEvent::VsLabel { row, .. } => Some(row),
+                AuditEvent::VsLabel { row, .. } => Some(*row),
                 _ => None,
             })
             .collect();

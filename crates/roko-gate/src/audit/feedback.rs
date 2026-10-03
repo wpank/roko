@@ -87,7 +87,7 @@ impl Signal {
 }
 
 /// One task type's place on the ladder.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Rung {
     /// Its verify depth.
@@ -99,7 +99,7 @@ pub struct Rung {
 }
 
 /// One step of the ladder.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
     /// The task type.
     pub task_type: String,
@@ -125,7 +125,7 @@ impl Step {
 }
 
 /// DP3's strictness ladder: a verify depth per task type (S05 §4.6).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Ladder {
     /// Each task type's rung.
@@ -286,7 +286,8 @@ impl TrustBook {
     /// book ordered by model and harness.
     fn merge(&mut self, fresh: &[TrustEstimate]) {
         let mut pairs = BTreeMap::new();
-        for estimate in self.estimates.drain(..).chain(fresh.iter().cloned()) {
+        let kept = std::mem::take(&mut self.estimates);
+        for estimate in kept.into_iter().chain(fresh.iter().cloned()) {
             let pair = (estimate.model.clone(), estimate.harness.clone());
             pairs.insert(pair, estimate);
         }
@@ -306,11 +307,11 @@ pub fn trust_path(vault: &AuditVault) -> PathBuf {
     vault.dir().join(TRUST_FILE)
 }
 
-/// Close every window due at `now` in `ledger` (S05 §4.5, §4.6), with
-/// `floor` the verify depth an active M1 floor request holds (V0 without
-/// one); returns what it closed.
+/// Close every window due at `now` in `ledger` (S05 §4.5, §4.6); returns
+/// what it closed.
 ///
-/// Each window appends its strata's `audit.estimate`, steps the ladder,
+/// `floor` is the verify depth an active M1 floor request holds, V0 without
+/// one. Each window appends its strata's `audit.estimate`, steps the ladder,
 /// updates the trust book and appends its summary last, so a window cut
 /// short is closed again whole; the ladder never applies one twice. One
 /// process closes windows at a time.

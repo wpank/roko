@@ -1,6 +1,8 @@
-//! Incident records (S05 §4.7, DP6): what a confirmed false green, a gaming
-//! finding, a weak oracle, a leaked canary or a faulty battery check leaves in
-//! the vault, for a person to act on.
+//! Incident records (S05 §4.7, DP6): what a confirmed audit finding leaves
+//! in the vault, for a person to act on.
+//!
+//! The kinds are a false green, a gaming finding, a weak oracle, a leaked
+//! canary and a faulty battery check ([`IncidentKind`]).
 //!
 //! - An incident is `<vault>/<workspace_id>/incidents/<incident_id>.json`,
 //!   with an append-only status history: `open → triaged → {fix_task_created
@@ -129,7 +131,7 @@ impl IncidentStatus {
 }
 
 /// One entry of an incident's status history.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusChange {
     /// The status it entered.
     pub status: IncidentStatus,
@@ -143,7 +145,7 @@ pub struct StatusChange {
 
 /// An incident's evidence: ids and hashes, never a hidden test's body or
 /// name.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Evidence {
     /// The selection audited.
@@ -169,7 +171,7 @@ pub struct Evidence {
 }
 
 /// An incident record.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Incident {
     /// `inc-` and 16 hex digits of its kind and attempt.
     pub incident_id: String,
@@ -204,7 +206,7 @@ impl Incident {
 }
 
 /// What opening an incident needs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncidentDraft {
     /// What it is about.
     pub kind: IncidentKind,
@@ -404,11 +406,11 @@ impl IncidentStore {
         let mut incidents = Vec::new();
         for entry in std::fs::read_dir(&self.dir)? {
             let path = entry?.path();
-            let is_record = path
+            let named = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("inc-") && name.ends_with(".json"));
-            if !is_record {
+                .is_some_and(|name| name.starts_with("inc-"));
+            if !named || path.extension().is_none_or(|extension| extension != "json") {
                 continue;
             }
             let parsed = std::fs::read_to_string(&path)

@@ -200,8 +200,8 @@ pub enum AuditEvent {
     VsLabel {
         /// S01's attempt key.
         attempt_key: String,
-        /// The row.
-        row: VsLabel,
+        /// The row, boxed: it is the largest event.
+        row: Box<VsLabel>,
     },
 }
 

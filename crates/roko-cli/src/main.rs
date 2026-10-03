@@ -600,6 +600,12 @@ Examples:
             default_missing_value = ".roko/state/state-snapshot.json"
         )]
         resume_plan: Option<PathBuf>,
+        /// Maximize mode for this run alone, as `roko plan run --no-holdout`
+        /// sets it: no learning loop is withheld, no route explores and the
+        /// spec gate holds no task out, though every decision is still
+        /// logged (decision 4115).
+        #[arg(long)]
+        no_holdout: bool,
     },
     /// (Removed) Use `roko run "<prompt>"`, or `roko run --plan "<prompt>"`.
     ///
@@ -1861,6 +1867,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             domain,
             fresh,
             resume_plan,
+            no_holdout,
         } => {
             // Resolve typed overrides before any side effects (#262).
             let _resolved = ResolvedExecutionOverrides::for_run(
@@ -1895,6 +1902,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                     domain,
                     fresh,
                     resume_plan,
+                    no_holdout,
                 },
             )
             .await

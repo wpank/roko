@@ -427,6 +427,7 @@ pub(crate) async fn cmd_run(
     max_retries: Option<u32>,
     engine: Option<String>,
     domain: Option<roko_core::TaskDomain>,
+    no_holdout: bool,
 ) -> Result<i32> {
     // Build CLI overrides from clap-parsed args instead of re-parsing
     // process args or laundering through env vars.
@@ -505,6 +506,7 @@ pub(crate) async fn cmd_run(
         domain,
         max_usd: None,
         origin: roko_serve::runtime::RunOrigin::Cli,
+        no_holdout,
     })
     .await;
 

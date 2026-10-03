@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""`vb`, the ViabilityBench driver (S08 §5.7): `run`, `estimate`, `materialize`, `campaign`, `ledger` and `report`.
+"""`vb`, the ViabilityBench driver (S08 §5.7): `run`, `estimate`, `materialize`, `campaign`, `ledger`, `report`
+and `replay`.
 
     vb run --experiment PILOT-A --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3 \
            --allow-network --max-cost-usd 10 [--line BL0] [--limit N] [--proxy] [--disturbance SPEC.toml] \
@@ -200,6 +201,8 @@ def main(argv: list[str] | None = None) -> int:
     forwarded = sys.argv[1:] if argv is None else argv
     if forwarded[:1] == ["report"]:
         return run_report(forwarded[1:])
+    if forwarded[:1] == ["replay"]:
+        return run_replay(forwarded[1:])
     args = _parser().parse_args(argv)
     args.argv = ["vb", *(sys.argv[1:] if argv is None else argv)]
     args.own_process = argv is None  # a script, not a call: `vb run` may start itself again (`agent_env.exec_scrubbed`)
@@ -214,6 +217,12 @@ def run_report(argv: list[str]) -> int:
     """`vb report` (S08 §5.7) is `analysis/report.py`, which parses its own flags: argparse cannot pass them through."""
     sys.path.insert(0, str(layout.VB_ROOT / "analysis"))
     return importlib.import_module("report").main(argv)
+
+
+def run_replay(argv: list[str]) -> int:
+    """`vb replay` (S09 E6, 3354) is `analysis/replay_runner.py`, which parses its own flags."""
+    sys.path.insert(0, str(layout.VB_ROOT / "analysis"))
+    return importlib.import_module("replay_runner").main(argv)
 
 
 def admit(plan: Plan, *, allow_network: bool, max_cost_usd: float | None) -> None:

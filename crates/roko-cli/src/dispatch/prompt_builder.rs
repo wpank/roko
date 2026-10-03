@@ -40,12 +40,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use parking_lot::RwLock;
 use roko_compose::role_prompts::is_droppable_section;
 use roko_compose::{
-    AttentionBidder, CompositionManifest, CompositionStrategy, ContextChunk, ContextSource,
-    LearningBidder, MultiPatchForager, PromptComposer, PromptSection as CanonicalPromptSection,
-    RoleSystemPromptSpec, SourceForagingProfile, TaskContext,
+    CompositionManifest, CompositionStrategy, ContextChunk, ContextSource, MultiPatchForager,
+    PromptComposer, PromptSection as CanonicalPromptSection, RoleSystemPromptSpec,
+    SourceForagingProfile, TaskContext,
 };
 use roko_core::config::schema::ConfigCompositionStrategy;
 use roko_core::{AgentRole, Group, GroupId, GroupPheromone, TaskContextWeight};
@@ -962,9 +961,9 @@ pub struct PromptDiagnostics {
     /// Canonical source refs and score results produced by prompt composition.
     #[serde(default)]
     pub scored_signals: Vec<ScoredSignalDiagnostic>,
-    /// Raw-content-free canonical allocation receipt. This is retained until
-    /// the terminal gate outcome so the exact eligible bidders and selected
-    /// sections can receive learning feedback.
+    /// Raw-content-free canonical allocation receipt: which sections the
+    /// composer kept and which it cut, which the exposure log and the
+    /// section items read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composition_manifest: Option<CompositionManifest>,
     /// Raw-content-free durable experiment assignments applied before
@@ -1657,90 +1656,14 @@ fn build_runner_context(
     Ok(parts.join("\n\n"))
 }
 
-/// The file name for the persisted attention bidders store under `.roko/learn/`.
-pub const ATTENTION_BIDDERS_FILENAME: &str = "attention-bidders.json";
-const MAX_ATTENTION_BIDDERS_BYTES: u64 = 4 * 1024 * 1024;
-
-/// Load persisted learning bidders from `.roko/learn/attention-bidders.json`.
-///
-/// A missing store is a valid cold start. Malformed, oversized, or internally
-/// inconsistent stores return an error so the caller can avoid overwriting
-/// forensic evidence with a new cold-start state.
-pub fn load_attention_bidders(
-    learn_dir: &Path,
-) -> std::io::Result<HashMap<AttentionBidder, LearningBidder>> {
-    let path = learn_dir.join(ATTENTION_BIDDERS_FILENAME);
-    let metadata = match std::fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(err) => return Err(err),
-    };
-    if metadata.len() > MAX_ATTENTION_BIDDERS_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "attention bidder store is {} bytes; limit is {MAX_ATTENTION_BIDDERS_BYTES}",
-                metadata.len()
-            ),
-        ));
-    }
-
-    let contents = std::fs::read_to_string(&path)?;
-    let bidders: HashMap<AttentionBidder, LearningBidder> = serde_json::from_str(&contents)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    for (key, bidder) in &bidders {
-        if bidder.subsystem_id != *key
-            || !bidder.prior_bid.is_finite()
-            || bidder.prior_bid < 0.0
-            || bidder.section_betas.values().any(|(alpha, beta)| {
-                !alpha.is_finite() || !beta.is_finite() || *alpha <= 0.0 || *beta <= 0.0
-            })
-            || bidder
-                .section_costs
-                .values()
-                .any(|stats| !stats.total_cost_usd.is_finite() || stats.total_cost_usd < 0.0)
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "attention bidder store failed invariant validation",
-            ));
-        }
-    }
-    tracing::debug!(path = %path.display(), bidder_count = bidders.len(), "loaded attention bidders");
-    Ok(bidders)
-}
-
-/// Save learning bidders to `.roko/learn/attention-bidders.json`.
-///
-/// Creates the learn directory if it does not exist and atomically replaces
-/// the prior snapshot only after the complete JSON payload is durable.
-pub fn save_attention_bidders(
-    learn_dir: &Path,
-    bidders: &HashMap<AttentionBidder, LearningBidder>,
-) -> std::io::Result<()> {
-    std::fs::create_dir_all(learn_dir)?;
-    let path = learn_dir.join(ATTENTION_BIDDERS_FILENAME);
-    roko_fs::atomic_write_json(&path, bidders)?;
-    tracing::debug!(
-        path = %path.display(),
-        bidder_count = bidders.len(),
-        "saved attention bidders"
-    );
-    Ok(())
-}
-
 #[derive(Debug, Clone)]
 pub struct PromptAssembler {
     /// Token budget cap.
     token_budget: u32,
     /// Optional prompt context sources. `minimal()` leaves this empty.
     sources: Vec<Arc<dyn PromptSectionSource>>,
-    /// Persisted learning bidders for prompt composition.
-    learning_bidders: Arc<RwLock<HashMap<AttentionBidder, LearningBidder>>>,
     /// Requested allocation strategy from `[prompt]` configuration.
     composition_strategy: CompositionStrategy,
-    /// Eligible allocation rounds required before `Auto` selects VCG.
-    vcg_warmup_observations: u32,
     /// Learned section-effectiveness registry for the compose builder.
     ///
     /// When present, the canonical compose path adjusts section priorities
@@ -1766,9 +1689,7 @@ impl PromptAssembler {
                 Arc::new(WorkdirPlaybookSource { cache: None }),
                 Arc::new(SectionEffectivenessSource { cache: None }),
             ],
-            learning_bidders: Arc::new(RwLock::new(HashMap::new())),
             composition_strategy: CompositionStrategy::Auto,
-            vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: None,
             section_bandit: None,
             pinned_sections: Vec::new(),
@@ -1794,9 +1715,7 @@ impl PromptAssembler {
                 }),
                 Arc::new(SectionEffectivenessSource { cache: Some(cache) }),
             ],
-            learning_bidders: Arc::new(RwLock::new(HashMap::new())),
             composition_strategy: CompositionStrategy::Auto,
-            vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: Some(effectiveness),
             section_bandit: Some(section_bandit),
             pinned_sections: Vec::new(),
@@ -1809,9 +1728,7 @@ impl PromptAssembler {
         Self {
             token_budget: 8_000,
             sources: Vec::new(),
-            learning_bidders: Arc::new(RwLock::new(HashMap::new())),
             composition_strategy: CompositionStrategy::Auto,
-            vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: None,
             section_bandit: None,
             pinned_sections: Vec::new(),
@@ -1824,94 +1741,9 @@ impl PromptAssembler {
         self
     }
 
-    /// Attach persisted learning bidders for prompt composition.
-    #[must_use]
-    pub fn with_learning_bidders(
-        mut self,
-        bidders: HashMap<AttentionBidder, LearningBidder>,
-    ) -> Self {
-        self.learning_bidders = Arc::new(RwLock::new(bidders));
-        self
-    }
-
-    /// Replace the current learning bidders without rebuilding the dispatcher
-    /// or discarding its prompt cache.
-    pub fn replace_learning_bidders(&self, bidders: HashMap<AttentionBidder, LearningBidder>) {
-        *self.learning_bidders.write() = bidders;
-    }
-
-    /// Snapshot the current learning bidders for durable persistence.
-    #[must_use]
-    pub fn learning_bidders(&self) -> HashMap<AttentionBidder, LearningBidder> {
-        self.learning_bidders.read().clone()
-    }
-
-    /// Apply one terminal gate outcome to the exact canonical composition
-    /// receipt produced for that attempt.
-    ///
-    /// Every eligible subsystem records one round, including bidders whose
-    /// sections lost the cold-start greedy allocation. Only included sections
-    /// update success/failure posteriors, avoiding false causal credit for
-    /// context the model never saw.
-    pub fn record_outcome(&self, diagnostics: &PromptDiagnostics, gate_passed: bool) {
-        let Some(manifest) = diagnostics.composition_manifest.as_ref() else {
-            return;
-        };
-
-        let eligible = manifest
-            .included
-            .iter()
-            .map(|section| section.bidder)
-            .chain(manifest.excluded.iter().map(|section| section.bidder))
-            .collect::<HashSet<_>>();
-        let mut bidders = self.learning_bidders.write();
-        for bidder_id in eligible {
-            bidders
-                .entry(bidder_id)
-                .or_insert_with(|| LearningBidder::new(bidder_id, 1.0))
-                .observe_round();
-        }
-        for section in &manifest.included {
-            bidders
-                .entry(section.bidder)
-                .or_insert_with(|| LearningBidder::new(section.bidder, 1.0))
-                .update(&section.name, true, gate_passed);
-        }
-    }
-
-    /// P1-19: Feed per-section cost attribution into learning bidders.
-    ///
-    /// Each tuple is `(bidder, section_name, included, gate_passed, cost_usd, tokens)`.
-    pub fn update_bidders_with_cost(
-        &self,
-        section_costs: &[(
-            roko_compose::AttentionBidder,
-            String,
-            bool,
-            bool,
-            f64,
-            usize,
-        )],
-    ) {
-        let mut bidders = self.learning_bidders.write();
-        for (bidder_id, section_name, was_included, gate_passed, cost_usd, tokens) in section_costs
-        {
-            bidders
-                .entry(*bidder_id)
-                .or_insert_with(|| LearningBidder::new(*bidder_id, 1.0))
-                .update_with_cost(
-                    section_name,
-                    *was_included,
-                    *gate_passed,
-                    *cost_usd,
-                    *tokens,
-                );
-        }
-    }
-
-    /// Set the composition strategy for VCG/density-greedy budget allocation.
-    /// The selected strategy is passed to the canonical [`PromptComposer`]
-    /// used by [`Self::assemble`].
+    /// Set the requested composition strategy, which the canonical
+    /// [`PromptComposer`] used by [`Self::assemble`] records; every strategy
+    /// allocates density-greedy (4218).
     #[must_use]
     pub fn with_composition_strategy(mut self, strategy: ConfigCompositionStrategy) -> Self {
         self.composition_strategy = match strategy {
@@ -1920,15 +1752,6 @@ impl PromptAssembler {
             ConfigCompositionStrategy::WeightedSum => CompositionStrategy::WeightedSum,
             ConfigCompositionStrategy::Vcg => CompositionStrategy::Vcg,
         };
-        self
-    }
-
-    /// Set the minimum bidder-observation count before VCG allocation activates.
-    /// The threshold is passed to the canonical [`PromptComposer`] used by
-    /// [`Self::assemble`].
-    #[must_use]
-    pub fn with_vcg_warmup_observations(mut self, observations: u32) -> Self {
-        self.vcg_warmup_observations = observations;
         self
     }
 
@@ -2098,8 +1921,6 @@ impl PromptAssembler {
         }
         let composer = PromptComposer::new()
             .with_strategy(self.composition_strategy)
-            .with_vcg_warmup_observations(self.vcg_warmup_observations)
-            .with_learning_bidders(self.learning_bidders())
             .with_foraging(default_forager());
         let mut canonical_sections = if let Some(registry) = section_effectiveness.as_ref() {
             spec.build_sections_with_section_effectiveness(registry)
@@ -3466,8 +3287,10 @@ mod tests {
         );
     }
 
+    /// 4218: an explicit `vcg` config still reaches the composer, which runs
+    /// density-greedy, since the VCG auction is retired.
     #[test]
-    fn explicit_vcg_config_reaches_the_canonical_composer() {
+    fn explicit_vcg_config_runs_density_greedy() {
         let assembler =
             PromptAssembler::minimal().with_composition_strategy(ConfigCompositionStrategy::Vcg);
         let pctx = PromptContext::from_task(&task(), &ctx());
@@ -3478,85 +3301,10 @@ mod tests {
             .expect("canonical composition manifest");
 
         assert_eq!(manifest.requested_strategy, CompositionStrategy::Vcg);
-        assert_eq!(manifest.selected_strategy, CompositionStrategy::Vcg);
-        assert!(manifest.vcg_diagnostics.is_some());
-    }
-
-    #[test]
-    fn terminal_feedback_warms_auto_from_greedy_to_vcg() {
-        let assembler = PromptAssembler::minimal()
-            .with_composition_strategy(ConfigCompositionStrategy::Auto)
-            .with_vcg_warmup_observations(1);
-        let pctx = PromptContext::from_task(&task(), &ctx());
-
-        let cold = assembler.assemble(&task(), &pctx).unwrap();
         assert_eq!(
-            cold.diagnostics
-                .composition_manifest
-                .as_ref()
-                .expect("cold manifest")
-                .selected_strategy,
+            manifest.selected_strategy,
             CompositionStrategy::DensityGreedy
         );
-
-        assembler.record_outcome(&cold.diagnostics, true);
-        assert!(
-            assembler
-                .learning_bidders()
-                .values()
-                .all(|bidder| bidder.observation_count() >= 1)
-        );
-
-        let warm = assembler.assemble(&task(), &pctx).unwrap();
-        let manifest = warm
-            .diagnostics
-            .composition_manifest
-            .expect("warm manifest");
-        assert_eq!(manifest.requested_strategy, CompositionStrategy::Auto);
-        assert_eq!(manifest.selected_strategy, CompositionStrategy::Vcg);
-        assert!(manifest.vcg_diagnostics.is_some());
-    }
-
-    #[test]
-    fn attention_bidder_store_round_trips_learned_rounds_atomically() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let mut bidder = LearningBidder::new(AttentionBidder::TaskContext, 1.0);
-        bidder.observe_round();
-        bidder.update("task", true, true);
-        let bidders = HashMap::from([(AttentionBidder::TaskContext, bidder)]);
-
-        save_attention_bidders(temp.path(), &bidders).expect("save bidders");
-        let restored = load_attention_bidders(temp.path()).expect("load bidders");
-
-        assert_eq!(restored, bidders);
-        assert!(!temp.path().join("attention-bidders.tmp").exists());
-    }
-
-    #[test]
-    fn malformed_attention_bidder_store_fails_closed_without_overwrite() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join(ATTENTION_BIDDERS_FILENAME);
-        let original = b"{ definitely-not-json";
-        std::fs::write(&path, original).expect("write malformed store");
-
-        let error = load_attention_bidders(temp.path()).expect_err("malformed store must fail");
-
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-        assert_eq!(std::fs::read(path).expect("read original"), original);
-    }
-
-    #[test]
-    fn attention_bidder_store_rejects_mismatched_subsystem_identity() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let invalid = HashMap::from([(
-            AttentionBidder::Neuro,
-            LearningBidder::new(AttentionBidder::Research, 1.0),
-        )]);
-        roko_fs::atomic_write_json(&temp.path().join(ATTENTION_BIDDERS_FILENAME), &invalid)
-            .expect("write invalid store");
-
-        let error = load_attention_bidders(temp.path()).expect_err("identity mismatch must fail");
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[test]

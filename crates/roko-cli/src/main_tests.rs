@@ -384,6 +384,7 @@ fn cli_parses_run_flags() {
             share,
             fresh,
             resume_plan,
+            no_holdout: false,
         }) => {
             assert_eq!(prompt, vec!["add".to_string(), "login".to_string()]);
             assert!(plan);
@@ -410,6 +411,36 @@ fn cli_parses_run_domain() {
     assert!(matches!(
         cli.command,
         Some(Command::Run { domain: Some(ref domain), .. }) if domain == "research"
+    ));
+}
+
+/// gap-29fe0a: `roko run --no-holdout` parses, for a prompt and for a plan
+/// directory, and a run without it is not in maximize mode.
+#[test]
+fn cli_parses_run_no_holdout() {
+    let cli = Cli::try_parse_from(["roko", "run", "--no-holdout", "fix", "it"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Run {
+            no_holdout: true,
+            ..
+        })
+    ));
+    let cli = Cli::try_parse_from(["roko", "run", "plans/add-login", "--no-holdout"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Run {
+            no_holdout: true,
+            ..
+        })
+    ));
+    let cli = Cli::try_parse_from(["roko", "run", "fix", "it"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Run {
+            no_holdout: false,
+            ..
+        })
     ));
 }
 

@@ -316,15 +316,22 @@ pub fn classify_failure_text(lower: &str) -> &'static str {
     }
 }
 
+/// What [`ProviderError::AuthFailure`] renders as, so an auth failure that has
+/// already passed through `Display` is still recognised downstream: an
+/// OpenAI-compatible 401 reaches Graph dispatch's provider health and the rung
+/// probe as "provider error: authentication failed" (bug-0b7695).
+pub const AUTH_FAILURE_MARKER: &str = "authentication failed";
+
 /// Whether lowercase failure text says the provider refused the caller's
-/// credentials: a CLI that is not logged in, a 401, an invalid API key, or a
-/// 403 forbidden.
+/// credentials: a CLI that is not logged in, a 401, an invalid API key, a 403
+/// forbidden, or a typed auth failure's own rendering ([`AUTH_FAILURE_MARKER`]).
 fn is_auth_failure_text(lower: &str) -> bool {
     lower.contains("not logged in")
         || lower.contains("please run /login")
         || lower.contains("invalid api key")
         || lower.contains("invalid_api_key")
         || lower.contains("unauthorized")
+        || lower.contains(AUTH_FAILURE_MARKER)
         || mentions_http_401(lower)
         || (lower.contains("403") && lower.contains("forbidden"))
 }
@@ -795,6 +802,26 @@ mod tests {
         assert_eq!(
             classify_failure_text("could not read /tmp/run-1401/x.json"),
             "unknown"
+        );
+    }
+
+    /// bug-0b7695: an OpenAI-compatible 401 is a typed auth failure, which
+    /// Graph dispatch's provider health and the rung probe read back from its
+    /// rendered text. That text must still name an auth failure, so the
+    /// provider is quarantined at once rather than counted as an unknown
+    /// failure until its circuit opens.
+    #[test]
+    fn rendered_auth_failure_classifies_as_auth_failure() {
+        use crate::tool_loop::LlmError;
+
+        let rendered = LlmError::Provider(ProviderError::AuthFailure).to_string();
+        assert!(rendered.contains(AUTH_FAILURE_MARKER), "{rendered}");
+        // As the shakedown's D7 run logged it.
+        let text = format!("agent error (cerebras): {rendered}");
+        assert_eq!(
+            classify_failure_text(&text.to_ascii_lowercase()),
+            "auth_failure",
+            "{text}"
         );
     }
 

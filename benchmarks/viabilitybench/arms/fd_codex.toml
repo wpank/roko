@@ -1,0 +1,29 @@
+# Arm fd_codex (S08.T12, S09 §4.2): the Codex CLI alone, non-interactive, with no Roko prompt, on the author's ChatGPT
+# subscription; LOG1's "could" arm, a second frontier-direct comparator from another vendor. D2 pins gpt-5.5, and S08
+# decision 6 allows gpt-5.4 instead when the subscription lacks it (one model, never a fallback). Codex reports no
+# dollar figure, so nothing is billed and the ledger carries U' alone: turn.completed usage x the snapshot.
+# driver/run_codex.py has the isolation, caps and costs. Before the first run, confirm that the subscription's terms
+# allow scripted `codex exec` runs, as D42 (dec-b78874) did for Claude Code, and run a live probe of the egress list.
+schema_version = "vb.arm/1"
+
+[arm]
+id = "fd_codex"
+harness = "codex-cli"                 # S09's harness vocabulary
+runner = "run_codex"
+models_allow = ["gpt-5.5"]            # D2; S08 decision 6: gpt-5.4 if the subscription lacks gpt-5.5
+line = "BL1"                          # S09 §4.6: P1's live line (the pilot has no fd_codex block)
+billed = false                        # the subscription: $0 billed
+label = "frontier·direct (Codex)"
+
+[caps]                                # S08 §4.10, subscription arms: native behaviour with safety limits
+wallclock_s = 1200                    # the runner kills the session at 20 minutes
+usd_per_task = 5.00                   # the runner stops a turn whose usage passes $5 (Codex reports usage per turn)
+                                      # codex exec has no turn cap, so the arm sets none
+
+[cli]
+program = "codex"                     # resolved on the driver's PATH
+effort = "high"                       # explicit, as the Claude Code arm's: -c model_reasoning_effort="high"
+egress_allow = ["chatgpt.com:443", "auth.openai.com:443"]   # the subscription's API and its login refresh (3305)
+
+[providers.openai]                    # what `vb run` admits as a network provider; codex signs in by itself
+base_url = "https://chatgpt.com/backend-api/codex"

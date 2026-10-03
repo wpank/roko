@@ -254,7 +254,9 @@ pub struct BenchTaskResult {
     pub status: String,
     /// Execution duration in milliseconds.
     pub duration_ms: u64,
-    /// Model that was actually used.
+    /// Model that was actually used: the one the provider reported serving
+    /// the task, else the one asked for, whose price is never used
+    /// (`cost_unknown`).
     #[serde(default = "default_model_string")]
     pub model: String,
     /// Input tokens consumed.
@@ -263,9 +265,15 @@ pub struct BenchTaskResult {
     /// Output tokens generated.
     #[serde(default, alias = "output_tokens")]
     pub tokens_out: u64,
-    /// Estimated cost in USD.
+    /// Estimated cost in USD: the tokens at the price snapshot's row for the
+    /// served model. 0 when `cost_unknown`.
     #[serde(default)]
     pub cost_usd: f64,
+    /// The provider reported no model, or the price snapshot has no row for
+    /// the one it reported, so the cost is unknown rather than another
+    /// model's price (3343).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cost_unknown: bool,
     /// Gate verdicts for this task.
     #[serde(default)]
     pub gate_verdicts: Vec<serde_json::Value>,
@@ -281,6 +289,11 @@ pub struct BenchTaskResult {
     /// Why the task was not graded, when its status is "skipped".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<String>,
+    /// Where the graded workspace was kept, relative to the workspace root
+    /// (`.roko/bench/archives/<run>/<task>`), so its grade can be checked
+    /// again; `None` when it was not kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<String>,
 }
 
 impl BenchTaskResult {
@@ -1559,11 +1572,13 @@ mod tests {
             tokens_in: 1,
             tokens_out: 1,
             cost_usd: 0.0,
+            cost_unknown: false,
             gate_verdicts: Vec::new(),
             retries_used: 0,
             output_preview: None,
             error: None,
             skip_reason: None,
+            archive: None,
         }
     }
 

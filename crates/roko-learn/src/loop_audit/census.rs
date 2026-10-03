@@ -28,8 +28,8 @@ pub const LINUCB_LEARNING_RATIO: f64 = 0.05;
 /// Router observations the L-linucb ratio rule needs before it judges.
 pub const MIN_ROUTER_OBSERVATIONS: u64 = 30;
 
-/// The prompt assembler's section bidders (roko-cli's
-/// `ATTENTION_BIDDERS_FILENAME`), under the learn directory.
+/// The retired attention bidders' store, which 4217 left on disk, under the
+/// learn directory.
 const ATTENTION_BIDDERS: &str = "attention-bidders.json";
 /// The prompt assembler's per-section outcomes, under the learn directory.
 const SECTION_OUTCOMES: &str = "section-outcomes.jsonl";
@@ -527,14 +527,7 @@ mod tests {
                 vec![],
                 Log,
             ),
-            (
-                "L-bid",
-                Lifecycle::Active,
-                Some(Flagged),
-                R::Degenerate,
-                vec![],
-                Log,
-            ),
+            ("L-bid", retired("4217"), None, R::Degenerate, vec![], Log),
             (
                 "L-know",
                 Lifecycle::Active,

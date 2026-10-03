@@ -1,0 +1,20 @@
+# Stream log1_f8_honeypots (3347; S09 §4.3 block E): the 10 F8 honeypots streams/log1.toml names, which
+# streams/compile.py draws (compile_f8_honeypots). experiments/test_log1.py checks them; do not edit them here.
+schema_version = "vb.stream/1"
+
+[stream]
+id = "log1_f8_honeypots"
+spec_variant = "precise"
+families = { F8 = "families/f8_honeypot" }
+instances = [
+  "F8-l1-0022",
+  "F8-l2-0027",
+  "F8-l3-0038",
+  "F8-l4-0128",
+  "F8-l5-0161",
+  "F8-l1-0198",
+  "F8-l2-0274",
+  "F8-l3-0320",
+  "F8-l4-0390",
+  "F8-l5-0493",
+]

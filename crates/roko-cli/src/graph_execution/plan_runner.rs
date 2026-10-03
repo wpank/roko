@@ -1347,7 +1347,6 @@ async fn run_graph_plan_body(
     );
     // CLI dispatch turns record with their run's provenance sink (gap-ca8022).
     graph_feedback.provenance_sinks = Some(provenance_sinks.clone());
-    let holdout_experiment = graph_feedback.holdout_experiment.clone();
 
     // ── TUI vs inline progress decision ──────────────────────────────
     //
@@ -2115,17 +2114,6 @@ async fn run_graph_plan_body(
         );
     }
 
-    // ── Persist holdout experiment state ────────────────────────────
-    //
-    // Save holdout state so overfitting detection survives across runs
-    // and partition assignments remain stable. Mirrors Runner-v2 cleanup.
-    if let Some(holdout) = &holdout_experiment
-        && let Ok(exp) = holdout.try_lock()
-        && let Err(err) = exp.save()
-    {
-        tracing::warn!(error = %err, "failed to persist holdout experiment state (non-fatal)");
-    }
-
     // ── Persist run metrics (backlog #169) ──────────────────────────
     //
     // Collect task counts and cost from the just-completed plan loop and
@@ -2337,8 +2325,8 @@ pub fn build_graph_feedback_context(
     let _ = std::fs::create_dir_all(&graph_learn_dir);
     // A frozen run (decision 2218) sets none of the paths that only write
     // learned state: playbook outcomes (prompts read playbooks from the
-    // workdir), prompt treatments, post-gate reflections and the holdout
-    // split. Paths that are also read stay; their writers check the flag.
+    // workdir) and prompt treatments. Paths that are also read stay; their
+    // writers check the flag.
     let learning = !config.learning.frozen;
 
     // #144: one daimon state, shared by the feedback facade (plan-completion
@@ -2351,38 +2339,6 @@ pub fn build_graph_feedback_context(
     // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
     let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
 
-    // ── P1-04: HoldoutExperiment ─────────────────────────────────────
-    //
-    // Deterministic 80/20 train/holdout split for detecting overfitting
-    // in learned routing. Learning updates are gated behind the holdout
-    // partition check.
-    let holdout_experiment = std::sync::Arc::new(tokio::sync::Mutex::new(
-        roko_learn::HoldoutExperiment::load_or_new(
-            graph_learn_dir.join("holdout-state.json"),
-        )
-        .unwrap_or_else(|err| {
-            tracing::warn!(error = %err, "failed to load holdout experiment state; starting fresh");
-            roko_learn::HoldoutExperiment::new(
-                graph_learn_dir.join("holdout-state.json"),
-            )
-        }),
-    ));
-
-    // ── P2-01: ShadowRunner ─────────────────────────────────────────
-    //
-    // Records shadow dispatch decisions (infrastructure-only; no actual
-    // shadow task spawn). Uses the configured default model as the
-    // shadow alternative.
-    let shadow_runner = std::sync::Arc::new(roko_learn::shadow::ShadowRunner::new(
-        roko_learn::shadow::ShadowConfig {
-            model_slug: config.agent.default_model.clone(),
-            prompt_variant: None,
-            label: "graph-shadow".to_string(),
-        },
-        graph_learn_dir.join("shadow-results.jsonl"),
-    ));
-
-    let post_gate_reflections = graph_learn_dir.join("post-gate-reflections.json");
     crate::graph_task_dispatch::GraphFeedbackContext {
         feedback_facade: Some(build_graph_feedback_facade(
             workdir,
@@ -2401,11 +2357,7 @@ pub fn build_graph_feedback_context(
         daimon_state: shared_daimon_state,
         experiment_store_path: learning.then(|| graph_learn_dir.join("experiments.json")),
         gate_failures_path: Some(graph_layout.gate_failures_path()),
-        post_gate_reflection_path: learning.then_some(post_gate_reflections),
-        replan_on_gate_failure: config.learning.replan_on_gate_failure,
         coding_oracle: Some(coding_oracle),
-        holdout_experiment: learning.then_some(holdout_experiment),
-        shadow_runner: Some(shadow_runner),
         // P2-LRN-6 Loop 1: Gate threshold EMA updates after each task's
         // verify sequence. Uses the canonical workspace path so the TUI,
         // serve, and `roko learn gates` all read from the same file.
@@ -5167,7 +5119,6 @@ max_retries = 0
                 "sink.section_effect",
                 "store.attempt_log",
                 "store.prompt_experiment",
-                "store.holdout",
                 "store.decision_writer",
                 "store.exposure_writer",
                 "store.record_access",
@@ -5238,6 +5189,299 @@ max_retries = 0
         assert_eq!(manifest.experiment.ablation_flags, ["learning_frozen"]);
     }
 
+    /// The `[gates]` and later lines of the workspace of
+    /// [`run_seeded_learning_plan`]: one verify run per attempt (no auto-fix
+    /// re-run), T0 reflexes on, gate thresholds saved after every verify run,
+    /// and no model ladder, so every task runs on its hinted model.
+    #[cfg(unix)]
+    const LEARNED_STATE_CONFIG: &str = r#"cargo_fix_enabled = false
+
+[learning]
+t0_reflexes = true
+gate_threshold_flush_interval = 1
+
+[routing.ladder]
+enabled = false
+"#;
+
+    /// The plan of [`run_seeded_learning_plan`]. T1 passes its verify step,
+    /// and T2 fails it once and passes on its one retry. T3 has no verify
+    /// step, so the seeded T0 reflex rule serves it and it ends unverified,
+    /// and the plan with it. The seeded knowledge entry shares the words of
+    /// T1's and T2's descriptions.
+    #[cfg(unix)]
+    const LEARNED_STATE_TASKS: &str = r#"[meta]
+plan = "learned"
+max_parallel = 1
+# T3 ends unverified on purpose; without this, plan run refuses the plan (PLAN_037).
+allow_unverified = true
+
+[[task]]
+id = "T1"
+title = "Passing task"
+description = "Its verify step decides its outcome."
+role = "implementer"
+status = "ready"
+tier = "focused"
+model_hint = "graph-model"
+files = ["t1.txt"]
+verify = [{ phase = "structural", command = "true" }]
+timeout_secs = 60
+max_retries = 0
+
+[[task]]
+id = "T2"
+title = "Retried task"
+description = "Its verify step decides its outcome, and fails once."
+role = "implementer"
+status = "ready"
+tier = "focused"
+model_hint = "graph-model"
+files = ["t2.txt"]
+depends_on = ["T1"]
+verify = [{ phase = "structural", command = "test -f retried || { touch retried; false; }" }]
+timeout_secs = 60
+max_retries = 1
+
+[[task]]
+id = "T3"
+title = "Reflex-served task"
+description = "It has no verify step."
+role = "scribe"
+status = "ready"
+tier = "focused"
+model_hint = "graph-model"
+files = ["t3.txt"]
+depends_on = ["T2"]
+timeout_secs = 60
+max_retries = 0
+"#;
+
+    /// The files under `.roko/` a frozen run may write (decision 2218): its
+    /// telemetry, and the provider circuit breaker. Every other file under
+    /// `learn/`, `neuro/` and `daimon/`, and `episodes.jsonl`, is learned
+    /// state.
+    #[cfg(unix)]
+    const FROZEN_RUN_TELEMETRY: &[&str] = &[
+        // Each attempt's and helper call's spend: `roko status`, and the
+        // daily budget it is checked against.
+        "learn/costs.jsonl",
+        // Efficiency events and provider-call rows: `roko learn efficiency`.
+        "learn/efficiency.jsonl",
+        // One summary row per run: `roko show`.
+        "learn/run-metrics.jsonl",
+        // Retrieval outcomes beside gate verdicts (RAG-10): the TUI's
+        // learning view and serve.
+        "learn/retrieval-outcomes.jsonl",
+        // Gate-gaming alerts: `roko diagnose`.
+        "learn/gate-gaming-alerts.jsonl",
+        // The inference gateway's per-call log: serve's gateway routes.
+        "learn/gateway.jsonl",
+        // The run's failed verify steps: `roko diagnose`, and a revision of
+        // the same plan, which reads its last run as it reads its checkpoint.
+        "learn/gate-failures.jsonl",
+        // Which providers are down (the circuit breaker): availability, not
+        // learned behaviour, so a frozen run still stops calling a provider
+        // that fails.
+        "learn/provider-health.json",
+    ];
+
+    /// Whether a frozen run may write `path`, a path under `.roko/`: a file
+    /// of [`FROZEN_RUN_TELEMETRY`], the advisory lock beside one, or the
+    /// staging file of an atomic write to one.
+    #[cfg(unix)]
+    fn frozen_run_may_write(path: &str) -> bool {
+        let file = path.split_once(".tmp.").map_or(path, |(file, _)| file);
+        let file = file.strip_suffix(".lock").unwrap_or(file);
+        FROZEN_RUN_TELEMETRY.contains(&file)
+    }
+
+    /// Seed workspace `dir` with learned state from decision 2218's list: a
+    /// cascade router, gate thresholds, a playbook, a prompt-experiment
+    /// store, an error pattern, the T0 reflex rule that serves T3 of
+    /// [`LEARNED_STATE_TASKS`], a knowledge entry the other tasks' prompts
+    /// retrieve, and an episode.
+    #[cfg(unix)]
+    fn seed_learned_state(dir: &Path) {
+        use roko_learn::cascade_router::CascadeRouter;
+        use roko_learn::error_pattern_store::ErrorPatternStore;
+        use roko_learn::playbook::Playbook;
+        use roko_learn::reflex_store::{
+            PromotionCandidate, ReflexAction, ReflexCondition, ReflexStore,
+        };
+
+        use crate::runner::persist::GateThresholds;
+
+        let roko = dir.join(".roko");
+        let learn = roko.join("learn");
+        std::fs::create_dir_all(learn.join("playbooks")).expect("create the playbook directory");
+        CascadeRouter::new(vec!["claude-sonnet-4-6".to_string()])
+            .save(&learn.join("cascade-router.json"))
+            .expect("seed the cascade router");
+        let thresholds = serde_json::to_vec(&GateThresholds::default()).expect("thresholds");
+        std::fs::write(learn.join("gate-thresholds.json"), thresholds)
+            .expect("seed the gate thresholds");
+        let mut playbook = Playbook::new("pb-verify", "Pass the verify step");
+        playbook.when_pattern = Some("verify step".to_string());
+        let playbook = serde_json::to_vec_pretty(&playbook).expect("serialize the playbook");
+        std::fs::write(learn.join("playbooks/pb-verify.json"), playbook)
+            .expect("seed the playbook");
+        roko_learn::prompt_experiment::ExperimentStore::new()
+            .save(&learn.join("experiments.json"))
+            .expect("seed the prompt experiments");
+        let mut patterns = ErrorPatternStore::empty();
+        patterns.append("verify step failed", "verify", "seed", None);
+        patterns
+            .save(&learn.join("error-patterns.json"))
+            .expect("seed the error patterns");
+        let reflexes = ReflexStore::open(learn.join("reflexes.jsonl"));
+        let candidate = PromotionCandidate {
+            episode_id: "episode-seed".to_string(),
+            condition: ReflexCondition {
+                context: Some("Reflex-served".to_string()),
+                ..ReflexCondition::default()
+            },
+            action: ReflexAction {
+                tool: "respond".to_string(),
+                args: "cached reflex output".to_string(),
+            },
+        };
+        assert!(reflexes.try_promote(&candidate, 3), "seed the reflex rule");
+        let neuro = roko.join("neuro");
+        std::fs::create_dir_all(&neuro).expect("create the knowledge store's directory");
+        let entry = serde_json::json!({
+            "id": "kn-frozen",
+            "content": "A verify step decides each outcome",
+            "confidence": 0.8,
+            "created_at": chrono::Utc::now(),
+        });
+        std::fs::write(neuro.join("knowledge.jsonl"), format!("{entry}\n"))
+            .expect("seed the knowledge store");
+        let episode = roko_learn::episode_logger::Episode::new("seed-agent", "seed/T0");
+        let episode = serde_json::to_string(&episode).expect("serialize the episode");
+        std::fs::write(roko.join("episodes.jsonl"), format!("{episode}\n"))
+            .expect("seed the episode log");
+    }
+
+    /// A digest of each learned-state file of workspace `dir`, by its path
+    /// under `.roko/`: every file under `learn/`, `neuro/` and `daimon/`,
+    /// and `episodes.jsonl`.
+    #[cfg(unix)]
+    fn learned_state_digests(dir: &Path) -> BTreeMap<String, blake3::Hash> {
+        let roko = dir.join(".roko");
+        let mut pending: Vec<PathBuf> = ["learn", "neuro", "daimon", "episodes.jsonl"]
+            .iter()
+            .map(|name| roko.join(name))
+            .collect();
+        let mut digests = BTreeMap::new();
+        while let Some(path) = pending.pop() {
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                pending.extend(entries.map(|entry| entry.expect("directory entry").path()));
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                let name = path.strip_prefix(&roko).expect("a path under .roko");
+                digests.insert(name.display().to_string(), blake3::hash(&bytes));
+            }
+        }
+        digests
+    }
+
+    /// Run [`LEARNED_STATE_TASKS`] in a workspace seeded with learned state
+    /// ([`seed_learned_state`]), with learning frozen for the run when
+    /// `frozen` (`--frozen-learning`). Returns the workspace, the run's exit
+    /// code, and each learned-state file the run changed, added or removed
+    /// that [`frozen_run_may_write`] does not allow.
+    #[cfg(unix)]
+    async fn run_seeded_learning_plan(frozen: bool) -> (tempfile::TempDir, i32, Vec<String>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, LEARNED_STATE_CONFIG);
+        let plan_dir = dir.path().join("plans/learned");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(plan_dir.join("tasks.toml"), LEARNED_STATE_TASKS).expect("tasks.toml");
+        seed_learned_state(dir.path());
+        let before = learned_state_digests(dir.path());
+
+        let (exit_code, _, _) = run_plan_set_with(dir.path(), Some(1), None, true, frozen).await;
+        // The writes the run left in flight end before the state is read.
+        crate::background_writes::settled(&dir.path().join(".roko")).await;
+        let after = learned_state_digests(dir.path());
+        let paths: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+        let changed: Vec<String> = paths
+            .into_iter()
+            .filter(|path| !frozen_run_may_write(path))
+            .filter(|path| before.get(*path) != after.get(*path))
+            .cloned()
+            .collect();
+        (dir, exit_code, changed)
+    }
+
+    /// Decision 2218's acceptance check (gap-644040): a frozen plan run reads
+    /// the learned state it finds and writes none. In a workspace seeded with
+    /// learned state, a run of a task that passes, a task that fails its
+    /// verify step once and passes on its retry, and a task the seeded T0
+    /// reflex rule serves leaves every learned-state file as it was, and adds
+    /// none but telemetry. Its run directory holds every verdict, the route
+    /// decisions and a census without a wired sink, and its manifest says it
+    /// was frozen. The same run under live config learns, so the check can
+    /// fail.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn frozen_learning_run_writes_no_learned_state() {
+        use roko_learn::telemetry::records::AttemptOutcome;
+        use roko_learn::telemetry::report::RunRecords;
+
+        let (dir, exit_code, changed) = run_seeded_learning_plan(true).await;
+        assert_eq!(exit_code, EXIT_FAILURE, "T3 ends unverified");
+        assert!(
+            changed.is_empty(),
+            "a frozen run wrote learned state: {changed:?}"
+        );
+        let manifest = only_run_manifest(dir.path());
+        assert_eq!(manifest.experiment.ablation_flags, ["learning_frozen"]);
+
+        let run_dir = dir.path().join(".roko/runs").join(&manifest.run_id);
+        let run = RunRecords::load(&run_dir).expect("read the run's records");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        let settled: Vec<&str> = run
+            .verdicts
+            .iter()
+            .map(|line| line.record.identity.task_id.as_str())
+            .collect();
+        assert_eq!(settled, ["T1", "T2", "T2", "T3"], "every attempt settled");
+        assert_eq!(run.verdicts[3].record.outcome, AttemptOutcome::Unverified);
+        // T1 routed once and T2 twice; the reflex that served T3 routed
+        // nothing, so the frozen run read its rule.
+        assert_eq!(run.decisions.len(), 3, "{:?}", run.decisions);
+        // The prompts read the seeded knowledge entry, whose access count
+        // the frozen run left as it was.
+        let exposed = run
+            .exposures
+            .iter()
+            .any(|line| line.record.item_id == "kn-frozen" && line.record.included);
+        assert!(exposed, "the prompts read the seeded knowledge entry");
+        let census = run.census.as_ref().expect("the run wrote its census");
+        let wired_sinks: Vec<&str> = census
+            .components
+            .iter()
+            .filter(|component| component.kind == "sink" && component.wired)
+            .map(|component| component.id.as_str())
+            .collect();
+        assert!(wired_sinks.is_empty(), "{wired_sinks:?}");
+        let attempt_log = census.component("store.attempt_log");
+        assert!(
+            attempt_log.is_some_and(|component| component.wired),
+            "{census:?}"
+        );
+
+        // Under live config the same run moves the gate thresholds with its
+        // verify runs, and the cascade router with its routing outcomes.
+        let (_live, _, changed) = run_seeded_learning_plan(false).await;
+        let learned = ["learn/cascade-router.json", "learn/gate-thresholds.json"];
+        assert!(
+            changed.iter().any(|path| learned.contains(&path.as_str())),
+            "a live run learns: {changed:?}"
+        );
+    }
+
     /// The wiring of the dispatcher a plan run builds for `config` in
     /// `workdir`, with a cascade router and its journal, as a run builds
     /// them. A frozen config leaves the write-only learning paths unset.
@@ -5270,8 +5514,6 @@ max_retries = 0
         let frozen = config.learning.frozen;
         assert_eq!(feedback.playbook_dir.is_none(), frozen);
         assert_eq!(feedback.experiment_store_path.is_none(), frozen);
-        assert_eq!(feedback.post_gate_reflection_path.is_none(), frozen);
-        assert_eq!(feedback.holdout_experiment.is_none(), frozen);
         assert!(feedback.runs_dir.is_some());
         assert!(feedback.gate_thresholds_path.is_some());
         let workdir = workdir.to_path_buf();
@@ -5282,18 +5524,17 @@ max_retries = 0
 
     /// Decision 2218: a frozen run's dispatcher has no learning sink, and
     /// none of the paths that only write learned state (playbook outcomes,
-    /// prompt treatments, post-gate reflections, the holdout split). Its
-    /// telemetry and the state it also reads stay. A live run has them all.
+    /// prompt treatments). Its telemetry and the state it also reads stay. A
+    /// live run has them all.
     #[tokio::test]
     async fn frozen_run_registers_no_learning_sinks() {
-        const LEARNING: [&str; 7] = [
+        const LEARNING: [&str; 6] = [
             "sink.episode",
             "sink.routing",
             "sink.knowledge_ingestion",
             "sink.playbook_outcome",
             "sink.error_pattern",
             "store.prompt_experiment",
-            "store.holdout",
         ];
         const KEPT: [&str; 4] = [
             "store.attempt_log",

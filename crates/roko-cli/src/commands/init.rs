@@ -203,6 +203,7 @@ fn profile_gate_rungs(profile: Option<&str>) -> Vec<GateRungConfig> {
                 timeout_secs: 120,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             },
             GateRungConfig {
                 name: "test".to_string(),
@@ -210,6 +211,7 @@ fn profile_gate_rungs(profile: Option<&str>) -> Vec<GateRungConfig> {
                 timeout_secs: 300,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             },
             GateRungConfig {
                 name: "lint".to_string(),
@@ -217,6 +219,7 @@ fn profile_gate_rungs(profile: Option<&str>) -> Vec<GateRungConfig> {
                 timeout_secs: 120,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             },
         ],
         Some("typescript") => vec![
@@ -226,6 +229,7 @@ fn profile_gate_rungs(profile: Option<&str>) -> Vec<GateRungConfig> {
                 timeout_secs: 120,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             },
             GateRungConfig {
                 name: "test".to_string(),
@@ -233,6 +237,7 @@ fn profile_gate_rungs(profile: Option<&str>) -> Vec<GateRungConfig> {
                 timeout_secs: 300,
                 required: true,
                 parallel_with: Vec::new(),
+                ..Default::default()
             },
         ],
         _ => Vec::new(),

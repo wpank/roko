@@ -1248,6 +1248,7 @@ impl From<&InsightRecord> for KnowledgeEntry {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         }
     }
@@ -1292,6 +1293,7 @@ impl From<&HeuristicRule> for KnowledgeEntry {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         }
     }
@@ -1342,6 +1344,7 @@ impl From<&PlaybookCompilation> for KnowledgeEntry {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         }
     }
@@ -1826,6 +1829,7 @@ fn anti_knowledge_for_heuristic(heuristic: &Heuristic, created_at_ms: i64) -> Kn
         hdc_encoder_version: 0,
         access_count: 0,
         last_accessed: None,
+        contradiction_count: 0,
         activation_conditions: Vec::new(),
     }
 }
@@ -2218,6 +2222,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         };
         let verdicts = vec![
@@ -2271,6 +2276,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         };
         let verdicts = vec![
@@ -2323,6 +2329,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         };
 
@@ -2369,6 +2376,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         };
         let transient = KnowledgeEntry {

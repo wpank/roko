@@ -229,6 +229,8 @@ pub struct RunHandle {
     /// The run's verdict once it has completed: a gated run's own, or the
     /// one its result gives (G42).
     pub verdict: Option<RunState>,
+    /// Stops a gated run (`run_cancel`, 9115); an answer has none.
+    pub cancel: Option<CancelToken>,
     /// Background task driving the run.
     pub handle: JoinHandle<()>,
 }
@@ -445,6 +447,10 @@ pub struct PlanRunSpec {
     pub resume: bool,
     /// A plan-set run's own options; `None` for a single-plan run.
     pub plan_set: Option<PlanSetSpec>,
+    /// Where the run's request came from (9116).
+    pub origin: crate::runtime::RunOrigin,
+    /// The run's budget ceiling in USD, when its caller set one (9116).
+    pub max_usd: Option<f64>,
 }
 
 /// The options of a plan-set run.

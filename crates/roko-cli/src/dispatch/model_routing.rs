@@ -24,8 +24,12 @@
 //!    it (shadow).
 //! 4. **CascadeRouter**. Only consulted when no override, hint or ladder
 //!    rung applies. Returns a [`CascadeModel`] whose `primary` slug is used.
-//!    A guard replaces a pick that cannot run here with the default, and
-//!    labels the choice [`ModelChoiceSource::Fallback`].
+//!    The guards mask the models that cannot run here before its argmax
+//!    (S02.P1-2); when none can, a guard replaces the pick with the default
+//!    and labels the choice [`ModelChoiceSource::Fallback`]. An attempt's
+//!    route explores (`[routing] explore_epsilon`, S02.P1-3): with
+//!    probability ε it runs a model drawn among the eligible ones, labelled
+//!    [`ModelChoiceSource::Explore`].
 //! 5. **Safe default**. With no router and no hint, fall back to the
 //!    `RunConfig.model` default. The router will eventually populate
 //!    itself from observations.
@@ -46,7 +50,9 @@ use roko_core::agent::ModelSpec;
 use roko_core::config::routing::LadderConfig;
 use roko_core::config::schema::{ModelProfile, RokoConfig};
 use roko_core::task::{TaskCategory, TaskSpeedPriority, TaskTier};
-use roko_learn::cascade_router::{CascadeModel, CascadeRouter, RoutingBias};
+use roko_learn::cascade_router::{
+    CascadeModel, CascadeRouter, ExploredRoute, RoutingBias, explore_route,
+};
 use roko_learn::latency::LatencyRegistry;
 use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
@@ -54,11 +60,16 @@ use roko_learn::routing_log::{
     CandidateEntry, DecisionState, ROUTE_DECISION_POINT, RouteInfluence, RouteProposals,
     RoutingDecisionLog,
 };
-use roko_learn::telemetry::DecisionSource;
+use roko_learn::telemetry::{AttemptKey, DecisionSource};
 
 use super::DispatchContext;
 use super::outcome::RunnerDispatchError;
 use crate::task_parser::TaskDef;
+
+/// `run_seed` of the exploration draws (`telemetry::assign`): 0 until runs
+/// record an experiment seed (S01 `experiment.seed`). The attempt key the
+/// draws use names the run.
+const EXPLORE_SEED: u64 = 0;
 
 /// Returns `true` when the task category requires tool use.
 ///
@@ -113,6 +124,9 @@ pub struct RoutingInputs {
     /// should bias toward cheaper models. Set by the event loop when
     /// `BudgetAction::RouteToCheaper` fires.
     pub budget_pressure: bool,
+    /// The attempt the route is for: the unit of its exploration draw
+    /// (S02.P1-3). Without one the route never explores.
+    pub attempt_key: Option<AttemptKey>,
 }
 
 impl RoutingInputs {
@@ -149,6 +163,7 @@ impl RoutingInputs {
             routing_context: ctx.routing_context.clone(),
             routing_bias,
             budget_pressure: false,
+            attempt_key: ctx.attempt_key.clone(),
         }
     }
 }
@@ -183,8 +198,8 @@ pub enum ModelChoiceSource {
     /// Author intent (`task.model_hint`).
     TaskHint,
     /// The task's start rung on `[routing.ladder]` ([`RoutingLadder`]).
-    /// Feedback records its outcome like a router pick, so the learner
-    /// sees every rung.
+    /// Its outcome teaches the cascade router nothing (decision 4111): the
+    /// router learns only from its own picks.
     Ladder {
         /// Index of the rung among the task's rungs, cheapest first.
         rung: usize,
@@ -200,6 +215,9 @@ pub enum ModelChoiceSource {
     },
     /// Fallback when no other signal was available.
     Default,
+    /// The exploration draw of the cascade router's ε-greedy route (S02.P1-3)
+    /// replaced its argmax with a model drawn among the eligible ones.
+    Explore,
 }
 
 impl ModelChoiceSource {
@@ -214,6 +232,7 @@ impl ModelChoiceSource {
             Self::Router => DecisionSource::Router,
             Self::Fallback { .. } => DecisionSource::Fallback,
             Self::Default => DecisionSource::Default,
+            Self::Explore => DecisionSource::Explore,
         }
     }
 }
@@ -321,9 +340,10 @@ pub struct ModelRouter {
     /// routing.  Has no effect when `latency_registry` is `None`.
     latency_threshold_ms: Option<f64>,
     /// Set of model slugs that have a configured, credential-ready provider
-    /// in the current workspace.  When non-empty, cascade router results are
-    /// filtered: a model whose slug is not in this set is replaced with the
-    /// `default_slug` fallback.  Empty means no filtering (backwards compat).
+    /// in the current workspace.  When non-empty, the cascade router picks
+    /// among these models (S02.P1-2), and its pick falls back to
+    /// `default_slug` only when none of its models is here.  Empty means no
+    /// filtering (backwards compat).
     configured_models: HashSet<String>,
     /// Provider IDs that the operator has statically disabled via
     /// `[routing] disabled_providers`.  Models backed by a disabled provider
@@ -345,6 +365,9 @@ pub struct ModelRouter {
     /// computed at, so a decision digests the state again only after the
     /// router learned (S01 P0-10).
     state_digest: Arc<parking_lot::Mutex<StateDigestMemo>>,
+    /// ε of the exploration draw of a route the cascade router decides
+    /// (S02.P1-3, `[routing] explore_epsilon`); 0 takes its argmax.
+    explore_epsilon: f64,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -364,6 +387,7 @@ impl std::fmt::Debug for ModelRouter {
             .field("models_without_tools", &self.models_without_tools.len())
             .field("ladder", &self.ladder)
             .field("knowledge", &self.knowledge.is_some())
+            .field("explore_epsilon", &self.explore_epsilon)
             .finish()
     }
 }
@@ -384,7 +408,18 @@ impl ModelRouter {
             ladder: None,
             knowledge: None,
             state_digest: Arc::default(),
+            explore_epsilon: 0.0,
         }
+    }
+
+    /// Explore with probability `epsilon` among the models the guards
+    /// accept, on each route the cascade router decides that has an attempt
+    /// key to draw for (S02.P1-3, decision 2203). The caller caps it
+    /// (`RoutingConfig::effective_explore_epsilon`).
+    #[must_use]
+    pub fn with_explore_epsilon(mut self, epsilon: f64) -> Self {
+        self.explore_epsilon = epsilon;
+        self
     }
 
     /// Start every task without an override or hint on its
@@ -470,10 +505,10 @@ impl ModelRouter {
     /// Restrict cascade router results to models that have a configured,
     /// credential-ready provider in the current workspace.
     ///
-    /// When non-empty, any cascade router result whose slug is absent from
-    /// `models` is replaced with the `default_slug` fallback.  When empty
-    /// (the default), no filtering occurs — preserving backwards
-    /// compatibility.
+    /// When non-empty, the cascade router picks among `models` (S02.P1-2);
+    /// when it knows none of them, its pick is replaced with the
+    /// `default_slug` fallback.  When empty (the default), no filtering
+    /// occurs — preserving backwards compatibility.
     #[must_use]
     pub fn with_configured_models(mut self, models: HashSet<String>) -> Self {
         self.configured_models = models;
@@ -483,9 +518,8 @@ impl ModelRouter {
     /// Exclude models whose provider ID appears in `providers`.
     ///
     /// Populated from `[routing] disabled_providers` in `roko.toml`.
-    /// Models backed by a disabled provider are rejected at the same
-    /// precedence level as unconfigured models (after the cascade router
-    /// selects, before returning the choice).
+    /// Models backed by a disabled provider are masked like unconfigured
+    /// models, before the cascade router selects (S02.P1-2).
     #[must_use]
     pub fn with_disabled_providers(mut self, providers: HashSet<String>) -> Self {
         self.disabled_providers = providers;
@@ -495,9 +529,9 @@ impl ModelRouter {
     /// Register model slugs that lack tool-use support.
     ///
     /// When a task requires tool use (implementation, scaffolding, integration,
-    /// verification, refactoring, infrastructure), cascade router results whose
-    /// slug is in this set are rejected and replaced with the `default_slug`
-    /// fallback.  Research and documentation tasks are unaffected.
+    /// verification, refactoring, infrastructure), the cascade router picks
+    /// among the models outside this set (S02.P1-2).  Research and
+    /// documentation tasks are unaffected.
     #[must_use]
     pub fn with_tool_capability_filter(mut self, models_without_tools: HashSet<String>) -> Self {
         self.models_without_tools = models_without_tools;
@@ -553,7 +587,8 @@ impl ModelRouter {
         inputs: &RoutingInputs,
     ) -> Result<(ModelChoice, RoutingDecisionLog), RunnerDispatchError> {
         let (choice, learned) = self.choose(inputs);
-        let decision = self.decision_row(inputs, &choice, learned);
+        let (choice, explored) = self.explore(inputs, choice);
+        let decision = self.decision_row(inputs, &choice, learned, explored.as_ref());
         Ok((choice, decision))
     }
 
@@ -625,7 +660,8 @@ impl ModelRouter {
         // (learned state may name `claude-opus` when no Anthropic key is
         // present), its provider must not be in `[routing]
         // disabled_providers`, and it must support tool use when the task
-        // category requires tools.
+        // category requires tools. The cascade picked among the models they
+        // accept, so they reject its pick only when they reject every model.
         if let Some(reason) = self.guard_rejection(&pick.slug, needs_tool_use(ctx.task_category)) {
             tracing::warn!(
                 selected = %pick.slug,
@@ -648,13 +684,62 @@ impl ModelRouter {
         (choice, learned)
     }
 
+    /// `choice` made ε-greedy (S02.P1-3): when the cascade router decided it,
+    /// exploration is on and the route has an attempt key, the attempt's
+    /// draw may replace the router's pick with a model drawn among the ones
+    /// the guards accept, as an [`ModelChoiceSource::Explore`] choice.
+    /// Returns the choice and, for an ε-greedy route, its draw.
+    fn explore(
+        &self,
+        inputs: &RoutingInputs,
+        choice: ModelChoice,
+    ) -> (ModelChoice, Option<ExploredRoute>) {
+        let route = if choice.source == ModelChoiceSource::Router {
+            self.explored_route(inputs, &choice.model.slug)
+        } else {
+            None
+        };
+        match route {
+            Some(route) if route.explored => {
+                let explored = ModelChoice {
+                    model: ModelSpec::from_slug(&route.chosen),
+                    source: ModelChoiceSource::Explore,
+                };
+                (explored, Some(route))
+            }
+            route => (choice, route),
+        }
+    }
+
+    /// The attempt's ε-greedy route around `argmax` among the models the
+    /// guards accept; `None` when exploration is off, the route has no
+    /// attempt key or routing context, or the guards accept `argmax` alone
+    /// or reject it.
+    fn explored_route(&self, inputs: &RoutingInputs, argmax: &str) -> Option<ExploredRoute> {
+        let key = inputs.attempt_key.as_ref()?;
+        let router = self.cascade.as_ref()?;
+        let ctx = inputs.routing_context.as_ref()?;
+        if self.explore_epsilon <= 0.0 {
+            return None;
+        }
+        let eligible = self.knowledge_candidates(router, ctx);
+        if eligible.len() < 2 || !eligible.iter().any(|model| model == argmax) {
+            return None;
+        }
+        let epoch = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let epsilon = self.explore_epsilon;
+        let route = explore_route(&eligible, argmax, epsilon, EXPLORE_SEED, &epoch, key);
+        Some(route)
+    }
+
     /// `choice` as a route decision row, with `learned` the cascade router's
-    /// own pick.
+    /// own pick and `explored` the draw of its ε-greedy route.
     fn decision_row(
         &self,
         inputs: &RoutingInputs,
         choice: &ModelChoice,
         learned: Option<String>,
+        explored: Option<&ExploredRoute>,
     ) -> RoutingDecisionLog {
         let ctx = inputs.routing_context.as_ref();
         let chosen = choice.model.slug.as_str();
@@ -687,10 +772,27 @@ impl ModelRouter {
                 None,
             ));
         }
-        // The policy is argmax until S02.P1-3: the chosen model has p = 1.
-        for candidate in &mut candidates {
-            candidate.p = Some(if candidate.model == chosen { 1.0 } else { 0.0 });
+        // Every model the router's ε-greedy route may run is a candidate.
+        for (model, _) in explored.iter().flat_map(|route| &route.propensities) {
+            if !candidates.iter().any(|candidate| candidate.model == *model) {
+                candidates.push(CandidateEntry::new(
+                    model.clone(),
+                    self.provider_of(model),
+                    0.0,
+                    None,
+                ));
+            }
         }
+        // The router's ε-greedy route gives each model the guards accept its
+        // probability (S02.P1-3); any other route chose with certainty.
+        for candidate in &mut candidates {
+            candidate.p = Some(match explored {
+                Some(route) => route.propensity(&candidate.model),
+                None if candidate.model == chosen => 1.0,
+                None => 0.0,
+            });
+        }
+        let propensity = explored.map_or(1.0, |route| route.propensity(chosen));
         let (ladder, fallback_reason) = match choice.source {
             ModelChoiceSource::Ladder { .. } => (Some(chosen.to_string()), None),
             ModelChoiceSource::Fallback { reason } => (None, Some(reason.as_str().to_string())),
@@ -741,13 +843,13 @@ impl ModelRouter {
             attempt_key: None,
             source: Some(source),
             default_model: Some(self.default_slug.clone()),
-            propensity: Some(1.0),
+            propensity: Some(propensity),
             decision_point: ROUTE_DECISION_POINT.to_string(),
             proposals: RouteProposals {
                 learned,
                 default: Some(self.default_slug.clone()),
                 ladder,
-                aa: None,
+                aa: explored.map(|route| route.aa.clone()),
             },
             fallback_reason,
             influences,
@@ -815,7 +917,8 @@ impl ModelRouter {
         Some((choice, shadow))
     }
 
-    /// The cascade router's pick for `ctx`, before the provider guards.
+    /// The cascade router's pick for `ctx`, among the models the provider
+    /// guards accept when they accept some ([`Self::eligible_models`]).
     fn cascade_pick(
         &self,
         router: &CascadeRouter,
@@ -824,18 +927,26 @@ impl ModelRouter {
     ) -> CascadeModel {
         // Merge budget pressure into routing bias when applicable.
         let effective_bias = Self::effective_bias(inputs);
+        // S02.P1-2: the guards mask the models that cannot run before the
+        // cascade's argmax, so it picks the best one that can.
+        let eligible = self.eligible_models(router, ctx);
 
         let route = if let Some(health) = &self.health {
             // Health-aware path: filters Open providers, demotes HalfOpen
             // and optionally high-latency providers.
             let latency_ref = self.latency_registry.as_deref();
-            router.route_with_health_scored(
+            router.route_with_health_scored_among(
                 ctx,
+                &eligible,
                 health,
                 &self.model_providers,
                 latency_ref,
                 self.latency_threshold_ms,
             )
+        } else if !eligible.is_empty() {
+            // No routing bias reaches a masked pick (decision 3108 removes
+            // the bias).
+            router.route_with_cfactor_among(ctx, &eligible, None, None)
         } else if let Some(bias) = &effective_bias {
             // Conductor / budget bias path (no health data).
             if bias.deprioritize.is_empty() && !bias.prefer_cheaper {
@@ -870,8 +981,29 @@ impl ModelRouter {
         router.apply_knowledge_among(ctx, route, &candidates, Some(&advice))
     }
 
-    /// The cascade router's models a knowledge-weighed pick may land on:
-    /// those the guards in [`Self::route`] accept.
+    /// The cascade router's models the guards in [`Self::route`] accept, when
+    /// they reject some of them and accept at least one (S02.P1-2): the
+    /// cascade picks among these. Empty otherwise, and the cascade picks among
+    /// every model; when the guards reject them all, [`Self::route`] replaces
+    /// the pick with the default.
+    fn eligible_models(&self, router: &CascadeRouter, ctx: &RoutingContext) -> Vec<String> {
+        let needs_tools = needs_tool_use(ctx.task_category);
+        let models = router.model_slugs();
+        let eligible: Vec<String> = models
+            .iter()
+            .filter(|slug| self.guard_rejection(slug, needs_tools).is_none())
+            .cloned()
+            .collect();
+        if eligible.len() == models.len() {
+            Vec::new()
+        } else {
+            eligible
+        }
+    }
+
+    /// The cascade router's models a knowledge-weighed pick or an
+    /// exploration draw may land on: those the guards in [`Self::route`]
+    /// accept.
     fn knowledge_candidates(&self, router: &CascadeRouter, ctx: &RoutingContext) -> Vec<String> {
         let needs_tools = needs_tool_use(ctx.task_category);
         router
@@ -1245,6 +1377,7 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),
+            attempt_key: None,
         }
     }
 
@@ -2177,7 +2310,9 @@ mod tests {
 
     /// G55: each guard that replaces the cascade router's pick with the
     /// default labels the choice a fallback with its reason, and so does
-    /// the decision row; the pick stays the row's learned proposal.
+    /// the decision row; the pick stays the row's learned proposal. A guard
+    /// replaces the pick only when it rejects every model: otherwise the
+    /// cascade picks among the others (S02.P1-2).
     #[test]
     fn unconfigured_cascade_pick_is_not_labelled_router() {
         let models = vec!["claude-sonnet-4-6".to_string(), "gpt-5".to_string()];
@@ -2199,7 +2334,7 @@ mod tests {
             .clone()
             .with_provider_health(Arc::new(ProviderHealthRegistry::new()), providers)
             .with_disabled_providers(HashSet::from(["provider-x".to_string()]));
-        let no_tools = HashSet::from([pick.clone()]);
+        let no_tools: HashSet<String> = models.iter().cloned().collect();
         let toolless = base.clone().with_tool_capability_filter(no_tools);
         for (router, reason) in [
             (unconfigured, FallbackReason::ProviderUnconfigured),
@@ -2222,6 +2357,87 @@ mod tests {
         assert_eq!(routed(&choice), (pick.as_str(), ModelChoiceSource::Router));
         assert_eq!(row.source, Some(DecisionSource::Router));
         assert_eq!(row.fallback_reason, None);
+    }
+
+    /// S02.P1-2: the guards mask a model that cannot run before the cascade
+    /// router's argmax. When the router's best arm is unconfigured, on a
+    /// disabled provider or without the tool use the task needs, it picks
+    /// the best arm that can run, as its own pick, not the default. The
+    /// masked arm stays in the decision row as an ineligible candidate.
+    #[test]
+    fn ineligible_pick_is_masked_before_argmax() {
+        let models = vec!["claude-sonnet-4-6".to_string(), "gpt-5".to_string()];
+        let cascade = Arc::new(CascadeRouter::new(models.clone()));
+        let best = cascade.route(&routing_context()).primary.slug;
+        let other = models
+            .iter()
+            .find(|slug| **slug != best)
+            .expect("a second arm")
+            .clone();
+        let base = ModelRouter::new(Some(cascade)).with_default_slug("default-model");
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+
+        let only_other = HashSet::from([other.clone()]);
+        let unconfigured = base.clone().with_configured_models(only_other);
+        let providers = HashMap::from([
+            (best.clone(), "provider-x".to_string()),
+            (other.clone(), "provider-y".to_string()),
+        ]);
+        let disabled = base
+            .clone()
+            .with_provider_health(Arc::new(ProviderHealthRegistry::new()), providers)
+            .with_disabled_providers(HashSet::from(["provider-x".to_string()]));
+        let no_tools = HashSet::from([best.clone()]);
+        let toolless = base.with_tool_capability_filter(no_tools);
+        let runnable = (other.as_str(), ModelChoiceSource::Router);
+        for (router, reason) in [
+            (unconfigured, FallbackReason::ProviderUnconfigured),
+            (disabled, FallbackReason::ProviderDisabled),
+            (toolless, FallbackReason::NoToolSupport),
+        ] {
+            let (choice, row) = decided(&router, &inputs);
+            assert_eq!(routed(&choice), runnable, "{reason:?}");
+            assert_eq!(row.proposals.learned.as_deref(), Some(other.as_str()));
+            assert_eq!(row.fallback_reason, None);
+            let masked = row
+                .candidates
+                .iter()
+                .find(|candidate| candidate.model == best)
+                .expect("the masked arm is a candidate");
+            assert!(!masked.eligible, "{reason:?}");
+            assert_eq!(masked.ineligible_reason.as_deref(), Some(reason.as_str()));
+        }
+    }
+
+    /// S02.P1-3: a route the cascade router decides for an attempt explores
+    /// with probability ε among the models the guards accept. Its decision
+    /// row gives each its ε-greedy probability and names the A/A draw; a
+    /// route without an attempt key takes the argmax.
+    #[test]
+    fn explored_route_logs_every_eligible_propensity() {
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "gpt-5".into(),
+        ]));
+        let router = ModelRouter::new(Some(cascade))
+            .with_default_slug("default-model")
+            .with_explore_epsilon(1.0);
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+        let (choice, row) = router.decide(&inputs).unwrap();
+        assert_eq!(choice.source, ModelChoiceSource::Router, "no attempt key");
+        assert_eq!(row.propensity, Some(1.0));
+        assert_eq!(row.proposals.aa, None);
+
+        inputs.attempt_key = Some(AttemptKey::new("run", "p", "t", 1));
+        let (choice, row) = router.decide(&inputs).unwrap();
+        assert_eq!(choice.source, ModelChoiceSource::Explore);
+        assert_eq!(row.source, Some(DecisionSource::Explore));
+        assert_eq!(row.propensity, Some(0.5));
+        let p: Vec<Option<f64>> = row.candidates.iter().map(|c| c.p).collect();
+        assert_eq!(p, [Some(0.5), Some(0.5)]);
+        assert!(row.proposals.aa.is_some());
     }
 
     /// The learned state `router`'s decision for `inputs` names.

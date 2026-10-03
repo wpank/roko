@@ -122,9 +122,6 @@ pub struct LearningConfig {
     /// Max warning entries to inject per task.
     #[serde(default = "default_warning_max")]
     pub warning_max_entries: usize,
-    /// Whether repeated gate failures should trigger a plan revision.
-    #[serde(default = "default_true")]
-    pub replan_on_gate_failure: bool,
     /// Run dream consolidation after a plan completes.
     ///
     /// Defaults to `false`: each automatic dream costs a model call, so dreams
@@ -268,7 +265,6 @@ impl Default for LearningConfig {
             learning_min_occurrences: default_learning_min_occ(),
             file_intel_max_entries: default_file_intel_max(),
             warning_max_entries: default_warning_max(),
-            replan_on_gate_failure: true,
             dream_on_completion: false,
             dreams: DreamsConfig::default(),
             use_lookahead_router: false,

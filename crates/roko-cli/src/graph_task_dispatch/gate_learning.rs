@@ -251,7 +251,7 @@ impl GraphTaskDispatcher {
     /// under its lock ([`GateThresholds::update_locked`]), so tasks and
     /// processes that update it at once lose nothing (bug-e0f472). A file
     /// that fails to load or save is logged and left to the next task's
-    /// update.
+    /// update. A frozen run records nothing.
     pub(super) fn settle_gate_learning(
         &self,
         spec: &TaskExecutionSpec,
@@ -262,6 +262,11 @@ impl GraphTaskDispatcher {
         let Some(thresholds_path) = &self.feedback.gate_thresholds_path else {
             return;
         };
+        // A frozen run (decision 2218) records nothing in the thresholds;
+        // retry budgets still read them as the run found them.
+        if self.learning_frozen() {
+            return;
+        }
         let profile = threshold_profile(task);
         let temperament = self
             .config
@@ -350,7 +355,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::graph_task_dispatch::tests::{VERIFY_PROVIDER, make_spec, make_test_dispatcher};
+    use crate::graph_task_dispatch::tests::{
+        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
+    };
 
     fn steps(outcomes: &[(&str, bool)]) -> Vec<(String, bool)> {
         outcomes
@@ -419,6 +426,76 @@ mod tests {
             4,
             "dropping the dispatcher writes what was left"
         );
+    }
+
+    /// Fake Claude CLI that answers every prompt, and adds a line to
+    /// `reflection-calls` beside itself for each post-gate reflection asked
+    /// of it.
+    const REFLECTING_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+input="$(cat)"
+case "$input" in
+  *"Lesson (one sentence)"*) printf 'reflection\n' >> "$(dirname -- "$0")/reflection-calls" ;;
+esac
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// One attempt whose verify step fails, in workspace `temp` with seeded
+    /// gate thresholds, a flush interval of one and `[learning] frozen` set
+    /// to `frozen`. The test model is the cheap helper model too, so a
+    /// post-gate reflection is asked of it. Returns the thresholds' bytes
+    /// before and after.
+    async fn failed_verify_attempt(temp: &tempfile::TempDir, frozen: bool) -> (Vec<u8>, Vec<u8>) {
+        let learn = temp.path().join("learn");
+        std::fs::create_dir_all(&learn).expect("create the learn directory");
+        let path = learn.join("gate-thresholds.json");
+        let seeded = serde_json::to_vec(&GateThresholds::default()).expect("serialize thresholds");
+        std::fs::write(&path, &seeded).expect("seed the thresholds");
+        let feedback = GraphFeedbackContext {
+            gate_thresholds_path: Some(path.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) = make_test_dispatcher(
+            temp,
+            REFLECTING_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                if let Some(model) = config.models.get_mut("stream-model") {
+                    model.supports_tools = true;
+                }
+                config.learning.gate_threshold_flush_interval = 1;
+                config.learning.frozen = frozen;
+            },
+            feedback,
+        )
+        .await;
+        task.verify = vec![verify_step("test", "false")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the verify step fails");
+        let after = std::fs::read(&path).expect("read the thresholds");
+        (seeded, after)
+    }
+
+    /// Decision 2218: a frozen run's failed verify step leaves
+    /// `gate-thresholds.json` as it was, while a live run records the step.
+    /// No run asks for a post-gate reflection since decision 4108, and the
+    /// diagnosis the retry prompt carries is within-run context, so both ask
+    /// for that.
+    #[tokio::test]
+    async fn frozen_gate_failure_writes_no_thresholds_or_reflections() {
+        let frozen = tempdir().expect("tempdir");
+        let (seeded, after) = failed_verify_attempt(&frozen, true).await;
+        assert_eq!(after, seeded, "a frozen run records nothing");
+        let live = tempdir().expect("tempdir");
+        let (seeded, after) = failed_verify_attempt(&live, false).await;
+        assert_ne!(after, seeded, "a live run records its verify run");
+        for run in [&frozen, &live] {
+            let reflections = run.path().join("learn/post-gate-reflections.json");
+            assert!(!reflections.exists(), "no run keeps a reflection (4108)");
+        }
     }
 
     /// gap-7a3527: a Graph verify run moves the pass-rate EMA by

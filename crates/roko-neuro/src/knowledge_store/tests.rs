@@ -72,6 +72,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         }
     }
@@ -795,6 +796,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add anti knowledge");
@@ -974,6 +976,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add anti knowledge");
@@ -1042,6 +1045,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add anti knowledge");
@@ -1100,6 +1104,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add oldest");
@@ -1140,6 +1145,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add middle");
@@ -1180,6 +1186,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add newest");
@@ -1501,6 +1508,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         };
 
@@ -1702,6 +1710,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add tiered");
@@ -1754,6 +1763,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             })
             .expect("add persistent");
@@ -1951,6 +1961,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         };
 
@@ -1988,6 +1999,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         };
 
@@ -2025,6 +2037,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         };
 
@@ -2075,6 +2088,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         };
 
@@ -2111,6 +2125,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         };
 
@@ -2584,6 +2599,7 @@ mod anti_pattern_tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         }
     }

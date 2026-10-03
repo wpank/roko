@@ -95,3 +95,18 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK28 (gap-c06ff3), PK53 (gap-dff960).
 - Suggested model: opus.
+
+## Progress
+
+All on `work/gap-f0a7ee`; cargo verification deferred to the batch gate.
+
+- 7112: implemented at 1a6362709
+- 7113: implemented at cff1dd068 (the fingerprint golden vectors hash fixed inputs, so they did not change)
+- 7114: implemented at 8aa1370fa (Wilson in every cell, per gap-a499aa; Cargo.lock's roko-gate entry gains hmac and sha2 by hand)
+- 7115: implemented at 149cbd885
+- 7116: implemented at 13bb70c1c
+- 7117: implemented at e7dcf8ee9
+- 7118: implemented at 6b5cd93c3
+- 7119: implemented at 56d1b8f4f, except plan step 4 (a note on what Codex's broker lets an agent read outside the workspace), which is not written; the Python guard passes all 185 table rows run by hand
+- 7120: implemented at 4dc29e730
+- 7121: implemented at b165ea489 and 4cee12746; the settle-time canary scan covers the agent's output only, since the composed prompt and the diff's added lines do not reach settle

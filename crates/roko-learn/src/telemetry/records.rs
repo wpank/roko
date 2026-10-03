@@ -1328,6 +1328,10 @@ pub struct RunProvenanceManifest {
     /// (`roko plan budget raise`, backlog 2118).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub budget_raises: Vec<BudgetRaise>,
+    /// Where the run's request came from, when a server started it: `http`,
+    /// or `mcp:<client>` for a chat host (backlog 9116).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// Set when the run closes.
     #[serde(default)]
     pub closed: Option<RunClosed>,
@@ -1349,6 +1353,7 @@ impl RunProvenanceManifest {
             experiment: ExperimentProvenance::default(),
             workspace: WorkspaceProvenance::default(),
             budget_raises: Vec::new(),
+            origin: None,
             closed: None,
         }
     }

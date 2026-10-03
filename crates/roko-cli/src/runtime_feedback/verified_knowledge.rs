@@ -17,12 +17,17 @@
 //!
 //! Tasks without verify steps never emit the event: a provider's own claim
 //! of success is not evidence.
+//!
+//! An attempt that failed through the agent's own work (learning label 0,
+//! blame `agent`) counts one contradiction against each entry its prompt
+//! surfaced, and weakens none of them (S02 L5, decision 4).
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use roko_learn::episode_logger::EpisodeGateVerdict;
+use roko_learn::telemetry::Blame;
 use roko_neuro::{RuntimeEpisodeObservation, RuntimeKnowledgeLifecycle, SourceChannel};
 
 use super::{FeedbackEvent, FeedbackSink};
@@ -162,10 +167,13 @@ impl FeedbackSink for VerifiedKnowledgeSink {
     }
 
     fn interested(&self, event: &FeedbackEvent) -> bool {
-        matches!(event, FeedbackEvent::TaskVerified(_))
+        matches!(event, FeedbackEvent::TaskVerified(_)) || agent_blamed_failure(event).is_some()
     }
 
     async fn on_event(&self, event: &FeedbackEvent) -> Result<(), anyhow::Error> {
+        if let Some((attempt_key, knowledge_ids)) = agent_blamed_failure(event) {
+            return self.record_contradictions(attempt_key, knowledge_ids).await;
+        }
         let FeedbackEvent::TaskVerified(attempt) = event else {
             return Ok(());
         };
@@ -191,9 +199,62 @@ impl FeedbackSink for VerifiedKnowledgeSink {
     }
 }
 
+impl VerifiedKnowledgeSink {
+    /// Count the failed attempt `attempt_key` against each entry of
+    /// `knowledge_ids` its prompt surfaced, without weakening any.
+    async fn record_contradictions(
+        &self,
+        attempt_key: &str,
+        knowledge_ids: &[String],
+    ) -> Result<(), anyhow::Error> {
+        if knowledge_ids.is_empty() {
+            return Ok(());
+        }
+        let store = self.lifecycle.knowledge_store().clone();
+        let ids = knowledge_ids.to_vec();
+        let key = attempt_key.to_string();
+        let serial = Arc::clone(&self.serial);
+        let counted = tokio::task::spawn_blocking(move || {
+            let _serial = serial.lock().unwrap_or_else(PoisonError::into_inner);
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            store.record_contradiction(&ids, &key)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("knowledge contradiction task join: {error}"))??;
+        tracing::debug!(
+            attempt_key,
+            counted,
+            "an agent-blamed failure counted against the knowledge it surfaced"
+        );
+        Ok(())
+    }
+}
+
+/// The attempt key and surfaced knowledge ids of `event` when it settles an
+/// attempt that failed through the agent's own work: learning label 0,
+/// blame `agent` (S01 §4.3). Infra and harness failures, and attempts
+/// without a label, are no evidence about the knowledge.
+fn agent_blamed_failure(event: &FeedbackEvent) -> Option<(&str, &[String])> {
+    let FeedbackEvent::TaskCompleted {
+        settled: Some(settled),
+        knowledge_ids,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    (settled.learning_label == Some(0) && settled.blame == Blame::Agent).then(|| {
+        (
+            settled.identity.attempt_key.as_str(),
+            knowledge_ids.as_slice(),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use roko_learn::telemetry::AttemptOutcome;
     use roko_neuro::{
         KnowledgeEntry, KnowledgeKind, KnowledgeStore, KnowledgeTier, RuntimeAdmissionPath,
     };
@@ -379,6 +440,80 @@ mod tests {
                 RuntimeAdmissionPath::Duplicate
             ]
         );
+    }
+
+    /// The `TaskCompleted` event of an attempt that settled `outcome` after
+    /// its prompt surfaced `knowledge_ids`.
+    fn completed(outcome: AttemptOutcome, knowledge_ids: Vec<String>) -> FeedbackEvent {
+        FeedbackEvent::TaskCompleted {
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            outcome: crate::dispatch::AgentOutcome {
+                task_id: "t".into(),
+                plan_id: "p".into(),
+                model: "claude-sonnet-4-6".into(),
+                provider: "claude_cli".into(),
+                output: String::new(),
+                tokens_in: 0,
+                tokens_out: 0,
+                cost_usd: 0.0,
+                duration_ms: 0,
+                exit_code: Some(1),
+                is_error: true,
+            },
+            model_source: crate::dispatch::ModelChoiceSource::Router,
+            succeeded: false,
+            routing_context: None,
+            prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids,
+            playbook_ids: vec![],
+            initial_model: String::new(),
+            turns: 0,
+            failure_reason: None,
+            settled: crate::runtime_feedback::settled_as(outcome, true),
+        }
+    }
+
+    /// S02 L5, decision 4: an attempt that failed through the agent's own
+    /// work counts one contradiction against each entry its prompt surfaced
+    /// and weakens none of them; an infra failure, or an attempt without a
+    /// learning label, records nothing.
+    #[tokio::test]
+    async fn agent_blamed_failure_counts_a_contradiction_without_weakening() {
+        let dir = tempdir().unwrap();
+        let store = KnowledgeStore::for_workdir(dir.path());
+        store
+            .add(KnowledgeEntry {
+                id: "prior-hint".into(),
+                kind: KnowledgeKind::Insight,
+                content: "Rust hello world programs compile with a plain rustc call".into(),
+                confidence: 0.8,
+                confidence_weight: 0.8,
+                ..KnowledgeEntry::default()
+            })
+            .unwrap();
+        let before = store.read_all().unwrap().remove(0);
+        let sink = VerifiedKnowledgeSink::for_workdir(dir.path());
+        let surfaced = vec!["prior-hint".to_string()];
+
+        for outcome in [AttemptOutcome::ProviderError, AttemptOutcome::Unverified] {
+            let event = completed(outcome, surfaced.clone());
+            assert!(!sink.interested(&event), "{outcome:?}");
+            sink.on_event(&event).await.unwrap();
+        }
+        assert_eq!(store.read_all().unwrap()[0].contradiction_count, 0);
+
+        let failure = completed(AttemptOutcome::GateFailed, surfaced);
+        assert!(sink.interested(&failure));
+        sink.on_event(&failure).await.unwrap();
+        let after = store.read_all().unwrap().remove(0);
+        assert_eq!(after.contradiction_count, 1);
+        assert_eq!(after.confidence, before.confidence);
+        assert_eq!(after.confidence_weight, before.confidence_weight);
+        assert_eq!(after.balance, before.balance);
+        assert_eq!(after.tier, before.tier);
+        assert_eq!(after.confirmation_count, before.confirmation_count);
     }
 
     #[tokio::test]

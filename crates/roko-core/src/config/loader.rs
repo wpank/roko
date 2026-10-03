@@ -1436,16 +1436,18 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "profiles",
     "agent.roles",
     "agent.tier_models",
+    "audit.families",
     "gates.max_output_tokens",
+    "gates.packs",
     "retrieval.role_token_budgets",
     "tools.profiles",
 ];
 
 /// Dynamic map sections whose entries are structs that deny unknown fields
-/// (`ProviderConfig`, `ModelProfile`). Loading strips an unknown key inside
-/// one of their entries, as it does anywhere else; serde itself ignores or
-/// collects unknown keys in the other sections' entries.
-const STRICT_ENTRY_SECTIONS: &[&str] = &["providers", "models"];
+/// (`ProviderConfig`, `ModelProfile`, `GatePackConfig`). Loading strips an
+/// unknown key inside one of their entries, as it does anywhere else; serde
+/// itself ignores or collects unknown keys in the other sections' entries.
+const STRICT_ENTRY_SECTIONS: &[&str] = &["providers", "models", "gates.packs"];
 
 /// Tables that keep keys the schema does not name: a `[profiles.<name>]`
 /// entry collects them in its flattened `DomainProfile::extra` map.
@@ -1523,6 +1525,12 @@ const REMOVED_CONFIG_KEYS: &[(&str, &str)] = &[
         "learning.replan_gate_attempts",
         "learning.replan_gate_attempts was removed because no plan run \
          revises a plan on gate failure, so it limited nothing",
+    ),
+    (
+        "learning.replan_on_gate_failure",
+        "learning.replan_on_gate_failure was removed because no plan run \
+         revises a plan on gate failure: a failed task is retried up to its \
+         max_retries, and no post-gate reflection is generated",
     ),
     (
         "executor",
@@ -1806,6 +1814,13 @@ fn build_schema_tree() -> toml::Value {
     // Populate Optional/skip_serializing_if agent fields with non-default
     // values so they appear in the serialized schema tree and are not
     // stripped by `strip_unknown_fields`.
+    // `[audit] home` (the vault override, 7112) is optional, and
+    // `[audit.families]` maps a family name to model globs.
+    config.audit.home = Some(PathBuf::new());
+    config
+        .audit
+        .families
+        .insert("_schema_sentinel".to_string(), Vec::new());
     config.agent.command = Some(String::new());
     config.agent.args = Some(Vec::new());
     config.agent.timeout_ms = Some(0);
@@ -1854,6 +1869,12 @@ fn build_schema_tree() -> toml::Value {
         .gates
         .max_output_tokens
         .insert("_schema_sentinel".to_string(), 0);
+    // `packs` maps work-domain labels to verifier packs (a dynamic map
+    // section).
+    config.gates.packs.insert(
+        "_schema_sentinel".to_string(),
+        super::schema::GatePackConfig::default(),
+    );
     // `weights` flattens its default `RewardWeights` and may override them
     // per tier.
     let sentinel_weights = RewardWeights {
@@ -4644,6 +4665,7 @@ override_learning_dampening = 0.5
 
     /// gap-7a3527: config keys that nothing read were removed. An old file
     /// that sets them is told why each went, and still loads and parses.
+    /// Backlog 4110 removed `learning.replan_on_gate_failure` the same way.
     #[test]
     fn dead_config_keys_are_removed_and_old_files_still_load() {
         let text = r#"
@@ -4656,6 +4678,7 @@ docs = ["shell:markdownlint ."]
 [learning]
 replan_max_per_plan = 2
 replan_gate_attempts = 3
+replan_on_gate_failure = true
 dream_on_completion = true
 "#;
         let value: toml::Value = text.parse().expect("parse the old file");
@@ -4672,6 +4695,7 @@ dream_on_completion = true
                 "gates.domain_gates",
                 "learning.replan_gate_attempts",
                 "learning.replan_max_per_plan",
+                "learning.replan_on_gate_failure",
             ]
         );
 
@@ -5266,6 +5290,31 @@ excluded_tools = ["write_file"]
         let research = &config.tools.profiles["research"];
         assert_eq!(research.extra_tools, ["web_search", "web_fetch"]);
         assert_eq!(research.excluded_tools, ["write_file"]);
+    }
+
+    /// 9120: `[gates.packs.<domain>]` entries are known config paths, a typo
+    /// inside one is reported, and a load keeps the packs and drops the typo.
+    #[test]
+    fn gate_packs_are_known_config_paths() {
+        let text = r#"
+[gates.packs.research]
+rung = []
+
+[[gates.packs.research.rungs]]
+name = "sources"
+kind = "citations"
+artefacts = ["report.md"]
+"#;
+        let value: toml::Value = text.parse().expect("parse packs toml");
+        let diags = validate_known_config_paths(&value);
+        let keys: Vec<&str> = diags.iter().map(|d| d.key.as_str()).collect();
+        assert_eq!(keys, ["gates.packs.research.rung"], "{diags:?}");
+
+        let config = deserialize_migrated_toml(text).expect("load packs config");
+        let rungs = &config.gates.packs["research"].rungs;
+        assert_eq!(rungs.len(), 1);
+        assert_eq!(rungs[0].name, "sources");
+        assert_eq!(rungs[0].kind, super::super::schema::RungKind::Citations);
     }
 
     #[test]

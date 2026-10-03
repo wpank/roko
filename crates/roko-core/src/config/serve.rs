@@ -156,6 +156,55 @@ pub struct ServeConfig {
     /// Optional OTLP tracing export. Disabled when `otlp_endpoint` is absent.
     #[serde(default)]
     pub tracing: TracingConfig,
+    /// Limits on runs a chat host starts over `POST /mcp` (9116).
+    #[serde(default)]
+    pub mcp: ServeMcpConfig,
+}
+
+/// `[serve.mcp]`: limits on the runs a chat host starts over `POST /mcp`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServeMcpConfig {
+    /// The most a run started over `/mcp` may spend, in USD. A `run_prompt`
+    /// or `plan_run` call must name a cap (`max_usd`) above 0 and at most
+    /// this, and the cap becomes the run's budget ceiling. Defaults to 5.00;
+    /// runs started any other way are not affected.
+    #[serde(default = "default_mcp_max_run_usd")]
+    pub max_run_usd: f64,
+    /// Let a chat host's run start without the data-model boundary
+    /// (`[agent.data_llm]`), which screens what the run reads (9117).
+    /// Defaults to false: such a run is refused.
+    #[serde(default)]
+    pub allow_without_data_llm: bool,
+}
+
+impl Default for ServeMcpConfig {
+    fn default() -> Self {
+        Self {
+            max_run_usd: default_mcp_max_run_usd(),
+            allow_without_data_llm: false,
+        }
+    }
+}
+
+fn default_mcp_max_run_usd() -> f64 {
+    5.0
+}
+
+impl super::schema::RokoConfig {
+    /// Why a run a chat host starts may not start, or `None` when it may
+    /// (9117). Its request text is untrusted data, and the data-model
+    /// boundary (`[agent.data_llm]`) screens what such a run reads, so
+    /// without the boundary the run is refused unless `[serve.mcp]
+    /// allow_without_data_llm` is set.
+    #[must_use]
+    pub fn chat_run_refusal(&self) -> Option<&'static str> {
+        let unscreened = self.agent.data_llm.is_none() && !self.serve.mcp.allow_without_data_llm;
+        unscreened.then_some(
+            "a run from a chat host needs the data-model boundary: set [agent.data_llm] in \
+             roko.toml, or [serve.mcp] allow_without_data_llm = true to run without it",
+        )
+    }
 }
 
 impl Default for ServeConfig {
@@ -176,6 +225,7 @@ impl Default for ServeConfig {
             event_ingest_allowlist: Vec::new(),
             live_agent_output: LiveAgentOutput::default(),
             tracing: TracingConfig::default(),
+            mcp: ServeMcpConfig::default(),
         }
     }
 }

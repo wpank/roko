@@ -493,6 +493,19 @@ fn tui_accessibility() -> Vec<EnvVarSpec> {
 fn config_system() -> Vec<EnvVarSpec> {
     vec![
         EnvVarSpec {
+            name: "ROKO_AUDIT_HOME",
+            owner: "Audit",
+            purpose: "Root of the audit vault (hidden tests, audit keys, the audit ledger), \
+                      outside every workdir",
+            value_type: ValueType::Path,
+            default: "~/.roko/audit",
+            precedence: "env > [audit] home > default",
+            scope: Scope::Gate,
+            sensitivity: Sensitivity::Public,
+            stability: Stability::Unstable,
+            replacement: None,
+        },
+        EnvVarSpec {
             name: "ROKO_CONFIG",
             owner: "Configuration",
             purpose: "Explicit path to roko.toml config file",

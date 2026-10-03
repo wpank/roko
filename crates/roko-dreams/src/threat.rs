@@ -159,6 +159,7 @@ pub fn threat_warning_entries_with_floor(
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         });
     }

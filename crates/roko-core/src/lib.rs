@@ -87,6 +87,10 @@ pub mod agent;
 /// Cross-cut arbitration protocol for resolving Daimon/Neuro/Dreams conflicts (INT-21).
 pub mod arbitration;
 pub mod attestation;
+/// The audit vault outside every workdir (S05 §4.4).
+pub mod audit_home;
+/// Plain audit data shared across crates (S05 §4.1, §4.6, §5).
+pub mod audit_types;
 pub mod body;
 pub mod build;
 /// Additional Bus backend implementations: BroadcastBus, MemoryBus, MultiBus.

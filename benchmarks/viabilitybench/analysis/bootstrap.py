@@ -26,13 +26,21 @@ Two kinds of interval:
   skewed enough that the plain percentile interval is biased. The bias-correction z0 and the acceleration a (from a
   leave-one-task-out jackknife of `statistic`, dropping one task's rows at a time from the full, unresampled data)
   follow Efron & Tibshirani (1993) ch. 14; `a` needs at least two jackknife values that differ, so a run with one
-  task raises BootstrapError.
+  task raises BootstrapError. The result keeps z0 and a (both 0 for a percentile interval).
+
+**The p-value of an interval** (`p_value`, S09 §4.1's directional p for Holm, task 3338): for H0: θ ≤ null against
+θ > null, twice the one-sided level at which the interval's lower bound reaches `null`; for H0: θ ≥ null, the same
+with the upper bound. So p ≤ a exactly when the (1 − a) two-sided interval's bound clears `null`, up to the
+interpolation between order statistics. A percentile interval gives 2·P*(θ* < null) (or 2·P*(θ* > null)); BCa
+inverts its adjusted quantile with the result's z0 and a. The empirical share is clipped to [1/(2B), 1 − 1/(2B)],
+as z0's is, so p is never 0.
 
 API:
     BootstrapError(ValueError)
-    BootstrapResult(estimate, low, high, b, alpha, method, replicates)
+    BootstrapResult(estimate, low, high, b, alpha, method, replicates, z0=0.0, acceleration=0.0)
     paired_bootstrap(rows, statistic, strata=("family", "ladder"), b=10_000, seed=0, alpha=0.05,
                      method="percentile") -> BootstrapResult
+    p_value(result, null, alternative) -> float     # alternative "greater" (H0: θ <= null) or "less"
     task_key(row) -> tuple                          # metrics.task_key's convention, read locally (no import cycle)
 """
 
@@ -63,6 +71,8 @@ class BootstrapResult:
     alpha: float
     method: str  # "percentile" or "bca"
     replicates: tuple[float, ...]  # length b, in draw order
+    z0: float = 0.0  # BCa's bias correction; 0 for a percentile interval
+    acceleration: float = 0.0  # BCa's acceleration; 0 for a percentile interval
 
 
 def task_key(row: Mapping) -> tuple:
@@ -91,14 +101,38 @@ def paired_bootstrap(rows: Sequence[Mapping], statistic: Callable[[Sequence[Mapp
     estimate = float(statistic(rows))
     rng = Random(seed)
     replicates = tuple(float(statistic(_resample(tree, rng))) for _ in range(b))
+    z0 = acceleration = 0.0
     if method == "percentile":
         low, high = _percentile(replicates, 100 * alpha / 2), _percentile(replicates, 100 * (1 - alpha / 2))
     elif method == "bca":
-        low, high = _bca_bounds(rows, strata, statistic, estimate, replicates, alpha)
+        z0, acceleration = _bca_parameters(rows, strata, statistic, estimate, replicates)
+        low, high = _bca_bounds(z0, acceleration, replicates, alpha)
     else:
         raise BootstrapError(f"method must be 'percentile' or 'bca', not {method!r}")
     return BootstrapResult(estimate=estimate, low=low, high=high, b=b, alpha=alpha, method=method,
-                           replicates=replicates)
+                           replicates=replicates, z0=z0, acceleration=acceleration)
+
+
+def p_value(result: BootstrapResult, null: float, alternative: str) -> float:
+    """The directional two-sided p of H0: θ <= null (`alternative` "greater") or θ >= null ("less") that matches
+    `result`'s interval (module docstring)."""
+    count = len(result.replicates)
+    if alternative == "greater":
+        share = sum(1 for value in result.replicates if value < null) / count
+    elif alternative == "less":
+        share = sum(1 for value in result.replicates if value > null) / count
+    else:
+        raise BootstrapError(f"alternative must be 'greater' or 'less', not {alternative!r}")
+    share = min(max(share, 1 / (2 * count)), 1 - 1 / (2 * count))
+    # The bound reaches `null` at the replicates' quantile `share` (from below for "greater", from above for
+    # "less"); solve BCa's adjusted level for the alpha that puts its bound there.
+    w = _NORMAL.inv_cdf(share) - result.z0 if alternative == "greater" else _NORMAL.inv_cdf(1 - share) - result.z0
+    denominator = 1 + result.acceleration * w
+    if denominator <= 0:
+        return 1.0  # beyond where BCa's adjusted level is monotone: no level claims it
+    shifted = w / denominator - result.z0
+    one_sided = _NORMAL.cdf(shifted) if alternative == "greater" else 1 - _NORMAL.cdf(shifted)
+    return min(1.0, 2 * one_sided)
 
 
 # --- the resampling tree --------------------------------------------------------------------------------------
@@ -153,8 +187,9 @@ def _percentile(values: Sequence[float], pct: float) -> float:
     return data[low] + (rank - low) * (data[high] - data[low])
 
 
-def _bca_bounds(rows: Sequence[Mapping], strata: Sequence[str], statistic: Callable[[Sequence[Mapping]], float],
-                estimate: float, replicates: Sequence[float], alpha: float) -> tuple[float, float]:
+def _bca_parameters(rows: Sequence[Mapping], strata: Sequence[str],
+                    statistic: Callable[[Sequence[Mapping]], float], estimate: float,
+                    replicates: Sequence[float]) -> tuple[float, float]:
     """Efron & Tibshirani (1993) ch. 14: bias-correction z0 from the replicates, acceleration a from a
     leave-one-task-out jackknife."""
     thetas = _jackknife(rows, strata, statistic)
@@ -167,7 +202,11 @@ def _bca_bounds(rows: Sequence[Mapping], strata: Sequence[str], statistic: Calla
     deviations = [mean_theta - theta for theta in thetas]
     numerator = sum(deviation ** 3 for deviation in deviations)
     denominator = 6 * sum(deviation ** 2 for deviation in deviations) ** 1.5
-    acceleration = numerator / denominator if denominator else 0.0
+    return z0, numerator / denominator if denominator else 0.0
+
+
+def _bca_bounds(z0: float, acceleration: float, replicates: Sequence[float], alpha: float) -> tuple[float, float]:
+    """The BCa interval's bounds: the replicates' quantiles at the levels z0 and the acceleration adjust."""
 
     def quantile(level: float) -> float:
         z = z0 + _NORMAL.inv_cdf(level)

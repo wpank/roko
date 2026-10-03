@@ -613,6 +613,7 @@ pub(super) fn with_targeted_compile_rung(
             timeout_secs: timeout_secs.max(1),
             required: true,
             parallel_with: Vec::new(),
+            ..Default::default()
         })
         .collect();
     optimized

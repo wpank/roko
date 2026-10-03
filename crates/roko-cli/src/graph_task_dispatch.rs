@@ -39,7 +39,6 @@ use roko_graph::cells::{
 use roko_learn::costs_db::CostRecord;
 use roko_learn::oracles::coding::{BuildRecord, CodingOracle, TestRecord};
 use roko_learn::reflex_store::{ReflexObservation, ReflexStore};
-use roko_learn::shadow::ShadowRunner;
 use roko_learn::telemetry::{AttemptKeyed, AttemptOutcome};
 
 use crate::dispatch::{
@@ -53,6 +52,7 @@ use crate::task_parser::TaskDef;
 
 mod attempt;
 mod attempt_workspace;
+mod audit_select;
 pub(crate) mod baseline_verify;
 mod bench_verify;
 mod budget;
@@ -70,6 +70,7 @@ mod live_tool_calls;
 mod operator_directives;
 mod operator_pause;
 mod operator_stop;
+mod pack_rungs;
 mod prompt_experiment;
 mod red_flags;
 mod reflex_credit;
@@ -111,9 +112,8 @@ use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
 use live_tool_calls::LiveToolCalls;
 use routing_context::{
-    CheapFactoryAgent, arbitrate_cross_cut_routing_bias, assign_retrieval_strategy_arm,
-    build_routing_context, dream_routing_bias, effective_agent_contract, select_cheap_model_key,
-    upstream_outputs,
+    CheapFactoryAgent, arbitrate_cross_cut_routing_bias, build_routing_context, dream_routing_bias,
+    effective_agent_contract, select_cheap_model_key, upstream_outputs,
 };
 use supervision::SupervisedAttempt;
 use tui_forward::forward_live_event_to_tui;
@@ -241,6 +241,9 @@ pub struct GraphTaskDispatcher {
     /// (`[meta] workspace_rungs`), per plan id, read once from the plan's
     /// `tasks.toml`.
     workspace_rung_plans: parking_lot::Mutex<HashMap<String, bool>>,
+    /// `(plan id, work domain)` pairs whose tasks face no workspace rungs
+    /// for want of a `[gates.packs]` entry, each logged once (`pack_rungs`).
+    unpacked_domains: parking_lot::Mutex<std::collections::HashSet<(String, String)>>,
     /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt stopped at its turn
     /// cap; the next attempt raises the cap and resumes the partial work.
     turn_cap_retries: parking_lot::Mutex<HashMap<String, TurnCapRetry>>,
@@ -339,6 +342,7 @@ impl GraphTaskDispatcher {
             stopping: tokio_util::sync::CancellationToken::new(),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
+            unpacked_domains: parking_lot::Mutex::default(),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
@@ -794,6 +798,11 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         dispatch_ctx: &mut DispatchContext,
     ) -> Result<crate::dispatch::RunnerDispatchPlan> {
+        // A rung the task must pass whose kind is not built yet fails the
+        // attempt before its agent runs, and is not retried (9120).
+        if let Some(rejection) = self.unbuilt_rung(spec, task) {
+            return Err(rejection);
+        }
         // The prompt shows every check that will judge the task: its own
         // verify steps, then the workspace rungs it faces.
         let task = &self.prompt_task(spec, task);
@@ -921,7 +930,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 file_exts,
             };
 
-            if let Some(reflex_match) = reflex_store.match_observation_with_id(&observation) {
+            // A frozen run reads its reflexes and counts no hit (decision 2218).
+            let reflex_match = if self.learning_frozen() {
+                reflex_store.peek_observation_with_id(&observation)
+            } else {
+                reflex_store.match_observation_with_id(&observation)
+            };
+            if let Some(reflex_match) = reflex_match {
                 let rule_id = reflex_match.rule_id;
                 let cached_output = reflex_match.action.args.clone();
                 tracing::info!(
@@ -952,21 +967,6 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // A plan with `[meta] skip_enrichment = true` is dispatched as
         // authored: no dream/cross-cut routing advice.
         let skip_enrichment = self.plan_skips_enrichment(spec);
-
-        // ── P2-01: ShadowRunner decision recording ──────────────────────
-        //
-        // Record whether this task would be shadowed. Infrastructure-only:
-        // we record the decision but do not actually spawn a shadow task.
-        if let Some(shadow) = &self.feedback.shadow_runner {
-            let should = shadow.should_shadow();
-            tracing::debug!(
-                plan_id = %spec.plan_id,
-                task_id = %task.id,
-                should_shadow = should,
-                shadow_model = %shadow.config.model_slug,
-                "P2-01: shadow decision recorded (infrastructure-only)"
-            );
-        }
 
         // ── Disk headroom (reg-7cf6f9) ───────────────────────────────────
         //
@@ -1216,6 +1216,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
+            attempt_key: Some(attempt.key.clone()),
         };
         let prompt_assembly_started = std::time::Instant::now();
         let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
@@ -1227,10 +1228,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
 
-        // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
+        // ── RAG-10: Retrieval outcome telemetry (pre-gate) ───────────────
         //
         // Immediately after prompt assembly we know:
-        //   - which strategy was used (RAG-11 experiment assignment or default)
+        //   - which strategy was used (keyword, the only one retrieval runs)
         //   - how many knowledge entries were retrieved (diagnostics.knowledge_ids)
         //   - the query text (task title + description)
         //   - prompt assembly latency (covers neuro knowledge retrieval)
@@ -1246,17 +1247,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .trim()
             .to_string();
 
-            // RAG-11: assign retrieval strategy via experiment store, or fall
-            // back to the default "keyword" arm (which is what the current
-            // `collect_neuro_knowledge_cached` always runs). The store read is
-            // blocking file I/O, so it runs off the reactor.
-            let strategy = if let Some(exp_path) = self.feedback.experiment_store_path.clone() {
-                tokio::task::spawn_blocking(move || assign_retrieval_strategy_arm(&exp_path))
-                    .await
-                    .unwrap_or_else(|_| roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string())
-            } else {
-                roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string()
-            };
+            // `collect_neuro_knowledge_cached` always retrieves by keyword. The
+            // RAG-11 A/A experiment, which drew a strategy label after the
+            // prompt was built and never applied it, is gone (G72).
+            let strategy = roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string();
 
             // Stash for gate-settlement below.
             self.retrieval_ctx.lock().insert(

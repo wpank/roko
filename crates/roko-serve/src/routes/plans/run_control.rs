@@ -3,6 +3,7 @@
 
 use super::*;
 
+use crate::runtime::RunOrigin;
 use crate::state::{
     PLAN_RUN_QUEUE_CAPACITY, PlanRunSpec, PlanRunStatus, PlanSetSpec, QueuedPlanRun, RunState,
 };
@@ -294,6 +295,8 @@ pub(super) async fn execute_plans(
             only_plans,
             max_parallel_plans: effective_max,
         }),
+        origin: RunOrigin::Http,
+        max_usd: None,
     };
     // Start the run, or queue it behind the live one (decision 9105).
     let position = start_or_queue_plan_run(&state, spec).await?;
@@ -324,10 +327,22 @@ pub(super) async fn execute_plans(
 ///   with the cancel token; `force_resume` and `fresh` are set from `resume`.
 ///
 /// Returns the run it started or queued.
-pub(super) async fn start_plan_run(
+pub(crate) async fn start_plan_run(
     state: &Arc<AppState>,
     id: String,
     resume: bool,
+) -> Result<StartedPlanRun, ApiError> {
+    start_plan_run_with(state, id, resume, RunOrigin::Http, None).await
+}
+
+/// [`start_plan_run`] for a run whose request came from `origin`, with
+/// `max_usd` as its budget ceiling when set (9116).
+pub(crate) async fn start_plan_run_with(
+    state: &Arc<AppState>,
+    id: String,
+    resume: bool,
+    origin: RunOrigin,
+    max_usd: Option<f64>,
 ) -> Result<StartedPlanRun, ApiError> {
     validate_path_segment(&id, "plan id")?;
 
@@ -389,6 +404,8 @@ pub(super) async fn start_plan_run(
         plan_dir,
         resume,
         plan_set: None,
+        origin,
+        max_usd,
     };
     // Start the run, or queue it behind the live one (decision 9105).
     let queued = start_or_queue_plan_run(state, spec).await?;
@@ -403,15 +420,15 @@ pub(super) async fn start_plan_run(
 }
 
 /// A run [`start_plan_run`] started or queued.
-pub(super) struct StartedPlanRun {
-    pub(super) run_id: String,
+pub(crate) struct StartedPlanRun {
+    pub(crate) run_id: String,
     /// Tasks the run replays from its checkpoint instead of running: none for
     /// a fresh run, `None` when the runtime cannot tell (gap-b07969) or the
     /// run is queued.
-    pub(super) skippable_task_ids: Option<Vec<String>>,
+    pub(crate) skippable_task_ids: Option<Vec<String>>,
     /// The run's place in the queue, 1 being next, while it waits for the
     /// live run to end (decision 9105).
-    pub(super) queued: Option<usize>,
+    pub(crate) queued: Option<usize>,
 }
 
 // ── Starting and queueing runs ───────────────────────────────────────
@@ -544,6 +561,8 @@ fn launch_single_plan_run(
         let plan_id = spec.key.clone();
         let plan_dir = spec.plan_dir.clone();
         let run_id = spec.run_id.clone();
+        let origin = spec.origin.clone();
+        let max_usd = spec.max_usd;
         let state_for_task = Arc::clone(state);
         async move {
             // Do NOT publish PlanStarted here. The runtime publishes its own
@@ -561,6 +580,8 @@ fn launch_single_plan_run(
                 live_agent_output: Some(live_agent_output),
                 // The run takes the id this handler returns (bug-4f833d).
                 run_id: Some(run_id.clone()),
+                origin,
+                max_usd,
                 ..PlanRunOptions::default()
             };
             let outcome = run_plans(&state_for_task, &plan_dir, options, revalidate).await;
@@ -644,6 +665,8 @@ fn launch_plan_set_run(
     let plan_target = spec.plan_dir.clone();
     let run_id = spec.run_id.clone();
     let plans = spec.members.clone();
+    let origin = spec.origin.clone();
+    let max_usd = spec.max_usd;
     let state_for_task = Arc::clone(state);
 
     // Every hub event of this run is sequenced at or after this point.
@@ -659,6 +682,8 @@ fn launch_plan_set_run(
             max_parallel_plans: Some(set.max_parallel_plans),
             live_agent_output: Some(live_agent_output),
             run_id: Some(run_id.clone()),
+            origin,
+            max_usd,
         };
         // Do NOT publish plan lifecycle events (plan_started, plan_completed)
         // for the run_id.  The runtime publishes its own per-plan events
@@ -952,10 +977,17 @@ pub(super) async fn cancel_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    cancel_plan_run(&state, &id).await.map(Json)
+}
+
+/// Cancel the live or queued plan run `id` names, as `POST
+/// /api/plans/{id}/cancel` does: the route and the MCP `run_cancel` tool
+/// (9115) share it.
+pub(crate) async fn cancel_plan_run(state: &Arc<AppState>, id: &str) -> Result<Value, ApiError> {
     let mut active = state.active_plans.write().await;
     // Resolve by key, run id or member plan id; else look in the queue.
-    let Some(key) = active_run_for(&active, &id) else {
-        return cancel_queued_run(&state, &mut active, &id);
+    let Some(key) = active_run_for(&active, id) else {
+        return cancel_queued_run(state, &mut active, id);
     };
     let handle = active
         .get(&key)
@@ -997,10 +1029,10 @@ pub(super) async fn cancel_plan(
     // it ended first. No snapshot is written — a cancelled plan is not
     // resumable.
     let cancelled = PlanRunStatus::ended(RunState::Cancelled, None);
-    record_plan_run_end(&state, &key, &run_id, cancelled).await;
+    record_plan_run_end(state, &key, &run_id, cancelled).await;
     // An aborted run's task never started the next queued run; this does,
     // unless the task did first (decision 9105).
-    start_next_queued_run(&state).await;
+    start_next_queued_run(state).await;
 
     // Publish PlanCompleted only when the task did not finish cleanly on its
     // own.  If the run observed the cancel token and returned, it already
@@ -1008,12 +1040,12 @@ pub(super) async fn cancel_plan(
     // to every connected WebSocket client.
     if had_to_abort {
         state.event_bus.publish(ServerEvent::PlanCompleted {
-            plan_id: id.clone(),
+            plan_id: id.to_string(),
             success: false,
         });
     }
 
-    Ok(Json(json!({ "cancelled": true })))
+    Ok(json!({ "cancelled": true }))
 }
 
 /// Take the queued run `id` names out of the queue (decision 9105). Its
@@ -1024,7 +1056,7 @@ fn cancel_queued_run(
     state: &AppState,
     active: &mut std::collections::HashMap<String, PlanHandle>,
     id: &str,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Value, ApiError> {
     let removed = {
         let mut queue = state
             .plan_queue
@@ -1045,5 +1077,5 @@ fn cancel_queued_run(
         cancel: CancelToken::new(),
     };
     active.insert(spec.run_id.clone(), plan_handle);
-    Ok(Json(json!({ "cancelled": true, "run_id": spec.run_id })))
+    Ok(json!({ "cancelled": true, "run_id": spec.run_id }))
 }

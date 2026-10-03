@@ -75,18 +75,40 @@ fn key_file_deny_rules() -> Vec<String> {
     rules
 }
 
+/// `Read` and `Edit` deny rules for the audit vault's roots (S05 §4.4).
+/// Claude Code also turns `Read` rules into exclusions in its own Grep and
+/// Glob.
+fn vault_deny_rules(roots: &[PathBuf]) -> Vec<String> {
+    let mut rules = Vec::new();
+    for root in roots {
+        let root = root.display();
+        rules.push(format!("Read(/{root}/**)"));
+        rules.push(format!("Edit(/{root}/**)"));
+    }
+    rules
+}
+
 /// Build the Claude CLI `--settings` JSON payload with safety hooks.
 ///
 /// Claude Code hook entries do not support per-hook condition fields. Keep the
 /// filtering inside one command so ordinary Bash calls are allowed while the
 /// destructive commands that should never be launched by a model in this
-/// workspace are blocked. The payload does not depend on the environment:
-/// the guard resolves `~` and the working directory when it runs.
+/// workspace are blocked. The deny rules name the audit vault's roots as this
+/// process resolves them when it spawns the CLI (`ROKO_AUDIT_HOME` and
+/// `~/.roko/audit`); nothing else depends on the environment: the guard
+/// resolves `~`, the vault and the working directory when it runs.
 #[must_use]
 pub fn build_settings_json() -> String {
+    settings_json_for(&roko_core::audit_home::vault_roots())
+}
+
+/// [`build_settings_json`] with the audit vault at `vault_roots`.
+fn settings_json_for(vault_roots: &[PathBuf]) -> String {
+    let mut deny = key_file_deny_rules();
+    deny.extend(vault_deny_rules(vault_roots));
     serde_json::json!({
         "permissions": {
-            "deny": key_file_deny_rules(),
+            "deny": deny,
         },
         "hooks": {
             "PreToolUse": [
@@ -2431,6 +2453,68 @@ mod tests {
         assert_eq!(bash_code("grep -r api_key ."), Some(0));
     }
 
+    /// S05 §4.4: Claude Code's own tools are kept out of the audit vault, by
+    /// deny rules on its roots and by the guard, which resolves
+    /// `ROKO_AUDIT_HOME` and `HOME` itself.
+    #[test]
+    fn claude_settings_deny_the_audit_vault() {
+        let vault = tempdir().unwrap();
+        let root = vault.path().canonicalize().unwrap();
+        let value: Value = serde_json::from_str(&settings_json_for(&[root.clone()])).unwrap();
+        let deny: Vec<&str> = value
+            .pointer("/permissions/deny")
+            .and_then(Value::as_array)
+            .expect("deny rules")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for tool in ["Read", "Edit"] {
+            let rule = format!("{tool}(/{}/**)", root.display());
+            assert!(deny.contains(&rule.as_str()), "missing {rule} in {deny:?}");
+        }
+        for name in KEY_FILE_NAMES {
+            let rule = format!("Read(//**/.roko/{name})");
+            assert!(deny.contains(&rule.as_str()), "missing {rule} in {deny:?}");
+        }
+
+        let suite = root.join("ws/hidden/hs-1/suite.py");
+        fs::create_dir_all(suite.parent().unwrap()).unwrap();
+        fs::write(&suite, "# hidden\n").unwrap();
+        let workdir = tempdir().unwrap();
+        fs::create_dir_all(workdir.path().join(".roko/audit")).unwrap();
+        fs::write(workdir.path().join(".roko/audit/messages.jsonl"), "{}\n").unwrap();
+        let env: [(&str, &std::path::Path); 1] = [("ROKO_AUDIT_HOME", root.as_path())];
+        let file = |input: Value| {
+            let payload = serde_json::json!({
+                "cwd": workdir.path(),
+                "tool_name": "Read",
+                "tool_input": input,
+            });
+            run_hook(&file_hook_command(), &payload.to_string(), &env)
+                .status
+                .code()
+        };
+        let bash = |command: String| {
+            let payload =
+                serde_json::json!({ "cwd": workdir.path(), "tool_input": { "command": command } });
+            run_hook(&bash_hook_command(), &payload.to_string(), &env)
+                .status
+                .code()
+        };
+        assert_eq!(file(serde_json::json!({ "file_path": suite })), Some(2));
+        assert_eq!(bash(format!("cat {}", suite.display())), Some(2));
+        assert_eq!(
+            bash("grep -r canary \"$ROKO_AUDIT_HOME\"".to_string()),
+            Some(2)
+        );
+        assert_eq!(
+            bash("cat ~/.roko/audit/ws/keys/audit-secret".to_string()),
+            Some(2)
+        );
+        let log = serde_json::json!({ "file_path": ".roko/audit/messages.jsonl" });
+        assert_eq!(file(log), Some(0), "the workspace log is not the vault");
+    }
+
     /// bug-69a002, bug-77413c: the searches and reads that reach a roko.toml
     /// holding a secret, or a key file in .roko, from the table roko-std's
     /// bash tool checks too, and the Grep calls only this guard checks.
@@ -2486,7 +2570,8 @@ mod tests {
             let (cwd, command) = rest
                 .strip_prefix("in src: ")
                 .map_or((root, rest), |command| (src.as_path(), command));
-            let want = if verdict == "deny" { Some(2) } else { Some(0) };
+            let refused = verdict == "deny" || verdict == "vault";
+            let want = if refused { Some(2) } else { Some(0) };
             assert_eq!(
                 hook_code(command, cwd),
                 want,

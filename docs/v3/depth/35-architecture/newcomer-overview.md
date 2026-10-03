@@ -718,10 +718,6 @@ tier2 = "claude-opus-4-6"      # Hard tasks
 [gates]
 max_rung = 2     # Only run compile + lint + test (skip expensive gates)
 adaptive = true  # Enable adaptive threshold learning
-
-# Optional: learning configuration
-[learning]
-replan_on_gate_failure = true  # Auto-generate revised plans on failure
 ```
 
 Key configuration sections:

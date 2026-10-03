@@ -163,6 +163,10 @@ pub struct DispatchContext {
     /// The other plans running in the same working tree now, each with the
     /// areas its tasks write (gap-c09fc7). Empty when the plan runs alone.
     pub concurrent_plans: Vec<(String, Vec<String>)>,
+    /// The attempt this dispatch is: the unit of its route's exploration
+    /// draw (S02.P1-3). `None` outside Graph dispatch, and then the route
+    /// never explores.
+    pub attempt_key: Option<roko_learn::telemetry::AttemptKey>,
 }
 
 // ─── Dispatcher facade ─────────────────────────────────────────────────
@@ -237,6 +241,14 @@ impl Dispatcher {
         self.router = self
             .router
             .with_tool_capability_filter(models_without_tools);
+        self
+    }
+
+    /// Explore with probability `epsilon` on each route the cascade router
+    /// decides ([`ModelRouter::with_explore_epsilon`]).
+    #[must_use]
+    pub fn with_explore_epsilon(mut self, epsilon: f64) -> Self {
+        self.router = self.router.with_explore_epsilon(epsilon);
         self
     }
 
@@ -568,6 +580,7 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),
+            attempt_key: None,
         }
     }
 

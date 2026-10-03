@@ -38,16 +38,8 @@ pub struct GraphFeedbackContext {
     pub experiment_store_path: Option<PathBuf>,
     /// Path to `.roko/learn/gate-failures.jsonl` for structured gate failure records.
     pub gate_failures_path: Option<PathBuf>,
-    /// Path to `.roko/learn/post-gate-reflections.json` for LLM-generated gate reflection store.
-    pub post_gate_reflection_path: Option<PathBuf>,
-    /// Whether gate failure replanning is enabled (`learning.replan_on_gate_failure`).
-    pub replan_on_gate_failure: bool,
     /// P0-04: CodingOracle for post-gate build/test observations.
     pub coding_oracle: Option<Arc<CodingOracle>>,
-    /// P1-04: HoldoutExperiment for gating learning updates (80/20 train/holdout split).
-    pub holdout_experiment: Option<Arc<tokio::sync::Mutex<roko_learn::HoldoutExperiment>>>,
-    /// P2-01: ShadowRunner for recording shadow dispatch decisions.
-    pub shadow_runner: Option<Arc<ShadowRunner>>,
     /// P2-LRN-6 Loop 1: Path to `.roko/learn/gate-thresholds.json` for
     /// adaptive EMA threshold updates after each verify run.
     ///
@@ -110,11 +102,7 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("daimon_state", &self.daimon_state.is_some())
             .field("experiment_store_path", &self.experiment_store_path)
             .field("gate_failures_path", &self.gate_failures_path)
-            .field("post_gate_reflection_path", &self.post_gate_reflection_path)
-            .field("replan_on_gate_failure", &self.replan_on_gate_failure)
             .field("coding_oracle", &self.coding_oracle.is_some())
-            .field("holdout_experiment", &self.holdout_experiment.is_some())
-            .field("shadow_runner", &self.shadow_runner.is_some())
             .field("gate_thresholds_path", &self.gate_thresholds_path)
             .field("retrieval_outcomes_path", &self.retrieval_outcomes_path)
             .field("runs_dir", &self.runs_dir)
@@ -133,11 +121,7 @@ impl Default for GraphFeedbackContext {
             daimon_state: None,
             experiment_store_path: None,
             gate_failures_path: None,
-            post_gate_reflection_path: None,
-            replan_on_gate_failure: false,
             coding_oracle: None,
-            holdout_experiment: None,
-            shadow_runner: None,
             gate_thresholds_path: None,
             retrieval_outcomes_path: None,
             runs_dir: None,
@@ -209,15 +193,14 @@ impl GraphTaskDispatcher {
         self.agg_tokens_out.fetch_add(tokens_out, Ordering::Relaxed);
         self.agg_dispatch_count.fetch_add(1, Ordering::Relaxed);
 
-        // Determine model choice source for feedback routing.
-        let model_source = if dispatch_plan.forced {
+        // The source routing returned (G32): a ladder rung, a task hint, a
+        // guard's fallback and the default reach the learners as themselves,
+        // not as router picks. A forced model (`--model`, express mode) is an
+        // override whatever routing reported.
+        let model_source = if dispatch_plan.forced || self.cli_model_override.is_some() {
             ModelChoiceSource::Override
-        } else if self.cli_model_override.is_some() {
-            ModelChoiceSource::Override
-        } else if task.model_hint.is_some() {
-            ModelChoiceSource::TaskHint
         } else {
-            ModelChoiceSource::Router
+            dispatch_plan.source
         };
         let experiment_settlement = prompt_experiment::settlement(learning);
         let diagnostics = &dispatch_plan.prompt.diagnostics;
@@ -343,12 +326,10 @@ impl GraphTaskDispatcher {
                 &dispatch.target.model_slug,
             )
             .map_or(cost_usd, |uncached| uncached.max(cost_usd));
-            // The task's first attempt, or a retry of a failed one, which
-            // a replan follows when gate failures trigger one.
+            // The task's first attempt, or a retry of a failed one: Graph
+            // runs retry and never replan.
             let eff_strategy = if settled.key().attempt <= 1 {
                 "initial"
-            } else if self.feedback.replan_on_gate_failure {
-                "replan"
             } else {
                 "retry"
             };
@@ -909,7 +890,8 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
+        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher,
+        make_test_dispatcher_with, no_auto_fix, verify_step,
     };
 
     /// Save a prompt experiment on the implementer's role section at
@@ -972,6 +954,20 @@ mod tests {
         (playbook.success_count, playbook.failure_count)
     }
 
+    /// A dispatcher on [`FLAKY_PROVIDER`] whose attempts run under a
+    /// `--model` pin of the task's own model. The router learns from a
+    /// pinned attempt through its dampened override path, and from a task
+    /// hint not at all (decision 4111).
+    async fn pinned_dispatcher(
+        temp: &tempfile::TempDir,
+        feedback: GraphFeedbackContext,
+    ) -> (Arc<GraphTaskDispatcher>, TaskDef) {
+        make_test_dispatcher_with(temp, FLAKY_PROVIDER, no_auto_fix, feedback, |dispatcher| {
+            dispatcher.with_cli_model_override(Some("stream-model".to_string()))
+        })
+        .await
+    }
+
     /// The router's confidence trials and successes for the dispatched
     /// model, and its bandit observations.
     fn router_counts(router: &CascadeRouter) -> ((u64, u64), u64) {
@@ -1004,11 +1000,81 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output\nLes
 printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
 "#;
 
+    /// Feedback sink keeping the `model_source` of each completed attempt.
+    #[derive(Debug, Default)]
+    struct SourceLog(parking_lot::Mutex<Vec<ModelChoiceSource>>);
+
+    #[async_trait::async_trait]
+    impl crate::runtime_feedback::FeedbackSink for SourceLog {
+        fn name(&self) -> &'static str {
+            "model-sources"
+        }
+
+        async fn on_event(&self, event: &FeedbackEvent) -> anyhow::Result<()> {
+            if let FeedbackEvent::TaskCompleted { model_source, .. } = event {
+                self.0.lock().push(*model_source);
+            }
+            Ok(())
+        }
+    }
+
+    /// The model sources the feedback events of one passing attempt carry,
+    /// for a task without a model hint in the workspace `configure` sets up.
+    async fn fed_back_sources(configure: impl FnOnce(&mut RokoConfig)) -> Vec<ModelChoiceSource> {
+        let temp = tempdir().expect("tempdir");
+        let sources = Arc::new(SourceLog::default());
+        let feedback = GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(FeedbackFacade::new().with_sink(sources.clone()))),
+            ..GraphFeedbackContext::default()
+        };
+        let workspace = |config: &mut RokoConfig| {
+            no_auto_fix(config);
+            configure(config);
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, workspace, feedback).await;
+        task.model_hint = None;
+        task.verify = vec![verify_step("check", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the verify step passes");
+        sources.0.lock().clone()
+    }
+
+    /// G32: the feedback event carries the source routing returned. With no
+    /// router and no rung that can run, the default runs; on a ladder whose
+    /// second rung is the only one that can run, that rung does. Neither is
+    /// relabelled a router pick.
+    #[tokio::test]
+    async fn feedback_carries_the_routes_own_source() {
+        assert_eq!(fed_back_sources(|_| {}).await, [ModelChoiceSource::Default]);
+
+        let laddered = fed_back_sources(|config| {
+            if let Some(model) = config.models.get_mut("stream-model") {
+                model.supports_tools = true;
+            }
+            config.routing.ladder.rungs = vec![
+                roko_core::config::routing::LadderRung {
+                    name: "cheap".to_string(),
+                    model: "no-such-model".to_string(),
+                },
+                roko_core::config::routing::LadderRung {
+                    name: "mid".to_string(),
+                    model: "stream-model".to_string(),
+                },
+            ];
+        })
+        .await;
+        assert_eq!(laddered, [ModelChoiceSource::Ladder { rung: 1 }]);
+    }
+
     /// bug-c34782 through the batch dispatch path: the router learns a
     /// success from a passing verify step and a failure from a failing one,
     /// and nothing from an attempt without verify steps, a provider transport
     /// error or exhausted usage, although the provider call succeeded or the
-    /// model never got to work.
+    /// model never got to work. The attempts run under a `--model` pin, which
+    /// the router learns from (decision 4111).
     #[tokio::test]
     async fn routing_learns_only_from_gate_verdicts() {
         let temp = tempdir().expect("tempdir");
@@ -1020,8 +1086,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             feedback_facade: Some(Arc::new(facade)),
             ..GraphFeedbackContext::default()
         };
-        let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, FLAKY_PROVIDER, no_auto_fix, feedback).await;
+        let (dispatcher, mut task) = pinned_dispatcher(&temp, feedback).await;
         let ctx = CellContext::new();
 
         task.verify = vec![verify_step("check", "true")];
@@ -1337,17 +1402,16 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
     }
 
     /// backlog 2107: an attempt writes one efficiency row, its settled one,
-    /// whatever ended it: a pass, a verify failure with replanning on, or a
-    /// provider failure. The pass row carries the verdict and the call's
-    /// tokens, the failed gate's row names the failed step, and a call that
-    /// streamed nothing marks its time to first token unknown.
+    /// whatever ended it: a pass, a verify failure, or a provider failure.
+    /// The pass row carries the verdict and the call's tokens, the failed
+    /// gate's row names the failed step, and a call that streamed nothing
+    /// marks its time to first token unknown.
     #[tokio::test]
     async fn efficiency_writes_one_keyed_row_per_attempt() {
         let temp = tempdir().expect("tempdir");
         let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
         let feedback = GraphFeedbackContext {
             efficiency_path: Some(efficiency_path.clone()),
-            replan_on_gate_failure: true,
             ..GraphFeedbackContext::default()
         };
         let (dispatcher, mut task) =
@@ -1535,7 +1599,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
     /// settled verdict. The provider bridge still records every call's
     /// efficiency row and, in the factory's registry, the provider's health,
     /// but it no longer observes or saves `cascade-router.json` from the
-    /// provider's own success, before any gate ran.
+    /// provider's own success, before any gate ran. The attempts run under a
+    /// `--model` pin, which the router learns from (decision 4111).
     #[tokio::test]
     async fn graph_dispatch_router_learns_only_from_settled_verdicts() {
         let temp = tempdir().expect("tempdir");
@@ -1547,8 +1612,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             feedback_facade: Some(Arc::new(facade)),
             ..GraphFeedbackContext::default()
         };
-        let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, FLAKY_PROVIDER, no_auto_fix, feedback).await;
+        let (dispatcher, mut task) = pinned_dispatcher(&temp, feedback).await;
         let ctx = CellContext::new();
 
         dispatcher
@@ -1590,8 +1654,10 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
     /// learning label, so none of them moves a learner (router, playbooks,
     /// daimon, prompt experiments, durable knowledge). The first two still
     /// leave episodes, labelled `null`, and all three leave verdicts, so none
-    /// reads as abandoned. A pass then moves every learner; durable
-    /// knowledge grows from the lesson its agent states (backlog 4216).
+    /// reads as abandoned. A pass then moves every learner: durable
+    /// knowledge grows from the lesson its agent states (backlog 4216), and
+    /// the attempts run under a `--model` pin, which the router learns from
+    /// (decision 4111).
     #[tokio::test]
     async fn learning_sinks_skip_attempts_without_a_learning_label() {
         let temp = tempdir().expect("tempdir");
@@ -1620,8 +1686,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             runs_dir: Some(roko.join("runs")),
             ..GraphFeedbackContext::default()
         };
-        let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, FLAKY_PROVIDER, no_auto_fix, feedback).await;
+        let (dispatcher, mut task) = pinned_dispatcher(&temp, feedback).await;
         task.title = "Render the greeting banner".into();
         let ctx = CellContext::new().with_run_id("run-labels".to_string());
         let affect_ticks = || daimon.lock().unwrap().state.tick_count;

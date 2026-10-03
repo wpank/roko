@@ -3508,6 +3508,7 @@ mod plan_set_event_mapping_tests {
         let started = ServerEvent::RunStarted {
             run_id: run_id.into(),
             prompt: "say hi".into(),
+            origin: None,
         };
         let completed = ServerEvent::RunCompleted {
             run_id: run_id.into(),

@@ -176,6 +176,7 @@ fn default_cargo_gate_rungs() -> Vec<GateRungConfig> {
         timeout_secs: 600,
         required: true,
         parallel_with: Vec::new(),
+        ..Default::default()
     })
     .collect()
 }

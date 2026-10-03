@@ -551,6 +551,41 @@ impl KnowledgeStore {
         })
     }
 
+    /// Count an attempt that failed through the agent's own work against
+    /// each of `entry_ids`, the entries its prompt surfaced (S02 L5,
+    /// decision 4): increment `contradiction_count` and change nothing else.
+    /// No confidence, balance or tier moves, because the entry may have had
+    /// no part in the failure. `attempt_key` names the attempt in the log.
+    ///
+    /// Returns the number of entries counted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be read or rewritten.
+    pub fn record_contradiction(&self, entry_ids: &[&str], attempt_key: &str) -> Result<usize> {
+        let id_set = entry_ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .collect::<HashSet<_>>();
+        if id_set.is_empty() {
+            return Ok(0);
+        }
+        let counted = self.update_entries(|entry| {
+            if !id_set.contains(entry.id.as_str()) {
+                return false;
+            }
+            entry.contradiction_count = entry.contradiction_count.saturating_add(1);
+            true
+        })?;
+        tracing::debug!(
+            attempt_key,
+            counted,
+            "agent-blamed failure counted against the knowledge it surfaced"
+        );
+        Ok(counted)
+    }
+
     /// Count a retrieval access to each of `entry_ids` (S01 P0-9): increment
     /// `access_count` and set `last_accessed`, and leave `half_life_days` as
     /// it is. Graph dispatch counts the entries a prompt included this way.

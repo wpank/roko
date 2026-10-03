@@ -20,14 +20,21 @@
 //! leave the router alone; the failover health registry tracks provider
 //! health.
 //!
-//! ## Override handling
+//! ## Credit for the router's own picks
 //!
-//! When [`ModelChoiceSource::Override`] tagged a task, the sink records
-//! it via `record_override_outcome` so manual operator overrides do not
-//! pollute the bandit signal that drives router decisions on
+//! The sink credits an outcome by the source routing returned for its model
+//! (`router_credit`). The router learns only from the choices it made
+//! (decision 4111 (A), S02 §4.1): its own pick
+//! ([`ModelChoiceSource::Router`]) updates its category stats, confidence
+//! and bandit. When [`ModelChoiceSource::Override`] tagged a task, the sink
+//! records it via `record_override_outcome` so manual operator overrides do
+//! not pollute the bandit signal that drives router decisions on
 //! non-overridden tasks. A `[routing.ladder]` rung
-//! ([`ModelChoiceSource::Ladder`]) is recorded like the router's own pick,
-//! so the learner sees every rung.
+//! ([`ModelChoiceSource::Ladder`]), a task hint, a guard's fallback and the
+//! default were not the router's choice, so they update none of its state:
+//! while the ladder routes, the router is a shadow learner. The attempt's
+//! verdict still records its rung and the router's shadow pick
+//! (`AttemptLadder`).
 //!
 //! ## Durability
 //!
@@ -126,6 +133,11 @@ impl FeedbackSink for RoutingObservationSink {
             return Ok(());
         }
 
+        // Decision 4111 (A): a model the router did not choose teaches it
+        // nothing.
+        let Some(credit) = router_credit(*model_source) else {
+            return Ok(());
+        };
         let ctx = match routing_context {
             Some(ctx) => ctx.clone(),
             None => build_fallback_routing_context(
@@ -145,7 +157,7 @@ impl FeedbackSink for RoutingObservationSink {
             let router = Arc::clone(&self.router);
             let model = outcome.model.clone();
             let (cost_usd, duration_ms) = (outcome.cost_usd, outcome.duration_ms);
-            let overridden = *model_source == ModelChoiceSource::Override;
+            let overridden = credit == RouterCredit::Override;
             tokio::task::spawn_blocking(move || {
                 if overridden {
                     journal.observe_override_outcome(
@@ -179,7 +191,7 @@ impl FeedbackSink for RoutingObservationSink {
         // Audit #90: manual overrides must not pollute the bandit signal.
         // Route them through the dampened `record_override_outcome` path
         // instead of the full router-outcome path.
-        if *model_source == ModelChoiceSource::Override {
+        if credit == RouterCredit::Override {
             self.router.record_override_outcome(
                 &outcome.model,
                 &ctx,
@@ -201,6 +213,39 @@ impl FeedbackSink for RoutingObservationSink {
         );
         Ok(())
     }
+}
+
+/// How the routing sink credits an outcome to the router.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouterCredit {
+    /// The router's learners: category stats, confidence and the bandit.
+    Full,
+    /// An operator override: dampened, so it does not pollute the bandit
+    /// signal (audit #90).
+    Override,
+}
+
+/// The credit an outcome earns from the source routing returned for its
+/// model (decision 4111 (A)): full for the router's own pick, its argmax or
+/// its exploration draw, dampened for an operator override, and none for a
+/// ladder rung, a task hint, a guard's fallback or the default, which the
+/// router did not choose.
+const fn router_credit(source: ModelChoiceSource) -> Option<RouterCredit> {
+    match source {
+        ModelChoiceSource::Router | ModelChoiceSource::Explore => Some(RouterCredit::Full),
+        ModelChoiceSource::Override => Some(RouterCredit::Override),
+        ModelChoiceSource::TaskHint
+        | ModelChoiceSource::Ladder { .. }
+        | ModelChoiceSource::Fallback { .. }
+        | ModelChoiceSource::Default => None,
+    }
+}
+
+/// Whether the routing sink credits the router with an outcome whose model
+/// came from `source`. The episode records it, so a hindsight relabel
+/// retracts only the credit the router was given.
+pub(crate) const fn credits_router(source: ModelChoiceSource) -> bool {
+    router_credit(source).is_some()
 }
 
 /// Record the outcome of a router-chosen model.
@@ -482,35 +527,64 @@ mod tests {
         assert_eq!(r.total_observations(), 0, "LinUCB is not updated");
     }
 
-    /// gap-9cbf35: a ladder rung's settled outcome teaches the router like
-    /// its own pick would, so the learner sees every rung.
+    /// Decision 4111 (A): the router is credited only for its own picks. A
+    /// ladder rung's labelled outcome updates none of its state, on either
+    /// sink path, and the attempt's verdict still carries its rung. A task
+    /// hint, a guard's fallback and the default teach it nothing either; the
+    /// router's own pick of the same model does.
     #[tokio::test]
-    async fn ladder_outcomes_are_recorded_like_router_outcomes() {
-        let r = router();
-        let sink = RoutingObservationSink::new(r.clone());
-        let event = FeedbackEvent::TaskCompleted {
-            turns: 0,
-            failure_reason: None,
-            settled: settled_as(AttemptOutcome::Passed, false),
-            plan_id: "p".into(),
-            task_id: "t".into(),
-            outcome: outcome(true),
-            model_source: ModelChoiceSource::Ladder { rung: 3 },
-            succeeded: true,
-            routing_context: Some(test_routing_context()),
-            prompt_text: None,
-            cache_read_tokens: 0,
-            knowledge_ids: vec![],
-            playbook_ids: vec![],
-            initial_model: String::new(),
-        };
-        sink.on_event(&event).await.unwrap();
+    async fn ladder_outcome_recorded_apart_from_router_picks() {
+        use roko_learn::telemetry::{AttemptLadder, LadderReason};
+
+        let mut verdict = settled_as(AttemptOutcome::Passed, false).expect("a settled verdict");
+        Arc::make_mut(&mut verdict).ladder = Some(AttemptLadder {
+            rung: Some("mid".into()),
+            index: Some(1),
+            step: 0,
+            reason: LadderReason::Start,
+            exhausted: false,
+            router_pick: Some("gpt-5".into()),
+        });
+        let temp = tempfile::tempdir().expect("tempdir");
+        let snapshot = temp.path().join("learn").join("cascade-router.json");
+        let journal = Arc::new(ModelCallJournal::for_snapshot(&snapshot));
+        let (plain, journaled) = (router(), router());
+        let sinks = [
+            RoutingObservationSink::new(plain.clone()),
+            RoutingObservationSink::new(journaled.clone()).with_journal(journal),
+        ];
+        let not_chosen = [
+            ModelChoiceSource::Ladder { rung: 1 },
+            ModelChoiceSource::TaskHint,
+            ModelChoiceSource::Fallback {
+                reason: crate::dispatch::FallbackReason::NoToolSupport,
+            },
+            ModelChoiceSource::Default,
+        ];
+        for source in not_chosen {
+            let event = completed(Some(Arc::clone(&verdict)), source);
+            for sink in &sinks {
+                assert!(sink.interested(&event), "{source:?}");
+                sink.on_event(&event).await.unwrap();
+            }
+        }
+        for r in [&plain, &journaled] {
+            assert!(r.confidence_snapshot().is_empty(), "no confidence trial");
+            assert!(r.category_stats_snapshot().is_empty(), "no category stats");
+            assert_eq!(r.total_observations(), 0, "no bandit observation");
+        }
+        let ladder = verdict.ladder.as_ref().expect("the verdict keeps its rung");
+        assert_eq!(ladder.rung.as_deref(), Some("mid"));
+
+        let picked = completed(Some(verdict), ModelChoiceSource::Router);
+        sinks[0].on_event(&picked).await.unwrap();
+        let confidence = plain.confidence_snapshot();
         assert_eq!(
-            r.confidence_snapshot().get("claude-sonnet-4-6").copied(),
+            confidence.get("claude-sonnet-4-6").copied(),
             Some((1, 1)),
-            "a ladder outcome is a full confidence trial, not a dampened override"
+            "the router's own pick is a full confidence trial"
         );
-        assert_eq!(r.total_observations(), 1);
+        assert_eq!(plain.total_observations(), 1);
     }
 
     #[tokio::test]

@@ -132,6 +132,9 @@ pub struct RokoConfig {
     /// M1, the ultrastable controller: its mode and constants (S06 §5).
     #[serde(default)]
     pub homeostasis: super::homeostasis::HomeostasisConfig,
+    /// M4, random deep audits: the lottery, its floor and budget (S05 §5).
+    #[serde(default)]
+    pub audit: super::audit::AuditConfig,
     #[serde(default, skip_serializing_if = "WatcherConfig::is_empty")]
     pub watcher: WatcherConfig,
     #[serde(default)]
@@ -451,6 +454,7 @@ impl Default for RokoConfig {
             pricing: crate::pricing_snapshot::PricingConfig::default(),
             conductor: ConductorConfig::default(),
             homeostasis: super::homeostasis::HomeostasisConfig::default(),
+            audit: super::audit::AuditConfig::default(),
             watcher: WatcherConfig::default(),
             learning: LearningConfig::default(),
             tui: TuiConfig::default(),
@@ -1426,11 +1430,6 @@ impl RokoConfig {
             out,
             "learning_min_occurrences = {}\n",
             c.learning.learning_min_occurrences
-        );
-        let _ = writeln!(
-            out,
-            "replan_on_gate_failure = {}",
-            c.learning.replan_on_gate_failure
         );
         let _ = writeln!(
             out,

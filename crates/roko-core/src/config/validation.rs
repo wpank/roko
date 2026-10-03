@@ -165,18 +165,6 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         ));
     }
 
-    if config.learning.replan_on_gate_failure
-        && config.gates.skip_tests
-        && !config.gates.clippy_enabled
-    {
-        results.push(invariant(
-            7,
-            InvariantSeverity::Warning,
-            "learning.replan_on_gate_failure",
-            "replan_on_gate_failure is enabled while test and clippy gates are disabled",
-        ));
-    }
-
     // The data LLM reads untrusted content, so it stays tool-less, and each
     // of its calls is bounded in time and size (gap-b0d514).
     if let Some(data_llm) = &config.agent.data_llm {
@@ -223,6 +211,25 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
             format!("homeostasis.{key}"),
             problem,
         ));
+    }
+
+    // M4's section (S05 §5, §4.9): the audit floor is locked at 0.05, rho
+    // lies between it and 0.5, shares lie in [0, 1], and a model glob
+    // belongs to one family.
+    for (key, problem) in config.audit.problems() {
+        results.push(invariant(
+            11,
+            InvariantSeverity::Error,
+            format!("audit.{key}"),
+            problem,
+        ));
+    }
+
+    // 9119: each gate rung has what its kind needs, such as a command for a
+    // `command` rung and artefacts for a `citations` one.
+    for (key, problem) in config.gates.rung_problems() {
+        let message = format!("{key}: {problem}");
+        results.push(invariant(12, InvariantSeverity::Error, key, message));
     }
 
     results

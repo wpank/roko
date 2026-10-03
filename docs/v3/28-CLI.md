@@ -268,8 +268,8 @@ The one entry point for work. `roko run` takes a prompt or an existing plan dire
 roko run <prompt...|plan-dir> [--plan] [--dry-run] [--yes]
                               [--complexity trivial|simple|standard|complex]
                               [--context <path>...] [--no-cascade] [--provider <name>]
-                              [--workdir <path>] [--max-retries <n>] [--serve] [--share]
-                              [--fresh] [--resume-plan [<path>]]
+                              [--workdir <path>] [--max-retries <n>] [--domain <label>]
+                              [--serve] [--share] [--fresh] [--resume-plan [<path>]]
 ```
 
 | Arg/Flag | Default | Description |
@@ -284,6 +284,7 @@ roko run <prompt...|plan-dir> [--plan] [--dry-run] [--yes]
 | `--provider <name>` | config | Override the provider for this run. |
 | `--workdir <path>` | cwd | Override the working directory. |
 | `--max-retries <n>` | config | Maximum retry attempts per task. A task that fails its gates is retried with the gate's feedback. |
+| `--domain <label>` | `[project] default_domain` | One-task runs only: the task's work domain (`code`, `research`, `docs`, `chain` or a custom label), which picks its tool policy and its verifier pack (`[gates.packs.<label>]`; a domain other than `code` without a pack gets no workspace rungs). |
 | `--serve` | false | Start the HTTP control plane alongside the run. One-task runs only. |
 | `--share` | false | Generate a shareable URL (starts serve if needed). One-task runs only. |
 | `--fresh` | false | Plan directory only: archive existing state and start from scratch. |

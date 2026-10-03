@@ -248,6 +248,7 @@ mod tests {
             timeout_secs: 300,
             required: true,
             parallel_with: Vec::new(),
+            ..Default::default()
         }];
         let keys = graph_engine_inert_settings(&config)
             .iter()

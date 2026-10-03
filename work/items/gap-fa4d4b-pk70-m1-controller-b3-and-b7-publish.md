@@ -57,3 +57,11 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK58 (gap-f0a7ee), PK60 (gap-940e44), PK61 (gap-8b67de), PK63 (gap-eb39c1), PK64 (gap-2e4a81).
 - Suggested model: opus.
+
+## Progress
+
+- 8127: implemented at e6ebb4e1c (cargo verification deferred to the batch gate). B7 and the audit coupling raise the
+  DP1 lottery's rho through the M1 sink (`HomeostasisSink::audit_rate`, `coupling::AuditBoosts`), within S5's
+  `[p_floor, p_max]` and never below M4's rho. B3 already reached DP3 as max(ladder level, floor) through the
+  attempt's θ (PK64); the audit worker's window close keeps V0, so M1's floor never holds the shared ladder up for
+  holdout chains. S5 has no verify ceiling field, so B3's ceiling is the notch ladder and the SafetyBox.

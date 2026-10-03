@@ -26,6 +26,10 @@
 //! the verdict with it (8123). The controller's θ lives in a
 //! [`HarnessParamsHandle`], swapped after every change it makes.
 //!
+//! An applied cost- or verification-reducing change arms its audit coupling,
+//! and M4's lottery asks [`HomeostasisSink::audit_rate`] for each green
+//! attempt's rate (B7 and S06 §4.6.5, 8127).
+//!
 //! It never reads the conductor's ring. A verdict whose failure class names
 //! a conductor cancel counts as a conductor restart of its chain, an
 //! auxiliary signal that only ranks moves; no attempt is marked so while the
@@ -44,12 +48,15 @@ use roko_core::config::schema::RokoConfig;
 use roko_core::task::TaskTier;
 use roko_fs::layout::RokoLayout;
 use roko_learn::homeostasis::controller::{Controller, ControllerEvent};
+use roko_learn::homeostasis::coupling::{AuditBoosts, audit_rate};
 use roko_learn::homeostasis::detect::Baseline;
 use roko_learn::homeostasis::ev::Ev;
 use roko_learn::homeostasis::holdout::HarnessHoldout;
-use roko_learn::homeostasis::ledger::{ControllerRecord, Envelope};
+use roko_learn::homeostasis::ledger::{ControllerRecord, Envelope, ParamChange};
 use roko_learn::homeostasis::lkg::ThetaLkg;
-use roko_learn::homeostasis::policy::{DEFAULT_HOLDOUT, ViabilityPolicy, non_m1_fingerprint};
+use roko_learn::homeostasis::policy::{
+    AuditPolicy, DEFAULT_HOLDOUT, ViabilityPolicy, non_m1_fingerprint,
+};
 use roko_learn::homeostasis::priors::{Calibration, DrivePredictor, M3Prior, PredictedLevels};
 use roko_learn::homeostasis::resolution::{ResolutionFold, TaskResolution};
 use roko_learn::loop_audit::assign::takes_default;
@@ -81,6 +88,10 @@ pub struct HomeostasisSink {
     theta0: HarnessParams,
     mode: HomeostasisMode,
     holdout: HarnessHoldout,
+    /// S5's audit rate bounds, which M1's boosts stay within (8127).
+    audit_policy: AuditPolicy,
+    /// The audit couplings that run (8127).
+    boosts: parking_lot::Mutex<AuditBoosts>,
     state: parking_lot::Mutex<SinkState>,
 }
 
@@ -176,6 +187,9 @@ impl HomeostasisSink {
         if theta != theta0 {
             handle.swap(theta, "lkg");
         }
+        let audit_policy = controller
+            .as_ref()
+            .map_or_else(AuditPolicy::default, |controller| controller.policy().audit);
         let state = SinkState {
             controller,
             lkg,
@@ -187,6 +201,8 @@ impl HomeostasisSink {
             theta0,
             mode,
             holdout: HarnessHoldout::new(holdout),
+            audit_policy,
+            boosts: parking_lot::Mutex::new(AuditBoosts::default()),
             state: parking_lot::Mutex::new(state),
         }
     }
@@ -216,6 +232,25 @@ impl HomeostasisSink {
     #[must_use]
     pub const fn handle(&self) -> &HarnessParamsHandle {
         &self.handle
+    }
+
+    /// The rate M4's lottery draws a green attempt of task class `class` at
+    /// (M1's B7 and audit coupling, 8127): `rho`, M4's own, raised by the
+    /// audit `boost` of the θ the attempt ran and doubled while the coupling
+    /// of a cost- or verification-reducing move on the class runs, within
+    /// S5's `[p_floor, p_max]` and never below `rho`. The attempt counts as
+    /// one pass of its class.
+    #[must_use]
+    pub fn audit_rate(&self, rho: f64, boost: u32, class: &str) -> f64 {
+        let mut boosts = self.boosts.lock();
+        let factor = boosts.factor(class);
+        boosts.pass(class);
+        audit_rate(rho, boost, factor, &self.audit_policy)
+    }
+
+    /// Arm the audit coupling `change` carries, when it was applied.
+    pub(crate) fn arm_audit_coupling(&self, change: &ParamChange) {
+        self.boosts.lock().arm(change);
     }
 
     /// This sink with a holdout of `h` and no all-off draw, so a test knows
@@ -421,6 +456,9 @@ impl HomeostasisSink {
             if let ControllerEvent::Change(change) = event {
                 let episode = change.episode_id.as_deref().unwrap_or("relax");
                 swap_reason = Some(format!("homeostat:{episode}/{}", change.change_id));
+                // A cost- or verification-reducing move doubles the audit
+                // rate on its class for the next passes (8127).
+                self.arm_audit_coupling(&ParamChange::from(&**change));
             }
             if let Some(lkg) = lkg.as_mut()
                 && let Err(error) = lkg.commit_event(event)

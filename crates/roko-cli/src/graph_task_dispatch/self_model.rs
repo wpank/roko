@@ -10,21 +10,37 @@
 //! In active mode (6130), while the calibration gate holds, the rung the self-model would
 //! choose becomes the chain's start rung: dispatch hands it to the router, which draws it
 //! through S03's route table and logs its propensity.
+//!
+//! After a gate pass (6132), policy (b) weighs the attempt's false-green risk r = p_fg: it asks
+//! DP3 (`verify_depth`) for the deepest verify depth d* whose check pays, r·L_fg·d_j > c_j, and
+//! only at the deepest depth with r above r_max rejects the pass so that a stronger model
+//! retries the task. An active self-model acts on the chains it started; in shadow mode the
+//! step is only logged. A pass that stands exports r as `risk_fg` for S05's audit tilt.
+//!
+//! A refine-spec or abandon forecast (6133) becomes a dashboard diagnosis and an event-log
+//! entry, and a refine request also a `spec.refine_requested` record in the run's spec ledger
+//! for S07. The self-model never edits a spec or drops a task: the attempt still runs on the
+//! ladder's choice.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use roko_core::audit_types::VerifyDepth;
 use roko_core::config::schema::RokoConfig;
 use roko_core::config::self_model::{SelfModelConfig, SelfModelMode, SelfModelPolicy};
+use roko_core::dashboard_snapshot::{DiagnosisSeverity, DiagnosisSummary};
 use roko_core::pricing_snapshot::PriceSnapshot;
+use roko_learn::self_model::baselines::K_MAX;
 use roko_learn::self_model::cascade::{
-    BREAK_EVEN_MARGIN, FailureContext, StepAction, after_failure, start_rung,
+    BREAK_EVEN_MARGIN, DepthOption, FALSE_GREEN_RISK_MAX, FailureContext, PassAction, StepAction,
+    after_failure, after_pass, start_rung,
 };
 use roko_learn::self_model::features::TaskFeatures;
 use roko_learn::self_model::gate::{CalibrationGate, CalibrationWindow, GateReport, WindowOutcome};
+use roko_learn::self_model::logit::FALSE_GREEN_PRIOR;
 use roko_learn::self_model::model::{MODEL_CLASS, SelfModel, StateLoad};
-use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, RouteAction, expected_cost};
+use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, P_ABANDON, RouteAction, expected_cost};
 use roko_learn::self_model::spec_features::{SPEC_RECORDS_FILE, SpecFeatureIndex, SpecVector};
 use roko_learn::self_model::{ArmKey, CandidateForecast, LabelSource, PredictorVersion, Unit};
 use roko_learn::telemetry::records::{
@@ -42,6 +58,51 @@ const FEATURES_SCHEMA: u32 = 1;
 
 /// Settled attempts a run keeps for late VS labels (6129); older ones are let go.
 const SETTLED_KEPT: usize = 4_096;
+
+/// The verify depths policy (b) may ask DP3 for after a pass (6132), each with its catch rate
+/// d_j, the prior 0.5 until S05's audits measure it, and its cost c_j in USD: V1's and V2's
+/// checks take machine time only, V3 adds a hidden suite a model writes, and V4 mutation and a
+/// review by a model of another family.
+const DEPTH_OPTIONS: [DepthOption; 4] = [
+    DepthOption {
+        depth: 1,
+        catch_rate: 0.5,
+        cost_usd: 0.005,
+    },
+    DepthOption {
+        depth: 2,
+        catch_rate: 0.5,
+        cost_usd: 0.02,
+    },
+    DepthOption {
+        depth: 3,
+        catch_rate: 0.5,
+        cost_usd: 0.08,
+    },
+    DepthOption {
+        depth: 4,
+        catch_rate: 0.5,
+        cost_usd: 0.20,
+    },
+];
+
+/// A false green's loss L_fg, in the attempt's expected cost on the model that ran: S04
+/// §4.10's five task costs.
+const FALSE_GREEN_LOSS: f64 = 5.0;
+
+/// The spec feature that holds S07's score of the task's spec over 1 (3240), which both
+/// policies compare with s_min.
+const SPEC_SCORE: &str = "spec_score";
+
+/// The action a policy names when the task's spec should be refined before it runs (6133).
+const REFINE_SPEC: &str = "refine_spec";
+
+/// The action a policy names when no rung is likely to pass the task (6133).
+const ABANDON: &str = "abandon";
+
+/// The event that hands a refine request to S07's plan-load gate, in the run's spec ledger
+/// and its event log (6133).
+const SPEC_REFINE_EVENT: &str = "spec.refine_requested";
 
 /// A plan run's self-model: loaded at plan start when `[self_model] mode` is not off, and shared
 /// by dispatch, which forecasts each routed attempt, and the outcome sink, which teaches it each
@@ -74,6 +135,12 @@ pub struct SelfModelRuntime {
     early_climbs: parking_lot::Mutex<HashMap<String, bool>>,
     /// Each run's spec records (3240), by run id, with the size of the file read.
     spec_indexes: parking_lot::Mutex<HashMap<String, (u64, SpecFeatureIndex)>>,
+    /// P(false green) of each chain's last pass that stood, by chain key: `risk_fg` for S05's
+    /// audit tilt (6132).
+    risks: parking_lot::Mutex<HashMap<String, f64>>,
+    /// The attempts whose pass an active self-model rejected as suspicious at the deepest
+    /// depth, by attempt key, so that their failure climbs a rung (6132).
+    suspicious: parking_lot::Mutex<HashSet<String>>,
 }
 
 /// The units a run settled, by attempt key, oldest first; past [`SETTLED_KEPT`] the oldest go.
@@ -187,6 +254,8 @@ impl SelfModelRuntime {
             chain_plans: parking_lot::Mutex::new(HashMap::new()),
             early_climbs: parking_lot::Mutex::new(HashMap::new()),
             spec_indexes: parking_lot::Mutex::new(HashMap::new()),
+            risks: parking_lot::Mutex::new(HashMap::new()),
+            suspicious: parking_lot::Mutex::new(HashSet::new()),
         }
     }
 
@@ -314,7 +383,9 @@ impl SelfModelRuntime {
     ) -> (AttemptPredictionRecord, Option<usize>) {
         let model = self.model.read();
         let forecasts = model.forecast(&features, &candidates.arms);
-        let (would_choose, action) = self.decide(identity, &forecasts, candidates, retries_left);
+        let spec_score = features.spec.get(SPEC_SCORE).copied();
+        let (would_choose, action) =
+            self.decide(identity, &forecasts, candidates, retries_left, spec_score);
         let arms: Vec<String> = forecasts
             .iter()
             .map(|forecast| forecast.arm.to_string())
@@ -440,19 +511,79 @@ impl SelfModelRuntime {
             current,
             climbs,
             retries_left,
-            spec_score: None,
+            spec_score: features.spec.get(SPEC_SCORE).copied(),
             skip_allowed: self.settings.allow_rung_skip,
         };
         Some(after_failure(&forecasts, &context, &|_| None))
     }
 
-    /// The candidate the policy would choose, and its action's name.
+    /// P(false green) of the chain `chain_key`'s last pass that stood, exported as `risk_fg` for
+    /// S05's audit tilt (6132), which S05 keeps at 0 until M3 has 50 audited labels.
+    #[must_use]
+    pub fn risk_fg(&self, chain_key: &str) -> Option<f64> {
+        self.risks.lock().get(chain_key).copied()
+    }
+
+    /// The candidates' forecasts of the open attempt `attempt_key`, whose forecast stays cached
+    /// for its verdict.
+    fn open_candidates(&self, attempt_key: &str) -> Option<Vec<CandidateForecast>> {
+        self.forecasts
+            .lock()
+            .get(attempt_key)
+            .map(|forecast| forecast.candidates.clone())
+    }
+
+    /// Whether the self-model's step after a pass acts on the chain `chain_key` (6132): policy
+    /// (b) in active mode, on a chain whose start rung it chose, until the breaker trips.
+    /// Otherwise the step is only logged.
+    fn acts_after_pass(&self, chain_key: &str) -> bool {
+        let started = self.chain_starts.lock().get(chain_key).copied().flatten();
+        self.settings.mode == SelfModelMode::Active
+            && self.settings.policy == SelfModelPolicy::Cascade
+            && started.is_some()
+            && !self.gate().breaker_tripped
+    }
+
+    /// Whether the chain `chain_key` can climb a rung from its candidate `current` (6132): a
+    /// rung above it, fewer than `K_MAX` climbs so far, and an attempt left.
+    fn can_climb(&self, chain_key: &str, current: usize, retries_left: u32) -> bool {
+        let plans = self.chain_plans.lock();
+        plans.get(chain_key).is_some_and(|(candidates, _)| {
+            !candidates.pinned
+                && current + 1 < candidates.rungs.len()
+                && candidates.step < K_MAX
+                && retries_left > 0
+        })
+    }
+
+    /// The climb the failure of the attempt `attempt_key` on ladder rung `rung` of the chain
+    /// `chain_key` earns when the self-model rejected its pass as suspicious (6132); `None` for
+    /// any other failure.
+    fn escalation_step(
+        &self,
+        attempt_key: &str,
+        chain_key: &str,
+        rung: usize,
+    ) -> Option<StepAction> {
+        if !self.suspicious.lock().remove(attempt_key) {
+            return None;
+        }
+        let plans = self.chain_plans.lock();
+        let (candidates, _) = plans.get(chain_key)?;
+        let current = candidates.rungs.iter().position(|&index| index == rung)?;
+        let to = current + 1;
+        (to < candidates.rungs.len()).then_some(StepAction::Climb { to })
+    }
+
+    /// The candidate the policy would choose, and its action's name. `spec_score`, S07's score
+    /// of the task's spec over 1, lets either policy ask for a clearer spec (6133).
     fn decide(
         &self,
         identity: &AttemptIdentity,
         forecasts: &[CandidateForecast],
         candidates: &Candidates,
         retries_left: u32,
+        spec_score: Option<f64>,
     ) -> (Option<usize>, &'static str) {
         if candidates.pinned {
             return (Some(candidates.default), "pinned");
@@ -461,14 +592,15 @@ impl SelfModelRuntime {
             SelfModelPolicy::Static => (Some(candidates.default), "dispatch"),
             SelfModelPolicy::LcbAci => {
                 let recovery = forecasts.iter().map(expected_cost).fold(0.0, f64::max);
-                let choice = self.lcb.lock().choose(forecasts, None, None, recovery);
+                let policy = self.lcb.lock();
+                let choice = policy.choose(forecasts, None, spec_score, recovery);
                 match choice.action {
                     RouteAction::Dispatch { arm, .. } => {
                         let index = forecasts.iter().position(|forecast| forecast.arm == arm);
                         (index, "dispatch")
                     }
-                    RouteAction::RefineSpec => (None, "refine_spec"),
-                    RouteAction::Abandon => (None, "abandon"),
+                    RouteAction::RefineSpec => (None, REFINE_SPEC),
+                    RouteAction::Abandon => (None, ABANDON),
                 }
             }
             SelfModelPolicy::Cascade => {
@@ -494,15 +626,15 @@ impl SelfModelRuntime {
                             current,
                             climbs: candidates.step,
                             retries_left,
-                            spec_score: None,
+                            spec_score,
                             skip_allowed: self.settings.allow_rung_skip,
                         };
                         match after_failure(forecasts, &context, &|_| None) {
                             StepAction::Retry => (Some(current), "retry"),
                             StepAction::Climb { to } => (Some(to), "climb"),
                             StepAction::Skip { to } => (Some(to), "skip"),
-                            StepAction::RefineSpec => (None, "refine_spec"),
-                            StepAction::Abandon => (None, "abandon"),
+                            StepAction::RefineSpec => (None, REFINE_SPEC),
+                            StepAction::Abandon => (None, ABANDON),
                         }
                     }
                 }
@@ -570,6 +702,20 @@ impl Candidates {
     }
 }
 
+/// What the self-model makes of one attempt's gate pass (6132).
+struct PostPass<'a> {
+    /// The run's self-model.
+    runtime: &'a SelfModelRuntime,
+    /// The attempt's chain key.
+    chain: String,
+    /// The candidate that ran, by its place among the chain's candidates.
+    current: usize,
+    /// r, P(false green) of the pass.
+    risk_fg: f64,
+    /// Policy (b)'s step after the pass.
+    action: PassAction,
+}
+
 impl GraphTaskDispatcher {
     /// M3's hook before routing (6128): forecast the attempt's candidates, log the prediction
     /// with the rung the self-model would choose beside the ladder's, and keep the forecast for
@@ -604,16 +750,148 @@ impl GraphTaskDispatcher {
             let vector = runtime.spec_vector(&run_dir, &identity.run_id, &spec.plan_id, &task.id);
             features.spec = vector.unwrap_or_default();
         }
+        let spec_score = features.spec.get(SPEC_SCORE).copied();
         let (prediction, would_choose) =
             runtime.predict(identity, features, &candidates, retries_left);
+        // M3 never edits a spec or drops a task: a person or S07 acts on its request (6133).
+        self.report_self_model_action(spec, task, identity, &prediction, spec_score);
         attempt.record_prediction(prediction);
         runtime.active_rung(identity, &candidates, would_choose)
+    }
+
+    /// Surface a refine-spec or abandon forecast for the attempt `identity` of `task` (6133),
+    /// as the ladder surfaces `ladder_exhausted`: a dashboard diagnosis and an event-log entry,
+    /// and for a refine request also a `spec.refine_requested` record in the run's spec ledger,
+    /// for S07's plan-load gate. Any other action reports nothing.
+    fn report_self_model_action(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        identity: &AttemptIdentity,
+        prediction: &AttemptPredictionRecord,
+        spec_score: Option<f64>,
+    ) {
+        let refine = match prediction.decision.action.as_str() {
+            REFINE_SPEC => true,
+            ABANDON => false,
+            _ => return,
+        };
+        let best = prediction
+            .candidates
+            .iter()
+            .map(|candidate| candidate.p_vs)
+            .fold(0.0, f64::max);
+        let score = spec_score.map_or_else(|| "unknown".to_string(), |score| format!("{score:.2}"));
+        let (plan_id, task_id) = (&spec.plan_id, &task.id);
+        let (kind, event, subject, detail, suggested_action, message) = if refine {
+            self.record_refine_request(identity, spec_score, best);
+            (
+                "self_model_refine",
+                SPEC_REFINE_EVENT,
+                format!("{task_id} needs a clearer spec"),
+                format!(
+                    "The self-model forecasts that no cheap rung reaches the success target on \
+                     task `{task_id}` of plan `{plan_id}` with its spec as written (spec score \
+                     {score}, best P(verified success) {best:.2}), and asks for the spec to be \
+                     refined (refine_spec). The attempt runs on the ladder's choice."
+                ),
+                "Refine the task's spec: its acceptance criteria, verify steps and files to read.",
+                format!("spec score {score}, best P(VS) {best:.2}: refine the spec"),
+            )
+        } else {
+            (
+                "self_model_abandon",
+                "self_model.abandon_flagged",
+                format!("{task_id} is unlikely to pass on any rung"),
+                format!(
+                    "The self-model forecasts at most {best:.2} P(verified success) for task \
+                     `{task_id}` of plan `{plan_id}` on every rung, below p_abandon \
+                     {P_ABANDON} (abandon). The attempt runs on the ladder's choice."
+                ),
+                "Split the task, replan it, or drop it.",
+                format!("best P(VS) {best:.2} below p_abandon {P_ABANDON}: the task is flagged"),
+            )
+        };
+        tracing::warn!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            attempt_key = %identity.attempt_key,
+            action = %prediction.decision.action,
+            spec_score = ?spec_score,
+            best_p_vs = best,
+            "self-model: {subject}; the attempt runs on the ladder's choice"
+        );
+        let Some(tui) = &self.tui_bridge else {
+            return;
+        };
+        tui.diagnosis(DiagnosisSummary {
+            id: format!("{kind}:{plan_id}/{task_id}"),
+            severity: DiagnosisSeverity::Warn,
+            subject,
+            detail,
+            suggested_action: Some(suggested_action.to_string()),
+            ..DiagnosisSummary::default()
+        });
+        let timestamp_ms = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default();
+        tui.publish_event(roko_core::DashboardEvent::EventLogEntry {
+            timestamp_ms,
+            event_type: event.to_string(),
+            plan_id: plan_id.clone(),
+            task_id: task_id.clone(),
+            message,
+        });
+    }
+
+    /// Append the refine request of the attempt `identity` to its run's spec ledger, for S07's
+    /// plan-load gate (6133). A write failure is logged: the record is telemetry.
+    fn record_refine_request(
+        &self,
+        identity: &AttemptIdentity,
+        spec_score: Option<f64>,
+        best: f64,
+    ) {
+        use std::io::Write as _;
+
+        let Some(runs) = &self.feedback.runs_dir else {
+            return;
+        };
+        // A shadow-mode request is the self-model's opinion only, which S07 may ignore.
+        let runtime = self.feedback.self_model.as_deref();
+        let mode = runtime.map_or("off", |runtime| mode_name(runtime.settings().mode));
+        let record = serde_json::json!({
+            "ev": SPEC_REFINE_EVENT,
+            "run_id": identity.run_id,
+            "plan_id": identity.plan_id,
+            "task_id": identity.task_id,
+            "attempt_key": identity.attempt_key,
+            "source": "self_model",
+            "mode": mode,
+            "spec_score": spec_score,
+            "p_vs_max": best,
+            "recorded_at_ms": chrono::Utc::now().timestamp_millis(),
+        });
+        let run_dir = runs.join(&identity.run_id);
+        let written = std::fs::create_dir_all(&run_dir).and_then(|()| {
+            let mut ledger = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(run_dir.join(SPEC_RECORDS_FILE))?;
+            writeln!(ledger, "{record}")
+        });
+        if let Err(error) = written {
+            tracing::warn!(
+                %error,
+                run = %identity.run_id,
+                "self-model: cannot write the refine request to the run's spec ledger"
+            );
+        }
     }
 }
 
 impl GraphTaskDispatcher {
     /// The self-model's step after `verdict`, an agent-blamed failure on ladder rung `rung`
-    /// after `climbs` climbs (6131); `None` when the self-model does not route the chain.
+    /// after `climbs` climbs (6131); `None` when the self-model does not route the chain. A
+    /// failure that rejected a suspicious pass climbs a rung (6132).
     pub(super) fn self_model_step(
         &self,
         spec: &TaskExecutionSpec,
@@ -623,6 +901,10 @@ impl GraphTaskDispatcher {
         climbs: u32,
     ) -> Option<StepAction> {
         let runtime = self.feedback.self_model.as_deref()?;
+        let chain = &verdict.identity.chain_key;
+        if let Some(step) = runtime.escalation_step(&verdict.identity.attempt_key, chain, rung) {
+            return Some(step);
+        }
         let used = self.attempt_in_run(&format!("{}/{}", spec.plan_id, task.id));
         let retries_left = spec.max_retries.saturating_sub(used);
         let error_class = verdict
@@ -634,8 +916,118 @@ impl GraphTaskDispatcher {
                     .ok()
                     .and_then(|value| value.as_str().map(str::to_string))
             });
-        let chain = &verdict.identity.chain_key;
         runtime.post_failure_step(chain, rung, climbs, retries_left, error_class)
+    }
+
+    /// The verify depth DP3 checks the attempt `attempt_key`, which ran `executor`, at (6132):
+    /// `depth`, its task type's ladder level or M1's floor, raised to the self-model's request
+    /// d* when an active self-model acts on the chain. In shadow mode the request is only
+    /// logged. Depth never decreases.
+    pub(super) fn self_model_depth(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_key: &str,
+        executor: &str,
+        depth: VerifyDepth,
+    ) -> VerifyDepth {
+        let Some(pass) = self.post_pass(attempt_key, executor, depth) else {
+            return depth;
+        };
+        let PassAction::Deepen { depth: level, .. } = pass.action else {
+            return depth;
+        };
+        let requested = depth_at(level).max(depth);
+        let applied = pass.runtime.acts_after_pass(&pass.chain);
+        tracing::info!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            depth = ?depth,
+            requested = ?requested,
+            risk_fg = pass.risk_fg,
+            applied,
+            "self-model: a low-confidence pass asks for a deeper verify depth"
+        );
+        if applied { requested } else { depth }
+    }
+
+    /// The self-model's step once the attempt `attempt_key`, which ran `executor`, passed every
+    /// check of verify depth `depth` (6132): the failure that escalates the model, when at the
+    /// deepest depth P(false green) is still above r_max and an active self-model can climb the
+    /// chain a rung; that failure climbs it. Otherwise `None`: the pass stands and exports its
+    /// risk as `risk_fg`, and in shadow mode an escalation is only logged.
+    pub(super) fn self_model_after_pass(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_key: &str,
+        executor: &str,
+        depth: VerifyDepth,
+    ) -> Option<String> {
+        let pass = self.post_pass(attempt_key, executor, depth)?;
+        let runtime = pass.runtime;
+        if !matches!(pass.action, PassAction::Escalate { .. }) {
+            runtime.risks.lock().insert(pass.chain, pass.risk_fg);
+            return None;
+        }
+        let used = self.attempt_in_run(&format!("{}/{}", spec.plan_id, task.id));
+        let retries_left = spec.max_retries.saturating_sub(used);
+        let applied = runtime.acts_after_pass(&pass.chain)
+            && runtime.can_climb(&pass.chain, pass.current, retries_left);
+        tracing::warn!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            depth = ?depth,
+            risk_fg = pass.risk_fg,
+            r_max = FALSE_GREEN_RISK_MAX,
+            applied,
+            "self-model: the pass looks like a false green at the deepest verify depth \
+             (pass but suspicious); a stronger model should retry the task"
+        );
+        if !applied {
+            runtime.risks.lock().insert(pass.chain, pass.risk_fg);
+            return None;
+        }
+        runtime.suspicious.lock().insert(attempt_key.to_string());
+        Some(format!(
+            "self_model:pass_but_suspicious: the self-model puts P(false green) at {:.2}, above \
+             r_max {FALSE_GREEN_RISK_MAX}, after every check of verify depth {depth:?}, the \
+             deepest; a stronger model retries the task",
+            pass.risk_fg
+        ))
+    }
+
+    /// What the self-model makes of the pass of the attempt `attempt_key`, which ran
+    /// `executor`, at verify depth `depth` (6132); `None` without a self-model, a forecast of
+    /// the attempt for the model that ran, or a false-green risk that has learned.
+    fn post_pass(
+        &self,
+        attempt_key: &str,
+        executor: &str,
+        depth: VerifyDepth,
+    ) -> Option<PostPass<'_>> {
+        let runtime = self.feedback.self_model.as_deref()?;
+        let candidates = runtime.open_candidates(attempt_key)?;
+        let (current, ran) = candidates
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| self.ran_model(&candidate.arm.model, executor))?;
+        let action = post_pass_action(ran, depth)?;
+        let chain = roko_learn::telemetry::AttemptKey::parse(attempt_key)?.chain_key();
+        Some(PostPass {
+            runtime,
+            chain,
+            current,
+            risk_fg: ran.p_fg,
+            action,
+        })
+    }
+
+    /// Whether `model`, an arm's model, is the one `executor` names: the same name, or the
+    /// `[models.*]` key of its slug.
+    fn ran_model(&self, model: &str, executor: &str) -> bool {
+        let profile = self.config.models.get(model);
+        model == executor || profile.is_some_and(|profile| profile.slug == executor)
     }
 
     /// Note whether the self-model made the climb the chain `chain_key` just took (6131).
@@ -672,6 +1064,45 @@ pub(crate) fn active_start(
         settings.mode == SelfModelMode::Active && !pinned && gate.eligible && !gate.breaker_tripped;
     let choice = would_choose.filter(|_| acts)?;
     (settings.allow_downward_start || choice >= default).then_some(choice)
+}
+
+/// Policy (b)'s step after a gate pass at verify depth `depth` (S04 §4.4, 6132), from `ran`, the
+/// attempt's forecast for the model that ran: ask for a deeper depth d*, escalate the model, or
+/// accept and export r = P(false green). `None` while r is the false-green head's prior: no VS
+/// label from S05's audits has taught it, so it says nothing about this pass.
+fn post_pass_action(ran: &CandidateForecast, depth: VerifyDepth) -> Option<PassAction> {
+    if (ran.p_fg - FALSE_GREEN_PRIOR).abs() < 1e-9 {
+        return None;
+    }
+    let loss_fg = FALSE_GREEN_LOSS * expected_cost(ran);
+    Some(after_pass(
+        ran.p_fg,
+        depth_level(depth),
+        &DEPTH_OPTIONS,
+        loss_fg,
+    ))
+}
+
+/// `depth`'s level on S05's V0–V4 scale.
+const fn depth_level(depth: VerifyDepth) -> u8 {
+    match depth {
+        VerifyDepth::V0 => 0,
+        VerifyDepth::V1 => 1,
+        VerifyDepth::V2 => 2,
+        VerifyDepth::V3 => 3,
+        VerifyDepth::V4 => 4,
+    }
+}
+
+/// The verify depth at `level` on S05's scale; V4 above it.
+const fn depth_at(level: u8) -> VerifyDepth {
+    match level {
+        0 => VerifyDepth::V0,
+        1 => VerifyDepth::V1,
+        2 => VerifyDepth::V2,
+        3 => VerifyDepth::V3,
+        _ => VerifyDepth::V4,
+    }
 }
 
 /// What the self-model knows of `task` before its attempt runs. Plan tasks have no benchmark
@@ -737,8 +1168,10 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, model, no_auto_fix,
+        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher,
+        make_test_dispatcher_with, model, no_auto_fix,
     };
+    use crate::state_hub::StateHub;
 
     const RUN: &str = "graph-self-model-run";
 
@@ -1049,5 +1482,220 @@ mod tests {
         assert_eq!(dispatcher.ladder_step(&held_spec, &held), 1);
         let held_chain = AttemptKey::new(RUN, "stream-plan", "T-HOLD", 1).chain_key();
         assert!(!dispatcher.self_model_climbed(&held_chain));
+    }
+
+    /// 6132: after a pass whose learned false-green risk is high, an active self-model asks DP3
+    /// for a deeper verify depth while one below the deepest pays, and keeps the model; after
+    /// the deepest depth it rejects the pass, and that one failure climbs the chain a rung. In
+    /// shadow mode it only logs. A pass that stands exports its risk.
+    #[tokio::test]
+    async fn low_confidence_pass_requests_depth_before_model() {
+        use roko_learn::telemetry::{AttemptKey, AttemptLadder, AttemptOutcome, LadderReason};
+
+        for mode in [SelfModelMode::Active, SelfModelMode::Shadow] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+            let settings = SelfModelConfig {
+                mode,
+                ..SelfModelConfig::default()
+            };
+            let state = temp.path().join(".roko/learn/self-model/state-v1.json");
+            let fresh = SelfModel::new(&snapshot);
+            let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+            let feedback = GraphFeedbackContext {
+                self_model: Some(Arc::clone(&runtime)),
+                ..GraphFeedbackContext::default()
+            };
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, VERIFY_PROVIDER, ladder(mode), feedback).await;
+            task.id = "T-PASS".to_string();
+            task.model_hint = None;
+            let mut spec = make_spec(&task);
+            spec.max_retries = 5;
+
+            // The self-model started the chain on the cheap rung, and puts the chance that a
+            // pass there is a false green at 60%, at $0.10 an attempt.
+            let key = AttemptKey::new(RUN, "stream-plan", "T-PASS", 1);
+            let (attempt_key, chain) = (key.attempt_key(), key.chain_key());
+            let arms: Vec<ArmKey> = ["cheap-model", "stream-model"]
+                .into_iter()
+                .map(|model| ArmKey::roko("stream-cli", model))
+                .collect();
+            let suspicious = |arm: &ArmKey| CandidateForecast {
+                arm: arm.clone(),
+                p_gate: 0.9,
+                p_fg: 0.6,
+                p_vs: 0.36,
+                p_vs_lcb: 0.3,
+                cost_q50: 0.10,
+                cost_q90: 0.10,
+                lat_q50_s: 60.0,
+                lat_q90_s: 60.0,
+                cold_start: false,
+            };
+            let candidates = Candidates {
+                arms: arms.clone(),
+                rungs: vec![0, 1],
+                default: 0,
+                step: 0,
+                pinned: false,
+            };
+            runtime.chain_starts.lock().insert(chain.clone(), Some(0));
+            let plan = (candidates, TaskFeatures::default());
+            runtime.chain_plans.lock().insert(chain.clone(), plan);
+            let forecast = AttemptForecast {
+                version: runtime.version(),
+                features: TaskFeatures::default(),
+                candidates: arms.iter().map(suspicious).collect(),
+                would_choose: Some(0),
+                default: 0,
+                pinned: false,
+                routed: true,
+            };
+            runtime.remember(attempt_key.clone(), forecast);
+            let (active, cheap) = (mode == SelfModelMode::Active, "claude-haiku-4-5");
+
+            // r·L_fg·d_j = 0.6 × (5 × $0.10) × 0.5 = $0.15 pays for V3's $0.08 but not for V4's
+            // $0.20: below the deepest depth the pass asks for V3, never for a new model.
+            let depth =
+                dispatcher.self_model_depth(&spec, &task, &attempt_key, cheap, VerifyDepth::V0);
+            let deeper = if active {
+                VerifyDepth::V3
+            } else {
+                VerifyDepth::V0
+            };
+            assert_eq!(depth, deeper, "{mode:?}");
+            let step = dispatcher.self_model_after_pass(&spec, &task, &attempt_key, cheap, depth);
+            assert_eq!(step, None, "{mode:?}");
+            assert_eq!(runtime.risk_fg(&chain), Some(0.6));
+
+            // After V4's checks r is still above r_max: an active self-model rejects the pass.
+            let depth =
+                dispatcher.self_model_depth(&spec, &task, &attempt_key, cheap, VerifyDepth::V4);
+            assert_eq!(depth, VerifyDepth::V4);
+            let step = dispatcher.self_model_after_pass(&spec, &task, &attempt_key, cheap, depth);
+            assert_eq!(step.is_some(), active, "{mode:?}: {step:?}");
+
+            // That one failure climbs the chain a rung; in shadow mode nothing moves.
+            let identity = AttemptIdentity::new(&key);
+            let outcome = AttemptOutcome::GateFailed;
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.ladder = Some(AttemptLadder {
+                rung: Some("cheap".to_string()),
+                index: Some(0),
+                step: 0,
+                reason: LadderReason::SelfModel,
+                exhausted: false,
+                router_pick: None,
+            });
+            let settled = SettledAttempt {
+                verdict: Arc::new(verdict),
+                failure_reason: None,
+                reflex_rule: None,
+                live_tool_calls: LiveToolCalls::default(),
+                harness: None,
+            };
+            dispatcher.note_ladder_outcome(&spec, &task, &settled);
+            assert_eq!(dispatcher.ladder_step(&spec, &task), u32::from(active));
+            assert_eq!(dispatcher.self_model_climbed(&chain), active, "{mode:?}");
+        }
+    }
+
+    /// 6133: a refine-spec forecast writes its action into the prediction row, and publishes a
+    /// `self_model_refine` diagnosis and a `spec.refine_requested` event, in the run's event log
+    /// and its spec ledger; nothing else changes, and the attempt runs on the ladder's choice.
+    #[tokio::test]
+    async fn refine_spec_action_emits_event_and_keeps_the_ladder_default() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let runs = roko.join("runs");
+        let run_dir = runs.join(RUN);
+        // S07 scored the task's spec 30 of 100, below s_min.
+        std::fs::create_dir_all(&run_dir).expect("the run's directory");
+        let quality = serde_json::json!({
+            "ev": "spec.quality",
+            "plan_id": "stream-plan",
+            "task_id": "T-REFINE",
+            "score": 30.0,
+        });
+        std::fs::write(run_dir.join(SPEC_RECORDS_FILE), format!("{quality}\n"))
+            .expect("write the spec record");
+        // Policy (a) on a fresh model: no rung's lower bound on P(VS) meets π*.
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Active,
+            policy: SelfModelPolicy::LcbAci,
+            ..SelfModelConfig::default()
+        };
+        let state = roko.join("learn/self-model/state-v1.json");
+        let fresh = SelfModel::new(&snapshot);
+        let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs),
+            self_model: Some(runtime),
+            ..GraphFeedbackContext::default()
+        };
+        let hub = StateHub::new(64);
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, mut task) = make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            ladder(SelfModelMode::Active),
+            feedback,
+            |dispatcher| dispatcher.with_tui_bridge(bridge),
+        )
+        .await;
+        task.id = "T-REFINE".to_string();
+        task.model_hint = None;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the attempt completes");
+        drop(dispatcher);
+
+        // The prediction row names the action beside the ladder's own pick, which the attempt
+        // ran.
+        let predictions = jsonl_rows_where(&run_dir.join("predictions.jsonl"), 1, |row| {
+            row["schema_version"] == "roko.prediction/1"
+        })
+        .await;
+        let decision = &predictions[0]["decision"];
+        assert_eq!(decision["action"], REFINE_SPEC, "{decision}");
+        assert!(decision["would_choose"].is_null(), "{decision}");
+        let default = decision["default"].as_str().expect("the ladder's arm");
+        let verdicts = jsonl_rows_where(&run_dir.join("attempts.jsonl"), 1, |row| {
+            row["schema_version"] == "roko.verdict/1"
+        })
+        .await;
+        let model = verdicts[0]["executed"]["model_requested"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            default.contains(&format!("/{model}@")),
+            "{default} vs {model}"
+        );
+
+        // A diagnosis and an event-log entry tell a person; the spec ledger tells S07.
+        let snapshot = hub.current_snapshot();
+        let diagnosis = "self_model_refine:stream-plan/T-REFINE";
+        let diagnosed = snapshot.diagnoses.iter().any(|row| row.id == diagnosis);
+        assert!(diagnosed, "{:?}", snapshot.diagnoses);
+        let logged = snapshot
+            .event_log
+            .iter()
+            .any(|entry| entry.event_type == SPEC_REFINE_EVENT && entry.task_id == "T-REFINE");
+        assert!(logged, "{:?}", snapshot.event_log);
+        let ledger = run_dir.join(SPEC_RECORDS_FILE);
+        let ledger = std::fs::read_to_string(&ledger).expect("the spec ledger");
+        let requests: Vec<serde_json::Value> = ledger
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|record| record["ev"] == SPEC_REFINE_EVENT)
+            .collect();
+        assert_eq!(requests.len(), 1, "{ledger}");
+        assert_eq!(requests[0]["task_id"], "T-REFINE");
+        assert_eq!(requests[0]["spec_score"], 0.3);
+        assert_eq!(requests[0]["mode"], "active");
     }
 }

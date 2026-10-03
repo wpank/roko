@@ -57,3 +57,9 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK43 (gap-c1d920), PK49 (gap-7ec3ef), PK60 (gap-940e44), PK63 (gap-eb39c1), PK64 (gap-2e4a81).
 - Suggested model: opus.
+
+## Progress
+
+Worker w3 (no cargo; Rust checks deferred to the batch gate), base `af070ee10`, branch `work/gap-4cbd80`:
+
+- 5135: implemented at `df6ead9ac`. The measured census folds L-M1 from M1's `harness_policy` rows (θ digests, S06's fixed 10% holdout, the params_digest receipt checked against the verdict's harness stamp), L-M3 from its epochs' route rows (ladder source = default arm; receipt = the attempt's prediction row), and L-M4 from route rows in which DP4's audit trust left a candidate out (`audit_trust` reason = receipt). loops.toml's notes are updated. Test `census_measures_meta_loops_from_receipts` (ε 8/9, 0.7, 0.9). Implemented on `work/gap-4cbd80` at `df6ead9ac`; cargo verification deferred to the batch gate.

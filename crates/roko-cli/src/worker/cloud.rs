@@ -601,6 +601,7 @@ pub async fn run_code_implementer_cloud(
                 effort: None,
                 no_cascade: false,
                 frozen_learning: false,
+                no_holdout: false,
                 metrics: None,
             })
             .await?;

@@ -215,6 +215,12 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// run. The run manifest records `ablation_flags = ["learning_frozen"]`.
         #[arg(long)]
         frozen_learning: bool,
+        /// Run in maximize mode (decision 4115): no learning loop is
+        /// withheld and no route explores, for this run alone, while every
+        /// decision is still logged. `[experiments] maximize = true` in
+        /// roko.toml does the same for every run.
+        #[arg(long)]
+        no_holdout: bool,
         /// Skip the disk-space pre-check and start the plan even when free disk
         /// is below `resources.min_free_disk_mb`. Use with caution: the plan
         /// may fail mid-run if disk space is exhausted.
@@ -1150,6 +1156,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             budget_override,
             no_budget,
             frozen_learning,
+            no_holdout,
             force,
             dangerously_skip_permissions,
             log_file,
@@ -1295,6 +1302,13 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                          the server's runs and timers write learned state; stop the server first"
                     );
                 }
+                if no_holdout {
+                    anyhow::bail!(
+                        "--no-holdout cannot be used when a server owns this workspace: the \
+                         server runs the plan under its own config; set [experiments] maximize \
+                         = true there, or stop the server first"
+                    );
+                }
                 return roko_cli::serve_client::run_plan_via_server(
                     &wd,
                     &resolved_plans_dir,
@@ -1338,6 +1352,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     budget_override,
                     no_budget,
                     frozen_learning,
+                    no_holdout,
                     effective_model_override.clone(),
                     dangerously_skip_permissions,
                     log_file.as_deref(),
@@ -2260,6 +2275,7 @@ pub(crate) async fn cmd_resume(
         budget_override: None,
         no_budget: false,
         frozen_learning: false,
+        no_holdout: false,
         force: false,
         dangerously_skip_permissions: false,
         log_file: None,
@@ -3126,6 +3142,7 @@ async fn cmd_plan_run_engine(
     budget_override: Option<f64>,
     no_budget: bool,
     frozen_learning: bool,
+    no_holdout: bool,
     cli_model_override: Option<String>,
     dangerously_skip_permissions: bool,
     log_file: Option<&std::path::Path>,
@@ -3225,6 +3242,8 @@ async fn cmd_plan_run_engine(
         no_cascade: false,
         // `--frozen-learning` holds learned state fixed for this run alone.
         frozen_learning,
+        // `--no-holdout` runs it in maximize mode (decision 4115).
+        no_holdout,
         metrics: None,
     };
     let exit_code = run_graph_plan(params).await;

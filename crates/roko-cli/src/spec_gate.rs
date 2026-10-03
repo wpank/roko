@@ -203,8 +203,34 @@ pub fn apply_holdout(report: &mut SpecGateReport, holdout_frac: f64, epoch: &str
     }
 }
 
-/// Log each blocked task's findings, then that the plans are refused.
+/// One line per finding of each blocked task:
+/// `<plan path> <task>: <rule>: <detail>`.
+#[must_use]
+pub fn blocked_lines(report: &SpecGateReport) -> Vec<String> {
+    report
+        .blocked()
+        .flat_map(|decision| {
+            decision.findings.iter().map(move |finding| {
+                format!(
+                    "{} {}: {}: {}",
+                    decision.plan_path, decision.task_id, finding.rule, finding.detail
+                )
+            })
+        })
+        .collect()
+}
+
+/// Report a refusal where an operator sees it: on stderr, the CLI's console,
+/// where tracing goes only with `--verbose` or `ROKO_LOG`, the refusal and
+/// then each blocked task's findings ([`blocked_lines`]); and in the log.
 pub fn log_blocked(report: &SpecGateReport) {
+    eprintln!(
+        "spec gate: plan refused before dispatch; fix the task specs below ([spec_quality] in \
+         roko.toml sets what the gate checks):"
+    );
+    for line in blocked_lines(report) {
+        eprintln!("  {line}");
+    }
     for decision in report.blocked() {
         for finding in &decision.findings {
             tracing::error!(
@@ -220,6 +246,29 @@ pub fn log_blocked(report: &SpecGateReport) {
         "plan refused before dispatch: fix the task specs above ([spec_quality] in roko.toml \
          sets what the gate checks)"
     );
+}
+
+/// The refusal as event-log entries, one per finding of each blocked task,
+/// for the run's event log and SSE: the plan runner publishes them on the
+/// run's hub.
+#[must_use]
+pub fn blocked_events(report: &SpecGateReport) -> Vec<roko_core::DashboardEvent> {
+    let timestamp_ms = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default();
+    report
+        .blocked()
+        .flat_map(|decision| {
+            decision
+                .findings
+                .iter()
+                .map(move |finding| roko_core::DashboardEvent::EventLogEntry {
+                    timestamp_ms,
+                    event_type: "spec.gate.refused".to_string(),
+                    plan_id: decision.plan_path.clone(),
+                    task_id: decision.task_id.clone(),
+                    message: format!("{}: {}", finding.rule, finding.detail),
+                })
+        })
+        .collect()
 }
 
 /// One task's `spec.gate` record (S07 §5): what the gate decided and why.

@@ -1202,6 +1202,13 @@ async fn run_graph_plan_body(
         };
     if spec_gate.blocks() {
         crate::spec_gate::log_blocked(&spec_gate);
+        // The run's event log and SSE show the refusal too.
+        if let Some(hub) = &state_hub {
+            let sender = hub.sender();
+            for event in crate::spec_gate::blocked_events(&spec_gate) {
+                sender.publish(event);
+            }
+        }
         return Ok(1);
     }
 

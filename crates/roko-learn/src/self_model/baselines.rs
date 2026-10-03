@@ -359,14 +359,14 @@ impl RoutingPolicy for RouterPolicy {
         self.attempts += 1;
         let model = self.models.get(arm)?.clone();
         if let Some(index) = self.router.model_index_for_slug(&model) {
-            let features = self.context.to_features_for_model(Some(&model));
+            let features = self.context.to_features_for_model(Some(model.as_str()));
             let reward = if result.passed { 1.0 } else { 0.0 };
             self.router.observe_outcome(features, index, reward, result.passed);
         }
         if result.passed || self.attempts > K_MAX {
             return None;
         }
-        self.context = Self::context(task, self.attempts + 1, Some(&model));
+        self.context = Self::context(task, self.attempts + 1, Some(model.as_str()));
         self.route()
     }
 }

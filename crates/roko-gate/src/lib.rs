@@ -111,12 +111,14 @@ pub mod generated_test_gate;
 /// Graph-compatible Cell wrapper for the production gate pipeline (#250).
 pub mod graph_cell;
 /// Multi-gate joint anomaly detection via Hotelling's T-squared (GATE-08).
+#[cfg(feature = "spc")]
 pub mod hotelling;
 pub mod integration_gate;
 pub mod judge_calibration;
 pub mod llm_judge_gate;
 pub mod payload;
 /// PELT (Pruned Exact Linear Time) offline change point detection (P1-13).
+#[cfg(feature = "spc")]
 pub mod pelt;
 pub mod process_reward;
 /// Production gate request types shared between Runner-v2 and Graph (#250).
@@ -135,6 +137,7 @@ pub mod rung_selector;
 pub mod schema_gate;
 pub mod shell;
 /// Statistical Process Control extensions: CUSUM, EWMA Control Chart, BOCPD (GATE-01).
+#[cfg(feature = "spc")]
 pub mod spc;
 /// Static spec-quality score for task specs: speclint's `sq-2` rules (S07.7).
 pub mod spec_quality;
@@ -189,6 +192,7 @@ pub use gate_env::{inherit_gate_env, inherit_gate_env_from};
 pub use gate_pipeline::{ComposedGatePipeline, GateComposition, GatePipeline};
 pub use gate_service::GateService;
 pub use generated::{GateGenerator, GeneratedCheck};
+#[cfg(feature = "spc")]
 pub use hotelling::{HotellingDetector, JointAnomalyResult};
 pub use payload::{BuildSystem, GatePayload, TestSelector};
 pub use process_reward::{
@@ -208,6 +212,7 @@ pub use rung_dispatch::{
 };
 pub use rung_selector::{PlanComplexity, Rung, RungCaps, is_selected, select_rungs};
 pub use shell::ShellGate;
+#[cfg(feature = "spc")]
 pub use spc::{
     BocpdDetector, ChangePoint, ControlStatus, CusumDetector, CusumShift, EwmaControlChart,
     SpcAlert, SpcDetector,

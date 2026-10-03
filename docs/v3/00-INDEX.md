@@ -375,6 +375,23 @@ The workspace contains **39 members** organized into 33 library crates, 3 applic
 binaries, and 1 integration test crate, plus the CLI binary (`roko-cli`), the HTTP server
 (`roko-serve`), and the ACP server (`roko-acp`).
 
+### Parked (off the default build)
+
+Decision 9201 parked every group that nothing on the plan path uses behind a cargo feature that
+is off by default (the conductor stays on, 9236). A default `roko` binary leaves these out; build
+with the feature to bring one back. Measurements are in `benchmarks/park/`.
+
+| Feature | Crate | What it adds back |
+|---|---|---|
+| `chain` | `roko-cli`, `roko-serve` | `roko-chain`, the 17 `chain.*` tools, the chain-family routes (arenas, marketplace, DeFi, registries, RPC proxy), chain state and the seven chain feed agents, x402 paid feeds, chain jobs; without it those routes answer 501 |
+| `alloy-backend` | `roko-cli`, `roko-serve` | Real EVM JSON-RPC (implies `chain`) |
+| `groups` | `roko-cli`, `roko-serve` | Agent groups, membership and pheromone state, and their routes |
+| `relay` | `roko-cli`, `roko-serve` | Relay registration, the subscription and feed relay bridge, the `/relay` proxy |
+| `cognitive-clock` | `roko-cli`, `roko-runtime` | The heartbeat clock, `CorticalState`, the theta and delta consumers and plan-completion sinks, the attention auction, heartbeat probes |
+| `cross-cut-functors` | `roko-compose` | The memory, daimon, dreams and safety functors, natural transformations, `CrossCutArbitrator` |
+| `spc` | `roko-gate` | CUSUM/EWMA/BOCPD detectors, PELT, Hotelling's T-squared in the adaptive thresholds |
+| `active-inference` | `roko-learn` | The expected-free-energy tier selector |
+
 ### Kernel layer
 
 These crates define the type system and core abstractions. Everything else depends on them.
@@ -382,7 +399,7 @@ These crates define the type system and core abstractions. Everything else depen
 | Crate | Path | What | Status |
 |---|---|---|---|
 | `roko-primitives` | `crates/roko-primitives/` | HDC vectors, tier routing | Stable |
-| `roko-runtime` | `crates/roko-runtime/` | ProcessSupervisor, event bus, cancellation, workflow contract | Stable |
+| `roko-runtime` | `crates/roko-runtime/` | ProcessSupervisor, event bus, cancellation, workflow contract | Stable; the cognitive clock is parked (`cognitive-clock`) |
 | `roko-core` | `crates/roko-core/` | Signal + 12 traits, types, config, tools, errors | Kernel, stable |
 
 ### Protocol implementation layer
@@ -392,10 +409,10 @@ Concrete implementations of the 9 protocol traits.
 | Crate | Path | What | Status |
 |---|---|---|---|
 | `roko-std` | `crates/roko-std/` | 35 default tool definitions (16 executable local + 19 GitHub MCP); 52 with typed optional-chain placeholders | Stable |
-| `roko-gate` | `crates/roko-gate/` | 19 gates, 7-rung pipeline, adaptive thresholds | Partial: plan runs use `ShellGate` for authored verify commands; the rung pipeline runs only in tests |
+| `roko-gate` | `crates/roko-gate/` | 19 gates, 7-rung pipeline, adaptive thresholds | Partial: plan runs use `ShellGate` for authored verify commands; the rung pipeline runs only in tests; the SPC ensemble is parked (`spc`) |
 | `roko-eval` | `crates/roko-eval/` | Unified evaluation framework: EvidenceCollector, Criterion, Profile traits | Wired |
 | `roko-fs` | `crates/roko-fs/` | FileSubstrate (JSONL), GC, layout | Stable |
-| `roko-compose` | `crates/roko-compose/` | Prompt assembly, 11 role templates, 9-layer SystemPromptBuilder, enrichment | Wired |
+| `roko-compose` | `crates/roko-compose/` | Prompt assembly, 11 role templates, 9-layer SystemPromptBuilder, enrichment | Wired; the cross-cut functors are parked (`cross-cut-functors`) |
 
 ### Agent layer
 
@@ -423,7 +440,7 @@ Learning, memory, affect, and dreams.
 
 | Crate | Path | What | Status |
 |---|---|---|---|
-| `roko-learn` | `crates/roko-learn/` | Episodes, playbooks, bandits, model routing, experiments, efficiency | Wired |
+| `roko-learn` | `crates/roko-learn/` | Episodes, playbooks, bandits, model routing, experiments, efficiency | Wired; the EFE tier selector is parked (`active-inference`) |
 | `roko-neuro` | `crates/roko-neuro/` | Durable knowledge store, distillation, tier progression | Wired |
 | `roko-dreams` | `crates/roko-dreams/` | Offline consolidation (hypnagogia, imagination, cycle), scheduling | Wired |
 | `roko-daimon` | `crates/roko-daimon/` | Affect engine, somatic markers, PAD vector, dispatch modulation | Partial: affect feeds routing; `modulate_dispatch` and somatic markers have no caller |
@@ -436,7 +453,7 @@ Gateway, plugins, connectivity, and configuration.
 |---|---|---|---|
 | `roko-gateway` | `crates/roko-gateway/` | 9-stage inference pipeline: routing, caching, backpressure, cost accounting | Wired in `roko serve` only; plan runs don't use it |
 | `roko-plugin` | `crates/roko-plugin/` | Plugin manifests, WASM hook validation (no hook runtime), signed deps, semantic-version resolution | Wired |
-| `roko-chain` | `crates/roko-chain/` | Optional chain client/runtime primitives, local registry, marketplace, arena, DeFi state machines | Partial (local state machines tested; chain transport/indexing remain Phase 2+) |
+| `roko-chain` | `crates/roko-chain/` | Optional chain client/runtime primitives, local registry, marketplace, arena, DeFi state machines | Parked: not in a default `roko` build (`--features chain`); local state machines tested, chain transport/indexing remain Phase 2+ |
 
 ### Code intelligence layer
 
@@ -462,7 +479,7 @@ Standalone MCP servers used by agents via `--mcp-config`.
 | Crate | Path | What | Status |
 |---|---|---|---|
 | `roko-cli` | `crates/roko-cli/` | CLI binary, plan DAG/runner, merge queue, worktree manager, ratatui TUI | Main entry point, wired |
-| `roko-serve` | `crates/roko-serve/` | HTTP control plane: REST routes (counts in `tools/http_route_inventory.snapshot.json`) + SSE + WebSocket on :6677 | Wired |
+| `roko-serve` | `crates/roko-serve/` | HTTP control plane: REST routes (counts in `tools/http_route_inventory.snapshot.json`) + SSE + WebSocket on :6677 | Wired; the chain-family, group and relay routes are parked (`chain`, `groups`, `relay`) and answer 501 |
 | `roko-demo` | `crates/roko-demo/` | Demo/example binary for showcasing features | Built |
 
 ### Application binaries

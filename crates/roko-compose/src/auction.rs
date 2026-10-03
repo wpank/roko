@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+#[cfg(feature = "cross-cut-functors")]
 use std::sync::Arc;
 
 use roko_core::Signal;
@@ -9,9 +10,13 @@ use roko_neuro::KnowledgeTier;
 use serde::{Deserialize, Serialize};
 
 use crate::AttentionBidder;
+#[cfg(feature = "cross-cut-functors")]
 use crate::cross_cut::{CrossCutContext, CrossCutFunctor, CrossCutResult};
+#[cfg(feature = "cross-cut-functors")]
 use crate::daimon_functor::DaimonFunctor;
+#[cfg(feature = "cross-cut-functors")]
 use crate::dreams_functor::DreamsFunctor;
+#[cfg(feature = "cross-cut-functors")]
 use crate::memory_functor::MemoryFunctor;
 
 /// Canonical subsystem identifier for prompt-budget bidding.
@@ -727,6 +732,7 @@ pub fn resolve_by_vcg(recommendations: &[CrossCutRecommendation]) -> CrossCutArb
 }
 
 /// Cross-cut pipeline output after safety pre-filtering and arbitration.
+#[cfg(feature = "cross-cut-functors")]
 pub struct CrossCutArbitration {
     /// Safely enriched signals used to collect bids.
     pub signals: Vec<Signal>,
@@ -735,6 +741,8 @@ pub struct CrossCutArbitration {
 }
 
 /// Runs the three advisory functors and resolves their conflicting bids.
+/// Parked with the functors behind `cross-cut-functors` (9223).
+#[cfg(feature = "cross-cut-functors")]
 pub struct CrossCutArbitrator {
     /// Durable-memory functor.
     pub memory: Arc<MemoryFunctor>,
@@ -745,6 +753,7 @@ pub struct CrossCutArbitrator {
     safety_filter: Arc<dyn CrossCutFunctor<CrossCutContext>>,
 }
 
+#[cfg(feature = "cross-cut-functors")]
 impl CrossCutArbitrator {
     /// Safety is mandatory and deliberately not represented as a bidder.
     #[must_use]
@@ -804,14 +813,21 @@ fn parse_knowledge_tier(value: &str) -> Option<KnowledgeTier> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "cross-cut-functors")]
     use std::sync::{Arc, RwLock};
 
+    #[cfg(feature = "cross-cut-functors")]
     use roko_agent::safety::contract::AgentContract;
+    #[cfg(feature = "cross-cut-functors")]
     use roko_core::capabilities::{Capability, CapabilitySet};
+    #[cfg(feature = "cross-cut-functors")]
     use roko_core::{Kind, Signal};
+    #[cfg(feature = "cross-cut-functors")]
     use roko_daimon::DaimonState;
+    #[cfg(feature = "cross-cut-functors")]
     use roko_neuro::KnowledgeStore;
 
+    #[cfg(feature = "cross-cut-functors")]
     use crate::{
         CrossCutContext, DaimonFunctor, DreamsFunctor, LoopStep, MemoryFunctor, SafetyFunctor,
     };
@@ -887,6 +903,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "cross-cut-functors")]
     #[tokio::test]
     async fn safety_prefilter_removes_forbidden_bid_before_collection() {
         let temp = tempfile::tempdir().unwrap();

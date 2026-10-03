@@ -152,6 +152,14 @@ pub struct LearningConfig {
     /// output is unverified and its rule earns no gate pass.
     #[serde(default)]
     pub t0_reflexes: bool,
+    /// Write an `hdc_fingerprint` on every persisted episode: one 64-bit hash
+    /// of the prompt and outcome expanded into an HDC vector.
+    ///
+    /// Off by default (9226): it identifies exact inputs, measures no
+    /// semantic similarity and only the TUI context view reads it, yet it was
+    /// most of each `.roko/episodes.jsonl` row. Rows already written keep it.
+    #[serde(default)]
+    pub episode_hdc_fingerprint: bool,
     /// Dampening factor for manual model override learning (UX34).
     ///
     /// When a user manually overrides the model via `--model` /
@@ -270,6 +278,7 @@ impl Default for LearningConfig {
             use_lookahead_router: false,
             lookahead_threshold: default_lookahead_threshold(),
             t0_reflexes: false,
+            episode_hdc_fingerprint: false,
             override_learning_dampening: None,
             gate_threshold_flush_interval: default_gate_threshold_flush_interval(),
             knowledge: KnowledgeProgressionConfig::default(),

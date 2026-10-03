@@ -88,8 +88,11 @@ function CountdownOverlay({ onDone }: { onDone: () => void }) {
 
 type Tab = 'configure' | 'live' | 'results' | 'history' | 'compare' | 'analysis' | 'learning';
 
+/**
+ * The simulated `demo` strategy is not offered: its results would sit beside real ones (S10 §4.4).
+ * The CLI keeps `roko bench demo`, labelled simulated.
+ */
 const STRATEGIES: { id: AgentStrategy; label: string; desc: string }[] = [
-  { id: 'demo', label: 'Demo', desc: 'Simulated results, no LLM needed' },
   { id: 'minimal', label: 'Minimal', desc: 'Basic agent, no enrichment' },
   { id: 'context_enriched', label: 'Context-Enriched', desc: 'With context bidders' },
   { id: 'neuro_augmented', label: 'Neuro-Augmented', desc: 'With knowledge store' },
@@ -290,11 +293,8 @@ export default function Bench() {
                         </button>
                       ))}
                     </div>
-                    {config.strategy === 'demo' && (
-                      <p className="bench-demo-banner">Demo mode: results are simulated. No LLM API key required.</p>
-                    )}
-                    {providerStatus && !providerStatus.has_api_keys && config.strategy !== 'demo' && (
-                      <p className="bench-demo-banner bench-demo-warn">No API keys detected. Tasks will likely fail. Switch to Demo strategy.</p>
+                    {providerStatus && !providerStatus.has_api_keys && (
+                      <p className="bench-demo-banner bench-demo-warn">No API keys detected. Tasks will likely fail.</p>
                     )}
                   </Pane>
 

@@ -152,19 +152,15 @@ export function useBench() {
     })();
   }, [get]);
 
-  // Fetch provider status on mount — auto-select demo if no API keys.
+  // Fetch provider status on mount. Without API keys the page warns; it never switches to the
+  // simulated demo strategy (S10 §4.4).
   useEffect(() => {
     (async () => {
       try {
-        const status = await get<ProviderStatus>('/api/bench/provider-status');
-        setProviderStatus(status);
-        if (status && !status.has_api_keys && status.demo_available) {
-          setConfig((prev) => ({ ...prev, strategy: 'demo' }));
-        }
+        setProviderStatus(await get<ProviderStatus>('/api/bench/provider-status'));
       } catch {
-        // Server unavailable — default to demo.
+        // Server unavailable.
         setProviderStatus({ has_providers: false, has_api_keys: false, demo_available: true });
-        setConfig((prev) => ({ ...prev, strategy: 'demo' }));
       }
     })();
   }, [get]);

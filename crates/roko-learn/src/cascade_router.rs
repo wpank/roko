@@ -848,11 +848,19 @@ impl CascadeRouter {
         }
 
         let _primary_hint = knowledge.hint_for(&route.primary.slug);
-        let frontier = self.current_pareto_frontier();
-        let linucb_scores: HashMap<_, _> = self
-            .ucb_scores(ctx, candidates, frontier.as_deref())
-            .into_iter()
-            .collect();
+        // Until LinUCB leaves its cold start, its scores only mark its own
+        // static pick (1.0 against 0.0), which no advice could outweigh and
+        // which need not be this route's pick: the advice alone then ranks
+        // the candidates.
+        let cold_start = stage_for_observations(self.total_observations()) == CascadeStage::Static;
+        let linucb_scores: HashMap<_, _> = if cold_start {
+            HashMap::new()
+        } else {
+            let frontier = self.current_pareto_frontier();
+            self.ucb_scores(ctx, candidates, frontier.as_deref())
+                .into_iter()
+                .collect()
+        };
 
         let adjusted_score = |slug: &str| {
             let base = linucb_scores
@@ -1339,7 +1347,9 @@ impl CascadeRouter {
     /// with knowledge `advice`: the knowledge step of
     /// [`Self::route_with_knowledge_among`], for a route a health- or
     /// bias-aware selector produced (reg-ff6e1a). A candidate that beats the
-    /// pick by more than 0.1 once the advice is counted replaces it.
+    /// pick by more than 0.1 once the advice is counted replaces it. Before
+    /// the router has learned anything (its static stage), the advice alone
+    /// ranks the candidates.
     #[must_use]
     pub fn apply_knowledge_among(
         &self,

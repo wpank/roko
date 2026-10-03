@@ -428,7 +428,10 @@ def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.
                verify_wrapper: str | None = None, snapshot: ledger.Snapshot | None = None) -> planemit.PlanSpec:
     """The plan spec of one task on this arm: `run_task`'s, and `preflight`'s for its stand-in task. A routed arm
     (3312: more than one `models_allow` entry) emits planemit's ladder mode instead of one pinned model, with one
-    rung per allowed model, cheapest first, and `model` as the start rung."""
+    rung per allowed model, cheapest first, and `model` as the start rung. The arm's `[overlay]` table (3360:
+    roko_full's spec gate, routing, audit, holdout and homeostasis mechanisms), if it has one, becomes planemit's
+    own `PlanSpec.overlay`, which `emit` turns into roko.toml's extra tables; an arm with no `[overlay]` (every
+    arm but roko_full) gets `PlanSpec`'s own empty default, so its emitted roko.toml is unchanged."""
     settings = arm.get("roko", {})
     api_key_env = endpoint.api_key_env or arm.get("providers", {}).get(endpoint.provider, {}).get("api_key_env") or ""
     if not api_key_env and settings.get("provider_kind", "openai_compat") != "claude_cli":
@@ -448,7 +451,7 @@ def _plan_spec(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.
         max_retries=int(settings.get("max_retries", 2)), max_turns=limits.turns_per_attempt,
         tier=settings.get("tier", "focused"), skip_enrichment=bool(settings.get("skip_enrichment", True)),
         verify_timeout_s=int(limits.command_timeout_s), verify_wrapper=verify_wrapper,
-        rungs=rungs, start=start, allow=tuple(allowed))
+        rungs=rungs, start=start, allow=tuple(allowed), overlay=arm.get("overlay") or {})
 
 
 def _rung(arm: dict, model: str, snapshot: ledger.Snapshot, limits: caps.Caps) -> planemit.Rung:

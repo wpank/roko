@@ -84,3 +84,15 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK14 (gap-997366), PK78 (gap-2339e2), PK79 (gap-425d9e).
 - Existing work items this package covers or touches: q-6b7cca. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-7add13`; cargo verification is deferred to the batch gate.
+
+- 9222: implemented at 068dfd104 (theta and delta sinks parked behind `cognitive-clock`, not deleted: q-6b7cca is still open)
+- 9223: implemented at 9858793f8
+- 9224: implemented at 5623ed202
+- 9225: implemented at ae2b84a0d
+- 9226: implemented at 5535ba81e
+- 9227: implemented at 8673f9541 (CLAUDE.md left to the coordinator; the cargo tree and cold-build numbers in benchmarks/park/ are null)
+- 9237: implemented at af8428e43

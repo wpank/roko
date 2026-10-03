@@ -1,0 +1,34 @@
+# s3_disturbance's disturbance hooks (S08 §4.6, §4.7; task 3331): compiled by streams/compile.py --seed 1. Do not hand-edit: regenerate with the same --seed for a byte-identical file.
+schema_version = "vb.disturbance/1"
+
+[[disturbance]]
+kind = "provider_fault"
+start_at = 11
+end_at = 16
+seed = 1
+params = { name = "http_5xx", p = 0.2 }
+
+[[disturbance]]
+kind = "model_swap"
+start_at = 17
+end_at = 22
+seed = 1
+params = { to = "zai/glm-4.7" }
+
+[[disturbance]]
+kind = "harder_mix"
+start_at = 23
+end_at = 28
+seed = 1
+
+[[disturbance]]
+kind = "convention_flip"
+start_at = 29
+end_at = 34
+seed = 1
+
+[[disturbance]]
+kind = "budget_cut"
+start_at = 35
+end_at = 40
+seed = 1

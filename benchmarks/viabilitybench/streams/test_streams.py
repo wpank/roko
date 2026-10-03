@@ -81,10 +81,8 @@ def test_the_committed_stream_files_match_compile_py():
     """The checked-in p1_core.toml, p1_h3.toml, p1_pass5.toml and log1.toml are exactly compile.py's output for
     DEFAULT_SEED: nobody hand-edited them after compiling (`compile.py --check` makes the same comparison)."""
     documents = compile_mod.compile_streams(compile_mod.DEFAULT_SEED)
-    for name, filename in compile_mod.FILES.items():
-        if name == "log1":
-            continue
-        path = STREAMS_DIR / filename
+    for name in ("p1_core", "p1_h3", "p1_pass5"):
+        path = STREAMS_DIR / compile_mod.FILES[name]
         assert path.read_text(encoding="utf-8") == compile_mod.render_toml(documents[name], seed=compile_mod.DEFAULT_SEED), \
             f"{filename} does not match compile.py --seed {compile_mod.DEFAULT_SEED}; regenerate it"
     log1_path = STREAMS_DIR / compile_mod.FILES["log1"]
@@ -172,3 +170,72 @@ def test_log1_toml_round_trips_through_tomllib():
     assert parsed["honeypots"] == doc["honeypots"]
     assert len(parsed["cell"]) == len(doc["cells"])
     assert sum(cell["n"] for cell in parsed["cell"]) == 2156
+
+
+# --- S1, S3 and S5 (S08 §4.7; task 3331) ---------------------------------------------------------------------
+
+
+def test_s_streams_match_s08_compositions():
+    """S1: F1-F4 x 24 (96), in blocks of 4. S3: 10 nominal + 30 disturbed (40), 6 per S08 §4.6 hook. S5: 120
+    spread over the 6 P1-core families."""
+    s1 = compile_mod.compile_s1(1)["stream"]["instances"]
+    assert len(s1) == 96 and len(set(s1)) == 96
+    counts = Counter(_family_level(instance_id)[0] for instance_id in s1)
+    assert counts == Counter({family: 24 for family in compile_mod.S1_FAMILIES})
+    blocks = [s1[i:i + 4] for i in range(0, 96, 4)]
+    assert all({_family_level(instance_id)[0] for instance_id in block} == set(compile_mod.S1_FAMILIES)
+              for block in blocks), "every block of 4 has exactly one instance per family"
+
+    s3_stream, s3_hooks = compile_mod.compile_s3(1)
+    instances = s3_stream["stream"]["instances"]
+    assert len(instances) == 40 and len(set(instances)) == 40
+    assert s3_hooks["schema_version"] == "vb.disturbance/1"
+    assert [entry["kind"] for entry in s3_hooks["disturbances"]] == list(compile_mod.S3_KINDS)
+    covered = sorted((entry["start_at"], entry["end_at"]) for entry in s3_hooks["disturbances"])
+    assert covered == [(11, 16), (17, 22), (23, 28), (29, 34), (35, 40)]  # 10 nominal, then 6 per kind
+    assert set(_family_level(instance_id)[0] for instance_id in instances) <= {"F1", "F4"}  # convention_flip-safe
+
+    s5 = compile_mod.compile_s5(1)["stream"]["instances"]
+    assert len(s5) == 120 and len(set(s5)) == 120
+    counts = Counter(_family_level(instance_id)[0] for instance_id in s5)
+    assert set(counts) == set(compile_mod.S5_FAMILIES) and set(counts.values()) == {20}
+
+
+def test_s_streams_are_reproducible_from_their_seed():
+    assert compile_mod.compile_s1(1) == compile_mod.compile_s1(1)
+    assert compile_mod.compile_s1(1) != compile_mod.compile_s1(2)
+    s3_a, hooks_a = compile_mod.compile_s3(1)
+    s3_b, hooks_b = compile_mod.compile_s3(1)
+    assert (s3_a, hooks_a) == (s3_b, hooks_b)
+    assert compile_mod.compile_s3(2)[0] != s3_a
+    assert compile_mod.compile_s5(1) == compile_mod.compile_s5(1)
+    assert compile_mod.compile_s5(1) != compile_mod.compile_s5(2)
+
+
+def test_s3_disturbance_hooks_load_through_the_real_disturb_module():
+    import disturb
+
+    hooks = disturb.load(STREAMS_DIR / "s3_disturbance_hooks.toml")
+    assert [h.kind for h in hooks] == list(compile_mod.S3_KINDS)
+    for entry in hooks:
+        assert disturb.kinds(hooks, entry.start_at) == [entry.kind]
+    assert disturb.kinds(hooks, 5) == []  # a nominal position: no hook covers it
+
+
+@pytest.mark.parametrize("stream_id", ["s1_learncurve", "s3_disturbance", "s5_holdout"])
+def test_s_streams_load_through_the_driver(stream_id):
+    stream = vb.load_stream(stream_id)
+    assert stream.id == stream_id
+    assert stream.order(3) == stream.order(3)
+
+
+def test_the_committed_s_stream_files_match_compile_py():
+    s1_text = compile_mod.render_toml(compile_mod.compile_s1(compile_mod.DEFAULT_SEED), seed=compile_mod.DEFAULT_SEED)
+    assert (STREAMS_DIR / "s1_learncurve.toml").read_text(encoding="utf-8") == s1_text
+    s3_stream, s3_hooks = compile_mod.compile_s3(compile_mod.DEFAULT_SEED)
+    assert (STREAMS_DIR / "s3_disturbance.toml").read_text(encoding="utf-8") == \
+        compile_mod.render_toml(s3_stream, seed=compile_mod.DEFAULT_SEED)
+    assert (STREAMS_DIR / "s3_disturbance_hooks.toml").read_text(encoding="utf-8") == \
+        compile_mod.render_disturbance_toml(s3_hooks, stream_id="s3_disturbance", seed=compile_mod.DEFAULT_SEED)
+    s5_text = compile_mod.render_toml(compile_mod.compile_s5(compile_mod.DEFAULT_SEED), seed=compile_mod.DEFAULT_SEED)
+    assert (STREAMS_DIR / "s5_holdout.toml").read_text(encoding="utf-8") == s5_text

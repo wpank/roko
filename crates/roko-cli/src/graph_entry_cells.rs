@@ -40,6 +40,7 @@ use roko_core::dashboard_snapshot::classify_task_outcome;
 use roko_core::error::{Result, RokoError};
 use roko_core::{Body, Capability, DashboardEvent, Kind, Signal, TaskDomain};
 use roko_graph::cells::task_executor::TaskGateVerdict;
+use roko_graph::cells::{ShellExecCell, ShellExecMode};
 use roko_graph::{Cell, CellContext, CellRegistry};
 use roko_runtime::cancel::CancelToken;
 use roko_serve::runtime::{PromptPlanResult, RunOrigin, fence_untrusted};
@@ -62,10 +63,21 @@ pub const EVENT_DATA_CLOSE: &str = "<<<END EVENT DATA>>>";
 
 /// The cells a graph that `roko graph` runs, validates or shows may use:
 /// [`roko_graph::default_registry`]'s and the entry cells, whose runs happen
-/// in `workdir` and publish to `hub`.
+/// in `workdir` and publish to `hub`. The shell cells run their commands in
+/// `workdir` too, which for serve's triggers is the served workspace, not
+/// the process's working directory (9129).
 #[must_use]
 pub fn graph_registry(workdir: PathBuf, hub: SharedStateHub) -> CellRegistry {
     let mut registry = roko_graph::default_registry();
+    for (cell_type, mode) in [
+        ("shell.exec", ShellExecMode::Exec),
+        ("verify.command", ShellExecMode::Verify),
+    ] {
+        let workdir = workdir.clone();
+        registry.register(cell_type, move |node| {
+            Box::new(ShellExecCell::new(mode, &node).with_workdir(workdir.clone()))
+        });
+    }
     register_agent_task(&mut registry, workdir.clone(), hub.clone());
     register_plan_run(&mut registry, workdir, hub);
     registry
@@ -778,5 +790,53 @@ depends_on = ["T9"]
             outside.to_string().contains("below the plans root"),
             "{outside}"
         );
+    }
+
+    /// 9129: a manual trigger's event runs the example trigger graph through
+    /// `execute_graph`, as serve's trigger runtime does, in the served
+    /// workspace: the pre-check passes the payload on, the `agent.task`
+    /// node's run passes its gates with the event's `topic` fenced in its
+    /// prompt, and its verdict reaches the graph's output.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trigger_fires_agent_task_graph() {
+        use crate::graph_command::execute_graph;
+        use roko_core::trigger::{TriggerEvent, TriggerSource};
+
+        let tmp = fake_agent_workspace();
+        let graph = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/graphs/trigger-agent-task.toml");
+        let event = TriggerEvent::new(
+            "summary".to_string(),
+            json!({ "topic": "the release notes" }),
+            TriggerSource::Manual {
+                user: "operator".to_string(),
+            },
+            "trace-summary".to_string(),
+        );
+        let hub = crate::state_hub::shared_state_hub();
+
+        let output = execute_graph(&graph, tmp.path(), &hub, Some(&event), None)
+            .await
+            .expect("the graph runs");
+        assert!(output.success, "{}", output.summary());
+        let completed = output
+            .node_results
+            .iter()
+            .filter(|node| node.status == roko_graph::NodeStatus::Complete)
+            .count();
+        assert_eq!(completed, 3, "{}", output.summary());
+        assert_eq!(
+            output.gate_verdicts.get("summarize"),
+            Some(&TaskGateVerdict::Passed)
+        );
+        let runs: Vec<PathBuf> = std::fs::read_dir(tmp.path().join(".roko/runs"))
+            .expect("the run's directory")
+            .map(|entry| entry.expect("a run").path())
+            .collect();
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        let tasks = std::fs::read_to_string(runs[0].join("tasks.toml")).expect("the run's plan");
+        assert!(tasks.contains(EVENT_DATA_OPEN), "{tasks}");
+        assert!(tasks.contains("topic: the release notes"), "{tasks}");
     }
 }

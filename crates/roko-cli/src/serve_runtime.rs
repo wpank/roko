@@ -396,12 +396,15 @@ impl CliRuntime for RokoCliRuntime {
 
     async fn run_trigger_graph(
         &self,
-        _workdir: &Path,
+        workdir: &Path,
         graph: &Path,
         event: &roko_core::trigger::TriggerEvent,
     ) -> anyhow::Result<PlanExecutionResult> {
+        // The graph's cells work in the served workspace, not the server
+        // process's working directory (9129).
         let output =
-            crate::graph_command::execute_graph(graph, &self.state_hub, Some(event), None).await?;
+            crate::graph_command::execute_graph(graph, workdir, &self.state_hub, Some(event), None)
+                .await?;
         Ok(PlanExecutionResult {
             success: output.success,
             output_text: Some(output.summary()),
@@ -411,13 +414,14 @@ impl CliRuntime for RokoCliRuntime {
 
     async fn run_trigger_graph_scoped(
         &self,
-        _workdir: &Path,
+        workdir: &Path,
         graph: &Path,
         event: &roko_core::trigger::TriggerEvent,
         scope: &TriggerExecutionScope,
     ) -> anyhow::Result<PlanExecutionResult> {
         let output = crate::graph_command::execute_graph(
             graph,
+            workdir,
             &self.state_hub,
             Some(event),
             scope.capabilities.as_ref(),

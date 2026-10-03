@@ -16,8 +16,10 @@
 //! - `env`, names of roko's environment variables the command inherits
 //!   beyond the gate allow-list (`roko_core::child_env`).
 //!
-//! `shell.exec` outputs a `ProcessExit` signal with the exit code, the tails
-//! of stdout and stderr with secrets scrubbed, and the duration; a non-zero
+//! `shell.exec` passes its input signals on, as the gate cells do, so a
+//! pre-check does not cut a trigger's payload off from the nodes after it
+//! (9129), and adds a `ProcessExit` signal with the exit code, the tails of
+//! stdout and stderr with secrets scrubbed, and the duration; a non-zero
 //! exit is the node's error. `verify.command` outputs a `GateVerdict` signal
 //! instead, which passes on exit 0 and fails otherwise: a failed check is not
 //! an error, which only a command that cannot run is. Both refuse to start in
@@ -256,7 +258,9 @@ impl Cell for ShellExecCell {
             .body(Body::Json(body))
             .tag("cell", cell)
             .build();
-        Ok(vec![exit])
+        let mut output = input;
+        output.push(exit);
+        Ok(output)
     }
 }
 
@@ -399,10 +403,13 @@ mod tests {
             temp.path(),
         );
         let output = copy
-            .execute(vec![payload], &ctx)
+            .execute(vec![payload.clone()], &ctx)
             .await
             .expect("the copy runs");
-        assert_eq!(output[0].kind, Kind::ProcessExit);
+        // The payload is passed on, ahead of the command's exit (9129).
+        assert_eq!(output.len(), 2, "{output:?}");
+        assert_eq!(output[0], payload);
+        assert_eq!(output[1].kind, Kind::ProcessExit);
         assert!(!temp.path().join("pwned").exists(), "the payload ran");
         let seen = std::fs::read_to_string(temp.path().join("seen.json")).expect("seen");
         assert!(seen.contains("$(touch pwned)"), "{seen}");

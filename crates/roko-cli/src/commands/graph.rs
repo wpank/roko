@@ -10,7 +10,7 @@ use clap::Subcommand;
 use roko_core::trigger::{TriggerEvent, TriggerSource};
 use roko_core::{Body, CapabilitySet, Kind, Provenance, Signal, TelemetryEventSink};
 use roko_graph::profile::{AuthoredGraphProfile, validate_cell_capabilities};
-use roko_graph::{CellContext, GraphEngine, GraphOutput, default_registry, loader};
+use roko_graph::{CellContext, CellRegistry, GraphEngine, GraphOutput, loader};
 use roko_runtime::{LensExecutor, LensQueueConfig, QueuedLensExecutor, SharedStateHub};
 
 /// Exit code for success.
@@ -158,7 +158,14 @@ async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
     .map_err(|e| anyhow!("failed to build runtime services: {e}"))?;
 
     let telemetry_hub = SharedStateHub::new_in_process();
-    let output = execute_graph(path, &telemetry_hub, None, Some(profile.effective())).await?;
+    let output = execute_graph(
+        path,
+        &workdir,
+        &telemetry_hub,
+        None,
+        Some(profile.effective()),
+    )
+    .await?;
 
     if json {
         // JSON output: emit a canonical JSON summary with profile metadata
@@ -214,9 +221,12 @@ async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
 }
 
 /// Execute one graph without printing, using the caller's live state hub for
-/// Lens projection and operator control.
+/// Lens projection and operator control. Its shell and entry cells run in
+/// `workdir`: the served workspace for a trigger, the working directory for
+/// `roko graph run`.
 pub(crate) async fn execute_graph(
     path: &Path,
+    workdir: &Path,
     telemetry_hub: &SharedStateHub,
     trigger_event: Option<&TriggerEvent>,
     capabilities: Option<&roko_core::CapabilitySet>,
@@ -243,9 +253,8 @@ pub(crate) async fn execute_graph(
 
     // The entry cells, `agent.task` (9127) and `plan.run` (9128), start
     // their runs in this workspace, on this hub.
-    let workdir = std::env::current_dir()
-        .map_err(|error| anyhow!("cannot find the graph's workspace: {error}"))?;
-    let registry = roko_cli::graph_entry_cells::graph_registry(workdir, telemetry_hub.clone());
+    let registry =
+        roko_cli::graph_entry_cells::graph_registry(workdir.to_path_buf(), telemetry_hub.clone());
     let mut engine = GraphEngine::new(graph, registry).with_allow_test_stubs(cfg!(test));
     if let Some(event) = trigger_event {
         engine = engine.with_root_inputs(vec![trigger_input_signal(event)]);
@@ -307,6 +316,14 @@ fn trigger_input_signal(event: &TriggerEvent) -> Signal {
     signal.build()
 }
 
+/// The cells `roko graph validate` and `roko graph show` resolve a graph's
+/// node types against: the ones [`execute_graph`] registers, the entry cells
+/// among them (9129). Nothing runs here.
+fn inspection_registry() -> CellRegistry {
+    let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    roko_cli::graph_entry_cells::graph_registry(workdir, SharedStateHub::new_in_process())
+}
+
 /// Validate a graph definition without executing it.
 ///
 /// This command is side-effect free: it loads and validates only.
@@ -315,7 +332,7 @@ fn cmd_graph_validate(path: &Path) -> Result<i32> {
     let graph = loader::load_from_file(path)
         .map_err(|e| anyhow!("failed to load graph '{}': {}", path.display(), e))?;
 
-    let registry = default_registry();
+    let registry = inspection_registry();
     let engine = GraphEngine::new(graph, registry);
     let issues = engine.validate();
 
@@ -338,7 +355,7 @@ fn cmd_graph_validate(path: &Path) -> Result<i32> {
 fn cmd_graph_show(path: &Path) -> Result<i32> {
     let graph = loader::load_from_file(path)
         .map_err(|e| anyhow!("failed to load graph '{}': {}", path.display(), e))?;
-    let registry = default_registry();
+    let registry = inspection_registry();
 
     println!("Graph: {}", graph.metadata.name);
     if let Some(desc) = &graph.metadata.description {
@@ -447,6 +464,7 @@ cell_type = "noop"
 
         let output = execute_graph(
             &graph_path,
+            directory.path(),
             &SharedStateHub::new_in_process(),
             Some(&event),
             None,

@@ -186,9 +186,9 @@ pub struct LearningConfig {
     /// state; the knowledge store in `.roko/neuro/`, with its access counts;
     /// and `.roko/episodes.jsonl`. A frozen run assigns no prompt
     /// experiments. Telemetry stays on: the run's `.roko/runs/<run_id>/`
-    /// files, `learn/costs.jsonl`, `learn/efficiency.jsonl`,
-    /// `learn/run-metrics.jsonl` and `retrieval-outcomes.jsonl`. A frozen
-    /// run's manifest records `ablation_flags = ["learning_frozen"]`.
+    /// files, `learn/costs.jsonl`, `learn/efficiency.jsonl` and
+    /// `learn/run-metrics.jsonl`. A frozen run's manifest records
+    /// `ablation_flags = ["learning_frozen"]`.
     #[serde(default)]
     pub frozen: bool,
 }

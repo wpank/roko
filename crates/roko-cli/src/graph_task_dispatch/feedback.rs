@@ -51,15 +51,6 @@ pub struct GraphFeedbackContext {
     /// published to the TUI bridge.
     pub gate_thresholds_path: Option<PathBuf>,
 
-    /// RAG-10: Path to `.roko/learn/retrieval-outcomes.jsonl`.
-    ///
-    /// When set, each task dispatch appends one pre-gate
-    /// [`roko_learn::retrieval_outcome::RetrievalOutcomeRecord`] immediately
-    /// after prompt assembly (strategy + result count known, gate unknown), and
-    /// a second settled record once all verify steps complete so the gate-pass
-    /// correlation is durably captured.
-    pub retrieval_outcomes_path: Option<PathBuf>,
-
     /// S01: `.roko/runs/`, where each run's `<run_id>/attempts.jsonl` records
     /// every attempt's open line and settled verdict.
     ///
@@ -170,7 +161,6 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("gate_failures_path", &self.gate_failures_path)
             .field("coding_oracle", &self.coding_oracle.is_some())
             .field("gate_thresholds_path", &self.gate_thresholds_path)
-            .field("retrieval_outcomes_path", &self.retrieval_outcomes_path)
             .field("runs_dir", &self.runs_dir)
             .field("provenance_sinks", &self.provenance_sinks.is_some())
             .field("section_outcomes", &self.section_outcomes.is_some())
@@ -190,7 +180,6 @@ impl Default for GraphFeedbackContext {
             gate_failures_path: None,
             coding_oracle: None,
             gate_thresholds_path: None,
-            retrieval_outcomes_path: None,
             runs_dir: None,
             provenance_sinks: None,
             section_outcomes: None,

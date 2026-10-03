@@ -2400,8 +2400,6 @@ pub fn build_graph_feedback_context(
         // verify sequence. Uses the canonical workspace path so the TUI,
         // serve, and `roko learn gates` all read from the same file.
         gate_thresholds_path: Some(graph_layout.gate_thresholds_path()),
-        // RAG-10: retrieval outcome JSONL for gate-pass correlation telemetry.
-        retrieval_outcomes_path: Some(graph_learn_dir.join("retrieval-outcomes.jsonl")),
         // S01: every attempt's open line and verdict, per checkpoint run.
         runs_dir: Some(graph_layout.runs_dir()),
         // The run body attaches its runs' provenance sinks (gap-ca8022).
@@ -5335,9 +5333,6 @@ max_retries = 0
         "learn/efficiency.jsonl",
         // One summary row per run: `roko show`.
         "learn/run-metrics.jsonl",
-        // Retrieval outcomes beside gate verdicts (RAG-10): the TUI's
-        // learning view and serve.
-        "learn/retrieval-outcomes.jsonl",
         // Gate-gaming alerts: `roko diagnose`.
         "learn/gate-gaming-alerts.jsonl",
         // The inference gateway's per-call log: serve's gateway routes.

@@ -2,7 +2,7 @@
 //! agent contract, and the routing context.
 
 use roko_core::TaskDomain;
-use roko_core::tool::ToolRegistry;
+use roko_core::tool::{OutboundPolicy, ToolRegistry};
 use roko_std::StaticToolRegistry;
 use roko_std::roles::domain_profile;
 
@@ -257,6 +257,32 @@ pub(super) fn effective_agent_contract(
         .with_tool_restrictions(task_allowed_tools, Some(denied.as_slice()))
 }
 
+/// What `task`'s agents do with a tool call that acts on the outside world
+/// (9131): its plan's `[meta] outbound` (`meta`), which a chat host's run
+/// sets to `stage`; else the `outbound` of the `[profiles.<domain>]` entry
+/// for its domain; else decision 9107's default, `stage` in the `ops` domain
+/// and `allow` elsewhere.
+pub(super) fn outbound_policy(
+    meta: Option<&crate::task_parser::TaskMeta>,
+    task: &TaskDef,
+    config: &RokoConfig,
+) -> OutboundPolicy {
+    let domain = task.effective_domain(config.project.default_domain.as_ref());
+    let profile = domain
+        .as_ref()
+        .and_then(|domain| super::pack_rungs::domain_profile(config, domain))
+        .and_then(|profile| profile.outbound);
+    let ops = domain.as_ref().is_some_and(|domain| domain.label() == "ops");
+    let default = if ops {
+        OutboundPolicy::Stage
+    } else {
+        OutboundPolicy::Allow
+    };
+    meta.and_then(|meta| meta.outbound)
+        .or(profile)
+        .unwrap_or(default)
+}
+
 /// The tools a task in `domain` is denied: its own `denied_tools`, and the
 /// built-in tools that belong to another domain
 /// ([`roko_std::roles::DomainToolProfile::offers`]) unless it names them in
@@ -406,7 +432,7 @@ pub(super) fn mark_attempt(
 
 #[cfg(test)]
 mod tests {
-    use roko_core::config::schema::ModelProfile;
+    use roko_core::config::schema::{DomainProfile, ModelProfile};
     use tempfile::tempdir;
 
     use super::*;
@@ -426,6 +452,35 @@ mod tests {
             .map(|tool| tool.name.clone())
             .filter(|name| contract.permits_tool(name))
             .collect()
+    }
+
+    /// 9131: a plan's `[meta] outbound` wins; else the domain's profile
+    /// decides; else the `ops` domain stages outbound effects and every
+    /// other domain allows them.
+    #[test]
+    fn outbound_policy_follows_meta_profile_then_ops_domain() {
+        let mut config = RokoConfig::default();
+        let mut task = make_task_def("focused");
+        assert_eq!(outbound_policy(None, &task, &config), OutboundPolicy::Allow);
+
+        task.domain = TaskDomain::from_label("ops");
+        assert_eq!(outbound_policy(None, &task, &config), OutboundPolicy::Stage);
+
+        let profile = DomainProfile {
+            name: "ops".to_string(),
+            outbound: Some(OutboundPolicy::Deny),
+            ..DomainProfile::default()
+        };
+        config.profiles.insert("ops".to_string(), profile);
+        assert_eq!(outbound_policy(None, &task, &config), OutboundPolicy::Deny);
+
+        let chat = crate::task_parser::TaskMeta {
+            outbound: Some(OutboundPolicy::Stage),
+            ..toml::from_str("plan = \"chat\"").expect("a meta")
+        };
+        task.domain = Some(TaskDomain::Code);
+        let policy = outbound_policy(Some(&chat), &task, &config);
+        assert_eq!(policy, OutboundPolicy::Stage);
     }
 
     /// gap-585bd2: the task's domain decides whether the `chain.*` tools,

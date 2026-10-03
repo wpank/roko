@@ -790,6 +790,11 @@ fn prompt_tasks_file(
             verify: Vec::new(),
             approval: None,
             allow_unverified,
+            // A chat host's run holds what would act on the outside world
+            // for approval (decision 9107, 9131).
+            outbound: origin
+                .is_chat()
+                .then_some(roko_core::tool::OutboundPolicy::Stage),
         },
         tasks: vec![TaskDef {
             id: "T1".to_string(),

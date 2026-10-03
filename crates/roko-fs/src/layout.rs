@@ -179,6 +179,24 @@ impl RokoLayout {
             .join(format!("{}.json", path_component(task_id)))
     }
 
+    /// `.roko/state/effect-holds/` — outbound-effect tool calls held for a
+    /// person's approval, one directory per run (9131).
+    #[must_use]
+    pub fn effect_holds_dir(&self) -> PathBuf {
+        self.state_dir().join("effect-holds")
+    }
+
+    /// `.roko/state/effect-holds/<run>/<effect>.json` — a tool call of run
+    /// `run_id` that acts on the outside world, held for a person's approval
+    /// instead of run (9131). It exists only while the effect waits.
+    /// Characters outside `[A-Za-z0-9._-]` in either id become `_`.
+    #[must_use]
+    pub fn effect_hold(&self, run_id: &str, effect_id: &str) -> PathBuf {
+        self.effect_holds_dir()
+            .join(path_component(run_id))
+            .join(format!("{}.json", path_component(effect_id)))
+    }
+
     /// `.roko/config/` — config.toml, presets.
     #[must_use]
     pub fn config_dir(&self) -> PathBuf {

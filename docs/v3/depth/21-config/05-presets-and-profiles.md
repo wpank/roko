@@ -99,6 +99,7 @@ pub struct DomainProfile {
     pub gate_config: Option<GateProfileConfig>,
     pub pack: Option<String>,           // A [gates.packs.<name>] (9125)
     pub role_identity: Option<String>,  // One line that leads the prompt (9125)
+    pub outbound: Option<OutboundPolicy>, // allow, stage or deny (9131)
     pub extra: HashMap<String, toml::Value>,
 }
 ```
@@ -111,6 +112,18 @@ built-in tool set (`coding`, `chain`, `research` or `general`, from
 `roko_std::roles`) the task's agent gets; and its `role_identity` leads the task's
 prompt. Plan runs ignore `model`, `effort` and `max_iterations`, and log a warning
 when a profile sets them: the tier ladder picks each task's model.
+
+Outbound effects (9131): a tool call that sends, posts, pays or changes a remote
+system (`roko_agent::safety::effects::is_outbound_effect`: an MCP tool that is
+destructive, or open-world and not read-only, with an omitted MCP hint taking the
+spec's default; a plugin tool with network and write access) follows the task's
+outbound policy. `allow` runs it, `deny` refuses it, and `stage` holds it for a
+person's approval in `.roko/state/effect-holds/<run>/<effect_id>.json` (mode 0600)
+and tells the agent it has not run. The policy is the plan's `[meta] outbound`,
+which a chat host's `roko run` sets to `stage`; else the profile's `outbound`;
+else decision 9107's default, `stage` in the `ops` domain and `allow` elsewhere.
+Only in-process tool loops are covered: CLI agents such as Claude Code run their
+own tools.
 
 ```toml
 [gates.packs.deep-research]

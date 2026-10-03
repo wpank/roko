@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 
 use crate::agent::{AgentBackend, ProviderKind};
 use crate::defaults::{DEFAULT_PLAN_TIMEOUT_SECS, DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS};
-use crate::tool::{ToolFormat, profile_for_model};
+use crate::tool::{OutboundPolicy, ToolFormat, profile_for_model};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -335,6 +335,11 @@ pub struct DomainProfile {
     /// agent is (9125).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_identity: Option<String>,
+    /// What the domain's tasks do with a tool call that acts on the outside
+    /// world, in place of decision 9107's default: `stage` in the `ops`
+    /// domain, `allow` elsewhere (9131).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound: Option<OutboundPolicy>,
     /// Forward-compatible profile-local extension fields.
     #[serde(default, flatten)]
     pub extra: HashMap<String, toml::Value>,
@@ -355,6 +360,7 @@ impl DomainProfile {
             gate_config: GateProfileConfig::overlay(parent.gate_config, child.gate_config),
             pack: child.pack.or(parent.pack),
             role_identity: child.role_identity.or(parent.role_identity),
+            outbound: child.outbound.or(parent.outbound),
             extra,
         }
     }

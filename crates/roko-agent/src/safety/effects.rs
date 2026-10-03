@@ -17,9 +17,25 @@
 //! - built-in tools are not outbound: `web_fetch` and `web_search` only
 //!   read.
 //!
+//! A run's [`OutboundPolicy`] says what happens to such a call (9131). The
+//! dispatcher reads it from the run's contract
+//! ([`AgentContract::outbound_policy`]) once the call has passed every
+//! check: `allow` runs it, `deny` refuses it, and `stage` writes an
+//! [`EffectHold`] under the workspace's `.roko/state/effect-holds/<run>/`
+//! instead of running it. Coverage is the in-process tool loops: CLI agents
+//! such as Claude Code and Codex run their own tools, which only an MCP
+//! proxy could hold.
+//!
 //! [`mcp_to_tool_def`]: crate::mcp::to_tool_def::mcp_to_tool_def
+//! [`AgentContract::outbound_policy`]: crate::safety::contract::AgentContract::outbound_policy
 
-use roko_core::tool::{ToolDef, ToolSource};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+
+pub use roko_core::tool::OutboundPolicy;
+use roko_core::tool::{ToolCall, ToolContext, ToolDef, ToolSource};
+use roko_fs::RokoLayout;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Whether a call of `tool` has an outbound effect ([module docs](self)).
@@ -52,6 +68,107 @@ fn mcp_outbound(metadata: Option<&Value>) -> bool {
     let open_world = hint(&["openWorld", "openWorldHint"], true);
     let destructive = hint(&["destructiveHint"], !read_only);
     destructive || (open_world && !read_only)
+}
+
+/// A tool call that acts on the outside world, held for a person's approval
+/// instead of run (9131): the JSON file
+/// `.roko/state/effect-holds/<run>/<effect_id>.json`, readable by its owner
+/// alone. It holds the call's arguments as the agent gave them, so that an
+/// approval can replay the call: never print them, since they may carry
+/// secrets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EffectHold {
+    /// The hold's id, which an approval or a rejection names.
+    pub effect_id: String,
+    /// The run whose agent proposed the call.
+    pub run_id: String,
+    /// The plan of the task whose agent proposed the call.
+    pub plan_id: String,
+    /// The task whose agent proposed the call.
+    pub task_id: String,
+    /// The task's attempt, from 1; 0 when the call names no attempt.
+    pub attempt: u32,
+    /// The tool, by the name the agent called it.
+    pub tool: String,
+    /// The MCP server of an MCP tool.
+    pub server: Option<String>,
+    /// The call's arguments.
+    pub arguments: Value,
+    /// When the agent proposed the call, in RFC 3339.
+    pub proposed_at: String,
+}
+
+impl EffectHold {
+    /// The hold of `call`, a call of `tool` that `ctx`'s attempt proposes
+    /// now. The attempt comes from its key, `{run}:{plan}:{task}:{attempt}`,
+    /// when the call's correlation carries one.
+    #[must_use]
+    pub fn propose(tool: &ToolDef, call: &ToolCall, ctx: &ToolContext) -> Self {
+        let correlation = &ctx.correlation;
+        let key: Vec<&str> = correlation.attempt_id.split(':').collect();
+        let (run_id, plan_id, task_id, attempt) = match key.as_slice() {
+            [run, plan, task, attempt] => (
+                (*run).to_string(),
+                (*plan).to_string(),
+                (*task).to_string(),
+                attempt.parse().unwrap_or(0),
+            ),
+            _ => (
+                correlation.run_id.clone(),
+                String::new(),
+                correlation.task_id.clone(),
+                0,
+            ),
+        };
+        let server = match &tool.source {
+            ToolSource::Mcp { server } => Some(server.clone()),
+            _ => None,
+        };
+        let now = chrono::Utc::now();
+        let stamp = now.format("%Y%m%dT%H%M%S");
+        Self {
+            effect_id: format!("effect-{stamp}-{:08x}", rand::random::<u32>()),
+            run_id,
+            plan_id,
+            task_id,
+            attempt,
+            tool: call.name.clone(),
+            server,
+            arguments: call.arguments.clone(),
+            proposed_at: now.to_rfc3339(),
+        }
+    }
+
+    /// Where the hold lives in the workspace at `root`: under its run, or
+    /// under `unscoped` for a call that names no run.
+    #[must_use]
+    pub fn path(&self, root: &Path) -> PathBuf {
+        let run = Some(self.run_id.as_str())
+            .filter(|run| !run.is_empty())
+            .unwrap_or("unscoped");
+        RokoLayout::for_project(root).effect_hold(run, &self.effect_id)
+    }
+
+    /// Write the hold into the workspace at `root`, readable by its owner
+    /// alone, and return its path.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the hold's directory or file cannot be written, or a hold
+    /// with its id already exists.
+    pub fn write(&self, root: &Path) -> std::io::Result<PathBuf> {
+        let path = self.path(root);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let json = serde_json::to_vec_pretty(self)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        options.open(&path)?.write_all(&json)?;
+        Ok(path)
+    }
 }
 
 #[cfg(test)]

@@ -1781,6 +1781,7 @@ fn build_schema_tree() -> toml::Value {
         }),
         pack: Some(String::new()),
         role_identity: Some(String::new()),
+        outbound: Some(crate::tool::OutboundPolicy::Allow),
         ..DomainProfile::default()
     };
     config

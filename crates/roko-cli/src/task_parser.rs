@@ -72,6 +72,12 @@ pub struct TaskMeta {
     /// run` sets it in a workspace that no gate can check (bug-1410e8).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_unverified: bool,
+    /// What the plan's agents do with a tool call that acts on the outside
+    /// world (9131): `allow`, `stage` (hold it for a person's approval) or
+    /// `deny`. A chat host's `roko run` sets `stage`. Unset, each task's
+    /// domain decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound: Option<roko_core::tool::OutboundPolicy>,
 }
 
 /// When a plan's verified tasks wait for a person's approval before their
@@ -1077,6 +1083,7 @@ pub const META_KEYS: &[&str] = &[
     "verify",
     "approval",
     "allow_unverified",
+    "outbound",
     // Read by `plan validate` and the spec-quality score.
     "queue_kind",
     "queue_schema",
@@ -2930,6 +2937,7 @@ depends_on = []
                 verify: Vec::new(),
                 approval: None,
                 allow_unverified: false,
+                outbound: None,
             },
             tasks: Vec::new(),
         };
@@ -4006,6 +4014,7 @@ files = ["README.md"]
             verify: vec![step.clone()],
             approval: Some(ApprovalMode::PerTask),
             allow_unverified: true,
+            outbound: Some(roko_core::tool::OutboundPolicy::Stage),
         };
 
         let task = TaskDef::from(raw.clone());

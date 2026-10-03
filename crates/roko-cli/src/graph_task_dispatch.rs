@@ -112,8 +112,8 @@ use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
 use live_tool_calls::LiveToolCalls;
 use routing_context::{
-    CheapFactoryAgent, build_routing_context, effective_agent_contract, select_cheap_model_key,
-    upstream_outputs,
+    CheapFactoryAgent, build_routing_context, effective_agent_contract, outbound_policy,
+    select_cheap_model_key, upstream_outputs,
 };
 use supervision::SupervisedAttempt;
 use tui_forward::forward_live_event_to_tui;
@@ -727,6 +727,15 @@ impl GraphTaskDispatcher {
         HelperAgent::new(agent, target, self.pricing_snapshot())
     }
 
+    /// The agent contract of `task`, a task of `spec`'s plan, for `role`,
+    /// with the policy its plan and domain set for tool calls that act on
+    /// the outside world (9131).
+    fn task_contract(&self, role: &str, spec: &TaskExecutionSpec, task: &TaskDef) -> AgentContract {
+        let meta = self.read_plan_meta(spec);
+        let outbound = outbound_policy(meta.as_ref(), task, &self.config);
+        effective_agent_contract(role, task, &self.config).with_outbound_policy(outbound)
+    }
+
     /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`
     /// when the file is missing or unreadable.
     fn read_plan_meta(&self, spec: &TaskExecutionSpec) -> Option<crate::task_parser::TaskMeta> {
@@ -1256,7 +1265,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         }
 
-        let contract = effective_agent_contract(role, &task, &self.config);
+        let contract = self.task_contract(role, spec, &task);
         let base_timeout_ms =
             base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         // The last attempt ran out of time with partial work on disk: give

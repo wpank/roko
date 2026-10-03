@@ -27,11 +27,13 @@
 //!   ([`roko_gate::analyze_diff`]): "no changes". Other roles, refactors
 //!   (role `refactorer`) and tasks without `files` are exempt. When a
 //!   declared file that git ignores exists on disk, the rejection says so:
-//!   no diff can show a change to it. An attempt that changed nothing, at a
-//!   task with authored verify steps, is judged by them first: when they
-//!   pass on the unchanged tree, the task's work was already there, as on a
-//!   `--fresh` rerun of a finished task, and the attempt settles as already
-//!   satisfied (gap-9eb1e1).
+//!   no diff can show a change to it. When the tool policy refused some of
+//!   the attempt's calls, the rejection names them, the rule each broke
+//!   and, where it can tell, what satisfies the rule (gap-2e455d). An
+//!   attempt that changed nothing, at a task with authored verify steps, is
+//!   judged by them first: when they pass on the unchanged tree, the task's
+//!   work was already there, as on a `--fresh` rerun of a finished task, and
+//!   the attempt settles as already satisfied (gap-9eb1e1).
 //!
 //! A rejection costs no compile or test run, except the verify steps of an
 //! unchanged tree. It settles like a failed verify step, `gate_failed` and
@@ -64,6 +66,13 @@ const NAMED_FILES: usize = 5;
 /// Most attempt diff findings a message lists.
 const LISTED_FINDINGS: usize = 10;
 
+/// Most refused tool calls a message lists.
+const LISTED_REFUSALS: usize = 5;
+
+/// How roko's tool loop traces the result of a call its tool policy refused:
+/// `error: ` and the `ToolError::PermissionDenied` the call failed with.
+const REFUSAL_PREVIEW_PREFIX: &str = "error: permission denied: ";
+
 /// Why the screen rejected an attempt.
 #[derive(Debug)]
 struct Rejection {
@@ -75,6 +84,10 @@ struct Rejection {
     /// verify steps decide first whether its work was already there
     /// (gap-9eb1e1).
     unchanged_tree: bool,
+    /// What the next attempt's feedback leads with, ahead of the errors it
+    /// parses out of the message, which would hide the rest of it: the calls
+    /// the tool policy refused (gap-2e455d).
+    diagnosis: Option<String>,
 }
 
 /// What the screen made of an attempt it did not reject.
@@ -149,9 +162,19 @@ impl GraphTaskDispatcher {
                 None => no_changes_red_flag(task, role, diff, attempt_number).await,
             };
         }
-        let Some(rejection) = rejection else {
+        let Some(mut rejection) = rejection else {
             return Ok(Screened::Clear);
         };
+        // An attempt whose edits the tool policy refused changes nothing:
+        // unless its feedback names them, and what satisfies their rules, the
+        // next attempt makes the same calls (gap-2e455d).
+        if rejection.check == "no_changes"
+            && let Some(note) = refusal_note(&refused_calls(dispatch))
+        {
+            rejection.message.push_str("\n\n");
+            rejection.message.push_str(&note);
+            rejection.diagnosis = Some(note);
+        }
         if rejection.unchanged_tree {
             tracing::info!(
                 plan_id = %spec.plan_id,
@@ -217,7 +240,10 @@ impl GraphTaskDispatcher {
                 })
                 .await;
         }
-        if let Some(feedback) = GateFeedback::from_raw(&message) {
+        if let Some(mut feedback) = GateFeedback::from_raw(&message) {
+            if let Some(diagnosis) = &rejection.diagnosis {
+                feedback = feedback.with_diagnosis(diagnosis);
+            }
             self.gate_retry_context.record(
                 &spec.plan_id,
                 &task.id,
@@ -372,6 +398,7 @@ impl GraphTaskDispatcher {
         Some(Rejection {
             check: "safety",
             unchanged_tree: false,
+            diagnosis: None,
             message: format!(
                 "Safety: the attempt broke its role's post-dispatch contract:\n{violations}\n\
                  Keep credentials out of the output, and change only what the `{role}` role \
@@ -440,6 +467,7 @@ impl GraphTaskDispatcher {
             let rejection = Rejection {
                 check: "tamper",
                 unchanged_tree: false,
+                diagnosis: None,
                 message: format!(
                     "Tampering: the task's changes weaken or edit what checks it:\n{}\n{next} \
                      Do not weaken or edit tests, verify scripts, pinned acceptance tests or \
@@ -463,6 +491,7 @@ impl GraphTaskDispatcher {
             Rejection {
                 check: "scope",
                 unchanged_tree: false,
+                diagnosis: None,
                 message: format!(
                     "Out of scope: the task changed paths its files do not name \
                      ([gates] diff_scope = \"enforce\"):\n{}\n{next}",
@@ -590,6 +619,7 @@ fn output_red_flag(
         return Some(Rejection {
             check: "overlong_output",
             unchanged_tree: false,
+            diagnosis: None,
             message: format!(
                 "Red flag, overlong output: the attempt reported {output_tokens} output tokens, \
                  more than the {cap} allowed for role `{role}` ([gates] max_output_tokens). \
@@ -604,6 +634,7 @@ fn output_red_flag(
     malformed_product(output).map(|problem| Rejection {
         check: "malformed_output",
         unchanged_tree: false,
+        diagnosis: None,
         message: format!(
             "Red flag, malformed output: the {role}'s output is its product, and {problem}. \
              Answer with the complete, well-formed result."
@@ -729,6 +760,7 @@ async fn no_changes_red_flag(
                      task asks for."
                 ),
                 unchanged_tree: true,
+                diagnosis: None,
             });
         }
         if !ignored.is_empty() {
@@ -740,6 +772,7 @@ async fn no_changes_red_flag(
             return Some(Rejection {
                 check: "no_changes",
                 unchanged_tree: false,
+                diagnosis: None,
                 message: format!(
                     "Red flag, no changes: the task names {}, which {which} gitignored, so \
                      roko's diff and delivery cannot see changes to {them}. The task's work must \
@@ -751,6 +784,7 @@ async fn no_changes_red_flag(
         return Some(Rejection {
             check: "no_changes",
             unchanged_tree: false,
+            diagnosis: None,
             message: format!(
                 "Red flag, no changes: the task names files to change ({files}), and its \
                  attempts have left the working tree as they found it. Make the change the \
@@ -764,6 +798,7 @@ async fn no_changes_red_flag(
         .then(|| Rejection {
             check: "no_changes",
             unchanged_tree: false,
+            diagnosis: None,
             message: format!(
                 "Red flag, no changes: every line the task added to {files} is a stub, such as \
                  `todo!()`, `unimplemented!()` or a bare `Ok(())`. Replace the stubs with the \
@@ -786,15 +821,118 @@ fn named_files(files: &[String]) -> String {
     named.join(", ")
 }
 
+/// A call of the attempt that its tool policy refused.
+#[derive(Debug, PartialEq, Eq)]
+struct RefusedCall {
+    /// The tool, e.g. `write_file`.
+    tool: String,
+    /// The file the call named, if any.
+    path: Option<String>,
+    /// Why the policy refused it, e.g. "contract violation for role
+    /// `implementer` (RequireToolBeforeEdit): tool `read_file` must run
+    /// before `write_file`".
+    reason: String,
+}
+
+/// The attempt's calls its tool policy refused, each once and in the order
+/// it made them, from the turns roko's tool loop traced (`agent.trace`). A
+/// CLI agent runs its own tools and traces no such turns.
+fn refused_calls(dispatch: &crate::dispatch_v2::AgentResultDispatch) -> Vec<RefusedCall> {
+    let mut refused: Vec<RefusedCall> = Vec::new();
+    for signal in &dispatch.result.trace {
+        if signal.kind.as_str() != "agent.trace" {
+            continue;
+        }
+        let Body::Json(turn) = &signal.body else {
+            continue;
+        };
+        for call in turn["tool_calls"].as_array().into_iter().flatten() {
+            let Some(reason) = call["result_preview"]
+                .as_str()
+                .and_then(|preview| preview.strip_prefix(REFUSAL_PREVIEW_PREFIX))
+            else {
+                continue;
+            };
+            let refusal = RefusedCall {
+                tool: call["name"].as_str().unwrap_or_default().to_string(),
+                path: call["path"].as_str().map(str::to_string),
+                reason: reason.to_string(),
+            };
+            if !refused.contains(&refusal) {
+                refused.push(refusal);
+            }
+        }
+    }
+    refused
+}
+
+/// The note a "no changes" rejection carries when the tool policy refused
+/// some of the attempt's calls: each call, the file it named, why it was
+/// refused and, when the refusal shows it, what satisfies the rule. `None`
+/// when the policy refused none.
+fn refusal_note(refused: &[RefusedCall]) -> Option<String> {
+    if refused.is_empty() {
+        return None;
+    }
+    let lead = "The tool policy refused these calls, so they did not run:";
+    let mut lines = vec![lead.to_string()];
+    for refusal in refused.iter().take(LISTED_REFUSALS) {
+        let file = refusal
+            .path
+            .as_deref()
+            .map(|path| format!(" on `{path}`"))
+            .unwrap_or_default();
+        let reason = refusal.reason.trim_end_matches('.');
+        let mut line = format!("- `{}`{file}: {reason}.", refusal.tool);
+        if let Some(remedy) = refusal_remedy(refusal) {
+            line.push(' ');
+            line.push_str(&remedy);
+        }
+        lines.push(line);
+    }
+    if refused.len() > LISTED_REFUSALS {
+        lines.push(format!("- and {} more", refused.len() - LISTED_REFUSALS));
+    }
+    Some(lines.join("\n"))
+}
+
+/// What satisfies the rule a refused call broke, when its refusal shows it:
+/// under `RequireToolBeforeEdit`, running the tool the rule names on the
+/// file first; under `MaxToolCallsPerTurn`, fewer calls in a turn.
+fn refusal_remedy(refusal: &RefusedCall) -> Option<String> {
+    let reason = refusal.reason.as_str();
+    // "... (RequireToolBeforeEdit): tool `read_file` must run before `write_file`"
+    if let Some((_, detail)) = reason.split_once("(RequireToolBeforeEdit): ") {
+        let required = detail
+            .strip_prefix("tool `")
+            .and_then(|rest| rest.split_once('`'))
+            .map_or("read_file", |(tool, _)| tool);
+        let file = refusal
+            .path
+            .as_deref()
+            .map_or_else(|| "the file".to_string(), |path| format!("`{path}`"));
+        let remedy = format!("Call `{required}` on {file} first, then edit it.");
+        return Some(remedy);
+    }
+    // "... (MaxToolCallsPerTurn): 9 > 8"
+    let (_, detail) = reason.split_once("(MaxToolCallsPerTurn): ")?;
+    let (_, cap) = detail.split_once(" > ")?;
+    let cap = cap.trim();
+    Some(format!("Make at most {cap} tool calls in one turn."))
+}
+
 #[cfg(test)]
 mod tests {
+    use roko_core::agent::ProviderKind;
+    use roko_core::config::schema::{ModelProfile, ProviderConfig};
     use tempfile::tempdir;
 
     use super::*;
     use crate::graph_task_dispatch::diff_snapshot::tests::commit_repo;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix,
-        verify_step,
+        FIXTURE_HANG_GUARD_SECS, VERIFY_PROVIDER, cli_provider, final_turn, jsonl_rows_where,
+        make_bare_dispatcher, make_spec, make_task_def, make_test_dispatcher, model, no_auto_fix,
+        spawn_openai_mock, tool_call_turn, verify_step,
     };
 
     /// A fake Claude CLI that answers with `text` (JSON-escaped) and reports
@@ -1462,5 +1600,160 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
         );
         assert!(output_is_the_product("quick_reviewer"));
         assert!(!output_is_the_product("implementer"));
+    }
+
+    /// A config whose one model, `api-model`, the OpenAI-compatible mock at
+    /// `base_url` serves: roko's tool loop runs its attempts, under the
+    /// role's tool policy.
+    fn api_config(base_url: String) -> RokoConfig {
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "api-model".to_string();
+        config.agent.bare_mode = false;
+        // `PATH` is always set, standing in for an API key.
+        let provider = ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some(base_url),
+            api_key_env: Some("PATH".to_string()),
+            command: None,
+            ..cli_provider("")
+        };
+        config.providers.insert("mock_api".to_string(), provider);
+        let profile = ModelProfile {
+            context_window: 128_000,
+            max_output: Some(1_024),
+            max_tools: Some(32),
+            tool_format: "openai_json".to_string(),
+            ..model("mock_api", "api-model-1", None)
+        };
+        config.models.insert("api-model".to_string(), profile);
+        // Keep the stall watchdog off; the mock answers a streamed request
+        // over SSE.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        config
+    }
+
+    /// gap-2e455d: the implementer contract's `RequireToolBeforeEdit` refuses
+    /// a write to a file the attempt has not read, so an attempt whose only
+    /// write it refused changes nothing. The rejection names the refused
+    /// call, its file and the rule, and says what satisfies it: read the
+    /// file first. That note leads the next attempt's feedback, where errors
+    /// parsed out of the verify output cannot hide it, and the retry, which
+    /// reads the file before it writes it, passes.
+    #[tokio::test]
+    async fn no_changes_feedback_names_a_refused_edit() {
+        let temp = tempdir().expect("tempdir");
+        let one = "pub fn one() -> u8 {\n    1\n}\n";
+        let two = format!("{one}\npub fn two() -> u8 {{\n    one() + one()\n}}\n");
+        commit_repo(temp.path(), &[("src/lib.rs", one)]);
+        let write = serde_json::json!({ "path": "src/lib.rs", "content": two });
+        let read = serde_json::json!({ "path": "src/lib.rs" });
+        let (base_url, requests) = spawn_openai_mock(vec![
+            tool_call_turn("call-write", "write_file", write.clone()),
+            final_turn("Done."),
+            tool_call_turn("call-read", "read_file", read),
+            tool_call_turn("call-write-again", "write_file", write),
+            final_turn("Done."),
+        ]);
+        let dispatcher = make_bare_dispatcher(api_config(base_url), temp.path()).await;
+        let marker = temp.path().join("verify-ran");
+        let check = format!("grep -q 'fn two' src/lib.rs && touch {}", marker.display());
+        let task = TaskDef {
+            id: "T01".to_string(),
+            title: "Add two".to_string(),
+            description: Some("Add `two` to src/lib.rs".to_string()),
+            model_hint: Some("api-model".to_string()),
+            files: vec!["src/lib.rs".to_string()],
+            verify: vec![verify_step("structural", &check)],
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:no_changes");
+        let refused = "- `write_file` on `src/lib.rs`: contract violation for role `implementer` \
+                       (RequireToolBeforeEdit): tool `read_file` must run before `write_file`. \
+                       Call `read_file` on `src/lib.rs` first, then edit it.";
+        assert!(message.contains(refused), "{message}");
+        let lib = std::fs::read_to_string(temp.path().join("src/lib.rs")).expect("src/lib.rs");
+        assert_eq!(lib, one, "the refused write changed nothing");
+        let next = dispatcher.next_retry_attempt(&make_spec(&task).plan_id, &task.id);
+        let feedback = next.feedback.expect("feedback for the next attempt");
+        assert!(
+            feedback
+                .diagnosis
+                .as_deref()
+                .is_some_and(|lead| lead.contains(refused)),
+            "{feedback:?}"
+        );
+
+        // The retry reads the file before it writes it, and passes.
+        let outputs = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the retry passes");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+        assert!(marker.exists(), "its verify step passed");
+        let requests = requests.lock();
+        assert_eq!(requests.len(), 5, "write, done; then read, write, done");
+        assert!(
+            requests[2].to_string().contains(refused),
+            "the retry's prompt carries the note: {}",
+            requests[2]
+        );
+    }
+
+    /// gap-2e455d: a refusal note names each refused call with its file and
+    /// why it was refused, and says what satisfies the rule when the refusal
+    /// shows it.
+    #[test]
+    fn refusal_note_says_what_satisfies_each_rule() {
+        let refusal = |tool: &str, path: Option<&str>, reason: &str| RefusedCall {
+            tool: tool.to_string(),
+            path: path.map(str::to_string),
+            reason: format!("contract violation for role `implementer` {reason}"),
+        };
+        assert_eq!(refusal_note(&[]), None);
+        let note = refusal_note(&[
+            refusal(
+                "edit_file",
+                Some("src/lib.rs"),
+                "(RequireToolBeforeEdit): tool `view` must run before `edit_file`",
+            ),
+            refusal(
+                "write_file",
+                None,
+                "(RequireToolBeforeEdit): tool `read_file` must run before `write_file`",
+            ),
+            refusal("bash", None, "(MaxToolCallsPerTurn): 9 > 8"),
+            refusal(
+                "web_fetch",
+                None,
+                "(ForbiddenTools): tool `web_fetch` is forbidden for this contract.",
+            ),
+        ])
+        .expect("a note");
+        let lines: Vec<&str> = note.lines().collect();
+        assert_eq!(lines.len(), 5, "{note}");
+        assert_eq!(
+            lines[1],
+            "- `edit_file` on `src/lib.rs`: contract violation for role `implementer` \
+             (RequireToolBeforeEdit): tool `view` must run before `edit_file`. Call `view` on \
+             `src/lib.rs` first, then edit it."
+        );
+        assert!(
+            lines[2].ends_with("`write_file`. Call `read_file` on the file first, then edit it."),
+            "{note}"
+        );
+        assert!(
+            lines[3].ends_with("9 > 8. Make at most 8 tool calls in one turn."),
+            "{note}"
+        );
+        assert!(lines[4].ends_with("for this contract."), "{note}");
     }
 }

@@ -364,10 +364,21 @@ impl ToolLoopAgent {
             .iter()
             .enumerate()
             .map(|(idx, call)| {
-                serde_json::json!({
+                let mut summary = serde_json::json!({
                     "name": call.name.as_str(),
                     "result_preview": trace.tool_results.get(idx).cloned().unwrap_or_default(),
-                })
+                });
+                // The file a call named, so feedback on a refused edit can
+                // name it (gap-2e455d).
+                if let Some(path) = call
+                    .arguments
+                    .get("path")
+                    .or_else(|| call.arguments.get("file_path"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    summary["path"] = serde_json::Value::from(path);
+                }
+                summary
             })
             .collect::<Vec<_>>();
 

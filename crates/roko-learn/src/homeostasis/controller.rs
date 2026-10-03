@@ -68,6 +68,32 @@ use crate::telemetry::AttemptOutcome;
 pub const STATE_FILE: &str = "learn/homeostat-state.json";
 /// `schema_version` of the state file.
 pub const STATE_SCHEMA: &str = "roko.homeostat_state/1";
+/// The mode a person set for M1's next runs through serve's admin route
+/// (8131), relative to the `.roko` directory. It beats `[homeostasis] mode`;
+/// M2 can still push it down to shadow.
+pub const MODE_FILE: &str = "learn/homeostat-mode.json";
+
+/// The mode a person set for M1's next runs, when one did (8131).
+#[must_use]
+pub fn operator_mode(roko_dir: &Path) -> Option<HomeostasisMode> {
+    let text = std::fs::read_to_string(roko_dir.join(MODE_FILE)).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    serde_json::from_value(value.get("mode")?.clone()).ok()
+}
+
+/// Keep `mode` as the one a person set for M1's next runs (8131).
+///
+/// # Errors
+///
+/// I/O errors creating the directory or writing the file.
+pub fn set_operator_mode(roko_dir: &Path, mode: HomeostasisMode) -> std::io::Result<()> {
+    let path = roko_dir.join(MODE_FILE);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let text = serde_json::json!({ "mode": mode, "actor": "human" }).to_string();
+    std::fs::write(path, text)
+}
 /// The catalog-sign prior: the drive reduction expected from a move whose
 /// catalog effects counter the breach, and its negative when they worsen it.
 pub const CATALOG_PRIOR: f64 = 0.1;

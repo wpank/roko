@@ -48,7 +48,7 @@ use roko_core::config::schema::RokoConfig;
 use roko_core::dashboard_snapshot::DashboardEvent;
 use roko_core::task::TaskTier;
 use roko_fs::layout::RokoLayout;
-use roko_learn::homeostasis::controller::{Controller, ControllerEvent};
+use roko_learn::homeostasis::controller::{Controller, ControllerEvent, operator_mode};
 use roko_learn::homeostasis::coupling::{AuditBoosts, audit_rate};
 use roko_learn::homeostasis::detect::Baseline;
 use roko_learn::homeostasis::ev::{Ev, EvBounds};
@@ -365,6 +365,11 @@ impl HomeostasisSink {
             && let Err(error) = lkg.restore_into(&mut controller)
         {
             tracing::warn!(%error, "M1's committed θ does not restore");
+        }
+        // A person's mode from serve's admin route beats the config's (8131).
+        let operator = operator_mode(layout.root()).filter(|mode| *mode != HomeostasisMode::Off);
+        if let Some(mode) = operator {
+            let _ = controller.set_mode(mode);
         }
         // M2 (S06 §4.6.8, 8128): the knowledge section switches on only for
         // a live loop, and a demoted L-M1 pushes M1 down to shadow.

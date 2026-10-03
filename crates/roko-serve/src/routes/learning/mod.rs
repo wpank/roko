@@ -2,6 +2,7 @@
 
 pub(super) mod experiments;
 pub(crate) mod helpers;
+pub(crate) mod homeostasis;
 pub(crate) mod loops;
 pub(crate) mod router_state;
 
@@ -72,6 +73,15 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/showcase/m2/loops", get(loops::loops))
         .route("/showcase/m2/loops/{id}/ledger", get(loops::loop_ledger))
         .merge(loops::fault_routes())
+        // S06 §5: the homeostat (8131)
+        .route("/learn/homeostasis", get(homeostasis::homeostasis))
+        .route("/learn/homeostasis/mode", post(homeostasis::set_mode))
+        .route("/learn/homeostasis/ack", post(homeostasis::ack))
+        .route(
+            "/showcase/m1/essential-variables",
+            get(homeostasis::essential_variables),
+        )
+        .route("/showcase/m1/episodes", get(homeostasis::episodes))
 }
 
 // ── handlers kept in mod.rs ──────────────────────────────────────────

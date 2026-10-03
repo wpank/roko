@@ -101,3 +101,7 @@ into the catch-all); `serve_runtime.rs`'s is a hard-coded constant that never va
 - Related: entry (d) of this same wave-4 report (filed separately) — once an auth failure IS correctly classified
   and surfaced as `definitive: true` / its own reason, there still needs to be a way to clear it after the operator
   fixes the underlying problem; that is the other item's scope, not this one's.
+
+## Progress
+
+- 2026-10-03: implemented on `work/gap-d90a93` at d639390ff; `health_hold` holds AuthFailure definitively; serve_runtime records `ErrorClass::from_failure_text`. Cargo verification deferred to the batch gate.

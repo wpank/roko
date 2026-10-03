@@ -881,6 +881,7 @@ pub struct AppState {
     /// Routes runtime feed output into the existing universal Pulse Bus.
     pub feed_bus_bridge: FeedBusBridge<roko_runtime::pulse_bus::PulseBus>,
     /// Persistent multi-agent group coordination runtime.
+    #[cfg(feature = "groups")]
     pub groups: crate::group_runtime::GroupRuntime,
 
     /// Optional shared secret that workers must present as the
@@ -1380,6 +1381,7 @@ impl AppState {
         );
         let pulse_bus = Arc::new(roko_runtime::pulse_bus::PulseBus::new(16_384));
         let feed_bus_bridge = FeedBusBridge::new(Arc::clone(&pulse_bus));
+        #[cfg(feature = "groups")]
         let groups = crate::group_runtime::GroupRuntime::open(&workdir, &roko_config.groups)
             .map_err(|error| anyhow::anyhow!("open group runtime: {error}"))?;
         let jwks_providers = crate::jwks::jwks_providers_for(&roko_config.serve.auth);
@@ -1497,6 +1499,7 @@ impl AppState {
             chain: Arc::new(roko_chain::chain_state::ChainState::default()),
             runtime_feeds,
             feed_bus_bridge,
+            #[cfg(feature = "groups")]
             groups,
             worker_callback_token: std::env::var("ROKO_WORKER_CALLBACK_TOKEN")
                 .ok()

@@ -1378,6 +1378,7 @@ async fn recipes_returns_ok() {
 // Groups
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "groups")]
 #[tokio::test]
 async fn groups_returns_ok() {
     let (_dir, app) = test_app();

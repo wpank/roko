@@ -49,6 +49,7 @@ pub mod extract;
 pub mod feed_agents;
 pub mod feedback;
 pub mod fswatcher;
+#[cfg(feature = "groups")]
 pub mod group_runtime;
 pub mod integrations;
 pub mod job_runner;

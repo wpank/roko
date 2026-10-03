@@ -1,7 +1,7 @@
 //! Parked route groups answer a typed 501 that names the cargo feature which
-//! builds them, instead of a 404 (9214).
+//! builds them, instead of a 404 (9214, 9219).
 
-#![cfg(not(feature = "chain"))]
+#![cfg(any(not(feature = "chain"), not(feature = "groups")))]
 #![allow(clippy::expect_used, clippy::unwrap_used, missing_docs)]
 
 use std::path::PathBuf;
@@ -97,6 +97,7 @@ async fn parked_answer(router: &axum::Router, method: Method, uri: &str) -> (Sta
 
 /// One path from each chain-family group: arenas, the marketplace, DeFi, the
 /// registries and the Mirage JSON-RPC proxy.
+#[cfg(not(feature = "chain"))]
 #[tokio::test]
 async fn chain_family_routes_return_501_without_chain_feature() {
     let (_dir, router) = test_router();
@@ -118,5 +119,24 @@ async fn chain_family_routes_return_501_without_chain_feature() {
                 .is_some_and(|hint| hint.contains("--features chain")),
             "{method} {uri}: {body}"
         );
+    }
+}
+
+/// Groups, their sub-resources and invitations are parked in a default build.
+#[cfg(not(feature = "groups"))]
+#[tokio::test]
+async fn group_routes_return_501_by_default() {
+    let (_dir, router) = test_router();
+    let requests = [
+        (Method::GET, "/api/groups"),
+        (Method::POST, "/api/groups"),
+        (Method::GET, "/api/groups/grp-1/members"),
+        (Method::POST, "/api/groups/grp-1/pheromones"),
+        (Method::POST, "/api/invitations/inv-1/accept"),
+    ];
+    for (method, uri) in requests {
+        let (status, body) = parked_answer(&router, method.clone(), uri).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {uri}");
+        assert_eq!(body["required_feature"], "groups", "{method} {uri}: {body}");
     }
 }

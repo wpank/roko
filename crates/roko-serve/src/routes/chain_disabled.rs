@@ -3,12 +3,13 @@
 //! A parked group answers every method on its paths with 501 and names the
 //! cargo feature that builds it, so a client can tell "not in this build"
 //! from "no such route" (9214). Without `alloy-backend` the `/chain/*` RPC
-//! routes answer this way, and without `chain` the chain-family routes do.
+//! routes answer this way, without `chain` the chain-family routes do, and
+//! without `groups` the agent-group routes do (9219).
 
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-#[cfg(not(feature = "chain"))]
+#[cfg(any(not(feature = "chain"), not(feature = "groups")))]
 use axum::routing::any;
 #[cfg(not(feature = "alloy-backend"))]
 use axum::routing::get;
@@ -52,6 +53,21 @@ pub(crate) fn chain_family_routes() -> Router<Arc<AppState>> {
 #[cfg(not(feature = "chain"))]
 async fn chain_family_parked() -> (StatusCode, Json<Value>) {
     parked("chain support", "chain")
+}
+
+/// The agent-group routes, which need `groups`: groups, their members,
+/// knowledge, pheromones and messages, and the invitations to join them.
+#[cfg(not(feature = "groups"))]
+pub(crate) fn group_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/groups", any(groups_parked))
+        .route("/groups/{*path}", any(groups_parked))
+        .route("/invitations/{*path}", any(groups_parked))
+}
+
+#[cfg(not(feature = "groups"))]
+async fn groups_parked() -> (StatusCode, Json<Value>) {
+    parked("agent groups", "groups")
 }
 
 /// The answer of a parked route: `what` is not included in this build, and

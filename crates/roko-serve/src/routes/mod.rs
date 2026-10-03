@@ -13,7 +13,7 @@ pub(crate) mod auth;
 mod bench;
 #[cfg(feature = "alloy-backend")]
 mod chain;
-#[cfg(not(feature = "alloy-backend"))]
+#[cfg(any(not(feature = "alloy-backend"), not(feature = "groups")))]
 mod chain_disabled;
 pub(crate) mod config;
 mod connectors;
@@ -26,6 +26,7 @@ mod event_ingest;
 mod extensions;
 pub(crate) mod feeds;
 mod gateway;
+#[cfg(feature = "groups")]
 mod groups;
 mod heartbeats;
 mod integrations;
@@ -78,6 +79,8 @@ mod rpc_proxy;
 use self::chain_disabled as chain;
 #[cfg(not(feature = "chain"))]
 use self::chain_disabled::chain_family_routes;
+#[cfg(not(feature = "groups"))]
+use self::chain_disabled::group_routes;
 use std::convert::Infallible;
 use std::net::IpAddr;
 use std::num::NonZeroU32;
@@ -371,7 +374,7 @@ pub fn build_router(
         .merge(connectors::routes())
         .merge(feeds::routes())
         .merge(recipes::routes())
-        .merge(groups::routes())
+        .merge(group_routes())
         .merge(auth::routes())
         .merge(secrets::routes())
         .merge(vision_loop::routes())
@@ -541,6 +544,13 @@ pub fn build_router(
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
+}
+
+/// Agent groups and their invitations. A build without `groups` parks them
+/// (9219).
+#[cfg(feature = "groups")]
+fn group_routes() -> Router<Arc<AppState>> {
+    groups::routes()
 }
 
 /// The chain-family routes: arenas, the marketplace, DeFi, the registries

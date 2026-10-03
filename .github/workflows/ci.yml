@@ -109,6 +109,7 @@ jobs:
         run: |
           cargo check -p roko-cli --features chain
           cargo test -p roko-std --features chain chain_tools_have_handlers_when_feature_enabled
+          cargo check -p roko-serve --features groups
 
   portal:
     name: Portal (types, tests, export)

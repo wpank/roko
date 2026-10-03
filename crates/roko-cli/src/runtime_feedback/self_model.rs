@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use roko_learn::self_model::{ArmKey, Label, LabelSource, Unit};
-use roko_learn::telemetry::{AttemptKey, AttemptOutcome, AttemptVerdictRecord};
+use roko_learn::telemetry::{AttemptKey, AttemptOutcome, AttemptVerdictRecord, LadderReason};
 
 use super::{FeedbackEvent, FeedbackSink};
 use crate::graph_task_dispatch::self_model::{AttemptForecast, SelfModelRuntime};
@@ -64,7 +64,12 @@ impl FeedbackSink for SelfModelOutcomeSink {
             return Ok(());
         };
         if let Some(unit) = unit_of(verdict, &forecast) {
-            self.runtime.settle(unit, forecast);
+            // The self-model routed the attempt when its start rung ran (6130).
+            let routed = verdict
+                .ladder
+                .as_ref()
+                .is_some_and(|ladder| ladder.reason == LadderReason::SelfModel);
+            self.runtime.settle(unit, AttemptForecast { routed, ..forecast });
         }
         Ok(())
     }

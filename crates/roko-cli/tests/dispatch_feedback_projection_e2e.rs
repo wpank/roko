@@ -93,6 +93,7 @@ fn ctx(workdir: std::path::PathBuf) -> DispatchContext {
         concurrent_plans: Vec::new(),
         attempt_key: None,
         arm_set: None,
+        self_model_rung: None,
     }
 }
 

@@ -93,6 +93,13 @@ impl RunManifests {
         }
     }
 
+    /// Record the digest of the θ M1 dispatches with at run open, which
+    /// every manifest these runs write carries (`config.params_digest`,
+    /// S06 T13); `None` without M1.
+    pub fn set_params_digest(&mut self, params_digest: Option<String>) {
+        self.config.params_digest = params_digest;
+    }
+
     /// Record that run `run_id` of plan `plan_id` starts in this process: a
     /// new manifest for a new run, one more invocation (a resume) for a run
     /// that has one. Returns the invocation's ordinal, or `None` when the

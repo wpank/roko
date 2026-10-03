@@ -24,8 +24,8 @@ use tokio::sync::mpsc;
 
 use super::records::{
     ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptPredictionRecord,
-    AttemptVerdictRecord, ContentDecisionRecord, ExposureRecord, PlaceboDecisionRecord, RunFile,
-    Stamped, TelemetryRecord, chain_key,
+    AttemptVerdictRecord, ContentDecisionRecord, ExposureRecord, HarnessPolicyDecisionRecord,
+    PlaceboDecisionRecord, RunFile, Stamped, TelemetryRecord, chain_key,
 };
 use crate::error::LearnError;
 use crate::homeostasis::ledger::{CONTROLLER_FILE, ControllerRecord};
@@ -51,6 +51,8 @@ pub enum TelemetryEvent {
     ContentDecision(Box<ContentDecisionRecord>),
     /// A `roko.decision/1` placebo decision.
     PlaceboDecision(Box<PlaceboDecisionRecord>),
+    /// A `roko.decision/1` harness-policy decision (A-DEC-H).
+    HarnessDecision(Box<HarnessPolicyDecisionRecord>),
     /// A `roko.exposure/1` line.
     Exposure(Box<ExposureRecord>),
     /// A `roko.prediction/1` line.
@@ -88,6 +90,12 @@ impl From<RoutingDecisionLog> for TelemetryEvent {
 impl From<ContentDecisionRecord> for TelemetryEvent {
     fn from(record: ContentDecisionRecord) -> Self {
         Self::ContentDecision(Box::new(record))
+    }
+}
+
+impl From<HarnessPolicyDecisionRecord> for TelemetryEvent {
+    fn from(record: HarnessPolicyDecisionRecord) -> Self {
+        Self::HarnessDecision(Box::new(record))
     }
 }
 
@@ -296,6 +304,7 @@ impl Worker {
                 TelemetryEvent::Decision(record) => self.write(&*record),
                 TelemetryEvent::ContentDecision(record) => self.write(&*record),
                 TelemetryEvent::PlaceboDecision(record) => self.write(&*record),
+                TelemetryEvent::HarnessDecision(record) => self.write(&*record),
                 TelemetryEvent::Exposure(record) => self.write(&*record),
                 TelemetryEvent::Prediction(record) => self.write(&*record),
                 TelemetryEvent::Controller(record) => self.write_cross_run(&record),

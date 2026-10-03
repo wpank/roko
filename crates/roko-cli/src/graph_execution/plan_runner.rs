@@ -1255,7 +1255,7 @@ async fn run_graph_plan_body(
     let roko_config = Arc::new(roko_config);
     // S01 P0-2: the harness build and config fingerprint every checkpoint
     // run's manifest records.
-    let run_manifests = super::run_manifest::RunManifests::capture(workdir, &roko_config);
+    let mut run_manifests = super::run_manifest::RunManifests::capture(workdir, &roko_config);
     let prompt_cache = Arc::new(crate::dispatch::PromptCache::load(workdir));
     // `--no-cascade`: the router picks no model; the run's feedback still
     // trains it.
@@ -1345,6 +1345,8 @@ async fn run_graph_plan_body(
     // M1's sink, whose open chains resolve and whose controller state is
     // saved at the run's end (8122).
     let homeostasis = graph_feedback.homeostasis.clone();
+    // Its runs' manifests name the θ M1 dispatches with (8123).
+    run_manifests.set_params_digest(homeostasis.as_ref().map(|sink| sink.params_digest()));
 
     // ── TUI vs inline progress decision ──────────────────────────────
     //

@@ -19,6 +19,13 @@
 //! - With `[homeostasis] m3_prior`, the controller's move priors come from
 //!   the run's self-model through [`SelfModelPredictor`] (8121, gap-d1ebc1).
 //!
+//! Per attempt, [`HomeostasisSink::decide`] draws the chain's arm on the
+//! fixed `harness_policy` holdout (8118) and returns the θ the attempt runs:
+//! θ₀ on the holdout and all-off arms and in shadow, the controller's θ on
+//! the learned arm in `on` mode. Dispatch writes the decision row and stamps
+//! the verdict with it (8123). The controller's θ lives in a
+//! [`HarnessParamsHandle`], swapped after every change it makes.
+//!
 //! It never reads the conductor's ring. A verdict whose failure class names
 //! a conductor cancel counts as a conductor restart of its chain, an
 //! auxiliary signal that only ranks moves; no attempt is marked so while the
@@ -29,22 +36,29 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use roko_core::config::harness_params::{HarnessLadders, HarnessParams};
+use roko_core::config::harness_params::{
+    HarnessLadders, HarnessParams, HarnessParamsHandle, VersionedParams,
+};
 use roko_core::config::homeostasis::HomeostasisMode;
 use roko_core::config::schema::RokoConfig;
 use roko_core::task::TaskTier;
 use roko_fs::layout::RokoLayout;
 use roko_learn::homeostasis::controller::{Controller, ControllerEvent};
+use roko_learn::homeostasis::holdout::HarnessHoldout;
 use roko_learn::homeostasis::detect::Baseline;
 use roko_learn::homeostasis::ev::Ev;
 use roko_learn::homeostasis::ledger::{ControllerRecord, Envelope};
 use roko_learn::homeostasis::lkg::ThetaLkg;
-use roko_learn::homeostasis::policy::{ViabilityPolicy, non_m1_fingerprint};
+use roko_learn::homeostasis::policy::{DEFAULT_HOLDOUT, ViabilityPolicy, non_m1_fingerprint};
 use roko_learn::homeostasis::priors::{Calibration, DrivePredictor, M3Prior, PredictedLevels};
 use roko_learn::homeostasis::resolution::{ResolutionFold, TaskResolution};
 use roko_learn::self_model::{ArmKey, CandidateForecast};
+use roko_learn::loop_audit::assign::takes_default;
+use roko_learn::telemetry::records::HARNESS_POLICY_DECISION_POINT;
 use roko_learn::telemetry::{
-    Arm, AttemptOutcome, AttemptVerdictRecord, TelemetryWriter, TelemetryWriterConfig,
+    Arm, Assignment, AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord,
+    DecisionSource, HarnessPolicyDecisionRecord, HarnessStamp, TelemetryWriter,
+    TelemetryWriterConfig,
 };
 
 use super::{FeedbackEvent, FeedbackSink};
@@ -62,7 +76,57 @@ pub const PREDICTED_TASKS: usize = 20;
 #[derive(Debug)]
 pub struct HomeostasisSink {
     layout: RokoLayout,
+    /// The controller's θ, swapped after each change it makes.
+    handle: HarnessParamsHandle,
+    theta0: HarnessParams,
+    mode: HomeostasisMode,
+    holdout: HarnessHoldout,
     state: parking_lot::Mutex<SinkState>,
+}
+
+/// What M1 decided for one attempt (8123).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HarnessDecision {
+    /// The chain's assignment on the `harness_policy` layer.
+    pub assignment: Assignment,
+    /// The θ the attempt runs.
+    pub applied: HarnessParams,
+    /// The controller's θ with its version: the would-be θ in shadow.
+    pub chosen: Arc<VersionedParams>,
+    /// θ₀.
+    pub default: HarnessParams,
+    /// M1's mode.
+    pub mode: HomeostasisMode,
+}
+
+impl HarnessDecision {
+    /// What the attempt's verdict says of it.
+    #[must_use]
+    pub fn stamp(&self) -> HarnessStamp {
+        HarnessStamp {
+            arm: self.assignment.arm,
+            policy_version: self.chosen.policy_version,
+            params_digest: self.applied.params_digest(),
+        }
+    }
+
+    /// The attempt `identity`'s `harness_policy` decision row (A-DEC-H).
+    #[must_use]
+    pub fn record(&self, identity: AttemptIdentity) -> HarnessPolicyDecisionRecord {
+        HarnessPolicyDecisionRecord {
+            identity,
+            decision_point: HARNESS_POLICY_DECISION_POINT.to_string(),
+            assignment: self.assignment.clone(),
+            arm: self.assignment.arm,
+            mode: self.mode,
+            policy_version: self.chosen.policy_version,
+            params_digest: self.applied.params_digest(),
+            chosen: self.chosen.params.clone(),
+            default: self.default.clone(),
+            differs: self.chosen.params != self.default,
+            source: DecisionSource::Control,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -76,6 +140,8 @@ struct SinkState {
     retry_limits: HashMap<(String, String), u32>,
     /// The chains resolved so far, in order.
     resolved: Vec<String>,
+    /// Each chain's last harness stamp: its arm and the θ it ran.
+    stamps: HashMap<String, HarnessStamp>,
     controller: Option<Controller>,
     lkg: Option<ThetaLkg>,
     /// Each run's writer; `None` when it did not start.
@@ -87,6 +153,22 @@ impl HomeostasisSink {
     /// only counts them without one.
     #[must_use]
     pub fn new(workdir: &Path, controller: Option<Controller>, lkg: Option<ThetaLkg>) -> Self {
+        let (theta0, theta, mode, holdout) = match &controller {
+            Some(controller) => (
+                controller.state().theta0.clone(),
+                controller.theta().clone(),
+                controller.mode(),
+                controller.policy().holdout,
+            ),
+            None => {
+                let theta0 = HarnessParams::baseline(&RokoConfig::default());
+                (theta0.clone(), theta0, HomeostasisMode::Shadow, DEFAULT_HOLDOUT)
+            }
+        };
+        let handle = HarnessParamsHandle::new(theta0.clone());
+        if theta != theta0 {
+            handle.swap(theta, "lkg");
+        }
         let state = SinkState {
             controller,
             lkg,
@@ -94,7 +176,49 @@ impl HomeostasisSink {
         };
         Self {
             layout: RokoLayout::for_project(workdir),
+            handle,
+            theta0,
+            mode,
+            holdout: HarnessHoldout::new(holdout),
             state: parking_lot::Mutex::new(state),
+        }
+    }
+
+    /// M1's decision for the attempt `key`, whose run draws its arms on
+    /// `epoch`: its chain's arm on the fixed `harness_policy` holdout, and
+    /// the θ it runs (θ₀ on the holdout and all-off arms and in shadow).
+    #[must_use]
+    pub fn decide(&self, key: &AttemptKey, epoch: &str) -> HarnessDecision {
+        let assignment = self.holdout.assign(epoch, CONTROLLER_SEED, key);
+        let chosen = self.handle.load();
+        let applied = if takes_default(assignment.arm) || self.mode != HomeostasisMode::On {
+            self.theta0.clone()
+        } else {
+            chosen.params.clone()
+        };
+        HarnessDecision {
+            assignment,
+            applied,
+            chosen,
+            default: self.theta0.clone(),
+            mode: self.mode,
+        }
+    }
+
+    /// The handle holding the controller's θ.
+    #[must_use]
+    pub const fn handle(&self) -> &HarnessParamsHandle {
+        &self.handle
+    }
+
+    /// The digest of the θ a learned-arm attempt runs now: the run
+    /// manifest's `config.params_digest` at run open.
+    #[must_use]
+    pub fn params_digest(&self) -> String {
+        if self.mode == HomeostasisMode::On {
+            self.handle.load().params_digest.clone()
+        } else {
+            self.theta0.params_digest()
         }
     }
 
@@ -222,6 +346,9 @@ impl HomeostasisSink {
         if conductor {
             *state.restarts.entry(chain.clone()).or_default() += 1;
         }
+        if let Some(stamp) = &verdict.harness {
+            state.stamps.insert(chain.clone(), stamp.clone());
+        }
         let task = (identity.plan_id.clone(), identity.task_id.clone());
         let last = verdict.outcome == AttemptOutcome::Cancelled
             || state
@@ -244,6 +371,10 @@ impl HomeostasisSink {
             .get(&resolution.chain_key)
             .copied()
             .unwrap_or(0);
+        if let Some(stamp) = state.stamps.get(&resolution.chain_key) {
+            resolution.arm = Some(stamp.arm);
+            resolution.params_digest = Some(stamp.params_digest.clone());
+        }
         state.resolved.push(resolution.chain_key.clone());
         let SinkState {
             controller,
@@ -262,7 +393,12 @@ impl HomeostasisSink {
             arm: Arm::Learned,
             seq: controller.state().resolutions,
         };
+        let mut swap_reason = None;
         for event in &events {
+            if let ControllerEvent::Change(change) = event {
+                let episode = change.episode_id.as_deref().unwrap_or("relax");
+                swap_reason = Some(format!("homeostat:{episode}/{}", change.change_id));
+            }
             if let Some(lkg) = lkg.as_mut()
                 && let Err(error) = lkg.commit_event(event)
             {
@@ -274,6 +410,9 @@ impl HomeostasisSink {
             if let Some(writer) = writer(writers, &self.layout, run_id) {
                 writer.submit(record);
             }
+        }
+        if let Some(reason) = swap_reason {
+            self.handle.swap(controller.theta().clone(), reason);
         }
         if events
             .iter()

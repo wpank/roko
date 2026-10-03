@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use roko_core::config::harness_params::HarnessParams;
+use roko_core::config::homeostasis::HomeostasisMode;
 use roko_core::usage::UsageSource;
 use serde::{Deserialize, Serialize};
 
@@ -983,6 +985,11 @@ pub struct AttemptVerdictRecord {
     /// Content exposure counts.
     #[serde(default)]
     pub exposures: Option<ExposureCounts>,
+    /// The θ M1 ran the attempt under (S06 T13): its chain's arm on the
+    /// `harness_policy` layer, θ's version and the digest of the θ it ran;
+    /// `None` when the run has no M1 sink.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessStamp>,
 }
 
 impl AttemptVerdictRecord {
@@ -1019,6 +1026,7 @@ impl AttemptVerdictRecord {
             output_sha256: None,
             diff_sha256: None,
             exposures: None,
+            harness: None,
         }
     }
 
@@ -1222,6 +1230,53 @@ pub struct PlaceboProposals {
     pub learned: String,
     /// The default arm's proposal.
     pub default: String,
+}
+
+/// The decision point of M1's harness parameters (A-DEC-H, S01 §5.3).
+pub const HARNESS_POLICY_DECISION_POINT: &str = "harness_policy";
+
+/// What an attempt says of the θ it ran under (S06 T13).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessStamp {
+    /// Its chain's arm on the `harness_policy` layer: `learned` runs the
+    /// controller's θ, `default` and `global_off` run θ₀.
+    pub arm: Arm,
+    /// The version of θ the handle held.
+    pub policy_version: u64,
+    /// `b3:` digest of the θ the attempt ran.
+    pub params_digest: String,
+}
+
+/// `roko.decision/1` at the `harness_policy` decision point (A-DEC-H).
+///
+/// One row per attempt (S06 T13), and S03's L-M1 receipt: every knob of
+/// the controller's θ (`chosen`, the would-be θ in shadow) and of θ₀
+/// (`default`), the chain's arm, and the digest of the θ the attempt ran.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HarnessPolicyDecisionRecord {
+    /// The attempt the decision belongs to.
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    /// Always [`HARNESS_POLICY_DECISION_POINT`].
+    pub decision_point: String,
+    /// The chain's assignment on the `harness_policy` layer.
+    pub assignment: Assignment,
+    /// The arm, as in `assignment`.
+    pub arm: Arm,
+    /// `off`, `shadow` or `on`.
+    pub mode: HomeostasisMode,
+    /// The version of θ the handle held.
+    pub policy_version: u64,
+    /// `b3:` digest of the θ the attempt ran.
+    pub params_digest: String,
+    /// The controller's θ.
+    pub chosen: HarnessParams,
+    /// θ₀.
+    pub default: HarnessParams,
+    /// Whether the controller's θ differs from θ₀.
+    pub differs: bool,
+    /// Who chose: the controller.
+    pub source: DecisionSource,
 }
 
 /// `roko.decision/1` at the placebo decision point (S03 §4.3, S02 L12): the
@@ -1943,6 +1998,17 @@ impl TelemetryRecord for ContentDecisionRecord {
     fn record_id(&self) -> String {
         let key = &self.identity.attempt_key;
         record_id(Self::SCHEMA, key, self.decision_point.as_str(), "", "")
+    }
+}
+
+/// One harness-policy decision per attempt.
+impl TelemetryRecord for HarnessPolicyDecisionRecord {
+    const SCHEMA: &'static str = DECISION_SCHEMA;
+    const FILE: RunFile = RunFile::Decisions;
+
+    fn record_id(&self) -> String {
+        let key = &self.identity.attempt_key;
+        record_id(Self::SCHEMA, key, HARNESS_POLICY_DECISION_POINT, "", "")
     }
 }
 

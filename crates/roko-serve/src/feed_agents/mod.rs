@@ -5,9 +5,12 @@
 //! server startup. Agents publish [`ServerEvent::FeedTick`] events that the
 //! SSE bridge streams to the demo-app Feeds dashboard.
 
+#[cfg(feature = "chain")]
 mod chain_watcher;
+#[cfg(feature = "chain")]
 mod gas_oracle;
 mod monitors;
+#[cfg(feature = "chain")]
 mod onchain;
 
 use std::sync::Arc;
@@ -118,19 +121,7 @@ pub fn spawn_all(state: Arc<AppState>) -> Vec<JoinHandle<()>> {
         });
     }
 
-    let agents: Vec<Arc<dyn FeedAgent>> = vec![
-        Arc::new(chain_watcher::ChainWatcherAgent),
-        Arc::new(gas_oracle::GasOracleAgent),
-        Arc::new(monitors::AgentMonitorAgent),
-        Arc::new(monitors::RelayStatsAgent),
-        Arc::new(monitors::SystemHeartbeatAgent),
-        // On-chain analytics (5)
-        Arc::new(onchain::BlockSpaceAgent),
-        Arc::new(onchain::TxThroughputAgent),
-        Arc::new(onchain::FeeBurnAgent),
-        Arc::new(onchain::NetworkHealthAgent),
-        Arc::new(onchain::ContractActivityAgent),
-    ];
+    let agents = builtin_agents();
 
     // Build catalog snapshot for the /api/feeds/catalog endpoint.
     let catalog_agents: Vec<FeedCatalogAgent> = agents
@@ -198,4 +189,58 @@ pub fn spawn_all(state: Arc<AppState>) -> Vec<JoinHandle<()>> {
     }
 
     handles
+}
+
+/// The built-in feed agents: the chain watcher, the gas oracle, the three
+/// generic monitors and five on-chain analytics agents.
+#[cfg(feature = "chain")]
+fn builtin_agents() -> Vec<Arc<dyn FeedAgent>> {
+    vec![
+        Arc::new(chain_watcher::ChainWatcherAgent),
+        Arc::new(gas_oracle::GasOracleAgent),
+        Arc::new(monitors::AgentMonitorAgent),
+        Arc::new(monitors::RelayStatsAgent),
+        Arc::new(monitors::SystemHeartbeatAgent),
+        // On-chain analytics (5)
+        Arc::new(onchain::BlockSpaceAgent),
+        Arc::new(onchain::TxThroughputAgent),
+        Arc::new(onchain::FeeBurnAgent),
+        Arc::new(onchain::NetworkHealthAgent),
+        Arc::new(onchain::ContractActivityAgent),
+    ]
+}
+
+/// Without `chain` only the three generic monitors are built in: the seven
+/// chain agents read chain state this build leaves out (9216).
+#[cfg(not(feature = "chain"))]
+fn builtin_agents() -> Vec<Arc<dyn FeedAgent>> {
+    vec![
+        Arc::new(monitors::AgentMonitorAgent),
+        Arc::new(monitors::RelayStatsAgent),
+        Arc::new(monitors::SystemHeartbeatAgent),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(not(feature = "chain"))]
+    #[test]
+    fn chain_feed_agents_absent_without_chain_feature() {
+        let agent_ids: Vec<&str> = builtin_agents()
+            .iter()
+            .map(|agent| agent.agent_id())
+            .collect();
+        assert_eq!(
+            agent_ids,
+            ["agent-monitor", "relay-stats", "system-heartbeat"]
+        );
+    }
+
+    #[cfg(feature = "chain")]
+    #[test]
+    fn chain_builds_keep_all_ten_feed_agents() {
+        assert_eq!(builtin_agents().len(), 10);
+    }
 }

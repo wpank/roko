@@ -64,12 +64,19 @@ impl WorktreeExecutionWorkspaceProvider {
             return Err(WorkspaceError::SharedCheckoutRejected);
         }
 
+        // The commit the checkout started from, so the attempt's diff leaves
+        // out what siblings landed before it; the configured base only when
+        // that is unknown, as for a re-attached checkout (backlog 1124).
+        let base_revision = handle
+            .base_commit
+            .clone()
+            .unwrap_or_else(|| self.manager.base_branch().to_string());
         Ok(WorkspaceLease {
             lease_id: handle.id.clone(),
             attempt_id: attempt_id.clone(),
             path: handle.path.clone(),
             branch: handle.branch.clone(),
-            base_revision: self.manager.base_branch().to_string(),
+            base_revision,
             lease_fingerprint: attempt_id.fingerprint(),
         })
     }

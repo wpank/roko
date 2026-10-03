@@ -5,7 +5,9 @@
 //! `item.completed`, and `turn.completed`. This module translates each line
 //! into provider-neutral [`AgentRuntimeEvent`]s.
 
-use roko_core::config::model_registry::{ModelPricing, builtin_pricing};
+use std::sync::LazyLock;
+
+use roko_core::pricing_snapshot::{PriceRow, PriceSnapshot, TokenCounts};
 use serde::Deserialize;
 use tracing::debug;
 
@@ -81,54 +83,64 @@ struct CodexUsage {
 
 // ── Cost estimation ─────────────────────────────────────────────────────
 
-/// The Codex CLI's configured default model, whose rates price a turn on a
-/// model the built-in price table does not know.
-const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
+/// The built-in price snapshot, its default id, read once: Codex reports no
+/// USD figure of its own, so a turn's cost is its tokens at this snapshot's
+/// rates (backlog 6106).
+static DEFAULT_SNAPSHOT: LazyLock<Option<PriceSnapshot>> =
+    LazyLock::new(|| PriceSnapshot::builtin().ok());
 
-/// Resolve per-token pricing for a codex model slug from the shared built-in
-/// price table ([`builtin_pricing`]), so a turn's estimate agrees with the
-/// cost tables (bug-0c0747). An empty slug, or one the table does not price,
-/// gets [`DEFAULT_CODEX_MODEL`]'s rates. Configured
-/// `[models.*].cost_*_per_m` values take precedence downstream whenever the
-/// runner prices from the `ModelProfile`; this estimate only feeds the
-/// stream-level `TurnCompleted.total_cost_usd`.
-fn codex_pricing_for_model(model: Option<&str>) -> Option<ModelPricing> {
-    model
-        .map(str::trim)
-        .filter(|slug| !slug.is_empty())
-        .and_then(builtin_pricing)
-        .or_else(|| builtin_pricing(DEFAULT_CODEX_MODEL))
+/// The row of the built-in price snapshot that prices Codex turns on
+/// `model`. `None` for an empty slug or one the snapshot does not list,
+/// whose turns then have an unknown cost, never another model's (backlog
+/// 6106). Resolve it once per dispatch and parse with
+/// [`parse_stream_line_priced`].
+#[must_use]
+pub fn codex_price_row(model: Option<&str>) -> Option<PriceRow> {
+    let slug = model.map(str::trim).filter(|slug| !slug.is_empty())?;
+    DEFAULT_SNAPSHOT.as_ref()?.row(slug).cloned()
 }
 
-/// Estimate the USD cost of a Codex turn from its token usage. Codex reports
-/// reasoning tokens as a subset of `output_tokens`, so reasoning is billed at
-/// the output rate here, matching how OpenAI invoices it.
-fn estimate_codex_cost(usage: &CodexUsage, pricing: &ModelPricing) -> f64 {
-    let uncached = usage.input_tokens.saturating_sub(usage.cached_input_tokens);
-    uncached as f64 * pricing.input_per_m / 1_000_000.0
-        + usage.cached_input_tokens as f64 * pricing.cache_read_per_m / 1_000_000.0
-        + usage.output_tokens as f64 * pricing.output_per_m / 1_000_000.0
+/// What a Codex turn's `usage` costs at `row`'s rates: its uncached input,
+/// cached input and output, plus its reasoning tokens at the output rate
+/// only when the row says they are not inside the output (backlog 6106).
+fn estimate_codex_cost(usage: &CodexUsage, row: &PriceRow) -> f64 {
+    let tokens = TokenCounts {
+        input: usage.input_tokens.saturating_sub(usage.cached_input_tokens),
+        cache_read: usage.cached_input_tokens,
+        cache_write_5m: 0,
+        cache_write_1h: 0,
+        output: usage.output_tokens,
+        reasoning: usage.reasoning_output_tokens,
+    };
+    row.price(&tokens).api_equiv_usd
 }
 
 // ── Parser ──────────────────────────────────────────────────────────────
 
 /// Parse one Codex `exec --json` JSONL line into canonical runtime events.
 ///
-/// Equivalent to [`parse_stream_line_with_model`] with no model hint: turn
-/// costs are estimated at the fallback `gpt-5.6-sol` rates.
+/// It names no model, so a turn's cost is unknown.
 #[must_use]
 pub fn parse_stream_line(line: &str) -> Vec<AgentRuntimeEvent> {
-    parse_stream_line_with_model(line, None)
+    parse_stream_line_priced(line, None)
 }
 
 /// Parse one Codex `exec --json` JSONL line into canonical runtime events,
-/// resolving turn-cost estimates from the configured model slug.
+/// pricing turns on `model` at the built-in price snapshot
+/// ([`codex_price_row`]).
 ///
-/// `model` only affects the `TurnCompleted.total_cost_usd` estimate; pass
-/// `None` (or an empty slug) to use the fallback pricing.
+/// `model` only affects the `TurnCompleted.total_cost_usd` estimate, which
+/// is `None` for an empty slug or one the snapshot does not list.
 #[must_use]
 pub fn parse_stream_line_with_model(line: &str, model: Option<&str>) -> Vec<AgentRuntimeEvent> {
-    let pricing = codex_pricing_for_model(model);
+    parse_stream_line_priced(line, codex_price_row(model).as_ref())
+}
+
+/// Parse one Codex `exec --json` JSONL line into canonical runtime events,
+/// pricing turns at `row`, the price snapshot row the caller resolved once
+/// for its dispatch. With no row, a turn's cost is unknown.
+#[must_use]
+pub fn parse_stream_line_priced(line: &str, row: Option<&PriceRow>) -> Vec<AgentRuntimeEvent> {
     let line = line.trim();
     if line.is_empty() {
         return Vec::new();
@@ -184,8 +196,8 @@ pub fn parse_stream_line_with_model(line: &str, model: Option<&str>) -> Vec<Agen
             let total_cost_usd = event
                 .usage
                 .as_ref()
-                .zip(pricing)
-                .map(|(usage, pricing)| estimate_codex_cost(usage, &pricing));
+                .zip(row)
+                .map(|(usage, row)| estimate_codex_cost(usage, row));
             if let Some(usage) = event.usage {
                 events.push(AgentRuntimeEvent::TokenUsage {
                     input_tokens: usage.input_tokens,
@@ -309,8 +321,9 @@ mod tests {
 
     #[test]
     fn turn_completed_with_usage() {
-        let events = parse_stream_line(
+        let events = parse_stream_line_with_model(
             r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0}}"#,
+            Some("gpt-5.5"),
         );
         assert_eq!(events.len(), 3);
         assert!(matches!(
@@ -346,52 +359,53 @@ mod tests {
         );
     }
 
-    #[test]
-    fn turn_cost_uses_fallback_pricing_without_model_hint() {
-        // 100 input (50 cached) + 10 output at gpt-5.6-sol rates:
-        // 50*$4 + 50*$0.40 + 10*$20 per M = $0.00042.
-        let events = parse_stream_line(
-            r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10}}"#,
-        );
-        let cost = events.iter().find_map(|e| match e {
+    /// The turn the snapshot tests price: 1,000 input tokens (400 cached)
+    /// and 100 output tokens, 30 of them reasoning.
+    const PRICED_TURN: &str = r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100,"reasoning_output_tokens":30}}"#;
+
+    /// The cost a turn's events report.
+    fn turn_cost(events: &[AgentRuntimeEvent]) -> Option<f64> {
+        events.iter().find_map(|event| match event {
             AgentRuntimeEvent::TurnCompleted { total_cost_usd, .. } => *total_cost_usd,
             _ => None,
-        });
-        let cost = cost.expect("cost estimate");
-        assert!((cost - 0.00042).abs() < 1e-12, "cost was {cost}");
+        })
     }
 
-    /// bug-0c0747: the rates are the built-in price table's.
+    /// backlog 6106: a Codex turn is priced at its model's price snapshot
+    /// row, its reasoning inside the output.
     #[test]
-    fn turn_cost_resolves_pricing_from_model_slug() {
-        let line = r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10}}"#;
-        let cost_for = |model: Option<&str>| {
-            parse_stream_line_with_model(line, model)
-                .into_iter()
-                .find_map(|e| match e {
-                    AgentRuntimeEvent::TurnCompleted { total_cost_usd, .. } => total_cost_usd,
-                    _ => None,
-                })
-                .expect("cost estimate")
-        };
-        let assert_cost = |model: Option<&str>, expected: f64| {
-            let cost = cost_for(model);
-            assert!(
-                (cost - expected).abs() < 1e-12,
-                "model {model:?}: expected {expected}, got {cost}"
-            );
-        };
+    fn codex_cost_uses_snapshot() {
+        // gpt-5.5: 600 uncached in at $5, 400 cached at $0.50 and 100 out at
+        // $30 per million.
+        let cost = turn_cost(&parse_stream_line_with_model(PRICED_TURN, Some("gpt-5.5")));
+        let cost = cost.expect("the snapshot lists gpt-5.5");
+        let expected = (600.0 * 5.0 + 400.0 * 0.50 + 100.0 * 30.0) / 1e6;
+        assert!((cost - expected).abs() < 1e-12, "{cost}");
+    }
 
-        // codex-mini: 50*$2 + 50*$0.50 + 10*$8 per M = $0.000205.
-        assert_cost(Some("codex-mini"), 0.000205);
-        // gpt-5.4-mini: 50*$0.75 + 50*$0.075 + 10*$4.50 per M = $0.00008625.
-        assert_cost(Some("gpt-5.4-mini"), 0.00008625);
-        // Slugs the table does not price, and empty ones, get gpt-5.6-sol's
-        // rates: 50*$4 + 50*$0.40 + 10*$20 per M = $0.00042.
-        assert_cost(Some("gpt-5-codex"), 0.00042);
-        assert_cost(Some("gpt-9-future"), 0.00042);
-        assert_cost(Some(""), 0.00042);
-        assert_cost(None, 0.00042);
+    /// backlog 6106: a model the snapshot does not list, an empty slug or no
+    /// model at all has an unknown cost, never the Codex CLI default's.
+    #[test]
+    fn an_unlisted_codex_model_has_no_cost() {
+        for model in [Some("gpt-5.6-sol"), Some("codex-mini"), Some(""), None] {
+            let events = parse_stream_line_with_model(PRICED_TURN, model);
+            assert_eq!(turn_cost(&events), None, "{model:?}");
+        }
+        assert_eq!(turn_cost(&parse_stream_line(PRICED_TURN)), None);
+    }
+
+    /// backlog 6106: a row that bills reasoning apart from the output adds
+    /// the reasoning tokens at the output rate.
+    #[test]
+    fn reasoning_billed_apart_adds_to_the_cost() {
+        let mut row = codex_price_row(Some("gpt-5.5")).expect("the gpt-5.5 row");
+        let inside = turn_cost(&parse_stream_line_priced(PRICED_TURN, Some(&row)));
+        row.reasoning_in_output = false;
+        let apart = turn_cost(&parse_stream_line_priced(PRICED_TURN, Some(&row)));
+        let (inside, apart) = (inside.expect("a cost"), apart.expect("a cost"));
+        // 30 reasoning tokens at gpt-5.5's $30 output rate.
+        let reasoning = 30.0 * 30.0 / 1e6;
+        assert!((apart - inside - reasoning).abs() < 1e-12, "{apart}");
     }
 
     #[test]

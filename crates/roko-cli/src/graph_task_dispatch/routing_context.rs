@@ -1,5 +1,5 @@
-//! Model routing inputs of a Graph task dispatch: the cheap helper model, cross-cut
-//! and dream routing bias, the agent contract, and the routing context.
+//! Model routing inputs of a Graph task dispatch: the cheap helper model, the
+//! agent contract, and the routing context.
 
 use roko_core::TaskDomain;
 use roko_core::tool::ToolRegistry;
@@ -86,6 +86,28 @@ impl roko_agent::Agent for CheapFactoryAgent {
 /// key so dispatch resolves exactly that profile.
 pub(super) fn select_cheap_model_key(config: &RokoConfig) -> Option<String> {
     select_cheap_model_key_with(config, |key| config.provider_available_for_model_key(key))
+}
+
+/// The helper model that judges an attempt `executor` (a model slug) ran
+/// (9123): the cheap helper model among those of another model family, with
+/// `true`, when one is available; else the cheap helper model, with `false`.
+pub(super) fn select_judge_model_key(
+    config: &RokoConfig,
+    executor: &str,
+) -> Option<(String, bool)> {
+    let family = |slug: &str| roko_core::config::model_registry::model_meta(slug).family;
+    let executor_family = family(executor);
+    let models = config.effective_models();
+    let cross_family = select_cheap_model_key_with(config, |key| {
+        config.provider_available_for_model_key(key)
+            && models
+                .get(key)
+                .is_some_and(|profile| family(&profile.slug) != executor_family)
+    });
+    match cross_family {
+        Some(key) => Some((key, true)),
+        None => select_cheap_model_key(config).map(|key| (key, false)),
+    }
 }
 
 /// [`select_cheap_model_key`] with an injectable provider-availability check.
@@ -213,109 +235,6 @@ fn cmp_price(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
     rank(a).total_cmp(&rank(b))
 }
 
-/// P1-16: Resolve cross-cut functor conflicts at routing time.
-///
-/// When Memory, Daimon, and Dreams all propose routing recommendations on
-/// the same signal set, the arbitrator applies priority resolution (safety-
-/// critical Daimon wins, consolidated Memory beats speculative Dreams) and
-/// falls back to VCG second-price arbitration for same-level ties.
-///
-/// Returns an `Option<RoutingBias>` derived from the winning recommendation
-/// so the cascade router can incorporate the cross-cut consensus.
-///
-/// `dream_advice` is the persisted Dreams advice, loaded once per dispatch
-/// and shared with [`dream_routing_bias`].
-pub(super) fn arbitrate_cross_cut_routing_bias(
-    feedback: &GraphFeedbackContext,
-    dream_advice: Option<&roko_dreams::DreamRoutingAdvice>,
-    task_category: &str,
-) -> Option<roko_learn::cascade_router::RoutingBias> {
-    use roko_compose::auction::{
-        CrossCutArbitrationResult, CrossCutDecisionKind, CrossCutRecommendation,
-    };
-
-    // Collect recommendations from persisted cross-cut state.
-    let mut recommendations = Vec::new();
-
-    // Dreams routing advice (persisted by DreamOutputConsumer or delta dream).
-    if let Some(advice) = dream_advice {
-        for rec in &advice.recommendations {
-            if rec.confidence < 0.5 {
-                continue;
-            }
-            recommendations.push(CrossCutRecommendation {
-                source: roko_compose::auction::CrossCutId::Dreams,
-                decision_key: format!("route:{task_category}"),
-                decision_kind: CrossCutDecisionKind::Route,
-                value: rec.recommended_model.clone(),
-                confidence: rec.confidence,
-                priority_level: 2,
-                safety_critical: false,
-                knowledge_tier: None,
-            });
-        }
-    }
-
-    // Daimon safety override: if the daimon is Struggling, emit a safety-
-    // critical recommendation to prefer a conservative model.
-    if let Some(daimon) = &feedback.daimon_state {
-        if let Ok(daimon) = daimon.lock() {
-            let affect = daimon.query_state();
-            if affect.behavioral_state == roko_core::BehavioralState::Struggling {
-                recommendations.push(CrossCutRecommendation {
-                    source: roko_compose::auction::CrossCutId::Daimon,
-                    decision_key: format!("route:{task_category}"),
-                    decision_kind: CrossCutDecisionKind::Route,
-                    value: "conservative".to_string(),
-                    confidence: 0.9,
-                    priority_level: 1,
-                    safety_critical: true,
-                    knowledge_tier: None,
-                });
-            }
-        }
-    }
-
-    if recommendations.is_empty() {
-        return None;
-    }
-
-    // Run priority-then-VCG arbitration.
-    let result = roko_compose::auction::resolve_by_priority(&recommendations)
-        .unwrap_or_else(|| roko_compose::auction::resolve_by_vcg(&recommendations));
-
-    match result {
-        CrossCutArbitrationResult::Resolved {
-            winner,
-            ref recommendation,
-            attention_cost,
-            mechanism,
-            ..
-        } => {
-            tracing::debug!(
-                ?winner,
-                value = %recommendation.value,
-                attention_cost,
-                ?mechanism,
-                "cross-cut arbitration resolved routing recommendation"
-            );
-            // If the winning recommendation names a specific model to prefer,
-            // deprioritize everything else. For safety-critical "conservative"
-            // recommendations, signal budget pressure instead.
-            if recommendation.safety_critical {
-                Some(roko_learn::cascade_router::RoutingBias {
-                    deprioritize: Vec::new(),
-                    prefer_cheaper: true,
-                    reason: format!("cross-cut safety arbitration: {}", recommendation.value),
-                })
-            } else {
-                None // Prefer normal dream routing advice path (P1-18)
-            }
-        }
-        CrossCutArbitrationResult::NoConflict => None,
-    }
-}
-
 /// The agent contract of a Graph task: its role's contract, narrowed by the
 /// task's `allowed_tools` and `denied_tools` and by its domain
 /// ([`task_denied_tools`]). A task that names no `domain` takes
@@ -330,6 +249,8 @@ pub(super) fn effective_agent_contract(
         .as_deref()
         .filter(|tools| !tools.is_empty());
     let domain = task.effective_domain(config.project.default_domain.as_ref());
+    // `[profiles.<domain>] tool_profile` picks the tool set (9125).
+    let domain = super::pack_rungs::tool_domain(config, domain);
     let denied = task_denied_tools(task, domain.as_ref(), task_allowed_tools);
     AgentContract::load_for_role_with_mode(task_role, ContractLoadMode::RestrictedFallback)
         .unwrap_or_else(|_| AgentContract::restricted(task_role))
@@ -375,53 +296,6 @@ pub(super) fn upstream_outputs(input: &[Signal]) -> Vec<(String, Vec<String>)> {
                 .map(|text| (format!("graph-upstream-{index}"), vec![text.to_string()]))
         })
         .collect()
-}
-
-/// P1-18: Convert persisted dream routing advice to a `RoutingBias` for the
-/// cascade router. Returns `None` when no advice was loaded (missing or
-/// stale file) or no recommendations match the task category.
-pub(super) fn dream_routing_bias(
-    advice: Option<&roko_dreams::DreamRoutingAdvice>,
-    task_category: &str,
-    routing_ctx: &roko_learn::model_router::RoutingContext,
-) -> Option<roko_learn::cascade_router::RoutingBias> {
-    let advice = advice?;
-    if advice.recommendations.is_empty() {
-        return None;
-    }
-    let complexity_band = routing_ctx.complexity.label();
-    let bias = roko_dreams::dream_advice_to_routing_bias(advice, task_category, complexity_band);
-    if bias.deprioritize.is_empty() {
-        return None;
-    }
-    tracing::debug!(
-        deprioritize = ?bias.deprioritize,
-        reason = %bias.reason,
-        "loaded dream routing bias for graph task dispatch"
-    );
-    Some(bias)
-}
-
-/// Whether a plan run dreams, so that dream routing advice may steer its
-/// dispatches: `[learning] dream_on_completion` and
-/// `dreams.trigger_on_plan_complete` are both on. Dreams are held
-/// (dec-e70592), and the first is off by default (backlog 4207).
-pub(super) const fn dreams_feed_plan_routing(learning: &roko_core::config::LearningConfig) -> bool {
-    learning.dream_on_completion && learning.dreams.trigger_on_plan_complete
-}
-
-/// The dream routing advice a dispatch reads: none while plan runs do not
-/// dream ([`dreams_feed_plan_routing`]), else the advice on disk, which
-/// [`roko_dreams::load_dream_routing_advice`] empties once it is older than
-/// [`roko_dreams::ROUTING_ADVICE_DEFAULT_TTL`], one hour.
-pub(super) fn plan_dream_routing_advice(
-    learning: &roko_core::config::LearningConfig,
-    workdir: &Path,
-) -> Option<roko_dreams::DreamRoutingAdvice> {
-    if !dreams_feed_plan_routing(learning) {
-        return None;
-    }
-    roko_dreams::load_dream_routing_advice(workdir).ok()
 }
 
 /// Build a reasonable `RoutingContext` for Graph task dispatch.
@@ -552,70 +426,6 @@ mod tests {
             .map(|tool| tool.name.clone())
             .filter(|name| contract.permits_tool(name))
             .collect()
-    }
-
-    /// Write dream routing advice, generated at `generated_at`, that
-    /// deprioritises `model-x` for a focused implementer task.
-    fn save_dream_advice(workdir: &Path, generated_at: chrono::DateTime<chrono::Utc>) {
-        let routing = build_routing_context("implementer", &make_task_def("focused"), &None);
-        let advice = roko_dreams::DreamRoutingAdvice {
-            generated_at,
-            recommendations: vec![roko_dreams::RoutingRecommendation {
-                task_category: "implementation".to_string(),
-                complexity_band: routing.complexity.label().to_string(),
-                recommended_model: "model-y".to_string(),
-                deprioritize: vec!["model-x".to_string()],
-                confidence: 0.9,
-                supporting_episodes: 5,
-                recommended_model_success_rate: 0.8,
-                pattern_signature: 1,
-            }],
-            ..roko_dreams::DreamRoutingAdvice::default()
-        };
-        roko_dreams::save_dream_routing_advice(workdir, &advice).expect("save dream advice");
-    }
-
-    /// The dream routing bias a focused implementer task's dispatch gets
-    /// under `learning` in `workdir`.
-    fn dream_bias(
-        learning: &roko_core::config::LearningConfig,
-        workdir: &Path,
-    ) -> Option<roko_learn::cascade_router::RoutingBias> {
-        let routing = build_routing_context("implementer", &make_task_def("focused"), &None);
-        let advice = plan_dream_routing_advice(learning, workdir);
-        dream_routing_bias(advice.as_ref(), "implementation", &routing)
-    }
-
-    /// A learning config under which plan runs dream.
-    fn dreaming() -> roko_core::config::LearningConfig {
-        let mut learning = roko_core::config::LearningConfig::default();
-        learning.dream_on_completion = true;
-        learning.dreams.trigger_on_plan_complete = true;
-        learning
-    }
-
-    /// backlog 4207: fresh advice on disk steers no dispatch while plan runs
-    /// do not dream, which is the default; a dreaming run reads it.
-    #[test]
-    fn dream_advice_ignored_while_dreams_are_held() {
-        let temp = tempdir().expect("tempdir");
-        save_dream_advice(temp.path(), chrono::Utc::now());
-        let held = roko_core::config::LearningConfig::default();
-        assert!(!dreams_feed_plan_routing(&held));
-        assert!(dream_bias(&held, temp.path()).is_none());
-        assert!(
-            dream_bias(&dreaming(), temp.path()).is_some(),
-            "fresh advice steers a dreaming run"
-        );
-    }
-
-    /// backlog 4207: with dreams on, advice past its one-hour TTL yields no
-    /// routing bias.
-    #[test]
-    fn stale_dream_advice_yields_no_routing_bias() {
-        let temp = tempdir().expect("tempdir");
-        save_dream_advice(temp.path(), chrono::Utc::now() - chrono::Duration::hours(2));
-        assert!(dream_bias(&dreaming(), temp.path()).is_none());
     }
 
     /// gap-585bd2: the task's domain decides whether the `chain.*` tools,

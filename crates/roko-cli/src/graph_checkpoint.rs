@@ -45,6 +45,7 @@ use roko_learn::telemetry::report::RunRecords;
 use roko_learn::telemetry::{AttemptOpenRecord, AttemptOutcome};
 use serde::{Deserialize, Serialize};
 
+use crate::graph_execution::delivery::{DELIVERY_CHECKS_EXTENSION, DeliveryCheck};
 use crate::runner::plan_loader::Plan;
 use crate::safety_provenance::{GraphProvenanceSink, SafetyProvenanceSummary};
 use crate::task_accept;
@@ -2226,6 +2227,10 @@ pub struct RecordedBatchDelivery {
     pub branch: String,
     /// The batch commit that delivered the plan's work.
     pub merge_commit: String,
+    /// The whole-plan checks its delivery ran (backlog 3111).
+    pub checks: Vec<DeliveryCheck>,
+    /// The log holding everything those checks wrote, when it was written.
+    pub check_log: Option<String>,
 }
 
 /// Where plan `plan_id`'s work went: the batch branch and commit its
@@ -2243,10 +2248,27 @@ pub fn recorded_batch_delivery(workdir: &Path, plan_id: &str) -> Option<Recorded
     if batch["state"].as_str() != Some("delivered") {
         return None;
     }
+    let receipt = &manifest["extensions"][DELIVERY_EXTENSION]["value"]["receipt"];
+    let checks = &receipt["extensions"][DELIVERY_CHECKS_EXTENSION];
     Some(RecordedBatchDelivery {
         branch: batch["branch"].as_str()?.to_string(),
         merge_commit: batch["merge_commit"].as_str()?.to_string(),
+        checks: serde_json::from_value(checks.clone()).unwrap_or_default(),
+        check_log: receipt["regression_evidence_ref"]
+            .as_str()
+            .map(str::to_string),
     })
+}
+
+/// Where a delivery of plan `plan_id` writes the full output of its
+/// whole-plan check: `delivery-check.log` beside the plan's checkpoint
+/// (backlog 3111).
+#[must_use]
+pub fn delivery_check_log(workdir: &Path, plan_id: &str) -> PathBuf {
+    workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("delivery-check.log")
 }
 
 /// Why plan `plan_id`'s whole-plan check failed, as its checkpoint recorded
@@ -4849,6 +4871,8 @@ depends_on = ["T1"]
             Some(RecordedBatchDelivery {
                 branch: "roko/batch/run-1".to_string(),
                 merge_commit: "a".repeat(40),
+                checks: Vec::new(),
+                check_log: None,
             })
         );
         assert_eq!(recorded_batch_delivery(dir.path(), "p-conflict"), None);

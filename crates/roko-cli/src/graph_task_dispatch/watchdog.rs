@@ -34,8 +34,11 @@
 //!   from the start of its call once [`FIRST_OUTPUT_GRACE`] has passed, so one
 //!   that never reports anything is cancelled too (bug-2aa55f);
 //! - other providers may report nothing until they finish (the Codex CLI hands
-//!   over its whole answer at the end), so their attempts are left to the hard
-//!   timeout until they first report something;
+//!   over its whole answer at the end), so their calls get the longer grace of
+//!   `[conductor] report_at_end_stall_secs` before they are silent from their
+//!   start: a hung one costs minutes, not the hours of a hard timeout that
+//!   grows with each retry (backlog 1126). With it at `0` such a call is left
+//!   to the hard timeout until it first reports something;
 //! - a tool call the agent made (a long `cargo test`, say) is bounded by the
 //!   provider's own tool timeout, so silence while one runs does not count.
 
@@ -84,6 +87,9 @@ pub(super) struct StallThresholds {
     warn_after: Option<Duration>,
     /// Silence after which the attempt is cancelled (`task_stall_secs`).
     cancel_after: Option<Duration>,
+    /// The first-output grace of a call to a provider that may report only
+    /// at the end (`report_at_end_stall_secs`).
+    report_at_end_grace: Option<Duration>,
 }
 
 impl StallThresholds {
@@ -92,6 +98,7 @@ impl StallThresholds {
         Self {
             warn_after: threshold(config.silence_timeout_secs),
             cancel_after: threshold(config.task_stall_secs),
+            report_at_end_grace: threshold(config.report_at_end_stall_secs),
         }
     }
 
@@ -112,15 +119,22 @@ pub(super) struct AttemptProgress {
 struct ProgressState {
     /// When the attempt last reported anything; `None` until it first does.
     last_event: Option<Instant>,
-    /// When the call in flight started, if its provider streams as it goes:
-    /// the start of its silence until it reports anything.
+    /// When the call in flight started: the start of its silence until it
+    /// reports anything, once its first-output grace has passed.
     quiet_since: Option<Instant>,
+    /// The call in flight is to a provider that may report nothing until it
+    /// finishes ([`streams_as_it_goes`] is false for it).
+    reports_at_end: bool,
     /// The call waits for its provider's concurrency permit, which is no
     /// silence (bug-eba31d).
     queued: bool,
     /// The first-output grace of this attempt's calls; `None` is
     /// [`FIRST_OUTPUT_GRACE`].
     first_output_grace: Option<Duration>,
+    /// The first-output grace of a call that may report only at the end
+    /// (`[conductor] report_at_end_stall_secs`); `None` leaves such a call
+    /// to the hard timeout until it first reports anything (backlog 1126).
+    report_at_end_grace: Option<Duration>,
     /// Tool calls the agent made whose results have not arrived yet.
     open_tool_calls: HashSet<String>,
     /// The provider call the attempt waits on, once one started.
@@ -278,7 +292,8 @@ impl AttemptProgress {
         at: Instant,
     ) {
         let mut state = self.inner.lock();
-        state.quiet_since = streams_as_it_goes(target.provider_kind).then_some(at);
+        state.quiet_since = Some(at);
+        state.reports_at_end = !streams_as_it_goes(target.provider_kind);
         state.queued = false;
         state.call = Some(CallInFlight { target, failover });
         state.usage = StreamedUsage::default();
@@ -309,23 +324,31 @@ impl AttemptProgress {
     }
 
     /// How long, at `now`, the attempt has been waiting on its model without
-    /// reporting progress: since its last event or, when its provider streams
-    /// as it goes, since its call started, once its first-output grace
-    /// ([`FIRST_OUTPUT_GRACE`]) has passed. `None` within that grace, while
-    /// the call waits for its provider's permit, before a provider that may
-    /// report only at the end first reports anything, and while a tool call
-    /// the agent made is still running.
+    /// reporting progress: since its last event or, before its first, since
+    /// its call started, once its first-output grace has passed
+    /// ([`FIRST_OUTPUT_GRACE`] when its provider streams as it goes, the
+    /// longer `report_at_end_stall_secs` when it may report only at the end,
+    /// backlog 1126). `None` within that grace, while the call waits for its
+    /// provider's permit, before a provider that may report only at the end
+    /// first reports anything when it has no such grace, and while a tool
+    /// call the agent made is still running.
     fn silence(&self, now: Instant) -> Option<Duration> {
         let state = self.inner.lock();
         if state.queued {
             return None;
         }
-        let grace = state.first_output_grace.unwrap_or(FIRST_OUTPUT_GRACE);
         let quiet_since = match state.last_event {
             Some(last_event) => last_event,
-            None => state
-                .quiet_since
-                .filter(|&started| now.saturating_duration_since(started) >= grace)?,
+            None => {
+                let grace = if state.reports_at_end {
+                    state.report_at_end_grace?
+                } else {
+                    state.first_output_grace.unwrap_or(FIRST_OUTPUT_GRACE)
+                };
+                state
+                    .quiet_since
+                    .filter(|&started| now.saturating_duration_since(started) >= grace)?
+            }
         };
         state
             .open_tool_calls
@@ -337,7 +360,8 @@ impl AttemptProgress {
 /// Whether the adapter of a `kind` provider streams the agent's events as it
 /// goes, so that a call reporting nothing for a while is silent. The Claude
 /// CLI does; providers that may report only at the end (the Codex CLI, the
-/// Cursor CLI) do not.
+/// Cursor CLI) do not, and their calls get the longer first-output grace of
+/// `[conductor] report_at_end_stall_secs`.
 const fn streams_as_it_goes(kind: roko_core::agent::ProviderKind) -> bool {
     matches!(kind, roko_core::agent::ProviderKind::ClaudeCli)
 }
@@ -365,9 +389,11 @@ pub(super) enum StallCheck {
 
 impl StallWatch {
     pub(super) fn new(thresholds: StallThresholds) -> Self {
+        let progress = AttemptProgress::default();
+        progress.inner.lock().report_at_end_grace = thresholds.report_at_end_grace;
         Self {
             thresholds,
-            progress: AttemptProgress::default(),
+            progress,
             warned: false,
         }
     }
@@ -799,6 +825,7 @@ mod tests {
         let defaults = StallThresholds::from_config(&ConductorConfig::default());
         assert_eq!(defaults.warn_after, Some(secs(180)));
         assert_eq!(defaults.cancel_after, Some(secs(300)));
+        assert_eq!(defaults.report_at_end_grace, Some(secs(900)));
         assert!(defaults.is_enabled());
 
         assert!(!thresholds(0, 0).is_enabled(), "0 and 0 watch nothing");
@@ -1669,9 +1696,39 @@ exec sleep 60
         );
     }
 
+    /// backlog 1126: a Codex CLI call that reports nothing is not left to the
+    /// hard timeout. Past the longer first-output grace of
+    /// `report_at_end_stall_secs` (set low here) its silence counts from its
+    /// start, and the stall watchdog cancels it at `task_stall_secs`.
+    #[tokio::test]
+    async fn hung_codex_attempt_is_cancelled_by_stall_watchdog() {
+        let temp = tempdir().expect("tempdir");
+        let hung = temp.path().join("hung-codex.sh");
+        write_provider(&hung, "#!/bin/sh\nset -eu\ncat >/dev/null\nexec sleep 60\n");
+        let mut config = watched_config(&hung);
+        let provider = config.providers.get_mut("graph-cli").expect("provider");
+        provider.kind = ProviderKind::CodexCli;
+        // This exercises the watchdog, not the command guard: let the Codex
+        // agent run in the test's checkout.
+        config.runner.allow_unguarded_agents_in_checkout = true;
+        config.conductor.report_at_end_stall_secs = 1;
+        let started = Instant::now();
+        let (error, verdict) = dispatch_once(temp.path(), config, "hung-codex").await;
+        let elapsed = started.elapsed();
+
+        assert!(error.to_string().contains("stalled"), "{error}");
+        assert_eq!(verdict["outcome"], "timeout", "{verdict}");
+        assert_eq!(verdict["blame"], "infra", "{verdict}");
+        assert!(
+            elapsed < secs(30),
+            "the watchdog, not the 60 s timeout, ended the hung call after {elapsed:?}"
+        );
+    }
+
     /// bug-2aa55f: a call whose provider streams as it goes is silent from
     /// its start, once its first-output grace has passed; one whose provider
-    /// may report only at the end is not until it reports something.
+    /// may report only at the end has the longer grace of
+    /// `report_at_end_stall_secs` first (backlog 1126).
     #[test]
     fn a_streaming_call_is_silent_from_its_start() {
         let config = Arc::new(watched_config(Path::new("/bin/true")));
@@ -1698,12 +1755,30 @@ exec sleep 60
         assert_eq!(streaming.silence(t0 + secs(5)), Some(secs(1)));
         assert!(streaming.reported_progress());
 
-        let at_the_end = AttemptProgress::default();
-        at_the_end.call_started_at(codex, FailoverChain::default(), t0);
+        // Past that longer grace, such a call is silent from its start too;
+        // with `report_at_end_stall_secs = 0` it is left to its timeout until
+        // it reports something.
+        let report_at_end = |grace_secs: u64| {
+            StallWatch::new(StallThresholds::from_config(&ConductorConfig {
+                report_at_end_stall_secs: grace_secs,
+                ..ConductorConfig::default()
+            }))
+            .progress()
+        };
+        let at_the_end = report_at_end(900);
+        at_the_end.call_started_at(codex.clone(), FailoverChain::default(), t0);
         assert_eq!(
             at_the_end.silence(t0 + secs(600)),
             None,
-            "a provider that may report only at the end is left to its timeout"
+            "it has its longer grace"
+        );
+        assert_eq!(at_the_end.silence(t0 + secs(900)), Some(secs(900)));
+        let unbounded = report_at_end(0);
+        unbounded.call_started_at(codex, FailoverChain::default(), t0);
+        assert_eq!(
+            unbounded.silence(t0 + secs(3_600)),
+            None,
+            "with report_at_end_stall_secs = 0 it is left to its timeout"
         );
     }
 

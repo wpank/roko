@@ -203,6 +203,10 @@ pub struct RokoConfig {
     /// RAG retrieval pipeline settings.
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+    /// How runs randomise their learning loops: maximize mode and forced
+    /// arms (`[experiments]`, decision 4115).
+    #[serde(default)]
+    pub experiments: super::experiments::ExperimentsConfig,
 }
 
 /// Composition strategy for allocating prompt token budget across candidate sections.
@@ -322,6 +326,15 @@ pub struct DomainProfile {
     pub tool_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_config: Option<GateProfileConfig>,
+    /// The `[gates.packs.<name>]` that verifies the tasks of the domain this
+    /// profile is named for, in place of the pack named for the domain
+    /// (9125).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<String>,
+    /// One line that leads the prompt of the domain's tasks, saying who the
+    /// agent is (9125).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_identity: Option<String>,
     /// Forward-compatible profile-local extension fields.
     #[serde(default, flatten)]
     pub extra: HashMap<String, toml::Value>,
@@ -340,6 +353,8 @@ impl DomainProfile {
             max_iterations: child.max_iterations.or(parent.max_iterations),
             tool_profile: child.tool_profile.or(parent.tool_profile),
             gate_config: GateProfileConfig::overlay(parent.gate_config, child.gate_config),
+            pack: child.pack.or(parent.pack),
+            role_identity: child.role_identity.or(parent.role_identity),
             extra,
         }
     }
@@ -484,6 +499,7 @@ impl Default for RokoConfig {
             daimon: DaimonConfig::default(),
             repos: Vec::new(),
             retrieval: RetrievalConfig::default(),
+            experiments: super::experiments::ExperimentsConfig::default(),
         }
     }
 }
@@ -1803,12 +1819,13 @@ pub struct ConductorConfig {
     //
     // `silence_timeout_secs` and `task_stall_secs` drive the Graph
     // dispatcher's per-attempt stall watchdog. An agent is silent while it
-    // waits on its model without reporting progress: silence starts counting
-    // when its provider call starts for a provider that streams as it goes
-    // (the Claude CLI), else once the attempt has reported something, and
-    // pauses while a tool call it made runs. `0` turns a threshold off; with
-    // both off a Graph run is not supervised at all. The hard `timeout_secs`
-    // stays the outer bound.
+    // waits on its model without reporting progress: silence counts from its
+    // last report or, before its first, from its provider call's start once
+    // a first-output grace has passed (30 s for a provider that streams as it
+    // goes, the Claude CLI; `report_at_end_stall_secs` for one that may
+    // report only at the end), and pauses while a tool call it made runs.
+    // `0` turns a threshold off; with both off a Graph run is not supervised
+    // at all. The hard `timeout_secs` stays the outer bound.
     /// Seconds of agent silence before its task gets a warning diagnosis
     /// (default 180; 0 = off).
     #[serde(default = "default_silence_timeout_secs")]
@@ -1820,6 +1837,14 @@ pub struct ConductorConfig {
     /// under its task's `max_retries` (default 300; 0 = off).
     #[serde(default = "default_task_stall_secs")]
     pub task_stall_secs: u64,
+    /// The first-output grace, in seconds, of a call to a provider that may
+    /// report nothing until it finishes (the Codex CLI, the Cursor CLI):
+    /// past it the call's silence counts from its start, so a call that never
+    /// reports anything is cancelled after this long, or after
+    /// `task_stall_secs` when that is longer (default 900; 0 = such a call
+    /// is left to the hard `timeout_secs` until it first reports anything).
+    #[serde(default = "default_report_at_end_stall_secs")]
+    pub report_at_end_stall_secs: u64,
     /// Context window usage percentage that triggers a warning (default 80).
     #[serde(default = "default_context_pressure_pct")]
     pub context_pressure_pct: u8,
@@ -1872,6 +1897,9 @@ const fn default_compile_fail_threshold() -> u32 {
 const fn default_task_stall_secs() -> u64 {
     300
 }
+const fn default_report_at_end_stall_secs() -> u64 {
+    900
+}
 const fn default_context_pressure_pct() -> u8 {
     80
 }
@@ -1906,6 +1934,7 @@ impl Default for ConductorConfig {
             silence_timeout_secs: default_silence_timeout_secs(),
             compile_fail_threshold: default_compile_fail_threshold(),
             task_stall_secs: default_task_stall_secs(),
+            report_at_end_stall_secs: default_report_at_end_stall_secs(),
             context_pressure_pct: default_context_pressure_pct(),
             phase_timeout_secs: default_phase_timeout_secs(),
             context_window_small_tokens: default_context_window_small_tokens(),

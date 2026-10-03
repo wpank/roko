@@ -3,7 +3,6 @@ plan = "08g-first-run"
 total = 3
 done = 0
 status = "ready"
-max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 60
 
@@ -57,7 +56,6 @@ Acceptance: accept/earlyAgent.accept.test.tsx (5) → src/components/stream/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = []
@@ -133,7 +131,6 @@ short delay, as a network does; firstPlan re-renders on replaceState as Next
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T01"]
@@ -202,7 +199,6 @@ edit the acceptance copies.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T02"]

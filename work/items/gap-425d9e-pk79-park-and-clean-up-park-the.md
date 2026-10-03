@@ -85,3 +85,16 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK33 (gap-aea13a).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-425d9e`; cargo verification is deferred to the batch gate.
+
+- 9214: implemented at 4dab209c9
+- 9215: implemented at 1b426fc4b
+- 9216: implemented at 2f8a649c7
+- 9217: implemented at 60659da57
+- 9218: implemented at 242115dfe
+- 9219: implemented at fe2d1eb81
+- 9220: implemented at ebbd5166c (subscription_relay.rs stays compiled: its status types back /api/subscriptions/relay/status and the OpenAPI document)
+- 9221: implemented at 38d5eadc1

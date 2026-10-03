@@ -82,3 +82,30 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK02 (gap-e00238).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-d254a3` from BASE e55d4c20f; cargo verification deferred to the batch gate.
+
+- 1123: implemented at 537ee1188. The conflict arm of `accept_attempt` records retry feedback: the refusal's reason,
+  then the conflicting paths it names (`WorktreeError::Conflict` words them), else the paths the attempt changed (from
+  the pre-verify screen's `take_changed_files`). It stays raw text (`from_raw`, lifted lists cleared), so a path that
+  reads like a failing test does not hide the rest. The stub-conflict test now also checks the changed-paths fallback.
+- 1124: implemented at e0630d3e7. `WorktreeHandle::base_commit` holds the commit `create_locked` resolved for the
+  checkout; `lease_from_handle` reports it, falling back to the configured base for a re-attached checkout (start
+  left unknown, as the spec allows). The bug hides behind a `base_branch` of `HEAD`, which resolves inside the
+  worktree, so the test uses `main`.
+- 1125: implemented at cb7a71ef0. `AttemptVerdictRecord::scope_findings` ({path, kind}, at most 50, with
+  `scope_findings_omitted`; both skipped when empty) and `set_scope_findings` keep the cap in one place. The findings
+  travel from `attempt_diff_red_flag` through `screen_attempt` and `VerificationReport` to the attempt, so this also
+  touched `verification.rs`, `streaming.rs`, `graph_task_dispatch.rs` (one line each) and `telemetry/mod.rs`.
+- 1126: implemented at 6f4707337. Option A: every call's silence counts from its start once a first-output grace has
+  passed, with `[conductor] report_at_end_stall_secs` (default 900, 0 = the old behaviour) as the grace of kinds that
+  may report only at the end. This bounds a first API call (OpenAI-compatible, Anthropic) that reports nothing too.
+- 1127: implemented at 1013f307f. The pre-dispatch `agent_spawned` names
+  `ProviderDispatchResolver::resolve(request.model_key).provider_id`, what `resolve_candidate` (private to `failover`)
+  returns for the planned key; an unresolved key keeps the kind label.
+- 1128: implemented at 8c7d3e97e. The hub upserts a second `AgentSpawned` for a running id (model and provider
+  replaced, no second active count), so no new event: `run_bridge_with_failover` takes a `DashboardRow` (plan/cell id
+  and role) and republishes it with the model and provider that run once failover has passed a model over. Side
+  effect: the run event log's `total_agent_calls` counts that republish too.

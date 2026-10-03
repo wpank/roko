@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use roko_core::usage::UsageSource;
 use serde::{Deserialize, Serialize};
 
-use super::assign::Arm;
+use super::assign::{Arm, Assignment};
 use crate::prompt_experiment::PromptAttemptKey;
 use crate::routing_log::{DecisionState, RoutingDecisionLog};
 
@@ -506,6 +506,23 @@ pub struct VerifyStepVerdict {
     pub skip_reason: Option<String>,
 }
 
+/// Most scope findings a verdict lists; it counts the rest
+/// ([`AttemptVerdictRecord::scope_findings_omitted`]).
+pub const SCOPE_FINDINGS_LISTED: usize = 50;
+
+/// A path a settled attempt changed outside its task's `files`, as the
+/// pre-verify screen found it (`scope_findings[]`, backlog 1125). Under
+/// `[gates] diff_scope = "record"` it is recorded and does not fail the
+/// attempt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScopeFinding {
+    /// The path, relative to the attempt's working tree.
+    pub path: String,
+    /// The finding's kind, e.g. `outside_scope`.
+    pub kind: String,
+}
+
 /// Unix-millisecond timestamps of one attempt (S01 §4.4); `None` when
 /// unknown, never `0`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -900,6 +917,15 @@ pub struct AttemptVerdictRecord {
     /// Per-rung verify results.
     #[serde(default)]
     pub steps: Vec<VerifyStepVerdict>,
+    /// Paths the attempt changed outside its task's `files`, at most
+    /// [`SCOPE_FINDINGS_LISTED`]; empty when it changed none or the
+    /// pre-verify screen did not diff it (backlog 1125).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_findings: Vec<ScopeFinding>,
+    /// How many more scope findings there were than the verdict lists;
+    /// `None` when it lists them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_findings_omitted: Option<u32>,
     /// Timestamps.
     #[serde(default)]
     pub timing: AttemptTiming,
@@ -962,6 +988,8 @@ impl AttemptVerdictRecord {
             blame,
             learning_label: learning_label_for(outcome, blame),
             steps: Vec::new(),
+            scope_findings: Vec::new(),
+            scope_findings_omitted: None,
             timing: AttemptTiming::default(),
             executed: ExecutedModel::default(),
             usage: AttemptUsage::default(),
@@ -982,6 +1010,15 @@ impl AttemptVerdictRecord {
         let mut record = Self::settle(identity, verdict.into(), false);
         record.gate_verdict = Some(verdict);
         record
+    }
+
+    /// List `findings` as the attempt's scope findings: the first
+    /// [`SCOPE_FINDINGS_LISTED`] of them, and a count of the rest.
+    pub fn set_scope_findings(&mut self, mut findings: Vec<ScopeFinding>) {
+        let omitted = findings.len().saturating_sub(SCOPE_FINDINGS_LISTED);
+        findings.truncate(SCOPE_FINDINGS_LISTED);
+        self.scope_findings = findings;
+        self.scope_findings_omitted = u32::try_from(omitted).ok().filter(|&count| count > 0);
     }
 
     /// The learning label as learners apply it (S01 §4.1): `Some(true)` for
@@ -1153,6 +1190,65 @@ fn eligible_by_default() -> bool {
     true
 }
 
+/// `decision_point` of the placebo's decision rows (S03 §4.3).
+pub const PLACEBO_DECISION_POINT: &str = "placebo";
+/// The placebo loop's registry id.
+pub const PLACEBO_LOOP_ID: &str = "L-placebo";
+/// What both arms of the placebo propose: the same thing, nothing.
+pub const PLACEBO_PROPOSAL: &str = "no_op";
+
+/// What the placebo's two arms propose: the same, by construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceboProposals {
+    /// The learned arm's proposal.
+    pub learned: String,
+    /// The default arm's proposal.
+    pub default: String,
+}
+
+/// `roko.decision/1` at the placebo decision point (S03 §4.3, S02 L12): the
+/// L-placebo loop's arm for the attempt's chain. Its two arms are identical
+/// and cost nothing, so its true effect is 0, and S03 calibrates its false
+/// transitions on it. Nothing reads the arm.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlaceboDecisionRecord {
+    /// The attempt the decision belongs to.
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    /// Always [`PLACEBO_DECISION_POINT`].
+    pub decision_point: String,
+    /// Always [`PLACEBO_LOOP_ID`].
+    pub loop_id: String,
+    /// The chain's assignment on the placebo layer.
+    pub assignment: Assignment,
+    /// What each arm proposes.
+    pub proposals: PlaceboProposals,
+    /// The realised arm's proposal.
+    pub chosen: String,
+    /// The realised arm's propensity.
+    pub chosen_propensity: f64,
+}
+
+impl PlaceboDecisionRecord {
+    /// The placebo decision of the attempt `identity`, from its chain's
+    /// `assignment` on the placebo layer.
+    #[must_use]
+    pub fn new(identity: AttemptIdentity, assignment: Assignment) -> Self {
+        Self {
+            identity,
+            decision_point: PLACEBO_DECISION_POINT.to_string(),
+            loop_id: PLACEBO_LOOP_ID.to_string(),
+            chosen_propensity: assignment.propensity,
+            assignment,
+            proposals: PlaceboProposals {
+                learned: PLACEBO_PROPOSAL.to_string(),
+                default: PLACEBO_PROPOSAL.to_string(),
+            },
+            chosen: PLACEBO_PROPOSAL.to_string(),
+        }
+    }
+}
+
 /// `roko.decision/1` at a content decision point (S01 §4.5, §5.3): the items
 /// an attempt's prompt retrieved there are the candidates, and the set it
 /// included is the choice. It shares `decisions.jsonl` with the route rows,
@@ -1185,6 +1281,10 @@ pub struct ContentDecisionRecord {
     /// (`learn/gate-thresholds.json`); `None` when there are none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thresholds_digest: Option<String>,
+    /// The arms of the attempt's chain (S02.P1-14), which every decision row
+    /// of the attempt carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arm_set: Option<crate::loop_audit::arm_set::ArmSet>,
 }
 
 /// `b3(attempt_key|item_kind|item_id)`: one item's exposure in one attempt
@@ -1581,6 +1681,17 @@ impl TelemetryRecord for ContentDecisionRecord {
     }
 }
 
+/// One placebo decision per attempt.
+impl TelemetryRecord for PlaceboDecisionRecord {
+    const SCHEMA: &'static str = DECISION_SCHEMA;
+    const FILE: RunFile = RunFile::Decisions;
+
+    fn record_id(&self) -> String {
+        let key = &self.identity.attempt_key;
+        record_id(Self::SCHEMA, key, PLACEBO_DECISION_POINT, "", "")
+    }
+}
+
 /// The item is its kind and id, so a knowledge entry and an episode that
 /// share an id stay two exposures.
 impl TelemetryRecord for ExposureRecord {
@@ -1769,6 +1880,43 @@ mod tests {
         assert_eq!(json["cost"]["vendor_usd"], serde_json::Value::Null);
         let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, record);
+    }
+
+    /// backlog 1125: a verdict lists at most `SCOPE_FINDINGS_LISTED` scope
+    /// findings and counts the rest; a verdict with none writes neither
+    /// field, and a row from before the fields still parses.
+    #[test]
+    fn scope_findings_are_capped_and_old_rows_still_parse() {
+        let mut record =
+            AttemptVerdictRecord::settle(identity("T3", 1), AttemptOutcome::Passed, true);
+        let findings = (0..SCOPE_FINDINGS_LISTED + 3)
+            .map(|n| ScopeFinding {
+                path: format!("src/f{n}.rs"),
+                kind: "outside_scope".to_string(),
+            })
+            .collect();
+        record.set_scope_findings(findings);
+        assert_eq!(record.scope_findings.len(), SCOPE_FINDINGS_LISTED);
+        assert_eq!(record.scope_findings_omitted, Some(3));
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(json["scope_findings"][0]["path"], "src/f0.rs");
+        assert_eq!(json["scope_findings"][0]["kind"], "outside_scope");
+        assert_eq!(json["scope_findings_omitted"], 3);
+        let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, record);
+
+        let mut json = serde_json::to_value(&record).expect("serialize");
+        let row = json.as_object_mut().expect("a JSON object");
+        row.remove("scope_findings");
+        row.remove("scope_findings_omitted");
+        let old: AttemptVerdictRecord = serde_json::from_value(json).expect("an old row parses");
+        assert!(old.scope_findings.is_empty());
+        assert_eq!(old.scope_findings_omitted, None);
+
+        record.set_scope_findings(Vec::new());
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert!(json.get("scope_findings").is_none(), "{json}");
+        assert!(json.get("scope_findings_omitted").is_none(), "{json}");
     }
 
     #[test]
@@ -2044,6 +2192,7 @@ mod tests {
             source: Some(DecisionSource::Default),
             state: Some(state),
             thresholds_digest: None,
+            arm_set: None,
         };
         let json = serde_json::to_value(&record).expect("serialize");
         assert_eq!(json["decision_point"], "knowledge");

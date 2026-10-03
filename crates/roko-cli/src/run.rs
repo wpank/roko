@@ -643,6 +643,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             no_cascade: run.overrides.cascade_enabled == Some(false),
             // `[learning] frozen` freezes a `roko run`.
             frozen_learning: false,
+            no_holdout: false,
             metrics: None,
         },
         Some(run_id.clone()),

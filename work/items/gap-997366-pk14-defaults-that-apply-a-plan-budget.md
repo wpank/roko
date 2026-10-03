@@ -103,3 +103,19 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK04 (gap-198c9c).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-997366`; cargo verification deferred to the batch gate. The static part of every verify
+passes.
+
+- 3102: implemented at 90cff58c1
+- 3103: implemented at 3ba95616f (the check that it fails with the whole-budget reservation put back needs cargo)
+- 3104: implemented at 9c371e146
+- 3105: implemented at f840012dc (`roko plan index --check` passes; the failed checkpoints of
+  portal-programme/02-backend-plan-execution and 09-acceptance in the main checkout need `--fresh`)
+- 3106: implemented at a989cd094
+- 3107: implemented at 6d111701d
+- 3109: implemented at e9d37c7c4
+- 3110: implemented at 840e04b5b
+- 3111: implemented at f20db587b

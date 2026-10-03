@@ -153,16 +153,25 @@ impl RelayHealth {
 // Workspace registration (roko-serve → relay)
 // ---------------------------------------------------------------------------
 
+// Registration needs the `relay` feature (9220); the health types above
+// stay compiled for `GET /api/relay/health` and the relay-stats feed agent.
+
+#[cfg(feature = "relay")]
 use std::sync::Arc;
 
+#[cfg(feature = "relay")]
 use parking_lot::RwLock;
+#[cfg(feature = "relay")]
 use roko_core::config::schema::RelayConfig;
+use roko_core::defaults::DEFAULT_RELAY_STALE_THRESHOLD_SECS;
+#[cfg(feature = "relay")]
 use roko_core::defaults::{
     DEFAULT_RELAY_CIRCUIT_BREAKER_BASE_BACKOFF_SECS,
     DEFAULT_RELAY_CIRCUIT_BREAKER_MAX_BACKOFF_SECS, DEFAULT_RELAY_CIRCUIT_BREAKER_THRESHOLD,
-    DEFAULT_RELAY_STALE_THRESHOLD_SECS,
 };
+#[cfg(feature = "relay")]
 use tokio::task::JoinHandle;
+#[cfg(feature = "relay")]
 use tracing::{debug, info, warn};
 
 /// Default staleness threshold in seconds.
@@ -171,6 +180,7 @@ pub const DEFAULT_STALE_THRESHOLD_SECS: u64 = DEFAULT_RELAY_STALE_THRESHOLD_SECS
 /// Resolve the public URL for this roko instance.
 ///
 /// Priority: config > RAILWAY_PUBLIC_DOMAIN > FLY_APP_NAME > localhost fallback.
+#[cfg(feature = "relay")]
 fn resolve_public_url(config: &RelayConfig, port: u16) -> String {
     if let Some(url) = &config.public_url {
         return url.clone();
@@ -197,6 +207,7 @@ pub fn normalize_relay_base_url(url: &str) -> String {
 }
 
 /// Extract `http(s)://host:port` from a WS relay URL, stripping any path.
+#[cfg(feature = "relay")]
 fn normalize_ws_to_http_base(ws_url: &str) -> String {
     let base = normalize_relay_base_url(ws_url);
     base.replace("wss://", "https://")
@@ -206,6 +217,7 @@ fn normalize_ws_to_http_base(ws_url: &str) -> String {
 /// Resolve the workspace name.
 ///
 /// Priority: config > hostname > "roko".
+#[cfg(feature = "relay")]
 fn resolve_workspace_name(config: &RelayConfig) -> String {
     if let Some(name) = &config.workspace_name {
         return name.clone();
@@ -219,6 +231,7 @@ fn resolve_workspace_name(config: &RelayConfig) -> String {
 ///
 /// After `DEFAULT_RELAY_CIRCUIT_BREAKER_THRESHOLD` consecutive failures, applies
 /// exponential backoff capped by the relay defaults.
+#[cfg(feature = "relay")]
 fn circuit_breaker_backoff(consecutive_failures: u32) -> std::time::Duration {
     if consecutive_failures < DEFAULT_RELAY_CIRCUIT_BREAKER_THRESHOLD {
         return std::time::Duration::ZERO;
@@ -230,6 +243,7 @@ fn circuit_breaker_backoff(consecutive_failures: u32) -> std::time::Duration {
 }
 
 /// Transition the shared relay health to `Degraded` state.
+#[cfg(feature = "relay")]
 fn mark_degraded(health: &RwLock<RelayHealth>, relay_url: &str, reason: &str) {
     let mut h = health.write();
     if !matches!(h.connection, RelayConnectionState::Degraded { .. }) {
@@ -248,6 +262,7 @@ fn mark_degraded(health: &RwLock<RelayHealth>, relay_url: &str, reason: &str) {
 }
 
 /// Transition the shared relay health back to `Relayed` state.
+#[cfg(feature = "relay")]
 fn mark_relayed(health: &RwLock<RelayHealth>, relay_url: &str) {
     let mut h = health.write();
     h.connection = RelayConnectionState::Relayed {
@@ -260,6 +275,7 @@ fn mark_relayed(health: &RwLock<RelayHealth>, relay_url: &str) {
 /// and sends periodic heartbeats with a circuit breaker.
 ///
 /// Returns `None` if relay is not configured.
+#[cfg(feature = "relay")]
 pub fn start_workspace_registration(
     relay_config: RelayConfig,
     port: u16,
@@ -488,6 +504,7 @@ mod tests {
         assert!(health.is_healthy()); // local + fresh = healthy
     }
 
+    #[cfg(feature = "relay")]
     #[test]
     fn circuit_breaker_no_backoff_below_threshold() {
         for failures in 0..DEFAULT_RELAY_CIRCUIT_BREAKER_THRESHOLD {
@@ -495,6 +512,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "relay")]
     #[test]
     fn circuit_breaker_exponential_backoff_at_threshold() {
         assert_eq!(
@@ -511,6 +529,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "relay")]
     #[test]
     fn circuit_breaker_caps_at_max() {
         assert_eq!(
@@ -519,6 +538,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "relay")]
     #[test]
     fn mark_degraded_transitions_health() {
         let health = Arc::new(RwLock::new(RelayHealth::default()));
@@ -531,6 +551,7 @@ mod tests {
         assert!(!h.is_healthy());
     }
 
+    #[cfg(feature = "relay")]
     #[test]
     fn mark_relayed_recovers_health() {
         let health = Arc::new(RwLock::new(RelayHealth::default()));
@@ -541,6 +562,7 @@ mod tests {
         assert!(h.is_healthy());
     }
 
+    #[cfg(feature = "relay")]
     #[test]
     fn start_workspace_registration_returns_none_without_url() {
         let config = RelayConfig::default();

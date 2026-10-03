@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
+use super::meta::ArenaAcceptanceEvidence;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::routes::middleware::AuthContext;
@@ -35,17 +36,6 @@ pub(crate) struct ArenaRuntime {
     state_path: PathBuf,
     registry: Mutex<ArenaRegistry>,
     startup_error: Option<String>,
-}
-
-/// Immutable R03 evidence consumed by meta-agent activation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ArenaAcceptanceEvidence {
-    pub(crate) arena_id: [u8; 32],
-    pub(crate) attempt_id: [u8; 32],
-    pub(crate) evidence_hash: [u8; 32],
-    pub(crate) subject_output_hash: [u8; 32],
-    pub(crate) scorer_principal: String,
-    pub(crate) observed_at_block: u64,
 }
 
 struct ArenaMutation<T> {

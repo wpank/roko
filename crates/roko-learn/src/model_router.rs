@@ -551,7 +551,8 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(ai, bi)| ai * bi).sum()
 }
 
-fn sample_beta<R: Rng + ?Sized>(alpha: f64, beta: f64, rng: &mut R) -> f64 {
+/// One draw from Beta(`alpha`, `beta`), through two gamma draws.
+pub(crate) fn sample_beta<R: Rng + ?Sized>(alpha: f64, beta: f64, rng: &mut R) -> f64 {
     let x = sample_gamma(alpha.max(f64::MIN_POSITIVE), rng);
     let y = sample_gamma(beta.max(f64::MIN_POSITIVE), rng);
     let total = x + y;

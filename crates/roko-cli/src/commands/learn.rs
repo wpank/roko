@@ -114,6 +114,18 @@ pub(crate) enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Show failure patterns, most frequent first (read-only).
+    Patterns {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Only the patterns ready to graduate into a lint or a verify step:
+        /// seen 3 or more times across 2 or more plans, with a verified fix.
+        /// Each comes with a suggested check, which a person writes
+        /// (decision 4127).
+        #[arg(long)]
+        graduate: bool,
+    },
     /// Show recent post-gate reflection records.
     Reflections {
         /// Working directory (default: cwd).
@@ -308,6 +320,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::KnowledgeStats { workdir }
         | LearnCmd::Playbooks { workdir }
         | LearnCmd::Sections { workdir }
+        | LearnCmd::Patterns { workdir, .. }
         | LearnCmd::Reflections { workdir, .. }
         | LearnCmd::Tools { workdir }
         | LearnCmd::FeedbackProof { workdir }
@@ -433,6 +446,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         LearnCmd::Sections { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_learn_sections(&wd).await
+        }
+        LearnCmd::Patterns { workdir, graduate } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_learn_patterns(&wd, graduate, json)
         }
         LearnCmd::Reflections { workdir, limit } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -2560,6 +2577,63 @@ async fn cmd_learn_playbooks(workdir: &std::path::Path) -> Result<i32> {
         );
     }
 
+    Ok(EXIT_SUCCESS)
+}
+
+// ── Failure patterns (backlog 4128) ──────────────────────────────────
+
+/// `roko learn patterns`: the failure patterns in `learn/error-patterns.json`,
+/// most frequent first. With `graduate`, only those ready to graduate into a
+/// lint or a verify step (decision 4127), each with its fix and a suggested
+/// check: roko proposes, and a person writes the check.
+fn cmd_learn_patterns(workdir: &std::path::Path, graduate: bool, json: bool) -> Result<i32> {
+    use roko_learn::error_pattern_store::{
+        ERROR_PATTERNS_FILE, ErrorPatternStore, GRADUATION_MIN_OCCURRENCES, GRADUATION_MIN_PLANS,
+    };
+
+    let path = workdir
+        .join(".roko")
+        .join("learn")
+        .join(ERROR_PATTERNS_FILE);
+    let store = ErrorPatternStore::load(&path);
+    if !graduate {
+        if json {
+            println!("{}", serde_json::to_string_pretty(&store.top_patterns(50))?);
+        } else if store.is_empty() {
+            println!("Failure patterns: none at {}", path.display());
+        } else {
+            print!("{}", store.format_for_prompt(20));
+        }
+        return Ok(EXIT_SUCCESS);
+    }
+    let candidates = store.graduation_candidates(GRADUATION_MIN_OCCURRENCES, GRADUATION_MIN_PLANS);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&candidates)?);
+        return Ok(EXIT_SUCCESS);
+    }
+    if candidates.is_empty() {
+        println!(
+            "No failure pattern is ready to graduate: none was seen {GRADUATION_MIN_OCCURRENCES} \
+             or more times across {GRADUATION_MIN_PLANS} or more plans with a verified fix."
+        );
+        return Ok(EXIT_SUCCESS);
+    }
+    println!(
+        "Failure patterns ready to graduate into a lint or a verify step \
+         ({GRADUATION_MIN_OCCURRENCES}+ times, {GRADUATION_MIN_PLANS}+ plans, a verified fix):"
+    );
+    for (index, candidate) in candidates.iter().enumerate() {
+        println!();
+        println!("{}. {}", index + 1, candidate.key);
+        let (seen, plans) = (candidate.occurrences, candidate.plans);
+        println!("   seen {seen} times in {plans} plans");
+        println!("   failure: {}", candidate.digest);
+        if let Some(gate) = &candidate.gate {
+            println!("   verify: {gate}");
+        }
+        println!("   fix: {}", candidate.resolution);
+        println!("   suggested check: {}", candidate.suggested_check);
+    }
     Ok(EXIT_SUCCESS)
 }
 

@@ -299,10 +299,9 @@ impl CalibrationTracker {
         let residuals = self
             .residuals
             .get(&(model.to_string(), category.to_string()))?;
-        if residuals.is_empty() {
-            return None;
-        }
-        Some(residuals.iter().map(|r| r * r).sum::<f64>() / residuals.len() as f64)
+        // The crate's one Brier formula (backlog 6111): a residual is the
+        // forecast's error against its outcome.
+        crate::self_model::metrics::mean_square(residuals.iter().map(|residual| (*residual, 1.0)))
     }
 
     /// Bin residuals into 10 equally-spaced buckets for reliability diagrams.
@@ -892,6 +891,7 @@ mod tests {
             fallback_reason: None,
             influences: Vec::new(),
             state: None,
+            arm_set: None,
         };
 
         let probability = selected_probability(&record).expect("probability");
@@ -925,6 +925,7 @@ mod tests {
             fallback_reason: None,
             influences: Vec::new(),
             state: None,
+            arm_set: None,
         };
 
         assert_eq!(fallback_stage_probability(&base), 0.65);
@@ -964,6 +965,7 @@ mod tests {
             fallback_reason: None,
             influences: Vec::new(),
             state: None,
+            arm_set: None,
         };
 
         let tracker = CalibrationTracker::from_routing_logs(&[record]);

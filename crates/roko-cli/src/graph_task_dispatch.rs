@@ -112,8 +112,8 @@ use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
 use live_tool_calls::LiveToolCalls;
 use routing_context::{
-    CheapFactoryAgent, arbitrate_cross_cut_routing_bias, build_routing_context, dream_routing_bias,
-    effective_agent_contract, select_cheap_model_key, upstream_outputs,
+    CheapFactoryAgent, build_routing_context, effective_agent_contract, select_cheap_model_key,
+    upstream_outputs,
 };
 use supervision::SupervisedAttempt;
 use tui_forward::forward_live_event_to_tui;
@@ -234,16 +234,17 @@ pub struct GraphTaskDispatcher {
     /// Cancelled once the plan run began to stop ([`Self::begin_stop`]), so
     /// waits can end on it (bug-3a3968).
     stopping: tokio_util::sync::CancellationToken,
-    /// `[meta] skip_enrichment` per plan id, read once from the plan's
-    /// `tasks.toml`.
-    skip_enrichment_plans: parking_lot::Mutex<HashMap<String, bool>>,
     /// Whether each plan's tasks run the workspace's `[[gates.rungs]]`
     /// (`[meta] workspace_rungs`), per plan id, read once from the plan's
     /// `tasks.toml`.
     workspace_rung_plans: parking_lot::Mutex<HashMap<String, bool>>,
-    /// `(plan id, work domain)` pairs whose tasks face no workspace rungs
-    /// for want of a `[gates.packs]` entry, each logged once (`pack_rungs`).
+    /// `(plan id, notice)` pairs about a plan's work domains already logged,
+    /// such as a domain whose tasks face no workspace rungs for want of a
+    /// `[gates.packs]` entry (`pack_rungs`).
     unpacked_domains: parking_lot::Mutex<std::collections::HashSet<(String, String)>>,
+    /// Looks up what a citations rung's artefacts cite, keeping the answers
+    /// for the run (9122, `pack_rungs`).
+    citation_resolver: Arc<dyn roko_gate::CitationResolver>,
     /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt stopped at its turn
     /// cap; the next attempt raises the cap and resumes the partial work.
     turn_cap_retries: parking_lot::Mutex<HashMap<String, TurnCapRetry>>,
@@ -340,9 +341,9 @@ impl GraphTaskDispatcher {
             task_spend: GraphTaskSpendLedger::default(),
             daily_budget: GraphDailyBudget::default(),
             stopping: tokio_util::sync::CancellationToken::new(),
-            skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             unpacked_domains: parking_lot::Mutex::default(),
+            citation_resolver: Arc::new(roko_gate::HttpCitationResolver::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
@@ -508,8 +509,19 @@ impl GraphTaskDispatcher {
         max_turn_usd: f64,
         continue_on_exhaustion: bool,
     ) -> Self {
+        let calls = self.budget_policy.concurrent_calls;
         self.budget_policy =
-            GraphPlanBudgetPolicy::from_limits(ceiling_usd, max_turn_usd, continue_on_exhaustion);
+            GraphPlanBudgetPolicy::from_limits(ceiling_usd, max_turn_usd, continue_on_exhaustion)
+                .with_concurrent_calls(calls);
+        self
+    }
+
+    /// How many provider calls of a plan can be in flight at once
+    /// (`[conductor] max_agents`): without `max_turn_usd`, each call
+    /// reserves that share of the plan budget (backlog 3102).
+    #[must_use]
+    pub fn with_concurrent_calls(mut self, calls: usize) -> Self {
+        self.budget_policy = self.budget_policy.with_concurrent_calls(calls);
         self
     }
 
@@ -693,7 +705,12 @@ impl GraphTaskDispatcher {
     /// reflection calls, which count toward the attempt being verified
     /// ([`HelperAgent`]).
     fn cheap_agent(&self) -> Option<HelperAgent> {
-        let model_key = select_cheap_model_key(&self.config)?;
+        select_cheap_model_key(&self.config).map(|model_key| self.helper_agent(model_key))
+    }
+
+    /// A helper agent wired to `model_key`, as [`Self::cheap_agent`] builds
+    /// one. The judge rung asks one from another model family (9123).
+    fn helper_agent(&self, model_key: String) -> HelperAgent {
         let target = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
             .resolve(&model_key);
         let agent = CheapFactoryAgent {
@@ -707,7 +724,7 @@ impl GraphTaskDispatcher {
                 .max(1)
                 .saturating_mul(1_000),
         };
-        Some(HelperAgent::new(agent, target, self.pricing_snapshot()))
+        HelperAgent::new(agent, target, self.pricing_snapshot())
     }
 
     /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`
@@ -721,27 +738,6 @@ impl GraphTaskDispatcher {
             .find(|path| path.is_file())
             .and_then(|path| crate::task_parser::TasksFile::parse(&path).ok())
             .map(|tasks| tasks.meta)
-    }
-
-    /// Whether the plan's `[meta] skip_enrichment` is set, read once per plan
-    /// from `<plan_dir>/tasks.toml`. An unreadable file counts as `false`.
-    fn plan_skips_enrichment(&self, spec: &TaskExecutionSpec) -> bool {
-        let mut plans = self.skip_enrichment_plans.lock();
-        if let Some(skip) = plans.get(&spec.plan_id) {
-            return *skip;
-        }
-        let skip = self
-            .read_plan_meta(spec)
-            .is_some_and(|meta| meta.skip_enrichment);
-        if skip {
-            tracing::info!(
-                plan_id = %spec.plan_id,
-                "plan sets skip_enrichment: dispatching tasks as authored \
-                 (no dream/cross-cut routing advice)"
-            );
-        }
-        plans.insert(spec.plan_id.clone(), skip);
-        skip
     }
 
     /// Per-task spend admission against [`task_budget_ceiling_usd`], mirroring
@@ -907,7 +903,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // serve tasks that no verify step checks: a task with its own steps,
         // or one the workspace rungs check, must earn its pass from them.
         if let Some(reflex_store) = self.reflex_store.as_ref().filter(|_| {
-            self.config.learning.t0_reflexes && self.verify_steps(spec, &task).is_empty()
+            self.config.learning.t0_reflexes
+                && self.verify_steps(spec, &task).is_empty()
+                && self.kind_rungs(spec, &task).is_empty()
         }) {
             let file_exts: Vec<String> = task
                 .files
@@ -963,10 +961,6 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 return Ok(outputs);
             }
         }
-
-        // A plan with `[meta] skip_enrichment = true` is dispatched as
-        // authored: no dream/cross-cut routing advice.
-        let skip_enrichment = self.plan_skips_enrichment(spec);
 
         // ── Disk headroom (reg-7cf6f9) ───────────────────────────────────
         //
@@ -1085,39 +1079,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
             );
         }
 
-        // ── W10: Enrichment pipeline ─────────────────────────────────────
+        // ── Routing context ──────────────────────────────────────────────
         let mut routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
         // Clone before the move into DispatchContext so emit_feedback can pass
         // the real dispatch-time context to the routing observation sink.
         // This ensures force_backend override outcomes are recorded with the
         // correct task category, complexity, and role rather than fallback defaults.
         let mut routing_ctx_for_feedback = routing_ctx.clone();
-
-        // Load persisted dream routing advice once; both the cross-cut
-        // arbitration and the P1-18 dream bias read it. Plans that skip
-        // enrichment get neither, and no plan reads it while plan runs do
-        // not dream (backlog 4207).
-        let routing_bias = if skip_enrichment {
-            None
-        } else {
-            let dream_advice =
-                routing_context::plan_dream_routing_advice(&self.config.learning, &self.workdir);
-            // P1-16: Run cross-cut arbitration to detect safety-critical
-            // overrides before applying dream routing advice.
-            let task_category = task.domain.as_ref().map_or("implementation", |d| d.label());
-            let arbitration_bias = arbitrate_cross_cut_routing_bias(
-                &self.feedback,
-                dream_advice.as_ref(),
-                task_category,
-            );
-
-            // P1-18: Convert the dream advice to a RoutingBias so the cascade
-            // router accounts for dream-observed model performance when
-            // picking a provider for this task. Arbitration safety overrides
-            // take priority over dream advice.
-            arbitration_bias
-                .or_else(|| dream_routing_bias(dream_advice.as_ref(), task_category, &routing_ctx))
-        };
 
         // ── Gate retry context lookup ──────────────────────────────────
         //
@@ -1156,7 +1124,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         }
 
         // gap-b62e95: the router and its observations know a retry from a
-        // first attempt. (The dream bias above keeps the first attempt's band.)
+        // first attempt.
         routing_context::mark_attempt(&mut routing_ctx, &task, attempt_number);
         routing_context::mark_attempt(&mut routing_ctx_for_feedback, &task, attempt_number);
 
@@ -1210,7 +1178,6 @@ impl TaskDispatcher for GraphTaskDispatcher {
             prompt_experiment: prompt_experiment.clone(),
             gate_feedback: prior_gate_feedback,
             routing_context: Some(routing_ctx),
-            routing_bias,
             dependency_outputs: upstream_outputs(&input),
             error_patterns_context: self.task_error_patterns(spec, &task).text,
             cached_workspace_map: cached_workspace_map.clone(),
@@ -1372,20 +1339,22 @@ impl TaskDispatcher for GraphTaskDispatcher {
             ctx.cell_id.as_deref().unwrap_or(&task.id)
         );
         if let Some(tui) = &self.tui_bridge {
-            // Derive a provider label from the planned backend so the dashboard
-            // can display it before the actual dispatch resolves a provider.
-            let planned_provider: String =
-                roko_core::ProviderKind::from(dispatch_plan.model.backend)
-                    .label()
-                    .to_string();
+            // The slug and provider the planned model key resolves to, as
+            // dispatch resolves them (`glm-4.7` on `zai`) and as a failover
+            // row names them (backlog 1128), not the backend family's label,
+            // which named every OpenAI-compatible model `codex_cli`; a model
+            // that does not resolve keeps that label (backlog 1127).
+            let planned =
+                crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
+                    .resolve(&request.model_key);
             tui.agent_spawned(
                 &pre_dispatch_agent_id,
                 &spec.plan_id,
                 &task.id,
                 0,
                 task.role.as_deref().unwrap_or("implementer"),
-                &dispatch_plan.model.slug,
-                &planned_provider,
+                &planned.model_slug,
+                &planned.provider_id,
             );
         }
 
@@ -1437,6 +1406,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     request,
                     Some(&progress),
                     failover::LadderRoute::of(&task, &dispatch_plan),
+                    Some(failover::DashboardRow {
+                        agent_id: &pre_dispatch_agent_id,
+                        role: task.role.as_deref().unwrap_or("implementer"),
+                    }),
                 ),
                 &progress,
                 stall_watch,
@@ -1696,6 +1669,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .await;
         attempt.verify_ended();
         attempt.record_verify_steps(report.steps);
+        attempt.record_scope_findings(report.scope_findings);
         let verification = report.result;
         // The helper model calls verification made count toward this
         // attempt, the background ones included (bug-62e3f4).
@@ -2628,41 +2602,6 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         }
     }
 
-    /// `[meta] skip_enrichment` is read once per plan, and a plan that sets it
-    /// still dispatches. What it skips leaves nothing to observe here: the
-    /// fixture has no dream routing advice.
-    #[tokio::test]
-    async fn skip_enrichment_plan_meta_is_read_once_per_plan() {
-        let temp = tempdir().expect("tempdir");
-        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |_| {}).await;
-        let plan_dir = temp.path().join("plans/authored");
-        std::fs::create_dir_all(&plan_dir).expect("plan dir");
-        let tasks_path = plan_dir.join("tasks.toml");
-        std::fs::write(
-            &tasks_path,
-            "[meta]\nplan = \"authored\"\nskip_enrichment = true\n\n\
-             [[task]]\nid = \"T-EXP\"\ntitle = \"Wire the batch fixture\"\n",
-        )
-        .expect("write tasks.toml");
-        let mut spec = make_spec(&task);
-        spec.plan_id = "authored".to_string();
-        spec.plan_dir = plan_dir.display().to_string();
-
-        assert!(dispatcher.plan_skips_enrichment(&spec));
-        dispatcher
-            .dispatch(&spec, Vec::new(), &batch_ctx())
-            .await
-            .expect("a plan that skips enrichment still dispatches");
-        // Read once: removing the plan file afterwards changes nothing.
-        std::fs::remove_file(&tasks_path).expect("remove tasks.toml");
-        assert!(dispatcher.plan_skips_enrichment(&spec));
-
-        let mut unflagged = make_spec(&task);
-        unflagged.plan_id = "unflagged".to_string();
-        unflagged.plan_dir = temp.path().join("plans/missing").display().to_string();
-        assert!(!dispatcher.plan_skips_enrichment(&unflagged));
-    }
-
     /// A T0 reflex rule that matches a task is never credited with a gate pass
     /// when it fires: no gate has run. With `[learning] t0_reflexes` off (the
     /// default) no rule is consulted. With it on, a task whose verify step
@@ -3299,5 +3238,95 @@ sleep 30
         let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
         let verdicts = jsonl_rows_where(&attempts, 1, is_verdict).await;
         assert_eq!(verdicts[0]["outcome"], "cancelled", "{}", verdicts[0]);
+    }
+
+    /// The agent id, model and provider of each `agent_spawned` event
+    /// published on `events` so far, in order.
+    pub(super) fn spawned_agents(
+        events: &mut tokio::sync::broadcast::Receiver<
+            roko_runtime::event_bus::Envelope<roko_core::DashboardEvent>,
+        >,
+    ) -> Vec<(String, String, String)> {
+        let mut spawned = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if let roko_core::DashboardEvent::AgentSpawned {
+                        agent_id,
+                        model,
+                        provider,
+                        ..
+                    } = envelope.payload
+                    {
+                        spawned.push((agent_id, model, provider));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => return spawned,
+            }
+        }
+    }
+
+    /// backlog 1127: the `agent_spawned` event published before dispatch
+    /// names the provider the planned model is configured on, here the
+    /// OpenAI-compatible `zai`, not its backend family's label (`codex_cli`).
+    #[tokio::test]
+    async fn agent_spawned_names_planned_provider() {
+        let temp = tempdir().expect("tempdir");
+        let (base_url, _requests) = spawn_openai_mock(vec![final_turn("ok"), final_turn("ok")]);
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "glm-model".to_string();
+        config.agent.bare_mode = false;
+        // `PATH` is always set, standing in for an API key.
+        config.providers.insert(
+            "zai".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(base_url),
+                api_key_env: Some("PATH".to_string()),
+                timeout_ms: Some(15_000),
+                ..ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "glm-model".to_string(),
+            ModelProfile {
+                provider: "zai".to_string(),
+                slug: "glm-4.7".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let task = TaskDef {
+            model_hint: Some("glm-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        // Only the event published before the provider call matters here.
+        let _ = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await;
+
+        let spawned = spawned_agents(&mut events);
+        let (_, model, provider) = spawned.first().expect("an agent_spawned event");
+        assert_eq!(provider, "zai", "{spawned:?}");
+        assert_eq!(model, "glm-4.7", "{spawned:?}");
     }
 }

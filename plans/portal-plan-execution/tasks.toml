@@ -3,7 +3,6 @@ plan = "portal-plan-execution"
 total = 3
 done = 0
 status = "ready"
-max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 45
 

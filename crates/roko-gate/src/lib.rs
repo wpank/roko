@@ -85,6 +85,7 @@ pub mod audit;
 /// Criterion benchmark regression detection: parse JSON output, compare against baselines.
 pub mod benchmark_gate;
 mod cancel_safe_command;
+pub mod citation_gate;
 pub mod clippy_gate;
 pub mod code_exec;
 pub mod compile;
@@ -97,6 +98,7 @@ pub mod env_builder;
 pub mod error;
 pub mod error_patterns;
 pub mod eval_generator;
+pub mod evidence_judge;
 pub mod fact_check;
 pub mod feedback;
 /// Forensic causal chain reconstruction from content-addressed artifacts (GATE-07).
@@ -130,6 +132,7 @@ pub mod registry;
 pub mod review_verdict;
 pub mod rung_dispatch;
 pub mod rung_selector;
+pub mod schema_gate;
 pub mod shell;
 /// Statistical Process Control extensions: CUSUM, EWMA Control Chart, BOCPD (GATE-01).
 pub mod spc;
@@ -150,6 +153,10 @@ pub use adaptive_threshold::{AdaptiveThresholds, RungStats, TOTAL_RUNGS};
 pub use agent_judge::AgentJudgeOracle;
 pub use artifact_store::ArtifactStore;
 pub use benchmark_gate::{BenchmarkComparison, BenchmarkRegressionGate};
+pub use citation_gate::{
+    Citation, CitationResolver, HttpCitationResolver, Resolution, check_citations,
+    extract_citations,
+};
 pub use clippy_gate::ClippyGate;
 pub use code_exec::{
     CodeExecutionBackend, CodeExecutionGate, CodeExecutionOutcome, CodeExecutionPayload,

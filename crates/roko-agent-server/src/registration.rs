@@ -145,6 +145,7 @@ impl AgentRegistration {
         state: Arc<AgentState>,
         addr: SocketAddr,
     ) -> Result<RegistrationOutcome> {
+        #[cfg_attr(not(feature = "chain"), allow(unused_mut))]
         let mut outcome = self.publish_card(Arc::clone(&state), addr).await?;
 
         #[cfg(feature = "chain")]

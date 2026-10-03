@@ -7,16 +7,21 @@
 mod affect;
 mod agents;
 mod aggregator;
+#[cfg(feature = "chain")]
 pub(crate) mod arenas;
 pub(crate) mod auth;
 mod bench;
 #[cfg(feature = "alloy-backend")]
 mod chain;
-#[cfg(not(feature = "alloy-backend"))]
-#[path = "chain_disabled.rs"]
-mod chain;
+#[cfg(any(
+    not(feature = "alloy-backend"),
+    not(feature = "groups"),
+    not(feature = "relay")
+))]
+mod chain_disabled;
 pub(crate) mod config;
 mod connectors;
+#[cfg(feature = "chain")]
 mod defi;
 mod deployments;
 mod diagnosis;
@@ -25,11 +30,13 @@ mod event_ingest;
 mod extensions;
 pub(crate) mod feeds;
 mod gateway;
+#[cfg(feature = "groups")]
 mod groups;
 mod heartbeats;
 mod integrations;
 mod jobs;
 mod learning;
+#[cfg(feature = "chain")]
 mod marketplace;
 mod mcp;
 pub(crate) mod meta;
@@ -41,6 +48,7 @@ mod projections;
 mod providers;
 mod rbac_middleware;
 mod recipes;
+#[cfg(feature = "chain")]
 pub(crate) mod registries;
 mod research;
 mod route_permissions;
@@ -66,10 +74,21 @@ mod auth_session;
 mod cache;
 mod doctor;
 mod history;
+#[cfg(any(feature = "chain", feature = "relay"))]
 mod proxy_ws;
+#[cfg(feature = "relay")]
 mod relay_proxy;
+#[cfg(feature = "chain")]
 mod rpc_proxy;
 
+#[cfg(not(feature = "alloy-backend"))]
+use self::chain_disabled as chain;
+#[cfg(not(feature = "chain"))]
+use self::chain_disabled::chain_family_routes;
+#[cfg(not(feature = "groups"))]
+use self::chain_disabled::group_routes;
+#[cfg(not(feature = "relay"))]
+use self::chain_disabled::relay_routes;
 use std::convert::Infallible;
 use std::net::IpAddr;
 use std::num::NonZeroU32;
@@ -308,6 +327,7 @@ pub fn build_router(
     // Replay the durable arena event outbox before accepting new mutations.
     // Publication is at-least-once: a crash after publish but before cursor
     // persistence may duplicate an event, but can never silently lose it.
+    #[cfg(feature = "chain")]
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
         let arena_state = Arc::clone(&state);
         runtime.spawn(async move {
@@ -336,16 +356,13 @@ pub fn build_router(
         .merge(subscriptions::routes())
         .merge(templates::routes())
         .merge(aggregator::routes())
-        .merge(arenas::routes())
+        .merge(chain_family_routes())
         .merge(meta::routes())
         .merge(agents::routes().layer(axum::middleware::from_fn_with_state(
             agent_reg_limiter,
             keyed_rate_limit_middleware,
         )))
         .merge(learning::routes())
-        .merge(marketplace::routes())
-        .merge(defi::routes())
-        .merge(registries::routes())
         .merge(config::routes())
         .merge(deployments::routes())
         .merge(diagnosis::routes())
@@ -365,7 +382,7 @@ pub fn build_router(
         .merge(connectors::routes())
         .merge(feeds::routes())
         .merge(recipes::routes())
-        .merge(groups::routes())
+        .merge(group_routes())
         .merge(auth::routes())
         .merge(secrets::routes())
         .merge(vision_loop::routes())
@@ -387,7 +404,6 @@ pub fn build_router(
         .nest("/models", providers::models_router())
         .nest("/routing", providers::routing_router())
         .merge(sse::routes())
-        .merge(rpc_proxy::routes())
         .route("/workflow/events", get(workflow_sse_handler));
 
     let api = if api_auth.enabled {
@@ -453,7 +469,7 @@ pub fn build_router(
     };
 
     let relay = if api_auth.enabled {
-        relay_proxy::routes()
+        relay_routes()
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
                 rbac_middleware::require_route_permission,
@@ -467,7 +483,7 @@ pub fn build_router(
                 middleware::require_api_key,
             ))
     } else {
-        relay_proxy::routes()
+        relay_routes()
     };
 
     // MCP for chat hosts (9114), at the root like the relay: the API's auth
@@ -536,6 +552,32 @@ pub fn build_router(
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
+}
+
+/// The relay proxy, mounted at the server root. A build without `relay`
+/// parks it (9220).
+#[cfg(feature = "relay")]
+fn relay_routes() -> Router<Arc<AppState>> {
+    relay_proxy::routes()
+}
+
+/// Agent groups and their invitations. A build without `groups` parks them
+/// (9219).
+#[cfg(feature = "groups")]
+fn group_routes() -> Router<Arc<AppState>> {
+    groups::routes()
+}
+
+/// The chain-family routes: arenas, the marketplace, DeFi, the registries
+/// and the Mirage JSON-RPC proxy. A build without `chain` parks them (9214).
+#[cfg(feature = "chain")]
+fn chain_family_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .merge(arenas::routes())
+        .merge(marketplace::routes())
+        .merge(defi::routes())
+        .merge(registries::routes())
+        .merge(rpc_proxy::routes())
 }
 
 async fn api_not_found(req: Request) -> Response {
@@ -675,6 +717,7 @@ mod tests {
         (dir, router)
     }
 
+    #[cfg(feature = "chain")]
     fn build_test_router_at(
         workdir: &std::path::Path,
         config: RokoConfig,
@@ -710,6 +753,7 @@ mod tests {
         (status, json)
     }
 
+    #[cfg(feature = "chain")]
     async fn authenticated_json(
         router: &axum::Router,
         method: Method,
@@ -874,6 +918,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn registry_lifecycle_is_authenticated_admin_only_and_queryable() {
         let viewer = "registry-viewer";
@@ -1176,6 +1221,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn arena_service_is_authenticated_classified_and_live() {
         let mut config = RokoConfig::default();
@@ -1213,6 +1259,7 @@ mod tests {
         assert_eq!(body["code"], "invalid_json");
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn arena_mutations_fail_closed_when_serve_auth_is_disabled() {
         let mut config = RokoConfig::default();
@@ -1238,6 +1285,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn arena_mutation_denies_a_read_only_workspace_key() {
         let plaintext = "arena-viewer";
@@ -1286,6 +1334,7 @@ mod tests {
         assert_eq!(body["code"], "insufficient_scope");
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn arena_owner_and_admin_settle_external_evidence_and_project_events() {
         let owner = "arena-owner-key";
@@ -1478,6 +1527,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn meta_activation_is_owned_arena_bound_single_use_and_fail_closed() {
         let owner = "meta-owner-key";
@@ -1806,6 +1856,7 @@ mod tests {
         assert_eq!(body["state"], "deactivated");
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn defi_stubs_are_authenticated_classified_and_explicit() {
         let mut config = RokoConfig::default();
@@ -2209,6 +2260,7 @@ mod tests {
 
     /// With `auth.enabled = false`, relay routes are accessible without a key
     /// (behavior unchanged from before the auth gating).
+    #[cfg(feature = "relay")]
     #[tokio::test]
     async fn relay_requires_auth_skipped_when_disabled() {
         let mut config = RokoConfig::default();
@@ -2240,6 +2292,7 @@ mod tests {
     /// A member-level `agent:write` key may mutate `/relay/*`: RBAC applies
     /// the declared `AgentSpawn` row instead of the `ConfigEdit` catch-all
     /// that only admins hold (bug-928add).
+    #[cfg(feature = "relay")]
     #[tokio::test]
     async fn relay_mutation_uses_declared_agent_spawn_permission() {
         let plaintext = "relay-agent-writer";

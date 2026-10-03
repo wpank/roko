@@ -797,6 +797,7 @@ mod tests {
                 passed: true,
                 summary: "passed".to_string(),
                 evidence_ref: None,
+                checks: Vec::new(),
             }
         }
 

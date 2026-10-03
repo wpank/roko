@@ -79,7 +79,6 @@ bone counts as coloured there, so the 08f version judges colour by Lab chroma).
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = []
@@ -162,7 +161,6 @@ Acceptance: accept/segments.accept.test.tsx (5) → src/components/rail/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = []
@@ -246,7 +244,6 @@ Acceptance: accept/checkExit.accept.test.tsx (8) → src/components/stream/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = []
@@ -334,7 +331,6 @@ Acceptance: accept/oneRetry.accept.test.tsx (7) → src/components/shell/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T02", "T03"]
@@ -428,7 +424,6 @@ Acceptance: accept/gate_output_accept.rs (7 tests).
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 40
 depends_on = []
@@ -491,7 +486,6 @@ edit the acceptance copies.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T01", "T04", "T05"]

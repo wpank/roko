@@ -195,6 +195,7 @@ impl GeminiNativeAgent {
             // No response named the model that served (bug-a5f181).
             model: None,
             wall_ms,
+            ..UsageObservation::default()
         })
     }
 
@@ -602,6 +603,7 @@ pub(crate) fn gemini_observation(
         source,
         model,
         wall_ms,
+        ..UsageObservation::default()
     }
 }
 

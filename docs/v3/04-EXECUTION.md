@@ -559,10 +559,9 @@ closed.
 > branch, `roko/batch/<run-id>`. The operator's checkout is never changed: the run ends
 > with the `git merge` command that takes the work. A workdir that is not the top level
 > of a git checkout with a commit runs its tasks in the shared working tree.
-> With worktrees, plans still run one at a time
-> (`crates/roko-cli/src/graph_execution/plan_runner.rs`). A run that has them from the
-> config runs its plans in turn, with a warning; one that asked for them with
-> `--worktree-per-task` refuses `max_parallel_plans` above 1. The per-plan path
+> With worktrees, plans also run side by side (`max_parallel_plans` above 1, backlog 3104):
+> each plan's attempts start from its own branch, and finished plans are delivered into the
+> batch branch one at a time, each merged into the tip the last one left. The per-plan path
 > (`ensure_for_plan`, `create_for_plan`) and `reclaim_idle` have no production caller, and
 > `max_live` is unset.
 

@@ -63,6 +63,17 @@ use serde::{Deserialize, Serialize};
 /// write and every reader loads (backlog 4204).
 pub const ERROR_PATTERNS_FILE: &str = "error-patterns.json";
 
+/// The longest fix a verified pass records on a pattern (backlog 4125).
+pub const MAX_RESOLUTION_CHARS: usize = 400;
+
+/// How often a pattern must recur before `roko learn` proposes a check for
+/// it (decision 4127).
+pub const GRADUATION_MIN_OCCURRENCES: u32 = 3;
+
+/// In how many plans a pattern must recur before `roko learn` proposes a
+/// check for it (decision 4127).
+pub const GRADUATION_MIN_PLANS: usize = 2;
+
 /// Runner-v2's pattern file in `.roko/learn`, which nothing writes any more.
 /// [`retire_legacy_discovered_patterns`] sets it aside.
 pub const LEGACY_DISCOVERED_PATTERNS_FILE: &str = "discovered-patterns.json";
@@ -126,8 +137,34 @@ pub struct ErrorPattern {
     pub resolved: bool,
     /// What fixed the error (filled in from reflection or manual annotation).
     pub resolution: Option<String>,
+    /// The key of the verified attempt whose pass recorded `resolution`
+    /// ([`ErrorPatternStore::record_resolution`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_by: Option<String>,
     /// Auto-fix hint extracted from rustc output.
     pub suggestion: Option<String>,
+}
+
+/// A failure pattern ready to graduate into a permanent check (decision
+/// 4127): it kept recurring across plans and has a verified fix. `roko learn
+/// patterns --graduate` proposes the check; a person writes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraduationCandidate {
+    /// The pattern's key.
+    pub key: String,
+    /// Its normalized signature.
+    pub digest: String,
+    /// The verify command that failed, if known.
+    pub gate: Option<String>,
+    /// How many times it was seen.
+    pub occurrences: u32,
+    /// In how many plans.
+    pub plans: usize,
+    /// The fix a verified retry recorded.
+    pub resolution: String,
+    /// The check that would catch it before a retry has to: a regression
+    /// test, a clippy lint or a verify step.
+    pub suggested_check: String,
 }
 
 /// A structured gate failure observation emitted by gates, review parsing, or
@@ -447,12 +484,88 @@ impl ErrorPatternStore {
             task_ids: observation.task_id.into_iter().collect(),
             resolved: false,
             resolution: None,
+            resolved_by: None,
             suggestion: observation.suggestion,
         });
         FailurePatternUpdate {
             inserted: true,
             occurrences: 1,
         }
+    }
+
+    /// Record on the pattern `key` what fixed it: `resolution`, cut to
+    /// [`MAX_RESOLUTION_CHARS`], from the verified attempt `resolved_by`
+    /// (backlog 4125). The pattern stays unresolved, because prompts leave
+    /// resolved patterns out, which would hide the fix exactly when there is
+    /// one to show. Returns whether `key` names a pattern.
+    pub fn record_resolution(&mut self, key: &str, resolution: &str, resolved_by: &str) -> bool {
+        let Some(&index) = self.key_index.get(key.trim()) else {
+            return false;
+        };
+        let pattern = &mut self.patterns[index];
+        pattern.resolution = Some(truncate_chars(resolution.trim(), MAX_RESOLUTION_CHARS));
+        pattern.resolved_by = Some(resolved_by.to_string());
+        true
+    }
+
+    /// The patterns ready to graduate into a lint or a verify step (decision
+    /// 4127): with a recorded fix, seen at least `min_occurrences` times in at
+    /// least `min_plans` plans, most frequent first, each with a suggested
+    /// check.
+    pub fn graduation_candidates(
+        &self,
+        min_occurrences: u32,
+        min_plans: usize,
+    ) -> Vec<GraduationCandidate> {
+        let mut ready: Vec<&ErrorPattern> = self
+            .patterns
+            .iter()
+            .filter(|pattern| pattern.occurrences >= min_occurrences)
+            .filter(|pattern| pattern.plan_ids.len() >= min_plans)
+            .filter(|pattern| pattern.resolution.is_some())
+            .collect();
+        ready.sort_by(|a, b| {
+            b.occurrences
+                .cmp(&a.occurrences)
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        ready
+            .into_iter()
+            .map(|pattern| GraduationCandidate {
+                key: pattern.key.clone(),
+                digest: pattern.digest.clone(),
+                gate: pattern.gate.clone(),
+                occurrences: pattern.occurrences,
+                plans: pattern.plan_ids.len(),
+                resolution: pattern.resolution.clone().unwrap_or_default(),
+                suggested_check: pattern.suggested_check(),
+            })
+            .collect()
+    }
+
+    /// The patterns with a recorded fix, seen at least twice, that are about
+    /// a crate `paths` name (backlog 4126), most frequent first and at most
+    /// `limit`. A pattern is about the crates its verify command, digest and
+    /// fix name: `crates/<name>` paths, and the package of a cargo `-p` or
+    /// `--package` flag.
+    pub fn resolved_for(&self, paths: &[String], limit: usize) -> Vec<&ErrorPattern> {
+        let wanted: BTreeSet<String> = paths.iter().flat_map(|path| crates_named(path)).collect();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        let mut found: Vec<&ErrorPattern> = self
+            .patterns
+            .iter()
+            .filter(|pattern| pattern.resolution.is_some() && pattern.occurrences >= 2)
+            .filter(|pattern| !pattern.crates().is_disjoint(&wanted))
+            .collect();
+        found.sort_by(|a, b| {
+            b.occurrences
+                .cmp(&a.occurrences)
+                .then_with(|| b.last_seen_at.cmp(&a.last_seen_at))
+        });
+        found.truncate(limit);
+        found
     }
 
     /// Return the most frequent patterns, sorted by descending occurrence
@@ -655,6 +768,36 @@ impl ErrorPatternStore {
 }
 
 impl ErrorPattern {
+    /// The check that would catch the pattern before a retry has to, from
+    /// its verify command: a clippy lint, a regression test or a verify
+    /// step.
+    fn suggested_check(&self) -> String {
+        match self.gate.as_deref() {
+            Some(gate) if gate.contains("clippy") => {
+                format!("deny the lint `{gate}` reports in the crate's [lints] table")
+            }
+            Some(gate) if gate.contains("test") => {
+                format!("a regression test for this failure that `{gate}` runs")
+            }
+            Some(gate) => format!("a verify step running `{gate}`"),
+            None => format!("a verify step that reproduces: {}", self.digest),
+        }
+    }
+
+    /// The crates the pattern is about: those its verify command, digest
+    /// and fix name ([`crates_named`]).
+    fn crates(&self) -> BTreeSet<String> {
+        [
+            self.gate.as_deref(),
+            Some(self.digest.as_str()),
+            self.resolution.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .flat_map(crates_named)
+        .collect()
+    }
+
     fn relevance_score(&self, query: FailurePatternQuery<'_>) -> usize {
         let mut score = 0usize;
         if let Some(task_id) = query.task_id
@@ -814,6 +957,38 @@ fn truncate_chars(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
+/// Where a workspace keeps its crates.
+const CRATES_DIR: &str = "crates/";
+
+/// The crates `text` names: each `crates/<name>` path, and the package of
+/// each cargo `-p <name>`, `--package <name>` or `--package=<name>` flag.
+fn crates_named(text: &str) -> BTreeSet<String> {
+    let mut crates = BTreeSet::new();
+    let mut words = text.split_whitespace().peekable();
+    while let Some(word) = words.next() {
+        for (start, _) in word.match_indices(CRATES_DIR) {
+            crates.insert(crate_name(&word[start + CRATES_DIR.len()..]));
+        }
+        let package = match word {
+            "-p" | "--package" => words.peek().copied(),
+            _ => word.strip_prefix("--package="),
+        };
+        if let Some(package) = package {
+            crates.insert(crate_name(package));
+        }
+    }
+    crates.remove("");
+    crates
+}
+
+/// The crate name `text` starts with: its leading ASCII letters, digits,
+/// dashes and underscores.
+fn crate_name(text: &str) -> String {
+    text.chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .collect()
+}
+
 // NOTE: The `unique_tmp_path` helper that lived here has been replaced by
 // `roko_fs::atomic_write_json`.
 
@@ -821,6 +996,53 @@ fn truncate_chars(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Decision 4127: a pattern graduates only when it recurred at least
+    /// three times across at least two plans and has a verified fix. One seen
+    /// in a single plan, one seen twice, and one without a fix stay out; each
+    /// candidate carries its fix and a suggested check.
+    #[test]
+    fn graduation_candidates_need_recurrence_and_a_resolution() {
+        let cases: [(&str, &str, &[&str], bool); 5] = [
+            ("ready", "cargo test", &["p1", "p2", "p2"], true),
+            ("one-plan", "cargo clippy", &["p1", "p1", "p1"], true),
+            ("twice", "cargo build", &["p1", "p2"], true),
+            ("unfixed", "cargo check", &["p1", "p2", "p3"], false),
+            ("lint", "cargo clippy", &["p1", "p2", "p3", "p3"], true),
+        ];
+        let mut store = ErrorPatternStore::empty();
+        for (key, command, plans, fixed) in cases {
+            for plan in plans {
+                store.observe_gate_failure(GateFailureObservation::new(
+                    key,
+                    *plan,
+                    Some("T1".to_string()),
+                    command,
+                    "verify",
+                    format!("{command} failed"),
+                    GateFailureSource::GateClassification,
+                ));
+            }
+            if fixed {
+                store.record_resolution(key, &format!("Fixed `{command}`"), "gr:p1:T1:2");
+            }
+        }
+
+        let candidates =
+            store.graduation_candidates(GRADUATION_MIN_OCCURRENCES, GRADUATION_MIN_PLANS);
+        let keys: Vec<&str> = candidates
+            .iter()
+            .map(|candidate| candidate.key.as_str())
+            .collect();
+        assert_eq!(keys, ["lint", "ready"]);
+        let lint = &candidates[0];
+        assert_eq!((lint.occurrences, lint.plans), (4, 3));
+        assert_eq!(lint.resolution, "Fixed `cargo clippy`");
+        let check = &lint.suggested_check;
+        assert!(check.contains("lint"), "{check}");
+        let check = &candidates[1].suggested_check;
+        assert!(check.contains("regression test"), "{check}");
+    }
 
     /// backlog 4209: a keyed summary selects a pattern of the same task, or
     /// of one of the task's verify commands from another task, and skips a

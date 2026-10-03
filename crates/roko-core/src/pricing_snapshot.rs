@@ -15,10 +15,12 @@
 //! unknown, never another model's rate. roko-core cannot name roko-learn's `CostSource`, so
 //! callers map a priced usage to it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock};
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::config::model_registry::is_snapshot_of;
@@ -278,6 +280,33 @@ impl PriceSnapshot {
             Some(snapshot) => Ok(snapshot),
             None => Self::builtin(),
         }
+    }
+
+    /// [`Self::for_workspace`], loaded once per process for each workspace and configured id,
+    /// and shared by every caller (backlog 2114, 6105). `None`, with a warning, when the
+    /// snapshot cannot be read.
+    pub fn shared(pricing: &PricingConfig, workspace_root: &Path) -> Option<Arc<Self>> {
+        type Loaded = HashMap<(PathBuf, String), Option<Arc<PriceSnapshot>>>;
+        static LOADED: LazyLock<Mutex<Loaded>> = LazyLock::new(Mutex::default);
+        let key = (
+            workspace_root.to_path_buf(),
+            pricing.snapshot_id().unwrap_or_default().to_string(),
+        );
+        LOADED
+            .lock()
+            .entry(key)
+            .or_insert_with(|| match Self::for_workspace(pricing, workspace_root) {
+                Ok(snapshot) => Some(Arc::new(snapshot)),
+                Err(error) => {
+                    tracing::warn!(
+                        workspace = %workspace_root.display(),
+                        %error,
+                        "no price snapshot: the costs it would price stay unknown"
+                    );
+                    None
+                }
+            })
+            .clone()
     }
 
     /// The snapshot id, `prices-<date>`: what `AttemptCost.price_snapshot_id` records.

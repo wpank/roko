@@ -1437,6 +1437,7 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "agent.roles",
     "agent.tier_models",
     "audit.families",
+    "experiments.force_arms",
     "gates.max_output_tokens",
     "gates.packs",
     "retrieval.role_token_budgets",
@@ -1778,6 +1779,8 @@ fn build_schema_tree() -> toml::Value {
             clippy_enabled: Some(false),
             max_rung: Some(0),
         }),
+        pack: Some(String::new()),
+        role_identity: Some(String::new()),
         ..DomainProfile::default()
     };
     config

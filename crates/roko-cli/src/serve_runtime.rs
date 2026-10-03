@@ -1001,6 +1001,7 @@ fn run_plan_on_local_runtime(
                 effort: None,
                 no_cascade: false,
                 frozen_learning: false,
+                no_holdout: false,
                 metrics,
             },
             run_id,
@@ -1100,7 +1101,7 @@ fn refuse_unscreened_chat_run(
 /// What a prompt run reports to serve: its id; its verdict, which
 /// [`roko_serve::state::RunState::of_ended_run`] gives from its task's outcome
 /// as for plan runs; its output and its cost.
-fn prompt_plan_result(
+pub(crate) fn prompt_plan_result(
     report: &roko_runtime::workflow_contract::WorkflowRunReport,
     snapshot: &roko_core::DashboardSnapshot,
     cancelled: bool,

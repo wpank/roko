@@ -80,7 +80,6 @@ Unit tests: token matching; create, validate and end a session; the token file i
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -138,7 +137,6 @@ the launch token as both header forms.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -190,7 +188,6 @@ Record both in the auth audit (`append_auth_audit`) like other auth events.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -245,7 +242,6 @@ In `crates/roko-cli/src/commands/server.rs`, for both `cmd_serve` and `cmd_up`:
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -291,7 +287,6 @@ carry the bearer header.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 15
@@ -332,7 +327,6 @@ written. Fix what misleads:
 status = "ready"
 role = "implementer"
 tier = "mechanical"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 15
@@ -415,7 +409,6 @@ Add unit tests in `embedded.rs` for the path rules:
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 40
@@ -468,7 +461,6 @@ at `/`, where the portal is.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -524,7 +516,6 @@ tests. Assert:
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -578,7 +569,6 @@ Run the acceptance check and record the result in
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -637,7 +627,6 @@ for all four combinations.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 20
@@ -686,7 +675,6 @@ conversion.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -741,7 +729,6 @@ Unit tests with canned stream-json lines: the events come out in order, and `run
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 35
@@ -794,7 +781,6 @@ Unit tests:
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -853,7 +839,6 @@ test releases it:
 status = "ready"
 role = "implementer"
 tier = "architectural"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 40
@@ -918,7 +903,6 @@ text record, and an ordinary record carrying neither flag.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 40
@@ -979,7 +963,6 @@ Put the startup rule in a function and unit-test it as
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -1033,7 +1016,6 @@ one of them `renders_live_tool_steps`.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 35
@@ -1088,7 +1070,6 @@ Run the acceptance check and record the result in
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -1163,7 +1144,6 @@ Then update the work graph: `work/items/`, format in `work/README.md`.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T09", "T20"]

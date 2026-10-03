@@ -1108,6 +1108,10 @@ impl ResidualCorrector {
 }
 
 /// Per-model/category calibration tracker.
+///
+/// roko-learn's `self_model::metrics` holds the shared forecast scores (Brier,
+/// ECE, AUROC); this tracker stays here because roko-core cannot depend on
+/// roko-learn (backlog 6111).
 #[derive(Debug)]
 pub struct CalibrationTracker {
     stats: RwLock<HashMap<(String, String), CalibrationStats>>,

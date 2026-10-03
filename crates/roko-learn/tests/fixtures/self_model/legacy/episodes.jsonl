@@ -1,0 +1,5 @@
+{"id":"ep_3525c42f17245e60","task_id":"T02","model":"claude-sonnet-4-6","backend":"claude-cli","success":true,"timestamp":"2026-08-22T14:19:48.889096Z","duration_secs":208.113,"extra":{"plan_id":"cli-ux-consistency"}}
+{"id":"ep_2154a3ea92e0c2d7","task_id":"T02","model":"claude-sonnet-4-6","backend":"claude-cli","success":true,"timestamp":"2026-08-22T14:44:01.634316Z","duration_secs":198.217,"extra":{"plan_id":"cli-ux-consistency"}}
+{"id":"ep_04224a20f71d0985","task_id":"E01-T01","model":"o3-mini","backend":"codex-cli","success":false,"timestamp":"2026-07-11T08:15:21.319702Z","duration_secs":33.869,"extra":{"plan_id":"E01-execution-engine"}}
+{"id":"ep_efee4866121fa877","task_id":"E01-T02","model":"gpt-5.5","backend":"codex-cli","success":true,"timestamp":"2026-07-11T08:24:07.592021Z","duration_secs":25.822,"extra":{"plan_id":"E01-execution-engine"}}
+{"id":"ep_d464c3ba012b60bc","task_id":"E01-T03","model":"gpt-5.5","backend":"codex-cli","success":false,"timestamp":"2026-07-11T08:30:47.968681Z","duration_secs":39.125,"extra":{"plan_id":"E01-execution-engine"}}

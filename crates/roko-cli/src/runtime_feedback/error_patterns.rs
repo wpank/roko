@@ -12,24 +12,39 @@
 //! (backlog 4208). Provider and harness failures say nothing about the
 //! agent's work.
 //!
+//! A verified pass of a task that failed earlier in the run records its fix
+//! on the patterns the task failed with (backlog 4125), so the prompt shows
+//! each failure with what fixed it. A pass no verify step checked records
+//! nothing.
+//!
 //! It is the one error-pattern writer on the Graph path.
 
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use async_trait::async_trait;
 use roko_learn::error_pattern_store::{
     ErrorPatternStore, GateFailureObservation, GateFailureSource, normalize_error_digest,
 };
 
-use super::{FeedbackEvent, FeedbackSink};
+use super::{FeedbackEvent, FeedbackSink, VerifiedAttempt};
 
-/// Sink that records failed attempts in the shared error-pattern store and
-/// saves it.
+/// How many lines of a verified attempt's final answer its fix quotes.
+const RESOLUTION_ANSWER_LINES: usize = 3;
+
+/// The pattern keys each `(plan, task)` failed with.
+type FailedPatterns = HashMap<(String, String), BTreeSet<String>>;
+
+/// Sink that records failed attempts in the shared error-pattern store, and
+/// the fixes of verified retries, and saves it.
 #[derive(Debug)]
 pub struct ErrorPatternSink {
     store: Arc<RwLock<ErrorPatternStore>>,
     path: PathBuf,
+    /// The pattern keys each `(plan, task)` failed with in this run, until a
+    /// verified pass of the task records its fix on them.
+    failed: Mutex<FailedPatterns>,
 }
 
 impl ErrorPatternSink {
@@ -40,7 +55,43 @@ impl ErrorPatternSink {
         Self {
             store,
             path: path.into(),
+            failed: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The pattern keys each task failed with in this run.
+    fn failed(&self) -> Result<MutexGuard<'_, FailedPatterns>, anyhow::Error> {
+        self.failed
+            .lock()
+            .map_err(|_| anyhow::anyhow!("failed-pattern map lock poisoned"))
+    }
+
+    /// Record the fix of `attempt`, a verified pass, on the patterns its task
+    /// failed with earlier in this run, and save the store. A task that did
+    /// not fail first records nothing.
+    async fn record_fix(&self, attempt: &VerifiedAttempt) -> Result<(), anyhow::Error> {
+        let task = (attempt.plan_id.clone(), attempt.task_id.clone());
+        // The lock is released before the save is awaited.
+        let keys = self.failed()?.remove(&task);
+        let Some(keys) = keys else {
+            return Ok(());
+        };
+        let resolution = resolution_summary(attempt);
+        let resolved_by = attempt.attempt_id.clone();
+        let store = Arc::clone(&self.store);
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut store = store
+                .write()
+                .map_err(|_| anyhow::anyhow!("error pattern store lock poisoned"))?;
+            for key in &keys {
+                store.record_resolution(key, &resolution, &resolved_by);
+            }
+            store.save(&path)?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("error pattern task join: {error}"))?
     }
 }
 
@@ -51,19 +102,16 @@ impl FeedbackSink for ErrorPatternSink {
     }
 
     /// A verify failure of the agent's work (learning label 0) with its
-    /// reason.
+    /// reason, and a verified pass (label 1), which may fix one.
     fn interested(&self, event: &FeedbackEvent) -> bool {
-        matches!(
-            event,
-            FeedbackEvent::TaskCompleted {
-                failure_reason: Some(reason),
-                ..
-            } if failure_class(reason) == VERIFY_CLASS
-        ) && event.learning_success() == Some(false)
+        matches!(event, FeedbackEvent::TaskVerified(_)) || is_verify_failure(event)
     }
 
     async fn on_event(&self, event: &FeedbackEvent) -> Result<(), anyhow::Error> {
-        if !self.interested(event) {
+        if let FeedbackEvent::TaskVerified(attempt) = event {
+            return self.record_fix(attempt).await;
+        }
+        if !is_verify_failure(event) {
             return Ok(());
         }
         let FeedbackEvent::TaskCompleted {
@@ -78,6 +126,10 @@ impl FeedbackSink for ErrorPatternSink {
         let Some(observation) = observation(plan_id, task_id, reason) else {
             return Ok(());
         };
+        self.failed()?
+            .entry((plan_id.clone(), task_id.clone()))
+            .or_default()
+            .insert(observation.key.clone());
         let store = Arc::clone(&self.store);
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
@@ -95,6 +147,38 @@ impl FeedbackSink for ErrorPatternSink {
 
 /// The `failure_reason` class of a verify failure.
 const VERIFY_CLASS: &str = "verify";
+
+/// Whether `event` is a verify failure of the agent's work (learning label
+/// 0) with its reason.
+fn is_verify_failure(event: &FeedbackEvent) -> bool {
+    matches!(
+        event,
+        FeedbackEvent::TaskCompleted {
+            failure_reason: Some(reason),
+            ..
+        } if failure_class(reason) == VERIFY_CLASS
+    ) && event.learning_success() == Some(false)
+}
+
+/// The fix a verified attempt records: the first lines of its final answer
+/// and the files its task declares. The store cuts it to
+/// `MAX_RESOLUTION_CHARS`.
+fn resolution_summary(attempt: &VerifiedAttempt) -> String {
+    let answer = attempt
+        .agent_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(RESOLUTION_ANSWER_LINES)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let files = attempt.files.join(", ");
+    match (answer.is_empty(), files.is_empty()) {
+        (_, true) => answer,
+        (true, false) => format!("changed {files}"),
+        (false, false) => format!("{answer} (files: {files})"),
+    }
+}
 
 /// The class of a class-prefixed `failure_reason`: `verify`, `turn_cap`,
 /// `timeout`, …
@@ -274,5 +358,82 @@ mod tests {
         }
         assert_eq!(store.read().expect("store").len(), 0);
         assert!(!path.exists(), "nothing was saved");
+    }
+
+    /// A verified attempt of `task_id` whose final answer is `answer`.
+    fn verified(task_id: &str, answer: &str) -> FeedbackEvent {
+        FeedbackEvent::TaskVerified(VerifiedAttempt {
+            plan_id: "plan-e".into(),
+            task_id: task_id.into(),
+            attempt_id: format!("gr-e:plan-e:{task_id}:2"),
+            title: "Greet".into(),
+            task_type: "focused".into(),
+            role: "implementer".into(),
+            model: "claude-sonnet-4-6".into(),
+            files: vec!["src/lib.rs".into()],
+            verify_steps: vec![("verify[0:test]".into(), "cargo test -p app".into())],
+            knowledge_ids: vec![],
+            agent_output: answer.into(),
+        })
+    }
+
+    /// backlog 4125: a task that fails its verify step and then passes it
+    /// records the fix on its failure's pattern: the first lines of the
+    /// verified answer with the task's files, and the attempt's key. The
+    /// pattern stays unresolved, so prompts keep showing it, now with its
+    /// fix. A pass no verify step checked, and a verified pass of a task that
+    /// never failed, record nothing.
+    #[tokio::test]
+    async fn verified_retry_records_resolution_on_its_failure_pattern() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join(".roko/learn/error-patterns.json");
+        let store = Arc::new(RwLock::new(ErrorPatternStore::empty()));
+        let sink = ErrorPatternSink::new(Arc::clone(&store), &path);
+        for (task_id, crate_name) in [("T1", "app"), ("T2", "web")] {
+            let reason = format!(
+                "verify: 1/1 verify step(s) failed for task `{task_id}`:\n\n\
+                 verify[0:test] `cargo test -p {crate_name}` failed: exit code: 101"
+            );
+            let failed = completed(task_id, AttemptOutcome::GateFailed, &reason);
+            sink.on_event(&failed).await.expect("record the failure");
+        }
+
+        // T1 passes its verify step on its retry, T2 passes with nothing to
+        // verify it, and T3 passes without having failed.
+        let fixed = verified(
+            "T1",
+            "Added `greet`.\n\nIt returns a greeting.\nDone.\nMore.",
+        );
+        assert!(sink.interested(&fixed));
+        sink.on_event(&fixed).await.expect("record the fix");
+        let unverified = completed("T2", AttemptOutcome::Unverified, "unverified");
+        assert!(!sink.interested(&unverified));
+        sink.on_event(&unverified).await.expect("ignore the pass");
+        let never_failed = verified("T3", "Nothing to fix.");
+        sink.on_event(&never_failed)
+            .await
+            .expect("nothing to record");
+
+        let saved = ErrorPatternStore::load(&path);
+        assert_eq!(saved.len(), 2);
+        let pattern = |gate: &str| {
+            saved
+                .top_patterns(10)
+                .into_iter()
+                .find(|pattern| pattern.gate.as_deref() == Some(gate))
+                .cloned()
+                .expect("the failure's pattern")
+        };
+        let app = pattern("cargo test -p app");
+        assert_eq!(
+            app.resolution.as_deref(),
+            Some("Added `greet`. It returns a greeting. Done. (files: src/lib.rs)")
+        );
+        assert_eq!(app.resolved_by.as_deref(), Some("gr-e:plan-e:T1:2"));
+        assert!(!app.resolved, "a pattern with a fix stays in prompts");
+        let web = pattern("cargo test -p web");
+        assert_eq!((web.resolution, web.resolved_by), (None, None));
+        let prompt = store.read().expect("store").format_for_prompt(5);
+        assert!(prompt.contains("Fix: Added `greet`."), "{prompt}");
     }
 }

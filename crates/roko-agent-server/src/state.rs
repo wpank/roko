@@ -759,6 +759,7 @@ pub struct AgentSidecarState {
     routes: Vec<String>,
     started_at: Instant,
     registered_at: u64,
+    #[cfg_attr(not(feature = "chain"), allow(dead_code))]
     chain_client: OptionalChainClient,
     // Held as Arc owner: message_dispatcher clones this at construction;
     // the field keeps the backend alive for the sidecar lifetime.

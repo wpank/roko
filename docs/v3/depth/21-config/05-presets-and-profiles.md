@@ -97,8 +97,30 @@ pub struct DomainProfile {
     pub max_iterations: Option<u32>,
     pub tool_profile: Option<String>,
     pub gate_config: Option<GateProfileConfig>,
+    pub pack: Option<String>,           // A [gates.packs.<name>] (9125)
+    pub role_identity: Option<String>,  // One line that leads the prompt (9125)
     pub extra: HashMap<String, toml::Value>,
 }
+```
+
+Domain packs as data (9125): a plan task whose work domain label is `L` follows
+`[profiles.L]` when the workspace declares it, resolved through `base` (which may
+end at a built-in profile). Its `pack` names the `[gates.packs.<name>]` that
+verifies the task, in place of `[gates.packs.L]`; its `tool_profile` names the
+built-in tool set (`coding`, `chain`, `research` or `general`, from
+`roko_std::roles`) the task's agent gets; and its `role_identity` leads the task's
+prompt. Plan runs ignore `model`, `effort` and `max_iterations`, and log a warning
+when a profile sets them: the tier ladder picks each task's model.
+
+```toml
+[gates.packs.deep-research]
+rungs = [{ name = "sources", kind = "citations", artefacts = ["report.md"] }]
+
+[profiles.research]
+name = "research"
+pack = "deep-research"
+tool_profile = "research"
+role_identity = "You are a careful research analyst who cites every source."
 ```
 
 ### 2.1 Built-in Profiles

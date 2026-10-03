@@ -25,9 +25,6 @@ command = "grep -rqw 'fn claude_model_usage_is_repriced_per_model' crates/roko-a
 command = "grep -rqw 'fn codex_cost_uses_snapshot' crates/roko-agent/ && cargo test -p roko-agent codex_cost_uses_snapshot"
 
 [[verify]]
-command = "test -f config/prices/2026-09-28.probes.md && grep -q 'reasoning_output_tokens' config/prices/2026-09-28.probes.md && grep -q 'costBasis' config/prices/2026-09-28.probes.md"
-
-[[verify]]
 command = "grep -rqw 'fn arm_key_round_trips' crates/roko-learn/src/self_model/ && cargo test -p roko-learn arm_key_round_trips"
 
 [[verify]]
@@ -101,3 +98,20 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK12 (gap-08120e), PK13 (gap-9e3134).
 - Suggested model: opus.
+
+## Progress
+
+- 6105: implemented at 8dbc8777f; cargo verification deferred to the batch gate.
+- 6106: implemented at 6a047fae7; cargo verification deferred to the batch gate.
+- 6107: blocked: the probe table needs live `claude -p` and `codex exec` runs on Will's subscriptions (D42 to re-confirm first; not an approved spend), so no table was written.
+- 6108: implemented at e4539f251; cargo verification deferred to the batch gate.
+- 6109: implemented at dbd6b0371; cargo verification deferred to the batch gate.
+- 6110: implemented at f3d8f0613; cargo verification deferred to the batch gate.
+- 6111: implemented at a9fdbfb8f; cargo verification deferred to the batch gate.
+- 6112: implemented at 2431a28f5; cargo verification deferred to the batch gate.
+- 6113: implemented at 1f0d30806; cargo verification deferred to the batch gate.
+- 6114: implemented at dcbcb966e; cargo verification deferred to the batch gate.
+- 6115: implemented at ee91f2008; cargo verification deferred to the batch gate.
+- 6116: implemented at 6fea5b450; cargo verification deferred to the batch gate.
+
+- 2026-10-03 (coordinator, gate 6b): task 6107's verify (the vendor-versus-snapshot probe table, `config/prices/2026-09-28.probes.md`) left this item for its own follow-up: it needs live `claude -p` and `codex exec` runs on Will's subscriptions, which need D42 re-confirmed and his approval.

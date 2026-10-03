@@ -136,6 +136,8 @@ pub mod runtime_feedback;
 pub mod section_effect;
 /// Prompt/context section outcome telemetry for future adaptive policy.
 pub mod section_outcome;
+/// M3: the calibrated self-model that forecasts each arm's pass, false-green, cost and latency.
+pub mod self_model;
 pub mod skill_library;
 pub mod task_metric;
 pub mod telemetry;

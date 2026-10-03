@@ -2790,6 +2790,7 @@ mod tests {
         shutdown(&state).await;
     }
 
+    #[cfg(feature = "chain")]
     fn erc20_transfer_binding(name: &str) -> TriggerBinding {
         TriggerBinding::new(
             name,
@@ -2813,6 +2814,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "chain")]
     fn transfer_log(block_hash: &str, tx_hash: &str, log_index: u32) -> ServerEvent {
         ServerEvent::ChainLogObserved {
             chain_id: 8453,
@@ -2832,12 +2834,14 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "chain")]
     fn configure_test_chain(state: &AppState) {
         let mut config = state.load_roko_config().as_ref().clone();
         config.chain.chain_id = Some(8453);
         state.store_roko_config(config);
     }
 
+    #[cfg(feature = "chain")]
     fn publish_watcher_transfer(
         state: &Arc<AppState>,
         block_number: u64,
@@ -2869,6 +2873,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "chain")]
     fn publish_watcher_block(state: &Arc<AppState>, number: u64, hash: &str, parent_hash: &str) {
         crate::publish_chain_watcher_payload(
             state,
@@ -2887,6 +2892,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn bundled_watcher_raw_log_decodes_and_promotes_once_at_finality() {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -2928,6 +2934,7 @@ mod tests {
         shutdown(&state).await;
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn bundled_watcher_block_reorg_invalidates_delivered_log() {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -2967,6 +2974,7 @@ mod tests {
         shutdown(&state).await;
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn chain_log_decodes_abi_waits_for_finality_and_handles_reorgs() {
         let directory = tempfile::tempdir().expect("tempdir");

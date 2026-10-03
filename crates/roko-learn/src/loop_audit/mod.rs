@@ -8,6 +8,8 @@
 //!   workspace's `.roko/learn/loop-registry.toml`.
 //! - [`assign`]: loop layers, holdout schedules, nesting, the all-off arm
 //!   and composed propensities over S01's one assignment function.
+//! - [`arm_set`]: S02.P1-14's per-chain arm set, drawn once over those
+//!   layers at attempt open and inherited by the chain's retries.
 //!
 //! The other modules hold one later piece of S03 each, so that they can be
 //! built in parallel: [`exposure`] (ε, ι), [`estimators`] (β), [`cs`]
@@ -17,6 +19,7 @@
 //! Per-run records (decisions, faults) stay in the run directory; the
 //! cross-run loop-audit rows go in `.roko/learn` (decision 2201).
 
+pub mod arm_set;
 pub mod assign;
 pub mod canary;
 pub mod census;

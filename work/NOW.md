@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 115 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 114 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -24,11 +24,11 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- **P2** [bug-412a5e](items/bug-412a5e-a-graph-attempt-s-model-call-efficiency.md) A Graph attempt's model-call efficiency row is written under its own worktree, not the workspace root [bug] · size M · verified 2026-10-03
 - **P2** [bug-dd20bd](items/bug-dd20bd-a-frozen-roko-run-still-appends-a.md) A frozen roko run still appends a workflow_complete episode, because record_workflow_feedback ignores [learning] frozen [bug] · size S · verified 2026-10-03
 - **P2** [bug-045773](items/bug-045773-a-reattached-worktree-s-base-commit-is.md) A reattached worktree's base_commit is hardcoded to None instead of read back from the original attach [bug] · size M · verified 2026-10-03
+- **P2** [bug-2410e1](items/bug-2410e1-a-resumed-run-in-a-new-process.md) A resumed run in a new process redraws its chains' arm sets; --srm has no row for per-section bandit draws [bug] · size M · verified 2026-10-03
 
-_19 more open · on hold: gap-3698cd · `goal = "truth"`_
+_15 more open · on hold: gap-3698cd · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -41,10 +41,10 @@ _1 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRI
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - **P1** [gap-a42df2](items/gap-a42df2-pk45-viabilitybench-proof-requires-live-refuse-a.md) PK45 ViabilityBench proof: requires_live: refuse a live manifest whose loops are not LIVE at its harness_sha (+1 more) · size S · verified 2026-10-02
-- **P2** [gap-63fd4c](items/gap-63fd4c-pk50-viabilitybench-proof-replays-r-h4-and.md) PK50 ViabilityBench proof: Replays R-H4 and R-M3 on S04's prequential replay · size S · verified 2026-10-02
 - **P1** [gap-ed1a08](items/gap-ed1a08-pk67-viabilitybench-proof-replay-r-h6-s06.md) PK67 ViabilityBench proof: Replay R-H6: S06's controllers A0-A5 plus A3-gated and A3-mis (+2 more) · size L · verified 2026-10-02
+- **P2** [gap-9ecd37](items/gap-9ecd37-pk82-showcase-and-deploy-showcase-bundle-builder.md) PK82 Showcase and deploy: Showcase bundle builder and verifier (Python, in ViabilityBench) (+7 more) · size L · verified 2026-10-02
 
-_16 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 

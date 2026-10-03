@@ -2,7 +2,7 @@
 id = "gap-63fd4c"
 kind = "gap"
 title = "PK50 ViabilityBench proof: Replays R-H4 and R-M3 on S04's prequential replay"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -10,8 +10,9 @@ rank = 50
 size = "S"
 subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "4f6ae807f"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK50"
 anchors = ["benchmarks/viabilitybench/analysis"]
 lane = "bench"
@@ -20,6 +21,17 @@ links = { depends_on = ["gap-2ca903", "gap-62e1b9", "gap-d90ef6", "gap-7ec3ef"],
 
 [[verify]]
 command = "grep -qw 'def test_r_h4_replay_is_deterministic' benchmarks/viabilitybench/analysis/test_replay_h4.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_replay_h4.py -k test_r_h4_replay_is_deterministic -q"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T17:45:05Z"
+commit = "4f6ae807f"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T17:08:33Z"
+forced = false
+evidence = "Gate 9a (work/backlog-batch-9a, merged into main as 4f6ae807f): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 3,538 roko-cli tests, roko-cli bin 436 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), the bench analysis suite 96 passed, the shakedown 8/8 against the batch binary; every [[verify]] passes. PK50 1/1: analysis/replay_h4.py, R-H4 over econ.build and R-M3 calibration scores; on fixtures, reporting evaluated:false until pilot traces and forecasts exist."
 +++
 
 ## Problem

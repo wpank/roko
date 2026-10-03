@@ -2,7 +2,7 @@
 id = "bug-f03b0d"
 kind = "bug"
 title = "A budget refusal after a provider call publishes no AgentCompleted, so the dashboard row stays running"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "4f6ae807f"
 source = "bug-ba53d1 fix (w4-length, 2026-10-03)"
 discovered_from = "bug-ba53d1"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/budget.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["bug-ba53d1"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn budget_refusal_after_a_call_closes_the_row' crates/roko-cli/src/ && cargo test -p roko-cli budget_refusal_after_a_call_closes_the_row"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T17:45:03Z"
+commit = "4f6ae807f"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T17:16:22Z"
+forced = false
+evidence = "Gate 9a (work/backlog-batch-9a, merged into main as 4f6ae807f): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 3,538 roko-cli tests, roko-cli bin 436 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), the bench analysis suite 96 passed, the shakedown 8/8 against the batch binary; every [[verify]] passes. A settlement failure after a call now publishes AgentOutput with the budget reason and then AgentCompleted, closing the row (db923ad83); settlement fails only on an invalid cost or a failed checkpoint write."
 +++
 
 ## Problem

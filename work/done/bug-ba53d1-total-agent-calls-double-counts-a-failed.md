@@ -2,7 +2,7 @@
 id = "bug-ba53d1"
 kind = "bug"
 title = "total_agent_calls double-counts a failed-over attempt (failover's dashboard upsert reuses AgentSpawned)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-execution", "roko-cli/graph-task-dispatch"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "4f6ae807f"
 source = "wave-6 follow-up reports 2026-10-03 (PK03 gap-d254a3)"
 discovered_from = "gap-d254a3"
 anchors = ["crates/roko-cli/src/graph_execution/event_log.rs", "crates/roko-cli/src/graph_task_dispatch/failover.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn failed_over_attempt_counts_one_agent_call' crates/roko-cli/ && cargo test -p roko-cli failed_over_attempt_counts_one_agent_call"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T17:45:02Z"
+commit = "4f6ae807f"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T17:08:34Z"
+forced = false
+evidence = "Gate 9a (work/backlog-batch-9a, merged into main as 4f6ae807f): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 3,538 roko-cli tests, roko-cli bin 436 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), the bench analysis suite 96 passed, the shakedown 8/8 against the batch binary; every [[verify]] passes. The event log counts an AgentSpawned only when it opens a row and AgentCompleted closes it, so a failover's relabel isn't counted and a retry is (59b623f8d); counting each agent id once would have undercounted retries, which reuse {plan}/{task}."
 +++
 
 ## Problem

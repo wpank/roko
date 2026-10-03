@@ -2,7 +2,7 @@
 id = "bug-412a5e"
 kind = "bug"
 title = "A Graph attempt's model-call efficiency row is written under its own worktree, not the workspace root"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/dispatch", "roko-fs/layout"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "4f6ae807f"
 source = "wave-6 follow-up reports 2026-10-03 (gate 6b)"
 discovered_from = "gate 6b (PK03's test conflict_retry_prompt_names_the_conflict, attempt_workspace.rs)"
 anchors = ["crates/roko-cli/src/dispatch_v2.rs::record_agent_dispatch_feedback", "crates/roko-fs/src/layout.rs::RokoLayout::for_project"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["bug-633b68"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn model_call_efficiency_row_lands_at_workspace_root_not_the_worktree' crates/roko-cli/ && cargo test -p roko-cli model_call_efficiency_row_lands_at_workspace_root_not_the_worktree"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T17:45:01Z"
+commit = "4f6ae807f"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T17:08:33Z"
+forced = false
+evidence = "Gate 9a (work/backlog-batch-9a, merged into main as 4f6ae807f): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 3,538 roko-cli tests, roko-cli bin 436 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), the bench analysis suite 96 passed, the shakedown 8/8 against the batch binary; every [[verify]] passes. record_agent_dispatch_feedback writes to immune_root's learn dir (the workspace), so a worktree attempt's model-call row and provider-health record land at the root (de1b9fb48)."
 +++
 
 ## Problem

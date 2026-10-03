@@ -2459,7 +2459,8 @@ pub fn build_graph_feedback_facade(
     let graph_episodes_path = graph_layout.root_episodes_path();
     let mut facade = crate::runtime_feedback::FeedbackFacade::new()
         .with_sink(std::sync::Arc::new(
-            crate::runtime_feedback::EpisodeSink::at(&graph_episodes_path),
+            crate::runtime_feedback::EpisodeSink::at(&graph_episodes_path)
+                .with_hdc_fingerprint(config.learning.episode_hdc_fingerprint),
         ))
         // Reads back the failed episode the episode sink just wrote, so
         // it must follow it.
@@ -2511,36 +2512,14 @@ pub fn build_graph_feedback_facade(
         ));
     }
 
-    // ── Theta reflection on plan completion ─────────────────────────
+    // ── Theta reflection and delta consolidation on plan completion ─
     //
-    // Runs a five-phase reflective cycle (gamma summary, affect update,
-    // calibration check, progress assessment, meta-cognition) after each
-    // plan completes. Lightweight and synchronous (no LLM calls).
-    let shared_cortical = std::sync::Arc::new(roko_runtime::heartbeat::CorticalState::default());
-    let shared_theta = std::sync::Arc::new(std::sync::Mutex::new(
-        roko_runtime::theta_consumer::ThetaConsumer::default(),
-    ));
-    facade = facade.with_sink(std::sync::Arc::new(
-        crate::runtime_feedback::ThetaReflectionSink::new(
-            std::sync::Arc::clone(&shared_theta),
-            std::sync::Arc::clone(&shared_cortical),
-        ),
-    ));
-
-    // ── Delta consolidation on plan completion ──────────────────────
-    //
-    // Tracks episode counts and checks trigger conditions for a dream
-    // consolidation cycle (NREM replay, REM imagination, integration).
-    // Bridges roko_runtime::delta_consumer into the feedback pipeline.
-    let shared_delta = std::sync::Arc::new(std::sync::Mutex::new(
-        roko_runtime::delta_consumer::DeltaConsumer::default(),
-    ));
-    facade = facade.with_sink(std::sync::Arc::new(
-        crate::runtime_feedback::DeltaConsolidationSink::new(
-            std::sync::Arc::clone(&shared_delta),
-            std::sync::Arc::clone(&shared_cortical),
-        ),
-    ));
+    // The cognitive clock is parked (9222): only a build with
+    // `cognitive-clock` registers these two sinks.
+    #[cfg(feature = "cognitive-clock")]
+    for sink in crate::runtime_feedback::plan_completion::cognitive_clock_sinks() {
+        facade = facade.with_sink(sink);
+    }
 
     std::sync::Arc::new(facade)
 }

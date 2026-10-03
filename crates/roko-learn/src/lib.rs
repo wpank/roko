@@ -43,6 +43,7 @@
 )]
 
 /// Active inference helpers for tier routing support.
+#[cfg(feature = "active-inference")]
 pub mod active_inference;
 /// Efficiency trend aggregation helpers for JSONL telemetry.
 pub mod aggregate;

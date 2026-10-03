@@ -28,16 +28,19 @@ pub mod builtin_lenses_health;
 pub mod builtin_lenses_performance;
 pub mod cancel;
 pub mod connector_runtime;
+#[cfg(feature = "cognitive-clock")]
 pub mod delta_consumer;
 pub mod demurrage_consumer;
 /// Cognitive energy model -- metabolic costs for cognitive operations.
 pub mod energy;
 pub mod event_bus;
+#[cfg(feature = "cognitive-clock")]
 pub mod heartbeat;
 #[cfg(feature = "cognitive-clock")]
 pub mod heartbeat_attention;
 #[cfg(feature = "cognitive-clock")]
 pub mod heartbeat_probes;
+pub mod heartbeat_types;
 pub mod http_event_sink;
 pub mod jsonl_logger;
 pub mod lens_executor;
@@ -56,6 +59,7 @@ pub mod runtime_event_dashboard;
 pub mod state_hub;
 pub mod state_snapshot;
 pub mod telemetry_projection_aggregator;
+#[cfg(feature = "cognitive-clock")]
 pub mod theta_consumer;
 pub mod workflow_contract;
 

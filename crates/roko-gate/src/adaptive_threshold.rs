@@ -3,7 +3,9 @@
 //! Uses exponential moving averages (EMA) per gate rung to track pass rates
 //! and suggest retry budgets and skip decisions.
 
+#[cfg(feature = "spc")]
 use crate::hotelling::HotellingDetector;
+#[cfg(feature = "spc")]
 use crate::spc::{SpcAlert, SpcDetector};
 use roko_core::Temperament;
 use roko_core::config::AgentThresholds;
@@ -217,18 +219,23 @@ pub struct AdaptiveThresholds {
     cusum_threshold: f64,
     /// Per-rung SPC detectors (CUSUM + EWMA Control Chart + BOCPD).
     /// Wired in GATE-01: each `observe()` call feeds through all three
-    /// detectors and collects any alerts.
+    /// detectors and collects any alerts. Parked behind `spc` (9224); files
+    /// that still carry this key load without it.
+    #[cfg(feature = "spc")]
     #[serde(default)]
     spc_detectors: HashMap<u32, SpcDetector>,
     /// Multi-gate joint anomaly detector (GATE-08).
     /// Tracks the full pass-rate vector across rungs and detects systemic
     /// shifts via Hotelling's T-squared statistic.
+    #[cfg(feature = "spc")]
     #[serde(skip)]
     hotelling: Option<HotellingDetector>,
     /// SPC alerts accumulated since last drain.
+    #[cfg(feature = "spc")]
     #[serde(skip)]
     pending_spc_alerts: Vec<(u32, SpcAlert)>,
     /// Whether the last full-pipeline observation triggered a joint anomaly.
+    #[cfg(feature = "spc")]
     #[serde(skip)]
     joint_anomaly_detected: bool,
 
@@ -306,9 +313,13 @@ impl AdaptiveThresholds {
             rungs,
             cusum_sensitivity: DEFAULT_CUSUM_SENSITIVITY,
             cusum_threshold: DEFAULT_CUSUM_THRESHOLD,
+            #[cfg(feature = "spc")]
             spc_detectors: HashMap::new(),
+            #[cfg(feature = "spc")]
             hotelling: None,
+            #[cfg(feature = "spc")]
             pending_spc_alerts: Vec::new(),
+            #[cfg(feature = "spc")]
             joint_anomaly_detected: false,
             ema_alpha: EMA_ALPHA,
             min_retries: MIN_RETRIES,
@@ -441,10 +452,10 @@ impl AdaptiveThresholds {
 
     /// Update statistics for a rung after a gate run.
     ///
-    /// Updates EMA pass rate, consecutive pass streak, CUSUM accumulators,
-    /// and feeds the observation to the per-rung SPC detector ensemble
-    /// (CUSUM + EWMA Control Chart + BOCPD). When any detector fires, the
-    /// alert is collected and can be drained via [`Self::drain_spc_alerts`].
+    /// Updates EMA pass rate, consecutive pass streak and CUSUM accumulators.
+    /// With the `spc` feature it also feeds the observation to the per-rung
+    /// SPC detector ensemble (CUSUM + EWMA Control Chart + BOCPD), whose
+    /// alerts are collected for `drain_spc_alerts`.
     ///
     /// When the poisoning defense is active for this rung, the EMA update is
     /// skipped and the frozen pre-poisoning value is restored instead (P4-13).
@@ -501,15 +512,19 @@ impl AdaptiveThresholds {
 
         // ── SPC detector ensemble (GATE-01 wiring) ──────────────────────
         // Feed the pass/fail observation to the per-rung SPC detector.
-        // Lazily initialize with the current EMA as the target.
-        let target = stats.ema_pass_rate;
-        let spc = self
-            .spc_detectors
-            .entry(rung)
-            .or_insert_with(|| SpcDetector::new(target, 0.1));
-        let alerts = spc.update(value);
-        for alert in alerts {
-            self.pending_spc_alerts.push((rung, alert));
+        // Lazily initialize with the current EMA as the target. Parked
+        // behind `spc` (9224): nothing reads its alerts.
+        #[cfg(feature = "spc")]
+        {
+            let target = stats.ema_pass_rate;
+            let spc = self
+                .spc_detectors
+                .entry(rung)
+                .or_insert_with(|| SpcDetector::new(target, 0.1));
+            let alerts = spc.update(value);
+            for alert in alerts {
+                self.pending_spc_alerts.push((rung, alert));
+            }
         }
     }
 
@@ -587,17 +602,20 @@ impl AdaptiveThresholds {
     ///
     /// Each alert is a `(rung, SpcAlert)` pair. The caller (typically the
     /// conductor or orchestrator) should log or react to these alerts.
+    #[cfg(feature = "spc")]
     pub fn drain_spc_alerts(&mut self) -> Vec<(u32, SpcAlert)> {
         std::mem::take(&mut self.pending_spc_alerts)
     }
 
     /// Whether any SPC alerts are pending.
+    #[cfg(feature = "spc")]
     #[must_use]
     pub fn has_spc_alerts(&self) -> bool {
         !self.pending_spc_alerts.is_empty()
     }
 
     /// Return a reference to the per-rung SPC detector, if initialized.
+    #[cfg(feature = "spc")]
     #[must_use]
     pub fn spc_detector(&self, rung: u32) -> Option<&SpcDetector> {
         self.spc_detectors.get(&rung)
@@ -609,6 +627,7 @@ impl AdaptiveThresholds {
     /// gate in the pipeline, in a stable order. The Hotelling detector is
     /// lazily initialized on the first call. When the T-squared statistic
     /// exceeds the chi-squared threshold, `joint_anomaly_detected` is set.
+    #[cfg(feature = "spc")]
     pub fn observe_pipeline(&mut self, pass_rates: &[f64]) {
         if pass_rates.is_empty() {
             return;
@@ -628,12 +647,14 @@ impl AdaptiveThresholds {
     }
 
     /// Whether the last `observe_pipeline()` call detected a joint anomaly.
+    #[cfg(feature = "spc")]
     #[must_use]
     pub fn joint_anomaly_detected(&self) -> bool {
         self.joint_anomaly_detected
     }
 
     /// Return the Hotelling detector, if initialized.
+    #[cfg(feature = "spc")]
     #[must_use]
     pub fn hotelling_detector(&self) -> Option<&HotellingDetector> {
         self.hotelling.as_ref()
@@ -761,9 +782,13 @@ impl Default for AdaptiveThresholds {
             rungs: HashMap::new(),
             cusum_sensitivity: DEFAULT_CUSUM_SENSITIVITY,
             cusum_threshold: DEFAULT_CUSUM_THRESHOLD,
+            #[cfg(feature = "spc")]
             spc_detectors: HashMap::new(),
+            #[cfg(feature = "spc")]
             hotelling: None,
+            #[cfg(feature = "spc")]
             pending_spc_alerts: Vec::new(),
+            #[cfg(feature = "spc")]
             joint_anomaly_detected: false,
             ema_alpha: EMA_ALPHA,
             min_retries: MIN_RETRIES,
@@ -1149,6 +1174,7 @@ mod tests {
 
     // ─── SPC wiring tests (GATE-01) ──────��─────────────────────────
 
+    #[cfg(feature = "spc")]
     #[test]
     fn spc_detector_initialized_on_first_observe() {
         let mut at = AdaptiveThresholds::new();
@@ -1157,6 +1183,7 @@ mod tests {
         assert!(at.spc_detector(0).is_some());
     }
 
+    #[cfg(feature = "spc")]
     #[test]
     fn spc_alerts_accumulate_on_major_shift() {
         let mut at = AdaptiveThresholds::new();
@@ -1180,6 +1207,7 @@ mod tests {
         assert!(alerts.iter().all(|(rung, _)| *rung == 0));
     }
 
+    #[cfg(feature = "spc")]
     #[test]
     fn spc_alerts_drain_empties_pending() {
         let mut at = AdaptiveThresholds::new();
@@ -1195,6 +1223,7 @@ mod tests {
 
     // ─── Hotelling / pipeline tests (GATE-08 wiring) ──────────────
 
+    #[cfg(feature = "spc")]
     #[test]
     fn hotelling_initialized_on_pipeline_observe() {
         let mut at = AdaptiveThresholds::new();
@@ -1203,6 +1232,7 @@ mod tests {
         assert!(at.hotelling_detector().is_some());
     }
 
+    #[cfg(feature = "spc")]
     #[test]
     fn hotelling_detects_joint_anomaly() {
         let mut at = AdaptiveThresholds::new();
@@ -1219,6 +1249,29 @@ mod tests {
     }
 
     // ─── Residual-based threshold update (TA-15) ──────────────────
+
+    #[cfg(not(feature = "spc"))]
+    #[test]
+    fn default_thresholds_serialize_no_spc_state() {
+        let mut at = AdaptiveThresholds::new();
+        for passed in [true, false, true, true] {
+            at.observe(1, passed);
+        }
+        let json: serde_json::Value =
+            serde_json::to_value(&at).expect("serialize adaptive thresholds");
+        assert!(json.get("spc_detectors").is_none(), "{json}");
+        assert!(json.get("rungs").is_some(), "{json}");
+
+        // A file an SPC build wrote still loads.
+        let mut legacy = json;
+        legacy["spc_detectors"] = serde_json::json!({ "1": {} });
+        let reloaded: AdaptiveThresholds =
+            serde_json::from_value(legacy).expect("old files with SPC state still load");
+        assert_eq!(
+            reloaded.rung_stats(1).map(|s| s.total_observations),
+            Some(4)
+        );
+    }
 
     #[test]
     fn residual_tightens_threshold() {

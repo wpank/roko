@@ -10,6 +10,9 @@
 //! non-blocking: the dream cycle is spawned with a bounded timeout so it
 //! never blocks the runner event loop, and the daimon persist is a
 //! fire-and-forget blocking write on the tokio thread pool.
+//!
+//! The theta and delta sinks drive the cognitive clock, which is parked: they
+//! compile only with the `cognitive-clock` feature (9222).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -241,6 +244,28 @@ impl FeedbackSink for DaimonPersistenceSink {
 }
 
 // ---------------------------------------------------------------------------
+// Theta reflection and delta consolidation (the parked cognitive clock)
+// ---------------------------------------------------------------------------
+
+/// The theta reflection and delta consolidation sinks, sharing one cortical
+/// state. Only a build with `cognitive-clock` has them (9222).
+#[cfg(feature = "cognitive-clock")]
+#[must_use]
+pub fn cognitive_clock_sinks() -> [Arc<dyn FeedbackSink>; 2] {
+    let cortical = Arc::new(roko_runtime::heartbeat::CorticalState::default());
+    let theta = Arc::new(Mutex::new(
+        roko_runtime::theta_consumer::ThetaConsumer::default(),
+    ));
+    let delta = Arc::new(Mutex::new(
+        roko_runtime::delta_consumer::DeltaConsumer::default(),
+    ));
+    [
+        Arc::new(ThetaReflectionSink::new(theta, Arc::clone(&cortical))),
+        Arc::new(DeltaConsolidationSink::new(delta, cortical)),
+    ]
+}
+
+// ---------------------------------------------------------------------------
 // Theta reflection sink
 // ---------------------------------------------------------------------------
 
@@ -251,11 +276,13 @@ impl FeedbackSink for DaimonPersistenceSink {
 /// shared behind an `Arc<Mutex<_>>` and passed to the sink at construction.
 /// The tick is synchronous and lightweight (no LLM calls), so it runs
 /// inline on `spawn_blocking` rather than spawning a long background task.
+#[cfg(feature = "cognitive-clock")]
 pub struct ThetaReflectionSink {
     theta: Arc<Mutex<roko_runtime::theta_consumer::ThetaConsumer>>,
     cortical: Arc<roko_runtime::heartbeat::CorticalState>,
 }
 
+#[cfg(feature = "cognitive-clock")]
 impl std::fmt::Debug for ThetaReflectionSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ThetaReflectionSink")
@@ -265,6 +292,7 @@ impl std::fmt::Debug for ThetaReflectionSink {
     }
 }
 
+#[cfg(feature = "cognitive-clock")]
 impl ThetaReflectionSink {
     /// Construct the sink.
     ///
@@ -279,6 +307,7 @@ impl ThetaReflectionSink {
     }
 }
 
+#[cfg(feature = "cognitive-clock")]
 #[async_trait]
 impl FeedbackSink for ThetaReflectionSink {
     fn name(&self) -> &'static str {
@@ -373,11 +402,13 @@ impl FeedbackSink for ThetaReflectionSink {
 /// trigger on every event. When a cycle fires, the three stub phases
 /// (NREM/REM/integration) produce diagnostic telemetry that will be
 /// connected to `roko-dreams` phases as they mature.
+#[cfg(feature = "cognitive-clock")]
 pub struct DeltaConsolidationSink {
     delta: Arc<Mutex<roko_runtime::delta_consumer::DeltaConsumer>>,
     cortical: Arc<roko_runtime::heartbeat::CorticalState>,
 }
 
+#[cfg(feature = "cognitive-clock")]
 impl std::fmt::Debug for DeltaConsolidationSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeltaConsolidationSink")
@@ -387,6 +418,7 @@ impl std::fmt::Debug for DeltaConsolidationSink {
     }
 }
 
+#[cfg(feature = "cognitive-clock")]
 impl DeltaConsolidationSink {
     /// Construct the sink.
     ///
@@ -401,6 +433,7 @@ impl DeltaConsolidationSink {
     }
 }
 
+#[cfg(feature = "cognitive-clock")]
 #[async_trait]
 impl FeedbackSink for DeltaConsolidationSink {
     fn name(&self) -> &'static str {
@@ -536,6 +569,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "cognitive-clock")]
     #[tokio::test]
     async fn theta_sink_skips_non_plan_events() {
         let theta = Arc::new(Mutex::new(
@@ -549,6 +583,7 @@ mod tests {
         assert!(!sink.interested(&event));
     }
 
+    #[cfg(feature = "cognitive-clock")]
     #[tokio::test]
     async fn theta_sink_runs_on_plan_completed() {
         let theta = Arc::new(Mutex::new(
@@ -567,6 +602,7 @@ mod tests {
         sink.on_event(&event).await.unwrap();
     }
 
+    #[cfg(feature = "cognitive-clock")]
     #[tokio::test]
     async fn delta_sink_skips_non_plan_events() {
         let delta = Arc::new(Mutex::new(
@@ -580,6 +616,7 @@ mod tests {
         assert!(!sink.interested(&event));
     }
 
+    #[cfg(feature = "cognitive-clock")]
     #[tokio::test]
     async fn delta_sink_records_episode_on_plan_completed() {
         let delta = Arc::new(Mutex::new(

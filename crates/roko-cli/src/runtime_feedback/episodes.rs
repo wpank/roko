@@ -25,6 +25,9 @@ use super::{FeedbackEvent, FeedbackSink};
 #[derive(Debug, Clone)]
 pub struct EpisodeSink {
     logger: Arc<EpisodeLogger>,
+    /// Whether episodes carry an `hdc_fingerprint`: `[learning]
+    /// episode_hdc_fingerprint`, off by default (9226).
+    hdc_fingerprint: bool,
 }
 
 impl EpisodeSink {
@@ -33,13 +36,25 @@ impl EpisodeSink {
     pub fn at(path: impl Into<PathBuf>) -> Self {
         Self {
             logger: Arc::new(EpisodeLogger::new(path.into())),
+            hdc_fingerprint: false,
         }
     }
 
     /// Wrap an existing logger (lets tests share state).
     #[must_use]
     pub fn from_logger(logger: Arc<EpisodeLogger>) -> Self {
-        Self { logger }
+        Self {
+            logger,
+            hdc_fingerprint: false,
+        }
+    }
+
+    /// Write an `hdc_fingerprint` on each episode (`[learning]
+    /// episode_hdc_fingerprint`).
+    #[must_use]
+    pub fn with_hdc_fingerprint(mut self, on: bool) -> Self {
+        self.hdc_fingerprint = on;
+        self
     }
 }
 
@@ -220,14 +235,16 @@ impl FeedbackSink for EpisodeSink {
             attach_settled_attempt(&mut episode, settled);
         }
 
-        attach_episode_hdc_fingerprint(
-            &mut episode,
-            plan_id,
-            task_id,
-            outcome,
-            *succeeded,
-            prompt_text,
-        );
+        if self.hdc_fingerprint {
+            attach_episode_hdc_fingerprint(
+                &mut episode,
+                plan_id,
+                task_id,
+                outcome,
+                *succeeded,
+                prompt_text,
+            );
+        }
 
         self.logger
             .append(&episode)
@@ -703,6 +720,24 @@ mod tests {
         sink.on_event(&event).await.unwrap();
         // No file should have been created.
         assert!(!path.exists() || std::fs::read(&path).unwrap().is_empty());
+    }
+
+    /// 9226: only `[learning] episode_hdc_fingerprint`, off by default, adds
+    /// the fingerprint.
+    #[tokio::test]
+    async fn default_episode_has_no_hdc_fingerprint() {
+        let dir = tempdir().expect("tempdir");
+        let configured = roko_core::config::LearningConfig::default().episode_hdc_fingerprint;
+        assert!(!configured, "the fingerprint is off by default");
+        for (name, on) in [("default", configured), ("on", true)] {
+            let path = dir.path().join(format!("{name}.jsonl"));
+            let sink = EpisodeSink::at(&path).with_hdc_fingerprint(on);
+            sink.on_event(&completed(None)).await.expect("episode");
+
+            let episodes = EpisodeLogger::read_all(&path).await.expect("episodes");
+            assert_eq!(episodes.len(), 1, "{name}");
+            assert_eq!(episodes[0].hdc_fingerprint.is_some(), on, "{name}");
+        }
     }
 
     /// A completed task's event for `outcome()`, settled by `settled`.

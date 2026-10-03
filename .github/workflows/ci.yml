@@ -111,6 +111,15 @@ jobs:
           cargo test -p roko-std --features chain chain_tools_have_handlers_when_feature_enabled
           cargo check -p roko-serve --features groups
           cargo check -p roko-serve --features relay
+      - name: Keep the other parked features compiling
+        env:
+          SKIP_FRONTEND_BUILD: "1"
+        run: |
+          cargo check -p roko-runtime --features cognitive-clock
+          cargo check -p roko-cli --features cognitive-clock
+          cargo check -p roko-compose --features cross-cut-functors
+          cargo check -p roko-gate --features spc
+          cargo check -p roko-learn --features active-inference
 
   portal:
     name: Portal (types, tests, export)

@@ -2540,6 +2540,9 @@ async fn check_disk_health(
                 std::fs::symlink_metadata(entry.path())
                     .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
             })
+            // Dot-directories such as the creation journal (`.roko-creation`)
+            // are the worktree manager's bookkeeping, never checkouts (9237).
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
             .map(|entry| entry.path())
             .collect::<Vec<_>>()
     } else {
@@ -3667,6 +3670,31 @@ mod tests {
                 .iter()
                 .any(|finding| finding.path == canonical_target.display().to_string())
         );
+    }
+
+    /// 9237: the worktree manager's creation journal is no checkout, so it is
+    /// neither reported as orphaned nor removed by `doctor disk --fix`.
+    #[tokio::test]
+    async fn disk_report_skips_creation_marker_dir() {
+        let temp = tempdir().unwrap();
+        let journal = temp.path().join(".roko/worktrees/.roko-creation");
+        tokio::fs::create_dir_all(&journal).await.unwrap();
+        tokio::fs::write(journal.join("marker.json"), b"{}")
+            .await
+            .unwrap();
+
+        let resources = roko_core::config::ResourcesConfig::default();
+        let (_, report) = check_disk_health(temp.path(), &resources).await;
+        assert!(
+            report.orphaned_worktree_dirs.is_empty(),
+            "{:?}",
+            report.orphaned_worktree_dirs
+        );
+        assert_eq!(report.worktree_count, 0);
+
+        let fixed = fix_leftover_checkouts(temp.path()).await;
+        assert!(fixed.is_empty(), "{fixed:?}");
+        assert!(journal.is_dir());
     }
 
     #[tokio::test]

@@ -1437,6 +1437,7 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "agent.roles",
     "agent.tier_models",
     "audit.families",
+    "experiments.force_arms",
     "gates.max_output_tokens",
     "gates.packs",
     "retrieval.role_token_budgets",

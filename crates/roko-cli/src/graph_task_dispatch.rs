@@ -1339,22 +1339,22 @@ impl TaskDispatcher for GraphTaskDispatcher {
             ctx.cell_id.as_deref().unwrap_or(&task.id)
         );
         if let Some(tui) = &self.tui_bridge {
-            // The provider the planned model key resolves to, as dispatch
-            // resolves it (`zai`, `openai`), not its backend family's label,
+            // The slug and provider the planned model key resolves to, as
+            // dispatch resolves them (`glm-4.7` on `zai`) and as a failover
+            // row names them (backlog 1128), not the backend family's label,
             // which named every OpenAI-compatible model `codex_cli`; a model
             // that does not resolve keeps that label (backlog 1127).
-            let planned_provider =
+            let planned =
                 crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
-                    .resolve(&request.model_key)
-                    .provider_id;
+                    .resolve(&request.model_key);
             tui.agent_spawned(
                 &pre_dispatch_agent_id,
                 &spec.plan_id,
                 &task.id,
                 0,
                 task.role.as_deref().unwrap_or("implementer"),
-                &dispatch_plan.model.slug,
-                &planned_provider,
+                &planned.model_slug,
+                &planned.provider_id,
             );
         }
 

@@ -1086,15 +1086,16 @@ printf '%s\n' '{"type":"result","session_id":"sess-w","model":"claude-sonnet-4-6
         );
     }
 
-    /// A provider that records each call's prompt as `prompt-<call>` and
-    /// rewrites the one line of `same.txt`; each of the first two calls
-    /// waits for the test to release it (`release-<call>`).
+    /// A provider that records each call's arguments, which carry the
+    /// system prompt and so any retry feedback, and its prompt as
+    /// `prompt-<call>`, and rewrites the one line of `same.txt`; each of the
+    /// first two calls waits for the test to release it (`release-<call>`).
     const EDITS_SAME_LINE_PROVIDER: &str = r#"#!/bin/sh
 set -eu
 dir=$(dirname -- "$0")
 n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$dir/calls"
-cat > "$dir/prompt-$n.part" && mv "$dir/prompt-$n.part" "$dir/prompt-$n"
+{ printf '%s\n---\n' "$*"; cat; } > "$dir/prompt-$n.part" && mv "$dir/prompt-$n.part" "$dir/prompt-$n"
 if [ "$n" -le 2 ]; then
   while [ ! -e "$dir/release-$n" ]; do sleep 0.05; done
 fi
@@ -1171,7 +1172,13 @@ printf '%s\n' '{"type":"result","session_id":"sess-c","model":"claude-sonnet-4-6
             retry.contains("conflicts with the plan's accepted work"),
             "{retry}"
         );
-        assert!(retry.contains("Conflicting paths: same.txt."), "{retry}");
+        // The conflict names `same.txt`, among whatever else both siblings
+        // committed.
+        let paths = retry
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("Conflicting paths: "))
+            .unwrap_or_else(|| panic!("no conflicting paths in {retry}"));
+        assert!(paths.contains("same.txt"), "{retry}");
     }
 
     /// A provider that writes `feature.txt` and, on its first call only, also

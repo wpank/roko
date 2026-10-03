@@ -1708,6 +1708,9 @@ exec sleep 60
         let mut config = watched_config(&hung);
         let provider = config.providers.get_mut("graph-cli").expect("provider");
         provider.kind = ProviderKind::CodexCli;
+        // This exercises the watchdog, not the command guard: let the Codex
+        // agent run in the test's checkout.
+        config.runner.allow_unguarded_agents_in_checkout = true;
         config.conductor.report_at_end_stall_secs = 1;
         let started = Instant::now();
         let (error, verdict) = dispatch_once(temp.path(), config, "hung-codex").await;

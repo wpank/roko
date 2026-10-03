@@ -323,7 +323,7 @@ sibling_settle_secs = 0
 
 [[gates.rungs]]
 name = "check"
-command = "true"
+command = "test -f README.md"
 "#,
                 provider = provider.display().to_string()
             ),

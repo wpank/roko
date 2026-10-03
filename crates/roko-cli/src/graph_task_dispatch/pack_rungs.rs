@@ -830,6 +830,9 @@ mod tests {
                 max_output: Some(1_024),
                 supports_tools: true,
                 tool_format: "openai_json".to_string(),
+                // Priced, so the plan budget can count its calls.
+                cost_input_per_m: Some(1.0),
+                cost_output_per_m: Some(2.0),
                 ..ModelProfile::default()
             },
         );

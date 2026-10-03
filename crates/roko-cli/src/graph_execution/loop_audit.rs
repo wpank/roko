@@ -284,10 +284,7 @@ mod tests {
                     Some(format!("{loop_id} health {state} {reason}"))
                 }
                 DashboardEvent::LoopTransition {
-                    loop_id,
-                    from,
-                    to,
-                    ..
+                    loop_id, from, to, ..
                 } => Some(format!("{loop_id} moved {from} -> {to}")),
                 _ => None,
             })

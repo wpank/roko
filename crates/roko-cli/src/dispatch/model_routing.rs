@@ -2469,12 +2469,12 @@ mod tests {
     #[test]
     fn route_decision_logs_arm_before_plan_and_executed_model() {
         use roko_learn::loop_audit::census::measure;
-        use roko_learn::telemetry::{Arm, Assignment};
         use roko_learn::telemetry::records::{
             AttemptIdentity, AttemptOutcome, AttemptVerdictRecord, DECISION_SCHEMA, Stamped,
             VERDICT_SCHEMA,
         };
         use roko_learn::telemetry::report::RunRecords;
+        use roko_learn::telemetry::{Arm, Assignment};
 
         let cascade = Arc::new(CascadeRouter::new(vec![
             "claude-sonnet-4-6".into(),
@@ -2497,7 +2497,10 @@ mod tests {
         let opportunity = audit.opportunity.as_ref().expect("the opportunity");
         assert!(opportunity.eligible, "{opportunity:?}");
         let assignment = audit.assignment.as_ref().expect("the chain's draw");
-        assert_eq!((assignment.draw.arm, assignment.draw.h), (Arm::Learned, 0.0));
+        assert_eq!(
+            (assignment.draw.arm, assignment.draw.h),
+            (Arm::Learned, 0.0)
+        );
         assert_eq!(assignment.unit_key, key.chain_key());
         assert!(assignment.assigned_at < audit.decided_at.expect("decided_at"));
         let proposals = &learned_row.proposals;

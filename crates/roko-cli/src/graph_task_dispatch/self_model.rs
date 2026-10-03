@@ -578,7 +578,11 @@ mod tests {
             };
             let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
             let state = roko.join("learn/self-model/state-v1.json");
-            Arc::new(SelfModelRuntime::new(settings, state, SelfModel::new(&snapshot)))
+            Arc::new(SelfModelRuntime::new(
+                settings,
+                state,
+                SelfModel::new(&snapshot),
+            ))
         });
         let feedback = GraphFeedbackContext {
             runs_dir: Some(roko.join("runs")),

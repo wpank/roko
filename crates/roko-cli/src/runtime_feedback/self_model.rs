@@ -214,7 +214,9 @@ mod tests {
             let key = forecast(&runtime, &snapshot, task);
             let event = settled(task, outcome);
             assert!(sink.interested(&event));
-            sink.on_event(&event).await.expect("the sink takes the verdict");
+            sink.on_event(&event)
+                .await
+                .expect("the sink takes the verdict");
             assert_eq!(runtime.outcomes(), learned, "{task}: {outcome:?}");
             assert!(
                 runtime.take_forecast(&key).is_none(),
@@ -228,7 +230,9 @@ mod tests {
         let mut substitute = (*verdict).clone();
         substitute.executed.failover_chain = vec!["glm-4.7".to_string()];
         let event = FeedbackEvent::AttemptSettled(Arc::new(substitute));
-        sink.on_event(&event).await.expect("the sink takes the verdict");
+        sink.on_event(&event)
+            .await
+            .expect("the sink takes the verdict");
         assert_eq!(
             runtime.outcomes(),
             3,

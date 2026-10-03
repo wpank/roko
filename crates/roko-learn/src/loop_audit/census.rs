@@ -335,7 +335,9 @@ fn census_row(
         facts.push(measured_fact(measured));
     }
     if let Some(measured) = judged {
-        winner = measured.reason.map(|code| (code, Evidence::Measured, false));
+        winner = measured
+            .reason
+            .map(|code| (code, Evidence::Measured, false));
     }
     if winner.is_some_and(|(_, evidence, stale)| evidence == Evidence::Declared && stale) {
         qualifiers.push(Qualifier::DeclaredStale);
@@ -426,7 +428,12 @@ fn tallies(runs: &[RunRecords], alpha: f64) -> BTreeMap<String, Tally> {
         let executed: HashMap<&str, &ExecutedModel> = run
             .verdicts
             .iter()
-            .map(|line| (line.record.identity.attempt_key.as_str(), &line.record.executed))
+            .map(|line| {
+                (
+                    line.record.identity.attempt_key.as_str(),
+                    &line.record.executed,
+                )
+            })
             .collect();
         for line in &run.decisions {
             let row = &line.record;
@@ -576,7 +583,9 @@ fn arm_of(audit: &AuditFields, arm_set: Option<&ArmSet>) -> (bool, f64) {
         .as_ref()
         .map(|assignment| &assignment.draw)
         .or_else(|| arm_set?.get(audit.layer.as_deref()?));
-    draw.map_or((true, 1.0), |draw| (!takes_default(draw.arm), draw.propensity))
+    draw.map_or((true, 1.0), |draw| {
+        (!takes_default(draw.arm), draw.propensity)
+    })
 }
 
 /// What a decision's reader loaded: its state, an empty one, or none.
@@ -1268,6 +1277,10 @@ mod tests {
         assert_eq!(measured.map(|measured| measured.eps.receipt), Some(0.0));
 
         // A loop no row belongs to keeps its unmeasured verdict.
-        assert!(report.row("L-sec").is_some_and(|row| row.measured.is_none()));
+        assert!(
+            report
+                .row("L-sec")
+                .is_some_and(|row| row.measured.is_none())
+        );
     }
 }

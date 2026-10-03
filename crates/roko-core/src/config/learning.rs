@@ -609,9 +609,15 @@ mod tests {
         // most 0.1, and counts are positive.
         for (toml_text, key) in [
             ("[learning.audit.h]\nlive = 0.6\n", "learning.audit.h.live"),
-            ("[learning.audit.h]\nprobation = 0.01\n", "learning.audit.h.probation"),
+            (
+                "[learning.audit.h]\nprobation = 0.01\n",
+                "learning.audit.h.probation",
+            ),
             ("[learning.audit.h]\nmin = 0.0\n", "learning.audit.h.min"),
-            ("[learning.audit]\nglobal_off = 0.2\n", "learning.audit.global_off"),
+            (
+                "[learning.audit]\nglobal_off = 0.2\n",
+                "learning.audit.global_off",
+            ),
             ("[learning.audit]\nn_beta = 0\n", "learning.audit.n_beta"),
         ] {
             let config = RokoConfig::from_toml(toml_text).expect("the section parses");

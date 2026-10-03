@@ -113,8 +113,8 @@ pub(crate) fn econ_workdir(cli: &Cli, cmd: &EconCmd) -> PathBuf {
 pub(crate) fn cmd_self_model(cli: &Cli, cmd: SelfModelCmd, json: bool) -> Result<i32> {
     let workdir = self_model_workdir(cli, &cmd);
     let config = roko_core::config::loader::load_config_unified(&workdir).unwrap_or_default();
-    let snapshot =
-        PriceSnapshot::for_workspace(&config.pricing, &workdir).context("load the price snapshot")?;
+    let snapshot = PriceSnapshot::for_workspace(&config.pricing, &workdir)
+        .context("load the price snapshot")?;
     match cmd {
         SelfModelCmd::Fit { offline, from, .. } => {
             if !offline {
@@ -153,8 +153,8 @@ pub(crate) fn cmd_self_model(cli: &Cli, cmd: SelfModelCmd, json: bool) -> Result
 pub(crate) fn cmd_econ(cli: &Cli, cmd: EconCmd, json: bool) -> Result<i32> {
     let workdir = econ_workdir(cli, &cmd);
     let config = roko_core::config::loader::load_config_unified(&workdir).unwrap_or_default();
-    let snapshot =
-        PriceSnapshot::for_workspace(&config.pricing, &workdir).context("load the price snapshot")?;
+    let snapshot = PriceSnapshot::for_workspace(&config.pricing, &workdir)
+        .context("load the price snapshot")?;
     match cmd {
         EconCmd::Prices { .. } => {
             if json {
@@ -435,7 +435,13 @@ pub(crate) fn replay_matrix(
     let mut policies = Vec::new();
     for spec in &specs {
         let make = || spec.build(snapshot);
-        policies.push(replay::replay(&matrix, &make, orderings, seed, &mut traces)?);
+        policies.push(replay::replay(
+            &matrix,
+            &make,
+            orderings,
+            seed,
+            &mut traces,
+        )?);
     }
     traces.flush()?;
     let report = ReplayReport {
@@ -514,9 +520,7 @@ impl Spec {
             Self::Router(models) => {
                 let models: Vec<(&str, &str, &str)> = models
                     .iter()
-                    .map(|(model, provider, arm)| {
-                        (model.as_str(), provider.as_str(), arm.as_str())
-                    })
+                    .map(|(model, provider, arm)| (model.as_str(), provider.as_str(), arm.as_str()))
                     .collect();
                 match RouterPolicy::new(&models) {
                     Some(policy) => Box::new(policy),

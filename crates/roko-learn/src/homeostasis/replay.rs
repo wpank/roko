@@ -112,8 +112,8 @@ impl SyntheticTable {
     ///
     /// - after the onset, each move in the disturbance's requisite-variety
     ///   row restores [`RESTORE_SHARE`] of what is left of the gap in pass
-    ///   rate, cost and wall time, and with one the failures stop being
-    ///   provider errors or budget ends; a kind M1 cannot regulate
+    ///   rate, cost and wall time, and with one the provider errors and
+    ///   budget ends stop; a kind M1 cannot regulate
     ///   (`flaky_verify`, every provider slowed) has no such move;
     /// - every move scales cost and wall time by its catalog effect on E2
     ///   and E4 ([`COST_UP`], [`COST_DOWN`], [`WALL_UP`], [`WALL_DOWN`]).

@@ -79,8 +79,10 @@ pub const REWARD_VARIANCE: f64 = 0.25;
 pub const Z95_ONE_SIDED: f64 = 1.644_854;
 /// Relaxation waits for E2 below this share of its bound.
 pub const RELAX_COST_SHARE: f64 = 0.7;
-/// An auxiliary signal is up when this share of the window shows it.
-pub const AUX_SHARE: f64 = 0.2;
+/// An auxiliary signal is up when this share of the window shows it: three
+/// of twenty resolutions, so a breach confirmed three resolutions into a
+/// provider fault already reads as an outage.
+pub const AUX_SHARE: f64 = 0.15;
 /// Retries are up when the window averages more attempts than this.
 pub const AUX_ATTEMPTS: f64 = 1.5;
 /// The config fingerprint the SafetyBox compares when the caller gives

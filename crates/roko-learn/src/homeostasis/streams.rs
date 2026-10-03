@@ -112,7 +112,7 @@ pub struct Regime {
     pub cost_factor: f64,
     /// Its wall time, as a multiple of the in-control wall time.
     pub wall_factor: f64,
-    /// Failures are charged to a provider error.
+    /// Every resolution had a provider error on some attempt.
     pub provider_errors: bool,
     /// Failures end on the task budget.
     pub budget_failures: bool,
@@ -132,19 +132,22 @@ impl Regime {
     };
 
     /// The regime once `step` has started, under θ₀: what S06 §4.9's
-    /// "expected effect" column looks like in resolutions. A flaky verify
-    /// reruns the visible check only, so its retries cost nothing extra.
+    /// "expected effect" column looks like in resolutions, with S06 C1's
+    /// steps (E1 0.80 → 0.50, E4 ×2) and every provider slowed ×5. A
+    /// budget cut fails 70% of its tasks on the budget, so its cost per
+    /// success rises too; a flaky verify reruns the visible check only, so
+    /// its retries cost nothing extra.
     #[must_use]
     pub const fn stepped(step: StepKind) -> Self {
         let base = Self::IN_CONTROL;
         match step.kind {
             DisturbanceKind::ProviderFault if step.all_providers => Self {
-                wall_factor: 2.5,
+                wall_factor: 5.0,
                 ..base
             },
             DisturbanceKind::ProviderFault => Self {
-                pass_rate: 0.55,
-                wall_factor: 2.5,
+                pass_rate: 0.50,
+                wall_factor: 2.0,
                 provider_errors: true,
                 ..base
             },
@@ -153,17 +156,17 @@ impl Regime {
                 ..base
             },
             DisturbanceKind::HarderMix => Self {
-                pass_rate: 0.55,
-                cost_factor: 1.6,
+                pass_rate: 0.50,
+                cost_factor: 1.25,
                 ..base
             },
             DisturbanceKind::BudgetCut => Self {
-                pass_rate: 0.40,
+                pass_rate: 0.30,
                 budget_failures: true,
                 ..base
             },
             DisturbanceKind::FlakyVerify => Self {
-                pass_rate: 0.60,
+                pass_rate: 0.50,
                 attempts: 2,
                 ..base
             },
@@ -231,7 +234,7 @@ pub fn resolve(position: u64, regime: &Regime, draws: &Draws) -> TaskResolution 
         api_equiv_usd: Some(usd),
         cost_source_mix,
         wall_ms: Some(wall_ms as u64),
-        provider_errors: u32::from(regime.provider_errors && !passed),
+        provider_errors: u32::from(regime.provider_errors),
         conductor_restarts: 0,
         params_digest: None,
         arm: None,

@@ -57,3 +57,7 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK19 (gap-de0b87), PK49 (gap-7ec3ef).
 - Suggested model: sonnet.
+
+## Progress
+
+- 3240: implemented at 1d362d3a8 (cargo verification deferred to the batch gate)

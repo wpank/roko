@@ -54,6 +54,7 @@ use roko_learn::cascade_router::{CascadeModel, CascadeRouter, ExploredRoute, exp
 use roko_learn::latency::LatencyRegistry;
 use roko_learn::loop_audit::arm_set::ArmSet;
 use roko_learn::loop_audit::assign::{NestedPick, RouteDecision, RouteDraw, route_propensity};
+use roko_learn::loop_audit::faults::{self, FaultKind};
 use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
 use roko_learn::routing_log::{
@@ -132,6 +133,10 @@ pub struct RoutingInputs {
     /// The arms of the attempt's chain (S02.P1-14). A draw on the route
     /// layer that holds the chain out runs π⁰.
     pub arm_set: Option<Arc<ArmSet>>,
+    /// The start rung an active self-model chose, an index on the role's
+    /// ladder (S04, 6130); [`ModelRouter::decide`] draws it through S03's
+    /// route table.
+    pub self_model_rung: Option<usize>,
 }
 
 impl RoutingInputs {
@@ -160,6 +165,7 @@ impl RoutingInputs {
             routing_context: ctx.routing_context.clone(),
             attempt_key: ctx.attempt_key.clone(),
             arm_set: ctx.arm_set.clone(),
+            self_model_rung: ctx.self_model_rung,
         }
     }
 }
@@ -194,6 +200,13 @@ pub enum ModelChoiceSource {
     /// The exploration draw of the cascade router's ε-greedy route (S02.P1-3)
     /// replaced its argmax with a model drawn among the eligible ones.
     Explore,
+    /// The start rung an active self-model chose on `[routing.ladder]`, drawn
+    /// through S03's route table (S04, 6130). Like a ladder rung, it teaches
+    /// the cascade router nothing.
+    SelfModel {
+        /// Index of the rung among the task's rungs, cheapest first.
+        rung: usize,
+    },
 }
 
 impl ModelChoiceSource {
@@ -209,6 +222,7 @@ impl ModelChoiceSource {
             Self::Fallback { .. } => DecisionSource::Fallback,
             Self::Default => DecisionSource::Default,
             Self::Explore => DecisionSource::Explore,
+            Self::SelfModel { .. } => DecisionSource::SelfModel,
         }
     }
 }
@@ -566,6 +580,10 @@ impl ModelRouter {
         inputs: &RoutingInputs,
     ) -> Result<(ModelChoice, RoutingDecisionLog), RunnerDispatchError> {
         let assigned_at = chrono::Utc::now().timestamp_millis();
+        // M3 (6130): an active self-model's start rung, through the route table.
+        if let Some(route) = self.self_model_route(inputs) {
+            return Ok(self.decide_self_model(inputs, &route, assigned_at));
+        }
         let (choice, learned) = self.choose(inputs);
         let (choice, explored) = self.explore(inputs, choice);
         let mut decision = self.decision_row(inputs, &choice, learned, explored.as_ref());
@@ -727,10 +745,29 @@ impl ModelRouter {
             return (choice, learned);
         }
         let choice = ModelChoice {
-            model: pick,
+            model: self.faulted_pick(router, ctx, pick),
             source: ModelChoiceSource::Router,
         };
         (choice, learned)
+    }
+
+    /// The cascade's `pick` under a fault flag on L-route (S03 §4.9;
+    /// fault-injection builds only): MASK runs the default under the
+    /// router's label, HARMFUL the cheapest eligible model.
+    fn faulted_pick(
+        &self,
+        router: &CascadeRouter,
+        ctx: &RoutingContext,
+        pick: ModelSpec,
+    ) -> ModelSpec {
+        match faults::active(ROUTE_LOOP) {
+            Some(FaultKind::Mask) => ModelSpec::from_slug(&self.default_slug),
+            Some(FaultKind::Harmful) => {
+                let eligible = self.eligible_models(router, ctx);
+                router.cheapest_model_among(&eligible)
+            }
+            _ => pick,
+        }
     }
 
     /// `choice` made ε-greedy (S02.P1-3): when the cascade router decided it,
@@ -843,7 +880,9 @@ impl ModelRouter {
         }
         let propensity = explored.map_or(1.0, |route| route.propensity(chosen));
         let (ladder, fallback_reason) = match choice.source {
-            ModelChoiceSource::Ladder { .. } => (Some(chosen.to_string()), None),
+            ModelChoiceSource::Ladder { .. } | ModelChoiceSource::SelfModel { .. } => {
+                (Some(chosen.to_string()), None)
+            }
             ModelChoiceSource::Fallback { reason } => (None, Some(reason.as_str().to_string())),
             _ => (None, None),
         };
@@ -970,6 +1009,11 @@ impl ModelRouter {
     /// The cascade router's pick for `ctx`, among the models the provider
     /// guards accept when they accept some ([`Self::eligible_models`]).
     fn cascade_pick(&self, router: &CascadeRouter, ctx: &RoutingContext) -> CascadeModel {
+        // The L-route canary's preference, read inside its canary scope only
+        // (S03 §4.7).
+        if let Some(canary) = router.canary_route() {
+            return canary;
+        }
         // S02.P1-2: the guards mask the models that cannot run before the
         // cascade's argmax, so it picks the best one that can.
         let eligible = self.eligible_models(router, ctx);
@@ -1105,6 +1149,10 @@ pub fn route_audit_fields(
     assigned_at: i64,
     decided_at: i64,
 ) -> AuditFields {
+    // LABEL_ONLY on L-route (S03 §4.9; fault-injection builds only) draws
+    // the arm at the decision, not before it.
+    let label_only = faults::active(ROUTE_LOOP) == Some(FaultKind::LabelOnly);
+    let assigned_at = if label_only { decided_at } else { assigned_at };
     AuditFields {
         loop_id: Some(ROUTE_LOOP.to_string()),
         loop_ids: vec![ROUTE_LOOP.to_string()],
@@ -1165,6 +1213,193 @@ fn route_assignment(inputs: &RoutingInputs, assigned_at: i64) -> Option<Decision
         assign(&spec, key)
     });
     Some(DecisionAssignment::new(draw, key, assigned_at))
+}
+
+// ─── M3: the self-model's start rung (6130) ────────────────────────────
+
+/// The loop whose epochs let the self-model choose on the route layer (S03
+/// §4.3): it shares the layer with L-route, rotating by epoch.
+const SELF_MODEL_LOOP: &str = "L-M3";
+
+/// L-M3's opportunity reason: an active self-model proposed the start rung.
+const SELF_MODEL_OPPORTUNITY: &str = "self_model_start";
+
+/// An active self-model's route for one attempt (6130).
+struct SelfModelRoute {
+    /// a⁰, π⁰'s pick: the rung the ladder routes the attempt to by itself.
+    default: LadderStartRung,
+    /// a^L: the rung the self-model's start rung puts the attempt on.
+    pick: LadderStartRung,
+    /// The rung the attempt runs on.
+    chosen: LadderStartRung,
+    /// E: every runnable rung of the task's role, cheapest first.
+    eligible: Vec<LadderStartRung>,
+    /// The chain's route-layer draw holds it out, so it runs a⁰.
+    held_out: bool,
+    /// The ε draw among the runnable rungs, when one was made.
+    explored: Option<ExploredRoute>,
+}
+
+impl ModelRouter {
+    /// The route an active self-model's start rung gives `inputs` (6130),
+    /// drawn through S03's route table: a chain the route layer holds out
+    /// runs the ladder's own rung, and the ε draw may explore another
+    /// runnable rung; the ladder climbs from the chosen start as from its
+    /// own. `None` without a proposal or a ladder, for a pinned attempt, and
+    /// when the proposed rung cannot run here: a guard-rejected rung is never
+    /// chosen.
+    fn self_model_route(&self, inputs: &RoutingInputs) -> Option<SelfModelRoute> {
+        let proposed = inputs.self_model_rung?;
+        if inputs.force_backend.is_some() || inputs.task_model_hint.is_some() {
+            return None;
+        }
+        let ladder = self.ladder.as_ref()?;
+        let (role, tier) = (inputs.role.as_str(), inputs.task_tier);
+        let own = ladder.start(role, tier, inputs.task_rung.as_deref())?;
+        let learned = ladder
+            .start(role, tier, Some(ladder.rung_name(role, proposed)?))
+            .filter(|rung| rung.index == proposed)?;
+        let lowest = ladder.start(role, tier, Some(ladder.rung_name(role, 0)?))?;
+        let above = ladder.rung_models_above(role, lowest.index);
+        let eligible: Vec<LadderStartRung> = std::iter::once(lowest).chain(above).collect();
+        let default = ladder.climb(role, own, inputs.ladder_step);
+        let pick = ladder.climb(role, learned, inputs.ladder_step);
+        let held_out = inputs
+            .arm_set
+            .as_deref()
+            .is_some_and(|arms| arms.takes_default(ROUTE_LAYER));
+        let explored = if held_out {
+            None
+        } else {
+            self.explored_rung(inputs, &eligible, &pick.model)
+        };
+        let drawn = explored
+            .as_ref()
+            .filter(|route| route.explored)
+            .and_then(|route| eligible.iter().find(|rung| rung.model == route.chosen));
+        let chosen = if held_out {
+            default.clone()
+        } else {
+            drawn.unwrap_or(&pick).clone()
+        };
+        Some(SelfModelRoute {
+            default,
+            pick,
+            chosen,
+            eligible,
+            held_out,
+            explored,
+        })
+    }
+
+    /// The ε draw among the runnable `rungs` around `pick` (S02.P1-3, the
+    /// route table's last row); `None` when exploration is off, the attempt
+    /// has no key, or one rung can run.
+    fn explored_rung(
+        &self,
+        inputs: &RoutingInputs,
+        rungs: &[LadderStartRung],
+        pick: &str,
+    ) -> Option<ExploredRoute> {
+        let key = inputs.attempt_key.as_ref()?;
+        if self.explore_epsilon <= 0.0 || rungs.len() < 2 {
+            return None;
+        }
+        let models: Vec<String> = rungs.iter().map(|rung| rung.model.clone()).collect();
+        let epoch = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let epsilon = self.explore_epsilon;
+        Some(explore_route(
+            &models,
+            pick,
+            epsilon,
+            EXPLORE_SEED,
+            &epoch,
+            key,
+        ))
+    }
+
+    /// [`Self::decide`] for an active self-model's `route`: the choice, and a
+    /// decision row with L-M3's opportunity, a⁰ and a^L as its default and
+    /// learned proposals, and every runnable rung's composed propensity
+    /// (S03 §4.3). A held-out chain's row has the ladder as its source, an
+    /// explored one ε's.
+    fn decide_self_model(
+        &self,
+        inputs: &RoutingInputs,
+        route: &SelfModelRoute,
+        assigned_at: i64,
+    ) -> (ModelChoice, RoutingDecisionLog) {
+        let rung = route.chosen.index;
+        let source = if route.held_out {
+            ModelChoiceSource::Ladder { rung }
+        } else {
+            ModelChoiceSource::SelfModel { rung }
+        };
+        let choice = ModelChoice {
+            model: ModelSpec::from_slug(route.chosen.model.clone()),
+            source,
+        };
+        let learned = Some(route.pick.model.clone());
+        let mut row = self.decision_row(inputs, &choice, learned, None);
+        let explored = route.explored.as_ref().filter(|explored| explored.explored);
+        let row_source = match (route.held_out, explored) {
+            (true, _) => DecisionSource::Ladder,
+            (false, Some(_)) => DecisionSource::Explore,
+            (false, None) => DecisionSource::SelfModel,
+        };
+        row.source = Some(row_source);
+        row.routing_reason = serde_json::to_value(row_source)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        row.default_model = Some(route.default.model.clone());
+        row.proposals.default = Some(route.default.model.clone());
+        row.proposals.aa = route.explored.as_ref().map(|explored| explored.aa.clone());
+        for rung in &route.eligible {
+            let listed = row
+                .candidates
+                .iter()
+                .any(|candidate| candidate.model == rung.model);
+            if !listed {
+                let provider = self.provider_of(&rung.model);
+                let candidate = CandidateEntry::new(rung.model.clone(), provider, 0.0, None);
+                row.candidates.push(candidate);
+            }
+        }
+        let decided_at = chrono::Utc::now().timestamp_millis().max(assigned_at + 1);
+        row.audit = route_audit_fields(inputs, &row, assigned_at, decided_at);
+        row.audit.loop_id = Some(SELF_MODEL_LOOP.to_string());
+        row.audit.loop_ids = vec![SELF_MODEL_LOOP.to_string()];
+        row.audit.opportunity = Some(DecisionOpportunity {
+            eligible: true,
+            reason: SELF_MODEL_OPPORTUNITY.to_string(),
+        });
+        let (g, h) = match &row.audit.assignment {
+            Some(assignment) => (assignment.draw.g, assignment.draw.h),
+            None => (0.0, 0.0),
+        };
+        let (eps, eligible) = match &route.explored {
+            Some(_) => {
+                let models = route.eligible.iter().map(|rung| rung.model.clone());
+                (self.explore_epsilon, models.collect())
+            }
+            None => (0.0, Vec::new()),
+        };
+        let decision = RouteDecision::Drawn(RouteDraw {
+            default: route.default.model.clone(),
+            eligible,
+            nested: vec![NestedPick {
+                pick: route.pick.model.clone(),
+                probability: 1.0,
+            }],
+        });
+        for candidate in &mut row.candidates {
+            candidate.p = Some(route_propensity(g, h, eps, &decision, &candidate.model));
+        }
+        let chosen = &route.chosen.model;
+        row.propensity = Some(route_propensity(g, h, eps, &decision, chosen));
+        (choice, row)
+    }
 }
 
 // ─── Ladder ────────────────────────────────────────────────────────────
@@ -1461,6 +1696,7 @@ mod tests {
             concurrent_plans: Vec::new(),
             attempt_key: None,
             arm_set: None,
+            self_model_rung: None,
         }
     }
 
@@ -2578,5 +2814,131 @@ mod tests {
         assert_eq!(route.n_learned, 1);
         assert_eq!((route.eps.receipt, route.eps.honest), (1.0, 1.0));
         assert_eq!(route.eps.est, 1.0);
+    }
+
+    /// 6130: an active self-model's start rung routes the task through S03's route table, and
+    /// the decision row names L-M3, a⁰ and a^L with every rung's composed propensity; a chain the
+    /// route layer holds out runs the ladder's own rung; dispatch proposes nothing when the
+    /// breaker trips, under a pin or outside active mode; and a pin beats a proposal.
+    #[test]
+    fn active_self_model_picks_start_rung_and_logs_propensity() {
+        use crate::graph_task_dispatch::self_model::active_start;
+        use roko_core::config::self_model::{SelfModelConfig, SelfModelMode};
+        use roko_learn::self_model::PredictorVersion;
+        use roko_learn::self_model::gate::GateReport;
+        use roko_learn::telemetry::{Arm, Assignment};
+
+        let gate = |eligible, breaker_tripped| GateReport {
+            predictor_version: PredictorVersion("m3-l1-test".to_string()),
+            n: 100,
+            ece: Some(0.03),
+            cal_in_large: Some(0.01),
+            bss: Some(0.2),
+            auroc: Some(0.8),
+            route_pass: Some(0.82),
+            eligible,
+            reasons: Vec::new(),
+            breaker_tripped,
+        };
+        let acts = |settings: &SelfModelConfig, eligible, tripped, pinned, choice| {
+            active_start(settings, &gate(eligible, tripped), pinned, Some(choice), 1)
+        };
+        let active = SelfModelConfig {
+            mode: SelfModelMode::Active,
+            ..SelfModelConfig::default()
+        };
+        let shadow = SelfModelConfig {
+            mode: SelfModelMode::Shadow,
+            ..SelfModelConfig::default()
+        };
+        let upward = SelfModelConfig {
+            allow_downward_start: false,
+            ..active.clone()
+        };
+        assert_eq!(acts(&active, true, false, false, 3), Some(3));
+        assert_eq!(
+            acts(&active, false, true, false, 3),
+            None,
+            "a tripped breaker"
+        );
+        assert_eq!(acts(&active, true, false, true, 3), None, "a pin");
+        assert_eq!(acts(&shadow, true, false, false, 3), None, "shadow mode");
+        assert_eq!(acts(&active, true, false, false, 0), Some(0), "B1");
+        assert_eq!(acts(&upward, true, false, false, 0), None, "without B1");
+
+        // Without a proposal, the ladder's own start rung routes the task.
+        let config = ladder_config();
+        let router = ModelRouter::new(None).with_routing_ladder(ladder(&config, |_| true));
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.attempt_key = Some(AttemptKey::new("gr-m3", "p", "t", 1));
+        let (own, _) = router.decide(&inputs).unwrap();
+        let ModelChoiceSource::Ladder { rung: start } = own.source else {
+            panic!("the ladder routes an unpinned task: {:?}", own.source);
+        };
+        let own_model = own.model.slug.as_str();
+
+        // Active and eligible: the proposed top rung routes, as the self-model's choice.
+        let top = 3;
+        assert_ne!(start, top);
+        inputs.self_model_rung = Some(top);
+        let (choice, row) = router.decide(&inputs).unwrap();
+        let expected = ModelChoiceSource::SelfModel { rung: top };
+        assert_eq!(routed(&choice), ("claude-sonnet-4-6", expected));
+        assert_eq!(row.source, Some(DecisionSource::SelfModel));
+        assert_eq!(row.propensity, Some(1.0));
+        assert_eq!(row.proposals.learned.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(row.proposals.default.as_deref(), Some(own_model));
+        assert_eq!(row.default_model.as_deref(), Some(own_model));
+        assert_eq!(row.audit.loop_id.as_deref(), Some("L-M3"));
+        let opportunity = row.audit.opportunity.as_ref().expect("L-M3's opportunity");
+        assert!(opportunity.eligible, "{opportunity:?}");
+
+        // With ε the propensities compose over the four runnable rungs and sum to 1.
+        let p = |row: &RoutingDecisionLog, model: &str| {
+            let candidate = row.candidates.iter().find(|c| c.model == model);
+            candidate.and_then(|c| c.p)
+        };
+        let exploring = router.clone().with_explore_epsilon(0.25);
+        let (choice, row) = exploring.decide(&inputs).unwrap();
+        assert_eq!(p(&row, "claude-sonnet-4-6"), Some(0.8125));
+        assert_eq!(p(&row, "gpt-oss-120b"), Some(0.0625));
+        let total: f64 = row.candidates.iter().filter_map(|c| c.p).sum();
+        assert!((total - 1.0).abs() < 1e-9, "p sums to {total}");
+        assert_eq!(row.propensity, p(&row, &choice.model.slug));
+        let source = if choice.model.slug == "claude-sonnet-4-6" {
+            DecisionSource::SelfModel
+        } else {
+            DecisionSource::Explore
+        };
+        assert_eq!(row.source, Some(source));
+
+        // A chain the route layer holds out runs the ladder's own rung, a⁰, at P = h.
+        let held_out = Assignment {
+            unit: AssignmentUnit::Chain,
+            layer: "route".to_string(),
+            salt_id: "route@2026-10-03".to_string(),
+            u: 0.1,
+            h: 0.2,
+            g: 0.0,
+            arm: Arm::Default,
+            propensity: 0.2,
+        };
+        inputs.arm_set = Some(Arc::new(ArmSet {
+            chain_key: "gr-m3:p:t".to_string(),
+            arms: [("route".to_string(), held_out)].into(),
+            condition_id: "normal".to_string(),
+        }));
+        let (choice, row) = router.decide(&inputs).unwrap();
+        let ladder_source = ModelChoiceSource::Ladder { rung: start };
+        assert_eq!(routed(&choice), (own_model, ladder_source));
+        assert_eq!(row.source, Some(DecisionSource::Ladder));
+        assert_eq!(row.propensity, Some(0.2));
+        assert_eq!(row.proposals.learned.as_deref(), Some("claude-sonnet-4-6"));
+        inputs.arm_set = None;
+
+        // A pin beats a proposal.
+        inputs.force_backend = Some("glm-4.7".to_string());
+        let (choice, _) = router.decide(&inputs).unwrap();
+        assert_eq!(routed(&choice), ("glm-4.7", ModelChoiceSource::Override));
     }
 }

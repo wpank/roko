@@ -187,6 +187,9 @@ pub(crate) enum LearnCmd {
         /// measured audit (backlog 5123) lands.
         #[arg(long)]
         census: bool,
+        /// Trace a loop's canary, or break a loop (S03 §5; backlog 5134).
+        #[command(subcommand)]
+        cmd: Option<roko_cli::commands::learn_loops::LoopsCmd>,
     },
     /// Check a run's attempt records, or report routing outcomes from them (read-only).
     Telemetry {
@@ -501,8 +504,18 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             }
             Ok(EXIT_SUCCESS)
         }
-        LearnCmd::Loops { workdir, census } => {
+        LearnCmd::Loops {
+            workdir,
+            census,
+            cmd,
+        } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            if let Some(cmd) = cmd {
+                let (printed, code) =
+                    roko_cli::commands::learn_loops::loops_cmd_output(&wd, &cmd, json)?;
+                print!("{printed}");
+                return Ok(code);
+            }
             if !census {
                 tracing::info!(
                     "the measured loop audit is not built yet (backlog 5123); printing the census"
@@ -3464,6 +3477,7 @@ mod tests {
                 cmd: LearnCmd::Loops {
                     workdir: None,
                     census: true,
+                    cmd: None,
                 },
             })
         ));

@@ -25,6 +25,7 @@ pub mod policy;
 pub mod prior;
 pub mod recal;
 pub mod replay;
+pub mod spec_features;
 
 use std::fmt;
 use std::str::FromStr;

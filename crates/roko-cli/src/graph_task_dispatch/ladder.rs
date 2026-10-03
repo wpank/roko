@@ -16,6 +16,7 @@
 //! dashboard to split or replan the task. Nothing splits it automatically.
 
 use roko_core::dashboard_snapshot::{DiagnosisSeverity, DiagnosisSummary};
+use roko_learn::self_model::cascade::StepAction;
 use roko_learn::telemetry::{AttemptLadder, AttemptVerdictRecord, Blame, LadderReason};
 
 use super::attempt::AttemptContext;
@@ -76,7 +77,7 @@ impl GraphTaskDispatcher {
         };
         let role = task.role.as_deref().unwrap_or("implementer");
         let (record, last_chance) = match plan.source {
-            ModelChoiceSource::Ladder { rung } => {
+            ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => {
                 // A `rung` hint that names one of the task's rungs replaced
                 // its start rung (gap-dbf2a6).
                 let hinted = task
@@ -84,8 +85,14 @@ impl GraphTaskDispatcher {
                     .rung
                     .as_deref()
                     .is_some_and(|hint| ladder.has_rung(role, hint));
-                let reason = if step > 0 {
+                let reason = if step > 0 && self.self_model_climbed(&attempt.identity().chain_key) {
+                    // The self-model climbed after one failure (6131).
+                    LadderReason::SelfModel
+                } else if step > 0 {
                     LadderReason::Escalated
+                } else if matches!(plan.source, ModelChoiceSource::SelfModel { .. }) {
+                    // An active self-model chose the start rung (6130).
+                    LadderReason::SelfModel
                 } else if hinted {
                     LadderReason::Hint
                 } else {
@@ -185,28 +192,43 @@ impl GraphTaskDispatcher {
             return;
         };
         let role = task.role.as_deref().unwrap_or("implementer");
-        let can_climb = ladder
-            .index
-            .and_then(|index| usize::try_from(index).ok())
-            .is_some_and(|index| routing.runnable_above(role, index) > 0);
+        let index = ladder.index.and_then(|index| usize::try_from(index).ok());
         let mut standing = self
             .gate_retry_context
             .ladder_standing(&spec.plan_id, &task.id);
         standing.failures_on_rung = standing.failures_on_rung.saturating_add(1);
-        if standing.failures_on_rung >= FAILURES_PER_RUNG
-            && standing.escalations < MAX_ESCALATIONS
-            && can_climb
-        {
+        // M3 (6131): when an active self-model started the chain, its re-forecast may climb
+        // after one failure; every other chain keeps the two-failure rule.
+        let two_failures = standing.failures_on_rung >= FAILURES_PER_RUNG;
+        let step = match index {
+            Some(index) if !two_failures => {
+                self.self_model_step(spec, task, verdict, index, standing.escalations)
+            }
+            _ => None,
+        };
+        let (early, rungs) = match step {
+            Some(StepAction::Climb { .. }) => (true, 1),
+            Some(StepAction::Skip { .. }) => (true, 2),
+            _ => (false, 1),
+        };
+        let can_climb = index.is_some_and(|index| routing.runnable_above(role, index) >= rungs);
+        let within = standing.escalations.saturating_add(rungs as u32) <= MAX_ESCALATIONS;
+        if (two_failures || early) && within && can_climb {
             standing = LadderStanding {
-                escalations: standing.escalations.saturating_add(1),
+                escalations: standing.escalations.saturating_add(rungs as u32),
                 failures_on_rung: 0,
             };
+            self.note_self_model_climb(&verdict.identity.chain_key, early);
+            let reason = if early { "low_forecast" } else { "gate_fail" };
             tracing::info!(
                 plan_id = %spec.plan_id,
                 task_id = %task.id,
                 rung = ladder.rung.as_deref().unwrap_or("-"),
                 escalations = standing.escalations,
-                "the task failed twice on its rung; its next attempt runs one rung up the ladder"
+                reason,
+                two_failure_rule = two_failures,
+                self_model_step = ?step,
+                "the task climbs the ladder; its next attempt runs higher"
             );
         }
         self.gate_retry_context

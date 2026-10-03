@@ -701,6 +701,21 @@ impl ListenerSecurity {
     }
 }
 
+/// What runs a loop's canary trace (S03 §4.7) for the admin canary route (5133).
+///
+/// It is roko-cli's canary writers and dry-run planner, which `roko serve`
+/// injects into [`AppState::loop_canary`], since roko-serve cannot depend on
+/// roko-cli.
+pub trait LoopCanaryRunner: Send + Sync {
+    /// Trace `loop_id`'s canary, dry, and append its `loop.canary` row to the
+    /// loop-audit ledger; the row.
+    ///
+    /// # Errors
+    ///
+    /// Why the loop has no canary here, or why the trace could not run.
+    fn run(&self, loop_id: &str) -> Result<roko_learn::loop_audit::ledger::CanaryRow, String>;
+}
+
 /// Shared server state, wrapped in `Arc` for handler access.
 pub struct AppState {
     /// Project working directory.
@@ -862,6 +877,9 @@ pub struct AppState {
     pub trigger_bindings: RwLock<HashMap<String, TriggerBinding>>,
     /// Long-lived trigger coordinator, initialized once server tasks are allowed.
     pub trigger_runtime: OnceCell<crate::trigger_runtime::TriggerRuntimeHandle>,
+    /// Runs a loop's canary for `POST /api/learn/loops/{id}/canary`; `roko
+    /// serve` sets it, and the route answers 503 without it (5133).
+    pub loop_canary: std::sync::OnceLock<Arc<dyn LoopCanaryRunner>>,
 
     /// Upstream mirage JSON-RPC URL for reverse proxy (`ROKO_MIRAGE_URL`).
     pub mirage_url: Option<String>,
@@ -1488,6 +1506,7 @@ impl AppState {
             ephemeral_workspaces,
             trigger_bindings: RwLock::new(trigger_bindings),
             trigger_runtime: OnceCell::new(),
+            loop_canary: std::sync::OnceLock::new(),
             mirage_url: std::env::var("ROKO_MIRAGE_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),

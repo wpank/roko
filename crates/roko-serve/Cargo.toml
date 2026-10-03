@@ -29,6 +29,10 @@ chain = [
 # builds: Alloy's provider/full graph dominates a cold CLI compile.
 alloy-backend = ["chain", "dep:alloy", "roko-chain/alloy-backend"]
 hdc = ["dep:roko-primitives", "roko-compose/hdc", "roko-fs/hdc"]
+# S03 §4.9's "break a loop" fault flags: the admin fault routes (5133). Off
+# by default; the fly image (Dockerfile) builds it in, admin-only, with dry-run
+# kinds reaching dry runs alone (decision 5101 §9.10).
+fault-injection = ["roko-learn/fault-injection"]
 # Agent groups, membership and pheromone state (GroupRuntime and the
 # /groups and /invitations routes). Parked: plan runs never use them (9219).
 groups = []

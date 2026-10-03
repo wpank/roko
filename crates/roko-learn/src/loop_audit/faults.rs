@@ -10,7 +10,14 @@
 //! there ([`FaultRecord`](super::ledger::FaultRecord)), which only the
 //! evaluation joins. Without the feature, [`active`] is a `const fn` that
 //! returns `None`, and nothing can set a flag.
+//!
+//! A flag of a dry-run kind (every kind but HARMFUL) touches only the reads
+//! made inside [`dry_run`], such as a canary's or E1's plans; a live read
+//! sees HARMFUL alone (decision 5101 §9.10), and a read a flag skips is no
+//! decision of it.
 
+#[cfg(feature = "fault-injection")]
+use std::cell::Cell;
 #[cfg(feature = "fault-injection")]
 use std::path::PathBuf;
 #[cfg(feature = "fault-injection")]
@@ -167,6 +174,19 @@ impl Registry {
         Some(flag.spec.kind)
     }
 
+    /// [`Self::active`] for a read made in a dry run or not: a dry-run kind
+    /// touches dry runs only, and a read it skips is no decision.
+    fn active_in(&mut self, loop_id: &str, now: Instant, dry_run: bool) -> Option<FaultKind> {
+        let harmful = self
+            .index(loop_id)
+            .is_some_and(|index| self.flags[index].spec.kind == FaultKind::Harmful);
+        if dry_run || harmful {
+            self.active(loop_id, now)
+        } else {
+            None
+        }
+    }
+
     /// Clear `loop_id`'s flag; whether it had one.
     fn clear(&mut self, loop_id: &str) -> bool {
         let Some(index) = self.index(loop_id) else {
@@ -318,11 +338,40 @@ pub fn charge(loop_id: &str, usd: f64) {
 
 /// The fault set on `loop_id`, if any: the only read API. Each call is one
 /// decision the flag affects (a `hit` row), and the flag expires after its
-/// TTL or its last decision, whichever comes first.
+/// TTL or its last decision, whichever comes first. Outside a [`dry_run`]
+/// only a HARMFUL flag is seen.
 #[cfg(feature = "fault-injection")]
 #[must_use]
 pub fn active(loop_id: &str) -> Option<FaultKind> {
-    with_registry(|registry| registry.active(loop_id, Instant::now())).flatten()
+    let dry_run = DRY_RUN.with(Cell::get);
+    with_registry(|registry| registry.active_in(loop_id, Instant::now(), dry_run)).flatten()
+}
+
+#[cfg(feature = "fault-injection")]
+thread_local! {
+    /// Whether this thread is inside a [`dry_run`].
+    static DRY_RUN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Restores the thread's dry-run mark when a [`dry_run`] ends, on a panic
+/// too.
+#[cfg(feature = "fault-injection")]
+struct DryRunMark(bool);
+
+#[cfg(feature = "fault-injection")]
+impl Drop for DryRunMark {
+    fn drop(&mut self) {
+        DRY_RUN.with(|dry_run| dry_run.set(self.0));
+    }
+}
+
+/// Run `plan` as a dry run: the reads it makes on this thread see a flag of
+/// any kind, where a live read sees HARMFUL alone (decision 5101 §9.10). A
+/// canary trace and E1's plans run inside one.
+pub fn dry_run<T>(plan: impl FnOnce() -> T) -> T {
+    #[cfg(feature = "fault-injection")]
+    let _mark = DryRunMark(DRY_RUN.with(|dry_run| dry_run.replace(true)));
+    plan()
 }
 
 /// The fault set on `loop_id`: none, as this build has no fault flags.

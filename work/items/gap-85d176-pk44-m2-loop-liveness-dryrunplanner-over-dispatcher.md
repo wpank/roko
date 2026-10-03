@@ -25,9 +25,6 @@ command = "grep -rqw 'fn dry_run_canary_reaches_p4_without_learned_writes' crate
 command = "grep -rqw 'fn injected_cut_empties_knowledge_section' crates/roko-cli/src/ && cargo test -p roko-cli --lib --features fault-injection injected_cut_empties_knowledge_section"
 
 [[verify]]
-command = "test -f crates/roko-cli/tests/loop_audit_faults.rs && grep -qw 'fn structural_faults_detected_and_localized' crates/roko-cli/tests/loop_audit_faults.rs && cargo test -p roko-cli --features fault-injection --test loop_audit_faults structural_faults_detected_and_localized"
-
-[[verify]]
 command = "test -f crates/roko-cli/tests/loop_audit_census_run.rs && grep -qw 'fn fixture_run_logs_arms_before_plan_and_measures_exposure' crates/roko-cli/tests/loop_audit_census_run.rs && cargo test -p roko-cli --test loop_audit_census_run fixture_run_logs_arms_before_plan_and_measures_exposure"
 
 [[verify]]
@@ -83,3 +80,17 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK32 (gap-b5caf3), PK38 (gap-894977), PK40 (gap-1f4bec), PK41 (gap-c2b1a3), PK42 (gap-2b3c1b), PK43 (gap-c1d920).
 - Suggested model: opus.
+
+## Progress
+
+Worker w3 (no cargo; Rust checks deferred to the batch gate), base `552112110`, branch `work/gap-85d176`:
+
+- 5128: implemented at `485635253`. `dispatch::dry_run_planner::DispatchPlanner` over `Dispatcher::plan` (P4: the prompt holds `CANARY-<nonce>`, the routed model and source). P5 is not offered (`execute_capped` stays `None`), so canaries run dry.
+- 5129: implemented at `1742abfa8`. Read sites at the knowledge and playbook readers, the route and the row builders, through `faults::active` (a const `None` without roko-cli's new `fault-injection` feature). 5133 later gates dry-run kinds to `faults::dry_run`.
+- 5130: blocked. E1's C2 needs fault signatures the measured census lacks: no stale read status on rows (STALE), no degeneracy measure (DEGENERATE), and a CUT reader leaves 5125's rows ineligible, so it shows as `no_opportunity`. An integration test also needs public pure row builders (`content_audit` is private). Each needs a design choice first.
+- 5131: implemented at `09bf91991`. `tests/loop_audit_census_run.rs`: 200 chains through the binary; knowledge arms near 80/20 with SRM e-value < 20, ordering on every row, receipts, and ε > 0 for L-know and L-play.
+- 5132: implemented at `c9161708b`. `GET /api/learn/loops`, `/{id}`, `/{id}/decisions`, and the showcase aliases (`routes/learning/loops.rs`); `LoopAuditor::reason`.
+- 5133: implemented at `f30e320ee`. Admin canary route (injected `LoopCanaryRunner`, set by `roko serve` and `roko up`), and feature-gated fault and break routes (403, 422, 409). Decision 5101 §9.10 is applied: the Dockerfile builds `fault-injection`, and dry-run kinds reach only `faults::dry_run` reads.
+- 5134: implemented at `f3606abd3`. `roko learn loops canary <id>` and `fault <id> <kind>` (exit 2 without the feature or `ROKO_FAULTS=1`). The fault form shows the canary's first failing probe; time to detection waits on 5130.
+- gap-135821 (5127's L-route canary): implemented at `318b1a0c3`. A canary-only `CascadeRouter` preference read inside `canary_scope`, `loop_canary::RouteCanary`, and L-route in `DryCanaryRunner`.
+- 2026-10-03 (coordinator, gate 9b): 5130 (E1, the fault replay) and its verify left this item for gap-a13544: the census lacks the stale, degenerate and cut signatures E1 needs. The census-run test (5131) runs as four 50-task plans under the 64-task cap (48bc6ac41).

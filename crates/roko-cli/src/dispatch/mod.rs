@@ -30,6 +30,7 @@
 //! [`AgentResultBridge`] that hides the provider for testing. Production
 //! callers wire in [`AgentDispatcherV2`]; tests can plug in a stub bridge.
 
+pub mod dry_run_planner;
 pub mod factory;
 pub mod model_routing;
 pub mod outcome;
@@ -167,6 +168,11 @@ pub struct DispatchContext {
     /// reads to withhold a loop's content (S02 L7). `None` outside Graph
     /// dispatch, and then nothing is withheld.
     pub arm_set: Option<std::sync::Arc<roko_learn::loop_audit::arm_set::ArmSet>>,
+    /// The start rung an active self-model chose for the attempt, an index
+    /// on its role's ladder (S04, 6130). `None` unless `[self_model] mode`
+    /// is active and its calibration gate holds; the router still draws it
+    /// through S03's route table.
+    pub self_model_rung: Option<usize>,
 }
 
 // ─── Dispatcher facade ─────────────────────────────────────────────────
@@ -599,6 +605,7 @@ mod tests {
             concurrent_plans: Vec::new(),
             attempt_key: None,
             arm_set: None,
+            self_model_rung: None,
         }
     }
 

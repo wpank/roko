@@ -151,6 +151,26 @@ pub struct CascadeRouter {
     /// the snapshot on disk, so processes sharing the snapshot keep each
     /// other's observations (bug-9c88ac).
     baseline: Mutex<CascadeSnapshot>,
+    /// The L-route canary's preferences, canary category to model slug (S03
+    /// §4.7): read only inside a [`canary_scope`] for the category, never
+    /// persisted, and removed exactly ([`Self::remove_canary_route`]).
+    canary_routes: Mutex<HashMap<String, String>>,
+}
+
+thread_local! {
+    /// The canary category this thread routes for, inside a [`canary_scope`].
+    static CANARY_CATEGORY: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `route` as a route for the canary category `category` (S03 §4.7): a
+/// router with a canary preference for it ([`CascadeRouter::set_canary_route`])
+/// answers with that model on this thread. No other route reads one.
+pub fn canary_scope<T>(category: &str, route: impl FnOnce() -> T) -> T {
+    let outer = CANARY_CATEGORY.with(|current| current.replace(Some(category.to_string())));
+    let routed = route();
+    CANARY_CATEGORY.with(|current| *current.borrow_mut() = outer);
+    routed
 }
 
 impl std::fmt::Debug for CascadeRouter {
@@ -397,7 +417,46 @@ impl CascadeRouter {
             cost_pressure_until: Mutex::new(None),
             disabled_providers: Vec::new(),
             baseline: Mutex::new(baseline),
+            canary_routes: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Send the canary category `category` to `slug`: the L-route canary's
+    /// preference (S03 §4.7), which only a route inside a [`canary_scope`]
+    /// for `category` reads. Returns how many canary preferences the router
+    /// holds, the canary's state version.
+    pub fn set_canary_route(&self, category: &str, slug: &str) -> usize {
+        let mut routes = self.canary_routes.lock();
+        routes.insert(category.to_string(), slug.to_string());
+        routes.len()
+    }
+
+    /// Remove `category`'s canary preference, and nothing else; whether it
+    /// had one.
+    pub fn remove_canary_route(&self, category: &str) -> bool {
+        self.canary_routes.lock().remove(category).is_some()
+    }
+
+    /// How many canary preferences the router holds.
+    #[must_use]
+    pub fn canary_route_count(&self) -> usize {
+        self.canary_routes.lock().len()
+    }
+
+    /// The canary's pick on this thread: the preferred model of the category
+    /// of the [`canary_scope`] this thread is in, if the router holds one.
+    #[must_use]
+    pub fn canary_route(&self) -> Option<CascadeModel> {
+        let category = CANARY_CATEGORY.with(|current| current.borrow().clone())?;
+        let slug = self.canary_routes.lock().get(&category).cloned()?;
+        let tier = slug_to_tier(&slug, &self.tier_map);
+        Some(CascadeModel {
+            primary: ModelSpec::from_slug(&slug),
+            fallback_chain: Vec::new(),
+            context_overflow_fallback: None,
+            latency_sla_ms: default_latency_sla(tier),
+            stage: self.current_stage(),
+        })
     }
 
     /// Set config-sourced tier assignments (builder pattern).

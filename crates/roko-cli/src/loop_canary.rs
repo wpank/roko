@@ -19,21 +19,29 @@
 //! the canary's own artifact and nothing else: M2 deletes no other learned
 //! state (S03 §2).
 //!
-//! L-route has no writer here. The cascade router keys what it learns by
-//! closed enums (task category, role) and context features, so no router
-//! preference can be scoped to a synthetic category; its static role table,
-//! the one preference a canary could set and restore exactly, applies to
-//! every task of a role and is read only at cold start.
+//! - [`RouteCanary`] (L-route) sets a canary-only preference in the cascade
+//!   router dispatch routes with (`CascadeRouter::set_canary_route`), which
+//!   sends the canary's category to the router's cheapest model. Only a route
+//!   inside the canary's `canary_scope` reads it, so no real task can, and
+//!   it is never persisted (gap-135821).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use roko_fs::RokoLayout;
-use roko_learn::loop_audit::canary::CanaryWriter;
+use roko_learn::cascade_router::{CascadeRouter, canary_scope};
+use roko_learn::loop_audit::canary::{CanaryTarget, CanaryTask, CanaryWriter, run_canary};
+use roko_learn::loop_audit::faults;
+use roko_learn::loop_audit::ledger::{CanaryRow, Ledger};
 use roko_learn::playbook::{Playbook, PlaybookStore};
 use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeStore, ReinforcementSignal};
 
-use crate::dispatch::prompt_builder::cached_reader_ids;
+use crate::dispatch::Dispatcher;
+use crate::dispatch::dry_run_planner::DispatchPlanner;
+use crate::dispatch::prompt_builder::{PromptAssembler, cached_reader_ids};
 use crate::dispatch::prompt_cache::PromptCache;
+use crate::dispatch::warm_pool::WarmPool;
 use crate::task_parser::TaskDef;
 
 /// The knowledge canary entry's `source`.
@@ -301,6 +309,169 @@ impl CanaryWriter for PlaybookCanary {
     }
 }
 
+/// A fresh canary nonce, `c-` and eight hex digits.
+fn fresh_nonce() -> String {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    format!("c-{}", &id[..8])
+}
+
+/// Runs a loop's dry canary trace in a workspace (S03 §4.7): the loop's
+/// writer here, the production prompt sources through [`DispatchPlanner`],
+/// and a `loop.canary` row in the loop-audit ledger. `roko serve` gives it
+/// to the admin canary route (5133), and `roko learn loops canary` runs it
+/// (5134). A dry trace runs no attempt, so P6 finds no decision row and is
+/// its first failure at best.
+#[derive(Debug, Clone)]
+pub struct DryCanaryRunner {
+    workdir: PathBuf,
+}
+
+impl DryCanaryRunner {
+    /// A runner for the workspace `workdir`.
+    #[must_use]
+    pub fn new(workdir: &Path) -> Self {
+        Self {
+            workdir: workdir.to_path_buf(),
+        }
+    }
+
+    /// Trace `loop_id`'s canary under a fresh nonce, dry, and append its row
+    /// to the loop-audit ledger; the row.
+    ///
+    /// # Errors
+    ///
+    /// A loop with no writer here (L-know, L-play and L-route have one), a
+    /// workspace without a cascade router for L-route's, or a ledger that
+    /// could not be appended.
+    pub fn trace(&self, loop_id: &str) -> Result<CanaryRow, String> {
+        let mut router = None;
+        let (mut writer, target): (Box<dyn CanaryWriter>, CanaryTarget) = match loop_id {
+            "L-know" => (
+                Box::new(KnowledgeCanary::new(&self.workdir)),
+                CanaryTarget::Prompt,
+            ),
+            "L-play" => (
+                Box::new(PlaybookCanary::new(&self.workdir)),
+                CanaryTarget::Prompt,
+            ),
+            "L-route" => {
+                let cascade = Arc::new(workspace_router(&self.workdir)?);
+                let writer = RouteCanary::new(Arc::clone(&cascade));
+                let target = CanaryTarget::Route {
+                    model: writer.canary_model(),
+                    source: "router".to_string(),
+                };
+                router = Some(cascade);
+                (Box::new(writer), target)
+            }
+            _ => return Err(format!("{loop_id} has no canary writer here")),
+        };
+        let nonce = fresh_nonce();
+        let task = CanaryTask {
+            loop_id: loop_id.to_string(),
+            category: canary_category(&nonce),
+            nonce,
+            target,
+        };
+        let dispatcher = Dispatcher::new(
+            router,
+            PromptAssembler::new(),
+            WarmPool::new(0),
+            HashSet::new(),
+        );
+        let mut planner = DispatchPlanner::new(&dispatcher, &self.workdir);
+        let layout = RokoLayout::for_project(&self.workdir);
+        let run_dir = layout.runs_dir().join(format!("canary-{}", task.nonce));
+        let ledger = Ledger::in_learn_dir(&layout.learn_dir());
+        // Every probe reads inside a fault dry run, so a flag of any kind
+        // reaches the reader it breaks (decision 5101 §9.10).
+        faults::dry_run(|| run_canary(&mut *writer, &mut planner, &run_dir, &task, true, &ledger))
+            .map_err(|error| format!("the canary's row was not written: {error}"))
+    }
+}
+
+impl roko_serve::state::LoopCanaryRunner for DryCanaryRunner {
+    fn run(&self, loop_id: &str) -> Result<CanaryRow, String> {
+        self.trace(loop_id)
+    }
+}
+
+/// L-route's canary writer (S03 §4.7; gap-135821): a canary-only preference
+/// in the cascade router `router`, the one dispatch routes with, sending the
+/// canary's category to the router's cheapest model. Only a route inside
+/// the canary's `canary_scope` reads it, and `cleanup` removes it exactly.
+#[derive(Debug)]
+pub struct RouteCanary {
+    router: Arc<CascadeRouter>,
+}
+
+impl RouteCanary {
+    /// L-route's canary writer over `router`.
+    #[must_use]
+    pub fn new(router: Arc<CascadeRouter>) -> Self {
+        Self { router }
+    }
+
+    /// The model the canary's preference sends its category to: the
+    /// router's cheapest.
+    #[must_use]
+    pub fn canary_model(&self) -> String {
+        self.router.cheapest_model().slug
+    }
+}
+
+impl CanaryWriter for RouteCanary {
+    /// Set the preference; the number of canary preferences the router holds
+    /// is the version.
+    fn write(&mut self, nonce: &str) -> Result<u64, String> {
+        let category = canary_category(nonce);
+        Ok(version(
+            self.router
+                .set_canary_route(&category, &self.canary_model()),
+        ))
+    }
+
+    /// The canary preferences the router dispatch routes with holds.
+    fn loaded_version(&mut self) -> Option<u64> {
+        let held = self.router.canary_route_count();
+        (held > 0).then(|| version(held))
+    }
+
+    /// Whether the router picks the canary model inside the canary's scope.
+    fn read_selected(&mut self, nonce: &str) -> bool {
+        let pick = canary_scope(&canary_category(nonce), || self.router.canary_route());
+        pick.is_some_and(|pick| pick.primary.slug == self.canary_model())
+    }
+
+    /// A canary preference has no counters to settle.
+    fn credit(&mut self, _nonce: &str) -> bool {
+        false
+    }
+
+    /// Remove the preference, and only it.
+    fn cleanup(&mut self, nonce: &str) {
+        self.router.remove_canary_route(&canary_category(nonce));
+    }
+}
+
+/// The cascade router of the workspace `workdir`, over the models its saved
+/// state names: the router L-route's canary writes to.
+fn workspace_router(workdir: &Path) -> Result<CascadeRouter, String> {
+    let path = RokoLayout::for_project(workdir)
+        .learn_dir()
+        .join("cascade-router.json");
+    let state = std::fs::read_to_string(&path)
+        .map_err(|error| format!("L-route's canary needs {}: {error}", path.display()))?;
+    let models: Vec<String> = serde_json::from_str::<serde_json::Value>(&state)
+        .ok()
+        .and_then(|value| serde_json::from_value(value["model_slugs"].clone()).ok())
+        .unwrap_or_default();
+    if models.is_empty() {
+        return Err(format!("{} names no model", path.display()));
+    }
+    CascadeRouter::from_snapshot_json(&state, models).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use roko_learn::loop_audit::canary::{
@@ -417,5 +588,74 @@ mod tests {
             writer.cleanup(NONCE);
             assert_eq!(stores(dir.path()), before, "{loop_id}: cleanup");
         }
+    }
+    /// gap-135821: L-route's canary sets a canary-only preference in the
+    /// cascade router dispatch routes with. A route outside the canary's
+    /// scope never reads it; through the driver the router returns the
+    /// canary model for the canary task (P3), the dry-run plan is routed
+    /// there by the router (P4), the trace stops at P6, and cleanup removes
+    /// the preference.
+    #[test]
+    fn route_canary_reaches_the_router_and_is_removed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let models = vec![
+            "claude-opus-4-1".to_string(),
+            "claude-haiku-4-5".to_string(),
+        ];
+        let router = Arc::new(CascadeRouter::new(models));
+        let mut writer = RouteCanary::new(Arc::clone(&router));
+        let model = writer.canary_model();
+        let dispatcher = Dispatcher::new(
+            Some(Arc::clone(&router)),
+            PromptAssembler::new(),
+            WarmPool::new(0),
+            HashSet::new(),
+        );
+        let mut planner = DispatchPlanner::new(&dispatcher, dir.path());
+        let category = canary_category(NONCE);
+        let task = CanaryTask {
+            loop_id: "L-route".to_string(),
+            nonce: NONCE.to_string(),
+            category: category.clone(),
+            target: CanaryTarget::Route {
+                model: model.clone(),
+                source: "router".to_string(),
+            },
+        };
+
+        // Only a route inside the canary's own scope reads the preference.
+        assert_eq!(writer.write(NONCE), Ok(1));
+        assert!(
+            router.canary_route().is_none(),
+            "a route outside any canary scope"
+        );
+        let other = canary_scope("canary-other", || router.canary_route());
+        assert!(other.is_none(), "another canary's scope");
+        let own = canary_scope(&category, || router.canary_route());
+        assert_eq!(own.map(|pick| pick.primary.slug), Some(model));
+        writer.cleanup(NONCE);
+        assert_eq!(router.canary_route_count(), 0);
+
+        let run_dir = dir.path().join(".roko/runs/gr-route");
+        let row = trace(&mut writer, &mut planner, &run_dir, &task, true);
+        let probes: Vec<(&str, bool)> = row
+            .probes
+            .iter()
+            .map(|probe| (probe.p.as_str(), probe.ok))
+            .collect();
+        let expected = [
+            ("P1", true),
+            ("P2", true),
+            ("P3", true),
+            ("P4", true),
+            ("P6", false),
+        ];
+        assert_eq!(probes, expected, "{row:?}");
+        assert_eq!(
+            router.canary_route_count(),
+            0,
+            "cleanup removed the preference"
+        );
+        assert!(canary_scope(&category, || router.canary_route()).is_none());
     }
 }

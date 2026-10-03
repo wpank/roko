@@ -43,12 +43,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          # The acceptance test's fixture plan checks formatting and lints.
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # Its TypeScript checks run on Node's type stripping (22.6 or later).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Build the canaries
         run: cargo test -p roko-cli --no-run $CANARIES
       - name: Run the canaries
         timeout-minutes: 10
         run: cargo test -p roko-cli $CANARIES
+      # Not a canary, so tests/golden_path_suite.rs does not list it: the whole
+      # golden path on one fixture plan, on the scripted provider (backlog 3116).
+      - name: Run the golden-path acceptance test
+        timeout-minutes: 10
+        run: cargo test -p roko-cli --test golden_path_acceptance
 
   fmt:
     name: Formatting

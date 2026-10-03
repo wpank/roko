@@ -2808,7 +2808,8 @@ fn start_block_watcher(_state: Arc<AppState>) -> JoinHandle<()> {
     tokio::spawn(async {})
 }
 
-#[cfg(any(feature = "alloy-backend", test))]
+/// Publish one block-watcher payload to the event bus and the chain state.
+#[cfg(any(feature = "alloy-backend", all(test, feature = "chain")))]
 fn publish_chain_watcher_payload(state: &Arc<AppState>, topic: &str, payload: serde_json::Value) {
     use roko_chain::chain_state::{
         BlockInfo, ChainReorgInfo, ContractEventInfo, RawLogInfo, TxInfo,

@@ -386,6 +386,7 @@ mod tests {
         assert_eq!(payload.total, 0);
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn feed_catalog_contains_only_reduced_generic_agents() {
         let dir = tempfile::tempdir().expect("tempdir");

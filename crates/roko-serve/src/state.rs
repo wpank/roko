@@ -44,6 +44,7 @@ use crate::dispatch::SubscriptionRegistry;
 use crate::event_bus::EventBus;
 use crate::runtime::CliRuntime;
 use crate::runtime::RunResult;
+#[cfg(feature = "chain")]
 use roko_chain::ChainClient;
 #[cfg(feature = "alloy-backend")]
 use roko_chain::alloy_impl::{AlloyChainClient, AlloyChainWallet};
@@ -801,6 +802,7 @@ pub struct AppState {
     /// Monotonic agent lifecycle observations committed before Lens delivery.
     pub agent_lifecycle: crate::agent_lifecycle::AgentLifecycleStore,
     /// Optional backend-neutral client used by registries and arenas.
+    #[cfg(feature = "chain")]
     pub chain_client: Option<Arc<dyn ChainClient>>,
     /// Optional concrete Alloy client for provider-specific routes/watchers.
     #[cfg(feature = "alloy-backend")]
@@ -870,6 +872,7 @@ pub struct AppState {
     pub feed_agent_catalog: RwLock<FeedAgentCatalog>,
 
     /// Shared chain watcher state exposed via REST and SSE.
+    #[cfg(feature = "chain")]
     pub chain: Arc<roko_chain::chain_state::ChainState>,
 
     /// Runtime feed instances started at serve-time and queryable via
@@ -1223,15 +1226,14 @@ impl AppState {
             .as_ref()
             .map(|client| Arc::clone(client) as Arc<dyn ChainClient>);
         #[cfg(not(feature = "alloy-backend"))]
-        let chain_client: Option<Arc<dyn ChainClient>> = {
-            if roko_config.chain.enabled && roko_config.chain.rpc_url.is_some() {
-                tracing::warn!(
-                    "[chain] RPC configuration ignored: rebuild roko with \
-                     `--features alloy-backend` to enable real chain access"
-                );
-            }
-            None
-        };
+        if roko_config.chain.enabled && roko_config.chain.rpc_url.is_some() {
+            tracing::warn!(
+                "[chain] RPC configuration ignored: rebuild roko with \
+                 `--features alloy-backend` to enable real chain access"
+            );
+        }
+        #[cfg(all(feature = "chain", not(feature = "alloy-backend")))]
+        let chain_client: Option<Arc<dyn ChainClient>> = None;
         #[cfg(feature = "chain")]
         let registries = crate::routes::registries::RegistryRuntime::open(
             &workdir,
@@ -1455,6 +1457,7 @@ impl AppState {
             aggregator_cache: RwLock::new(HashMap::new()),
             heartbeats: RwLock::new(VecDeque::new()),
             agent_lifecycle,
+            #[cfg(feature = "chain")]
             chain_client,
             #[cfg(feature = "alloy-backend")]
             alloy_chain_client,
@@ -1490,6 +1493,7 @@ impl AppState {
                 .filter(|s| !s.is_empty())
                 .or_else(|| roko_config.relay.url.clone()),
             feed_agent_catalog: RwLock::new(FeedAgentCatalog::default()),
+            #[cfg(feature = "chain")]
             chain: Arc::new(roko_chain::chain_state::ChainState::default()),
             runtime_feeds,
             feed_bus_bridge,

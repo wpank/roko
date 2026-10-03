@@ -48,9 +48,9 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
 
-- **26/28 closed** · goal `cybernetic` · severity p2
-- open by lane: none 1, rust-hot 1
-- next: [gap-644040](items/gap-644040-no-way-to-run-with-learning-frozen.md) No way to run with learning frozen: prompts and routing change from run to run
+- **27/28 closed** · goal `cybernetic` · severity p2
+- open by lane: rust-hot 1
+- next: none ready (1 unverified)
 
 ## [spec-1e1b45](items/spec-1e1b45-epic-tracker-tooling-for-parallel-work.md) tracker tooling for parallel work
 
@@ -100,12 +100,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 58 | 93 | 35 (26) |
-| docs | 18 | 22 | 4 (3) |
+| bench | 59 | 94 | 35 (26) |
+| docs | 18 | 23 | 5 (4) |
 | frontend | 3 | 6 | 3 (3) |
-| none | 343 | 420 | 77 (77) |
+| none | 344 | 420 | 76 (76) |
 | paper | 61 | 73 | 12 (9) |
-| rust-cold | 188 | 242 | 54 (44) |
-| rust-hot | 137 | 170 | 33 (30) |
+| rust-cold | 188 | 243 | 55 (45) |
+| rust-hot | 141 | 170 | 29 (26) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 21 | 24 | 3 (2) |

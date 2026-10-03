@@ -2,7 +2,7 @@
 id = "gap-f0a7ee"
 kind = "gap"
 title = "PK58 M4 deep audits: roko-core: resolve the audit vault outside every workdir, and define the shared audit… (+9 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 58
 size = "L"
 subsystem = ["roko-gate/audit"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "2347ad858"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK58"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs", "crates/roko-agent/src/claude_cli_guard.py", "crates/roko-agent/src/safety/path.rs", "crates/roko-agent/src/safety/sandbox.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-core/src/config/config_fingerprint_golden.json", "crates/roko-core/src/config/env_registry.rs", "crates/roko-core/src/config/mod.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-core/src/lib.rs", "crates/roko-gate/Cargo.toml", "crates/roko-gate/src/attempt_diff.rs", "crates/roko-gate/src/lib.rs", "crates/roko-std/src/tool/builtin/sandbox/reads.rs", "crates/roko-std/src/tool/builtin/sandbox/secret_read_cases.txt"]
 lane = "rust-hot"
@@ -47,6 +48,17 @@ command = "grep -qw 'fn audit_only_kinds_find_test_detection_and_success_strings
 
 [[verify]]
 command = "grep -rqw 'fn every_green_attempt_draws_one_audit_selection' crates/roko-cli/src/ && cargo test -p roko-cli --lib every_green_attempt_draws_one_audit_selection"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T01:24:15Z"
+commit = "2347ad858"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T22:19:30Z"
+forced = false
+evidence = "Gate 5b (merged into main as 2347ad858, tree identical to work/backlog-batch-5b apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 11,533 passed over 10 crates (after the [audit] schema fix, roko-core 1,999/1,999), roko-cli bin + golden-path canaries + learning_wiring_census + plan_spec_gate 442/442, ViabilityBench suite 582 passed with the analysis lock; every [[verify]] passes."
 +++
 
 ## Problem

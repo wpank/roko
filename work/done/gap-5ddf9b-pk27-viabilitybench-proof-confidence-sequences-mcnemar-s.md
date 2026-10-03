@@ -2,7 +2,7 @@
 id = "gap-5ddf9b"
 kind = "gap"
 title = "PK27 ViabilityBench proof: Confidence sequences, McNemar's test and CUPED in analysis/ (+5 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -10,8 +10,9 @@ rank = 27
 size = "L"
 subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "2347ad858"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK27"
 anchors = ["benchmarks/viabilitybench/driver/vb.py"]
 lane = "bench"
@@ -35,6 +36,17 @@ command = "grep -qw 'def test_replay_io_reads_records_deterministically' benchma
 
 [[verify]]
 command = "grep -qw 'def test_log1_refuses_to_start_without_the_lock' benchmarks/viabilitybench/driver/test_campaign.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_campaign.py -k test_log1_refuses_to_start_without_the_lock -q"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T01:24:36Z"
+commit = "2347ad858"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T22:19:32Z"
+forced = true
+evidence = "Gate 5b (merged as 2347ad858): all six [[verify]] commands pass in the batch worktree's bench venv with requirements-analysis.lock installed (numpy/scipy, decision 3336 option a); the main checkout's venv lacks that lock, hence --force. The whole ViabilityBench suite passes (582). Task 3339's coverage band (0.93-0.97) is not met by S09 4.1's two-stage bootstrap (0.975): Will's choice of method is filed as a decision item."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-b5caf3"
 kind = "gap"
 title = "PK32 Loops re-closed: Retire the legacy holdout from Graph runs: its learning gate gates nothing (+11 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 32
 size = "L"
 subsystem = ["roko-cli/learning"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "2347ad858"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK32"
 anchors = ["crates/roko-cli/src/config.rs", "crates/roko-cli/src/dispatch/model_routing.rs", "crates/roko-cli/src/graph_task_dispatch/feedback.rs", "crates/roko-cli/src/graph_task_dispatch/helper_calls.rs", "crates/roko-cli/src/graph_task_dispatch/prompt_experiment.rs", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs", "crates/roko-cli/src/graph_task_dispatch/wiring.rs", "crates/roko-cli/src/runtime_feedback/hindsight.rs", "crates/roko-cli/src/runtime_feedback/routing.rs", "crates/roko-cli/src/runtime_feedback/verified_knowledge.rs", "crates/roko-cli/tests/learning_wiring_census.rs", "crates/roko-cli/tests/test_runtime.rs", "crates/roko-core/src/config/learning.rs", "crates/roko-core/src/config/loader.rs", "crates/roko-core/src/config/presets.rs", "crates/roko-core/src/config/routing.rs", "crates/roko-core/src/config/validation.rs", "crates/roko-execution/src/plan_generator.rs", "crates/roko-learn/src/cascade_router.rs", "crates/roko-learn/src/episode_logger.rs", "crates/roko-learn/src/event_subscriber.rs", "crates/roko-learn/src/lib.rs", "crates/roko-learn/src/playbook.rs", "crates/roko-learn/src/prompt_experiment.rs", "crates/roko-learn/src/shadow.rs", "crates/roko-neuro/src/knowledge_store/crud.rs", "crates/roko-neuro/src/lib.rs", "roko.toml"]
 lane = "rust-hot"
@@ -53,6 +54,17 @@ command = "grep -rqw 'fn ineligible_pick_is_masked_before_argmax' crates/roko-cl
 
 [[verify]]
 command = "grep -rqw 'fn route_propensities_sum_to_one_and_respect_epsilon' crates/roko-learn/src/ && cargo test -p roko-learn route_propensities_sum_to_one_and_respect_epsilon"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T01:24:21Z"
+commit = "2347ad858"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T22:19:31Z"
+forced = false
+evidence = "Gate 5b (merged into main as 2347ad858, tree identical to work/backlog-batch-5b apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 11,533 passed over 10 crates (after the [audit] schema fix, roko-core 1,999/1,999), roko-cli bin + golden-path canaries + learning_wiring_census + plan_spec_gate 442/442, ViabilityBench suite 582 passed with the analysis lock; every [[verify]] passes."
 +++
 
 ## Problem

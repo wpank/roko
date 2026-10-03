@@ -2,7 +2,7 @@
 id = "gap-2b5d37"
 kind = "gap"
 title = "PK11 Decision records and census: A frozen gate settlement writes no thresholds and makes no reflection call (+1 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -10,8 +10,9 @@ rank = 11
 size = "M"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "2347ad858"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK11"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/gate_learning.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs"]
 lane = "rust-hot"
@@ -23,6 +24,17 @@ command = "grep -rqw 'fn frozen_gate_failure_writes_no_thresholds_or_reflections
 
 [[verify]]
 command = "grep -rqw 'fn frozen_learning_run_writes_no_learned_state' crates/roko-cli/src && cargo test -p roko-cli --lib frozen_learning_run_writes_no_learned_state"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T01:24:16Z"
+commit = "2347ad858"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-02T22:19:33Z"
+forced = false
+evidence = "Gate 5b (merged into main as 2347ad858, tree identical to work/backlog-batch-5b apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 11,533 passed over 10 crates (after the [audit] schema fix, roko-core 1,999/1,999), roko-cli bin + golden-path canaries + learning_wiring_census + plan_spec_gate 442/442, ViabilityBench suite 582 passed with the analysis lock; every [[verify]] passes."
 +++
 
 ## Problem

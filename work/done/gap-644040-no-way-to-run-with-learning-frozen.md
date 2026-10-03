@@ -2,15 +2,15 @@
 id = "gap-644040"
 kind = "gap"
 title = "No way to run with learning frozen: prompts and routing change from run to run"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-09-28
-updated = 2026-10-01
-last_verified = 2026-10-01
-last_verified_rev = "ebdc0f5d5"
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "2347ad858"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::plan_skips_enrichment", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/dispatch/prompt_builder.rs:153"]
@@ -18,6 +18,13 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn frozen_learning_run_writes_no_learned_state' crates/roko-cli/src && cargo test -p roko-cli --lib frozen_learning_run_writes_no_learned_state"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T01:24:37Z"
+commit = "2347ad858"
+forced = false
+evidence = "Frozen learning exists end to end: --frozen-learning / [learning] frozen (PK10, gap-f61823, 2724386ea) and the frozen gate settlement plus the digest proof over every learned-state file (PK11, gap-2b5d37, 2347ad858). frozen_learning_run_writes_no_learned_state passed in gate 5b's nextest run."
 +++
 `[meta] skip_enrichment` suppresses only eval artifacts and routing advice (`graph_task_dispatch.rs:3061-3074`). Every run still reads and writes learned state:
 - c-factor context, section effectiveness, knowledge, episode knowledge and playbooks are injected into prompts (`dispatch/prompt_builder.rs`);

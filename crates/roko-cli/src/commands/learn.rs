@@ -476,7 +476,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
                     "the measured loop audit is not built yet (backlog 5123); printing the census"
                 );
             }
-            print!("{}", roko_cli::commands::learn_loops::loops_output(&wd, json)?);
+            print!(
+                "{}",
+                roko_cli::commands::learn_loops::loops_output(&wd, json)?
+            );
             Ok(EXIT_SUCCESS)
         }
         LearnCmd::Inspect { subsystem } => {

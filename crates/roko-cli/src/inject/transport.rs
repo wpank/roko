@@ -746,7 +746,9 @@ mod unix {
         #[tokio::test]
         async fn inject_socket_binds_under_a_long_workspace_path() {
             let root = tempdir().expect("tempdir");
-            let workdir = root.path().join("a-checkout-nested-deeply-enough".repeat(3));
+            let workdir = root
+                .path()
+                .join("a-checkout-nested-deeply-enough".repeat(3));
             std::fs::create_dir_all(&workdir).expect("create the deep workspace");
             let home = super::super::inject_socket_dir(&workdir)
                 .join(format!("{}.sock", std::process::id()));
@@ -767,7 +769,10 @@ mod unix {
             assert_eq!(command.command_id, "req-plan-1");
             drop(server);
             assert!(!bound.exists(), "the socket is removed");
-            assert!(!socket_pointer_path(&home).exists(), "the pointer is removed");
+            assert!(
+                !socket_pointer_path(&home).exists(),
+                "the pointer is removed"
+            );
         }
 
         /// A client that cannot present the run's token gets no answer, and

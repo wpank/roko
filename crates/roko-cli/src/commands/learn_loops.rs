@@ -49,8 +49,8 @@ mod tests {
     /// table has one line per loop.
     #[test]
     fn learn_loops_census_json_matches_library() {
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../roko-learn/tests/fixtures/loop_census");
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../roko-learn/tests/fixtures/loop_census");
         let temp = tempfile::tempdir().expect("tempdir");
         copy_tree(&fixture, &temp.path().join(".roko"));
         let workdir = temp.path();
@@ -63,7 +63,10 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&printed).expect("JSON");
         assert_eq!(parsed["schema"], census::CENSUS_SCHEMA);
         let linucb = report.row("L-linucb").expect("an L-linucb row");
-        assert_eq!(linucb.reason.map(|reason| reason.as_str()), Some("dormant:no_learning"));
+        assert_eq!(
+            linucb.reason.map(|reason| reason.as_str()),
+            Some("dormant:no_learning")
+        );
 
         let table = loops_output(workdir, false).expect("the table");
         assert_eq!(table.lines().count(), registry.loops().len() + 1, "{table}");

@@ -28,7 +28,9 @@ fn cs_widths_match_python_reference() {
     assert_eq!(reference["alpha"].as_f64(), Some(alpha));
     assert_eq!(reference["grid"].as_u64(), Some(grid));
     let sequences = input["sequences"].as_array().expect("sequences");
-    let expected = reference["sequences"].as_array().expect("reference sequences");
+    let expected = reference["sequences"]
+        .as_array()
+        .expect("reference sequences");
     assert_eq!(sequences.len(), expected.len());
     for (sequence, python) in sequences.iter().zip(expected) {
         let name = sequence["name"].as_str().expect("a name");

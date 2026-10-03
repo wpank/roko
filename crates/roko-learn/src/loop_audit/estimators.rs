@@ -441,7 +441,13 @@ impl BenefitEstimator {
         if let Some(x) = row.pre.covariate {
             let x = x.clamp(0.0, 1.0);
             let sums = &mut self.covariate_sums;
-            *sums = (sums.0 + 1.0, sums.1 + x, sums.2 + u, sums.3 + x * u, sums.4 + x * x);
+            *sums = (
+                sums.0 + 1.0,
+                sums.1 + x,
+                sums.2 + u,
+                sums.3 + x * u,
+                sums.4 + x * x,
+            );
         }
         if let Some(stratum) = &row.pre.stratum {
             let entry = self
@@ -573,7 +579,10 @@ mod tests {
         let variance = estimates.iter().map(|e| (e - mean).powi(2)).sum::<f64>() / (n - 1.0);
         let standard_error = (variance / n).sqrt();
         println!("AIPW over {RUNS} runs: mean {mean:.4} ± {standard_error:.4} (true 0.1)");
-        assert!((mean - 0.1).abs() <= 2.0 * standard_error, "{mean} ± {standard_error}");
+        assert!(
+            (mean - 0.1).abs() <= 2.0 * standard_error,
+            "{mean} ± {standard_error}"
+        );
     }
 
     /// S03 §4.5: with a covariate that predicts the outcome, CUPED's
@@ -596,7 +605,10 @@ mod tests {
         println!("CUPED variance reduction factor {factor:.3}");
         assert!(factor > 1.0, "VRF {factor}");
         assert_eq!(dim.n, cuped.n);
-        assert!((cuped.mean - 0.1).abs() < 4.0 * cuped.standard_error(), "{cuped:?}");
+        assert!(
+            (cuped.mean - 0.1).abs() < 4.0 * cuped.standard_error(),
+            "{cuped:?}"
+        );
     }
 
     /// S03 §4.5's table: every increment stays within its declared bound at
@@ -639,13 +651,20 @@ mod tests {
                 increments.cost,
             ];
             for increment in all.into_iter().flatten() {
-                assert!(increment.value.abs() <= increment.bound + 1e-9, "{increment:?}");
+                assert!(
+                    increment.value.abs() <= increment.bound + 1e-9,
+                    "{increment:?}"
+                );
             }
             assert_eq!(increments.cost.is_some(), source.is_reported_usage());
             assert_eq!(estimator.push(&chain), Admission::Loop);
         }
         let (dim, cost) = (estimator.dim(), estimator.cost());
-        assert_eq!((dim.n, cost.n), (2_000, 1_500), "β_cost needs reported usage");
+        assert_eq!(
+            (dim.n, cost.n),
+            (2_000, 1_500),
+            "β_cost needs reported usage"
+        );
         let worst = estimator.dim().interval.expect("an interval");
         assert!(worst.0 < worst.1);
 

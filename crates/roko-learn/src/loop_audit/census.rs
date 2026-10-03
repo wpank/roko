@@ -228,9 +228,8 @@ fn census_row(spec: &LoopSpec, logs: &Logs, harness_sha: Option<&str>) -> Census
         qualifiers.extend(finding.qualifier);
     }
     // The cheapest code wins; on a tie, log evidence beats a declaration.
-    candidates.sort_by_key(|(code, evidence, _)| {
-        (code.precedence(), *evidence == Evidence::Declared)
-    });
+    candidates
+        .sort_by_key(|(code, evidence, _)| (code.precedence(), *evidence == Evidence::Declared));
     let winner = candidates.first().copied();
     if winner.is_some_and(|(_, evidence, stale)| evidence == Evidence::Declared && stale) {
         qualifiers.push(Qualifier::DeclaredStale);
@@ -459,7 +458,9 @@ impl Logs {
             }
             "L-dream-bias" => {
                 let written = self.dream_recommendations?;
-                facts.push(format!("the dream cycle wrote {written} routing recommendations"));
+                facts.push(format!(
+                    "the dream cycle wrote {written} routing recommendations"
+                ));
                 None
             }
             _ => None,
@@ -518,12 +519,54 @@ mod tests {
         assert_eq!(report.rows.len(), registry.loops().len());
         let retired = |by: &str| Lifecycle::Retired { by: by.to_string() };
         let expected = [
-            ("L-linucb", Lifecycle::Active, Some(Flagged), R::NoLearning, vec![], Log),
-            ("L-bid", Lifecycle::Active, Some(Flagged), R::Degenerate, vec![], Log),
-            ("L-know", Lifecycle::Active, Some(Flagged), R::Unlogged, vec![], Log),
-            ("L-play", Lifecycle::Active, Some(Flagged), R::Unlogged, vec![], Log),
-            ("L-route", Lifecycle::Active, Some(Flagged), R::Mask, vec![], Declared),
-            ("L-dream-bias", Lifecycle::Active, Some(Flagged), R::WriteOnly, vec![], Declared),
+            (
+                "L-linucb",
+                Lifecycle::Active,
+                Some(Flagged),
+                R::NoLearning,
+                vec![],
+                Log,
+            ),
+            (
+                "L-bid",
+                Lifecycle::Active,
+                Some(Flagged),
+                R::Degenerate,
+                vec![],
+                Log,
+            ),
+            (
+                "L-know",
+                Lifecycle::Active,
+                Some(Flagged),
+                R::Unlogged,
+                vec![],
+                Log,
+            ),
+            (
+                "L-play",
+                Lifecycle::Active,
+                Some(Flagged),
+                R::Unlogged,
+                vec![],
+                Log,
+            ),
+            (
+                "L-route",
+                Lifecycle::Active,
+                Some(Flagged),
+                R::Mask,
+                vec![],
+                Declared,
+            ),
+            (
+                "L-dream-bias",
+                Lifecycle::Active,
+                Some(Flagged),
+                R::WriteOnly,
+                vec![],
+                Declared,
+            ),
             (
                 "L-prompt-exp",
                 Lifecycle::Active,
@@ -540,8 +583,22 @@ mod tests {
                 vec![],
                 Declared,
             ),
-            ("L-holdout", retired("4101"), None, R::WriteOnly, vec![Misspecified], Declared),
-            ("L-rag11", retired("4105"), None, R::LabelOnly, vec![], Declared),
+            (
+                "L-holdout",
+                retired("4101"),
+                None,
+                R::WriteOnly,
+                vec![Misspecified],
+                Declared,
+            ),
+            (
+                "L-rag11",
+                retired("4105"),
+                None,
+                R::LabelOnly,
+                vec![],
+                Declared,
+            ),
         ];
         for (id, lifecycle, state, reason, qualifiers, evidence) in expected {
             let row = report.row(id).unwrap_or_else(|| panic!("{id} has no row"));
@@ -563,7 +620,10 @@ mod tests {
             "no loop is live"
         );
         let linucb = report.row("L-linucb").expect("L-linucb");
-        assert_eq!(linucb.facts, ["LinUCB learned from 1 of 275 router observations"]);
+        assert_eq!(
+            linucb.facts,
+            ["LinUCB learned from 1 of 275 router observations"]
+        );
     }
 
     /// A commit no finding was verified at.
@@ -579,7 +639,10 @@ mod tests {
         assert!(route.findings.iter().all(|finding| finding.stale));
         assert!(route.qualifiers.contains(&Qualifier::DeclaredStale));
         let linucb = report.row("L-linucb").expect("L-linucb");
-        assert!(!linucb.qualifiers.contains(&Qualifier::DeclaredStale), "log evidence");
+        assert!(
+            !linucb.qualifiers.contains(&Qualifier::DeclaredStale),
+            "log evidence"
+        );
 
         let json = render_json(&report).expect("render");
         let parsed: Value = serde_json::from_str(&json).expect("JSON");

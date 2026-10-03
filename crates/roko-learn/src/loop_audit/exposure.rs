@@ -471,7 +471,11 @@ mod tests {
         let (low, high) = estimate.interval.expect("an interval");
         assert!(low <= 0.0 && 0.0 <= high, "[{low}, {high}]");
 
-        let set = |ids: &[&str]| ids.iter().map(|id| (*id).to_string()).collect::<BTreeSet<_>>();
+        let set = |ids: &[&str]| {
+            ids.iter()
+                .map(|id| (*id).to_string())
+                .collect::<BTreeSet<_>>()
+        };
         assert!((set(&["a", "b"]).distance(&set(&["b", "c"])) - 2.0 / 3.0).abs() < 1e-12);
         assert_eq!(set(&[]).distance(&set(&[])), 0.0);
     }

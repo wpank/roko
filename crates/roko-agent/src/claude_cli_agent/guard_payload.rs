@@ -32,8 +32,8 @@ const LENGTH_EXTRA: [u32; 29] = [
 ];
 /// The shortest distance of each distance code, 0 to 29.
 const DISTANCE_BASE: [usize; 30] = [
-    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049,
-    3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
 ];
 /// The extra bits of each distance code.
 const DISTANCE_EXTRA: [u32; 30] = [

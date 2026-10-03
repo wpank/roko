@@ -1270,7 +1270,9 @@ pub(crate) fn reset_provider_health(path: &Path, provider: Option<&str>) -> Resu
             Some(record) => format!("{:?}", record.error_class),
             None => "no failure".to_string(),
         };
-        cleared.push(format!("{key}: was {note} after {cause}; its circuit is closed"));
+        cleared.push(format!(
+            "{key}: was {note} after {cause}; its circuit is closed"
+        ));
     }
     registry
         .save(path)

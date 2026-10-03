@@ -79,7 +79,11 @@ fn up_bet(bet: f64, m: f64) -> f64 {
 
 /// The downward bet against mean `m`, truncated the same way.
 fn down_bet(bet: f64, m: f64) -> f64 {
-    if m == 1.0 { bet } else { bet.min(CS_C / (1.0 - m)) }
+    if m == 1.0 {
+        bet
+    } else {
+        bet.min(CS_C / (1.0 - m))
+    }
 }
 
 /// One step of the hedged capital against scaled mean `m`: update both
@@ -339,8 +343,8 @@ impl SrmEvalue {
             return;
         }
         let arms = self.counts.len() as f64;
-        let predictive = (self.prior + self.counts[arm] as f64)
-            / (self.prior * arms + self.units as f64);
+        let predictive =
+            (self.prior + self.counts[arm] as f64) / (self.prior * arms + self.units as f64);
         self.log_e += predictive.ln() - null.ln();
         self.counts[arm] += 1;
         self.units += 1;
@@ -390,7 +394,8 @@ mod tests {
         let mut cs = EmpiricalBernsteinCs::new(alpha);
         steps.iter().all(|&(x, bound)| {
             cs.push(x, bound);
-            cs.interval().is_none_or(|(low, high)| low <= mean && mean <= high)
+            cs.interval()
+                .is_none_or(|(low, high)| low <= mean && mean <= high)
         })
     }
 
@@ -407,8 +412,7 @@ mod tests {
         let passed = bernoulli(rng, 0.7);
         let false_green = passed && bernoulli(rng, 0.1);
         let audited = bernoulli(rng, q);
-        let u = f64::from(u8::from(passed))
-            - f64::from(u8::from(audited && false_green)) / q;
+        let u = f64::from(u8::from(passed)) - f64::from(u8::from(audited && false_green)) / q;
         let learned = !bernoulli(rng, p);
         let (increment, _) = ipw_difference(u, 1.0 / q, learned, p);
         (increment, 1.0 / (q * p))
@@ -438,7 +442,10 @@ mod tests {
             let bernstein = bernstein as f64 / PATHS as f64;
             println!("{name}: betting coverage {betting:.4}, empirical Bernstein {bernstein:.4}");
             assert!(betting >= 1.0 - alpha, "{name}: betting {betting}");
-            assert!(bernstein >= 1.0 - alpha, "{name}: empirical Bernstein {bernstein}");
+            assert!(
+                bernstein >= 1.0 - alpha,
+                "{name}: empirical Bernstein {bernstein}"
+            );
         }
     }
 
@@ -528,9 +535,15 @@ mod tests {
                 betting.push(x, bound);
                 bernstein.push(x, bound);
                 let want = &sequence["betting_widths"][step];
-                assert!(close(betting.width(), want, 1e-12), "{name} step {step}: betting");
+                assert!(
+                    close(betting.width(), want, 1e-12),
+                    "{name} step {step}: betting"
+                );
                 let want = &sequence["eb_widths"][step];
-                assert!(close(bernstein.width(), want, 1e-9), "{name} step {step}: bernstein");
+                assert!(
+                    close(bernstein.width(), want, 1e-9),
+                    "{name} step {step}: bernstein"
+                );
             }
         }
     }

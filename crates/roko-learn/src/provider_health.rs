@@ -124,7 +124,9 @@ impl ErrorClass {
     #[must_use]
     pub fn from_failure_text(text: &str) -> Self {
         let lower = text.to_ascii_lowercase();
-        Self::from_kind(roko_agent::provider::error_classify::classify_failure_text(&lower))
+        Self::from_kind(roko_agent::provider::error_classify::classify_failure_text(
+            &lower,
+        ))
     }
 }
 

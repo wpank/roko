@@ -2219,8 +2219,8 @@ fn cli_parses_config_providers_health_subcommand() {
 
 #[test]
 fn cli_parses_config_providers_reset_health_subcommand() {
-    let cli = Cli::try_parse_from(["roko", "config", "providers", "reset-health", "claude_cli"])
-        .unwrap();
+    let cli =
+        Cli::try_parse_from(["roko", "config", "providers", "reset-health", "claude_cli"]).unwrap();
     assert!(matches!(
         cli.command,
         Some(Command::Config {

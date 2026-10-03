@@ -31,9 +31,11 @@
 //! depth once, and a task type keeps, in this process, the deepest depth it
 //! ran at in its ladder window until the ladder applies a new window to it.
 //! Without audits there is no ladder and so no window: M1's floor applies as
-//! it stands. S04's per-attempt depth request d* is not published yet
-//! (6132), so nothing here reads it. Decision 7103 (b): the depth acts on
-//! real runs.
+//! it stands. An active self-model's per-attempt request d* (S04, 6132)
+//! raises one attempt's depth above that, never its window's, and after the
+//! deepest depth's checks it may reject a pass that still looks like a false
+//! green, so that a stronger model retries the task. Decision 7103 (b): the
+//! depth acts on real runs.
 
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
@@ -263,7 +265,10 @@ impl GraphTaskDispatcher {
     ) -> Result<Deepened> {
         let mut deepened = Deepened::default();
         let depth = self.verify_depth(spec, task, theta);
+        // 6132: the self-model's request d* after the pass, never lower.
+        let depth = self.self_model_depth(spec, task, attempt_key, executor, depth);
         if depth == VerifyDepth::V0 {
+            deepened.failure = self.self_model_after_pass(spec, task, attempt_key, executor, depth);
             return Ok(deepened);
         }
         let kind = task_type(task);
@@ -333,6 +338,10 @@ impl GraphTaskDispatcher {
         }
         if let Some(Ok((_, worktree))) = opened {
             remove_worktree(worktree).await;
+        }
+        // 6132: still suspicious after the deepest depth, the pass escalates the model.
+        if deepened.failure.is_none() {
+            deepened.failure = self.self_model_after_pass(spec, task, attempt_key, executor, depth);
         }
         Ok(deepened)
     }

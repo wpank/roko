@@ -61,3 +61,16 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK17 (gap-cb5133), PK19 (gap-de0b87), PK52 (gap-0c429f), PK58 (gap-f0a7ee), PK60 (gap-940e44), PK64 (gap-2e4a81).
 - Suggested model: opus.
+
+## Progress
+
+- 6132: implemented at f7c1cbcd1 on `work/gap-414e56`; cargo verification deferred to the batch gate.
+  Policy (b)'s post-pass step (`self_model.rs`) hands d* to DP3, which applies max(its level, d*)
+  (`verify_depth.rs::deepen_verification`); after the deepest depth, r > r_max rejects the pass and
+  that failure climbs a rung. Active mode on self-started chains only; shadow logs; silent while
+  p_fg is at its prior. d_j (prior 0.5) and c_j are defaults until S05 measures them.
+- 6133: implemented at 72ad81814 on `work/gap-414e56`; cargo verification deferred to the batch gate.
+  Both policies read S07's spec score; refine_spec/abandon publish `self_model_refine:`/
+  `self_model_abandon:` diagnoses and event-log entries, and refine appends `spec.refine_requested`
+  to the run's `spec.jsonl`. The attempt always runs on the ladder's choice; S07's gate does not
+  read the request yet.

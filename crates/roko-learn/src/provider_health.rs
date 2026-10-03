@@ -117,6 +117,17 @@ impl ErrorClass {
             _ => Self::Unknown,
         }
     }
+
+    /// The class of a failure from its text, as the shared failure
+    /// classifier (`roko_agent::provider::error_classify`) names it, for a
+    /// caller that has only the text (bug-52c48f).
+    #[must_use]
+    pub fn from_failure_text(text: &str) -> Self {
+        let lower = text.to_ascii_lowercase();
+        Self::from_kind(roko_agent::provider::error_classify::classify_failure_text(
+            &lower,
+        ))
+    }
 }
 
 /// Cooldown for an [`ErrorClass::Exhausted`] failure whose reset time is
@@ -261,10 +272,38 @@ impl ProviderHealth {
     ///
     /// The circuit opens immediately and stays open until the provider's
     /// reported reset rather than a class-default cooldown; after that the
-    /// next request is a half-open probe.
-    pub fn record_exhaustion(&mut self, now_ms: i64, until_ms: i64) {
-        self.record_failure(ErrorClass::Exhausted, now_ms);
+    /// next request is a half-open probe. A provider the generic failure path
+    /// already holds open for an exhaustion, as it does once it has
+    /// classified the same refusal, only has the quarantine's end moved: one
+    /// refusal is one failure (bug-c55f1c). Returns whether a failure was
+    /// recorded.
+    pub fn record_exhaustion(&mut self, now_ms: i64, until_ms: i64) -> bool {
+        let last_exhausted = self
+            .failure_window
+            .back()
+            .is_some_and(|record| record.error_class == ErrorClass::Exhausted);
+        let held = self.state == CircuitState::Open
+            && self.cooldown_until.is_some_and(|until| until > now_ms)
+            && last_exhausted;
+        if !held {
+            self.record_failure(ErrorClass::Exhausted, now_ms);
+        }
+        self.state = CircuitState::Open;
         self.cooldown_until = Some(until_ms.max(now_ms));
+        !held
+    }
+
+    /// Clear the live circuit state, as an operator does once the cause of a
+    /// quarantine is fixed (a CLI logged in again, a bill paid): the circuit
+    /// closes, the consecutive failures, cooldown and rolling window of
+    /// recent outcomes reset, so the provider routes again and its next
+    /// failure is judged afresh. Its lifetime counts and recent failure
+    /// records stay: they are its history (gap-d90a93).
+    pub fn clear(&mut self) {
+        self.state = CircuitState::Closed;
+        self.consecutive_failures = 0;
+        self.cooldown_until = None;
+        self.recent_outcomes.clear();
     }
 
     /// P3-09: Record a failure with associated cost attribution.
@@ -547,24 +586,50 @@ impl ProviderHealthRegistry {
     /// The provider stays unavailable until `until_ms` (its reported reset
     /// time, or now plus a cooldown when none was reported), then admits one
     /// half-open probe. The state is persisted like any other outcome, so a
-    /// restarted run keeps routing around the provider.
+    /// restarted run keeps routing around the provider. A refusal the generic
+    /// failure path already recorded as an exhaustion is not counted again
+    /// ([`ProviderHealth::record_exhaustion`]).
     pub fn record_exhaustion(&self, provider_id: &str, until_ms: i64) {
         let key = normalize_provider_key(provider_id);
-        tracing::info!(
-            monotonic_counter.roko_provider_failures_total = 1_u64,
-            provider = %key,
-            error_class = ?ErrorClass::Exhausted,
-            until_ms,
-            "provider usage exhaustion recorded"
-        );
-        self.count_failure(&key, ErrorClass::Exhausted);
         let mut providers = self.providers.lock();
         let health = providers
             .entry(key.clone())
             .or_insert_with(|| new_provider_health(&key));
-        health.record_exhaustion(unix_ms_now(), until_ms);
+        let recorded = health.record_exhaustion(unix_ms_now(), until_ms);
         drop(providers);
+        if recorded {
+            tracing::info!(
+                monotonic_counter.roko_provider_failures_total = 1_u64,
+                provider = %key,
+                error_class = ?ErrorClass::Exhausted,
+                until_ms,
+                "provider usage exhaustion recorded"
+            );
+            self.count_failure(&key, ErrorClass::Exhausted);
+        } else {
+            tracing::info!(
+                provider = %key,
+                until_ms,
+                "provider usage exhaustion already recorded; its quarantine now ends at the reset"
+            );
+        }
         self.schedule_persist();
+    }
+
+    /// Clear `provider_id`'s live circuit state ([`ProviderHealth::clear`])
+    /// and schedule a save: the provider routes again at once. Returns its
+    /// health as it was, or `None` for a provider the registry does not
+    /// track. The key is normalized before lookup.
+    pub fn clear(&self, provider_id: &str) -> Option<ProviderHealth> {
+        let key = normalize_provider_key(provider_id);
+        let mut providers = self.providers.lock();
+        let health = providers.get_mut(&key)?;
+        let before = health.clone();
+        health.clear();
+        drop(providers);
+        tracing::info!(provider = %key, "provider health cleared: its circuit is closed");
+        self.schedule_persist();
+        Some(before)
     }
 
     /// Return whether `provider_id` is currently available for routing.
@@ -1962,6 +2027,63 @@ mod tests {
         assert!(!h.is_available(86_400_999));
     }
 
+    /// bug-52c48f: a failure's text names its class through the shared
+    /// classifier, so a caller with only the text records an auth failure as
+    /// one, not as unknown.
+    #[test]
+    fn error_class_from_failure_text_uses_the_shared_classifier() {
+        for (text, class) in [
+            ("Not logged in", ErrorClass::AuthFailure),
+            ("429 Too Many Requests", ErrorClass::RateLimit),
+            ("503 service unavailable", ErrorClass::ServerError),
+            ("something odd", ErrorClass::Unknown),
+        ] {
+            assert_eq!(ErrorClass::from_failure_text(text), class, "{text}");
+        }
+    }
+
+    /// gap-d90a93: clearing a provider an auth failure took out closes its
+    /// circuit at once, so it routes again, and keeps its lifetime counts and
+    /// failure records; the next failure starts a fresh count. A cleared
+    /// registry saves the closed circuit, and clearing an untracked provider
+    /// changes nothing.
+    #[test]
+    fn provider_health_clear_reopens_the_circuit() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("provider-health.json");
+        let registry = ProviderHealthRegistry::load_or_new(&path);
+        registry.record_success("claude-cli");
+        registry.record_failure("claude-cli", ErrorClass::AuthFailure);
+        assert!(!registry.is_available("claude_cli"));
+
+        let before = registry.clear("claude-cli").expect("a tracked provider");
+        assert_eq!(before.state, CircuitState::Open);
+        assert!(registry.is_available("claude_cli"));
+        let cleared = registry.get("claude_cli");
+        assert_eq!(cleared.state, CircuitState::Closed);
+        assert_eq!(cleared.consecutive_failures, 0);
+        assert_eq!(cleared.cooldown_until, None);
+        assert!(cleared.recent_outcomes.is_empty());
+        assert_eq!(cleared.total_requests, 2);
+        assert_eq!(cleared.total_failures, 1);
+        assert_eq!(cleared.failure_window.len(), 1);
+
+        registry.record_failure("claude-cli", ErrorClass::Timeout);
+        assert!(
+            registry.is_available("claude_cli"),
+            "one failure is not three"
+        );
+        assert_eq!(registry.get("claude_cli").consecutive_failures, 1);
+        assert!(registry.clear("cerebras").is_none());
+
+        registry.clear("claude-cli");
+        registry.save(&path).expect("save");
+        drop(registry);
+        let reloaded = ProviderHealthRegistry::load_or_new(&path);
+        assert_eq!(reloaded.get("claude_cli").state, CircuitState::Closed);
+        assert_eq!(reloaded.get("claude_cli").total_failures, 2);
+    }
+
     /// backlog 1115: a single auth failure takes the provider out at once,
     /// for as long as a billing failure does: a login does not fix itself
     /// within a run.
@@ -1994,6 +2116,25 @@ mod tests {
             h.cooldown_until,
             Some(1_000 + DEFAULT_EXHAUSTION_COOLDOWN_MS)
         );
+    }
+
+    /// bug-c55f1c: the generic failure path records an exhaustion refusal
+    /// first, then the dedicated path quarantines the provider until its
+    /// reported reset; together they count one failure. An exhaustion after
+    /// the quarantine ended counts again.
+    #[test]
+    fn exhaustion_after_its_generic_failure_counts_once() {
+        let mut h = new_provider_health("claude_cli");
+        h.record_failure(ErrorClass::Exhausted, 1_000);
+        assert!(!h.record_exhaustion(1_001, 7_200_000));
+        assert_eq!(h.total_failures, 1);
+        assert_eq!(h.failure_window.len(), 1);
+        assert_eq!(h.cooldown_until, Some(7_200_000));
+
+        assert!(h.is_available(7_200_000));
+        assert!(h.record_exhaustion(7_200_001, 14_400_000));
+        assert_eq!(h.total_failures, 2);
+        assert_eq!(h.cooldown_until, Some(14_400_000));
     }
 
     #[test]

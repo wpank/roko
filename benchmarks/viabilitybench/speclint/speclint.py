@@ -1541,11 +1541,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, help="with --dynamic: the most seconds a verify step may take (default: 120)")
     parser.add_argument("--scratch", type=Path, help="with --dynamic: an existing directory outside the checkout for the base checkouts (default: the system temp directory)")
     parser.add_argument("--fixture", action="store_true", help="with --dynamic: the workspace root (default: the first path) is a plain directory; check against a one-commit snapshot of it")
+    parser.add_argument("--critic", action="store_true", help="add critic_score and n_questions (specops/critic.py's fixed four-question rubric); advisory, never changes score or band")
+    parser.add_argument("--ambiguity-probe", action="store_true", help="add ambiguity in [0, 1] (specops/ambiguity.py's ClarifyGPT-style probe); advisory, never changes score or band")
     args = parser.parse_args(argv)
     if not args.dynamic and (args.base or args.timeout is not None or args.scratch or args.fixture):
         parser.error("--base, --timeout, --scratch and --fixture need --dynamic")
     if args.timeout is not None and args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if args.critic or args.ambiguity_probe:
+        # Both features are advisory and need a model (specops/critic.py, specops/ambiguity.py); S09 block C
+        # wires a live one (about $0.002/task). Until then these flags refuse rather than guess or call out.
+        flag = "--critic" if args.critic else "--ambiguity-probe"
+        parser.error(f"{flag} needs a model; none is wired yet (S09 block C). A default run always scores "
+                    "critic: null, ambiguity: null with no network call.")
 
     files = discover(args.paths)
     if not files:

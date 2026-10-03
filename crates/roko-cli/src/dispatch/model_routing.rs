@@ -486,6 +486,19 @@ impl ModelRouter {
         self
     }
 
+    /// Route by `health` from now on, keeping the model-to-provider map
+    /// [`Self::with_provider_health`] gave: a caller that loads a persisted
+    /// registry after the router was built swaps it in (bug-cf1cf7).
+    pub fn replace_provider_health(&mut self, health: Arc<ProviderHealthRegistry>) {
+        self.health = Some(health);
+    }
+
+    /// The provider health registry routing reads, if any.
+    #[must_use]
+    pub fn provider_health(&self) -> Option<&Arc<ProviderHealthRegistry>> {
+        self.health.as_ref()
+    }
+
     /// Attach a latency registry and ceiling.
     ///
     /// Providers whose tracked p95 latency exceeds `threshold_ms` are
@@ -2071,6 +2084,72 @@ mod tests {
             choice.model.slug, "gemini-2.5-flash",
             "Open anthropic must be excluded; gemini must be selected"
         );
+    }
+
+    /// bug-cf1cf7: the router a factory builds reads the registry that
+    /// `with_health_registry` supplies afterwards, as a plan run's persisted
+    /// one, so a provider whose circuit that registry holds open gets no task
+    /// from the new run's first route.
+    #[tokio::test]
+    async fn with_health_registry_rewires_the_router() {
+        use roko_core::agent::ProviderKind;
+        use roko_core::config::schema::ProviderConfig;
+        use roko_learn::provider_health::ErrorClass;
+
+        use crate::dispatch::SharedAgentFactory;
+
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        // The cascade router picks, not the ladder.
+        config.routing.ladder.enabled = false;
+        for (provider, kind, model) in [
+            ("anthropic", ProviderKind::AnthropicApi, "claude-sonnet-4-6"),
+            ("google", ProviderKind::GeminiApi, "gemini-2.5-flash"),
+        ] {
+            // `PATH` is always set, standing in for a key.
+            let provider_config = ProviderConfig {
+                kind,
+                api_key_env: Some("PATH".to_string()),
+                ..ProviderConfig::default()
+            };
+            config
+                .providers
+                .insert(provider.to_string(), provider_config);
+            let profile = ModelProfile {
+                provider: provider.to_string(),
+                slug: model.to_string(),
+                supports_tools: true,
+                ..ModelProfile::default()
+            };
+            config.models.insert(model.to_string(), profile);
+        }
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "gemini-2.5-flash".into(),
+        ]));
+        let health = Arc::new(ProviderHealthRegistry::new());
+        for _ in 0..3 {
+            health.record_failure("anthropic", ErrorClass::RateLimit);
+        }
+
+        let factory = SharedAgentFactory::new(Arc::new(config), None, Some(cascade), None)
+            .await
+            .with_health_registry(Arc::clone(&health));
+        let routed = factory
+            .dispatcher()
+            .provider_health()
+            .expect("the router reads provider health");
+        assert!(Arc::ptr_eq(routed, &health));
+        let mut planned = ctx();
+        planned.routing_context = Some(routing_context());
+        for _ in 0..4 {
+            let plan = factory
+                .dispatcher()
+                .plan(&task(), &planned)
+                .expect("the factory plans the task");
+            assert_eq!(plan.model.slug, "gemini-2.5-flash");
+        }
     }
 
     /// Health registry attached but no providers are degraded --

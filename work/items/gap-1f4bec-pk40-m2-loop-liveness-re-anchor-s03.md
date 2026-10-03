@@ -89,3 +89,17 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK22 (gap-46fd19), PK27 (gap-5ddf9b), PK34 (gap-ac2611).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-1f4bec`; cargo verification deferred to the batch gate.
+
+- 5104: implemented in place in the untracked `tmp/cybernetic-harness/specs/S03-loop-liveness-audit.md` (v1.3; S03 was already v1.2 from 2202, so the verify's `v1.2` still matches); no commit
+- 5105: implemented at 66259e3a0 (231 KB, row counts exact)
+- 5106: implemented at b78915e79 (retired L-holdout and L-rag11 print `retired` with their last declared reason)
+- 5107: implemented at f8078481f (handler in the library, `commands/learn_loops.rs`, so `--lib` runs the test)
+- 5109: implemented at 5806dd045 (fixture computed by a faithful Python port of today's rule; the gate's two tests confirm it against `LegacyRule` and the live `PromptExperiment`)
+- 5110: implemented at 6964e5642 and 0e5ab8141
+- 5111: implemented at 5e3f69fe8 (adds the Python side to `analysis/test_toolkit.py`, which passes)
+- 5112: implemented at f6ac1ebf0
+- 5113: implemented at ef9e78528

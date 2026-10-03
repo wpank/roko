@@ -99,3 +99,7 @@ classified-failure recording for a failed result; `failover.rs` then performs it
   (`failover.rs`'s direct `record_exhaustion`) that task 1114's anchors never covered.
 - Do not weaken `failover.rs`'s own quarantine `until_ms` computation — it is more accurate (provider-reported
   reset time) than the bridge's generic classified-failure path would produce on its own.
+
+## Progress
+
+- 2026-10-03: implemented on `work/gap-d90a93` at 5cff574dd; `ProviderHealth::record_exhaustion` only moves the quarantine end of a provider already held open for an exhaustion, which also covers the serve and ACP paths. Cargo verification deferred to the batch gate.

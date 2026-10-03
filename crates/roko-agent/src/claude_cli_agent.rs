@@ -35,26 +35,42 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 use tokio_util::task::AbortOnDropHandle;
 
+mod guard_payload;
+
 /// The PreToolUse guard: destructive git commands anywhere in a Bash
 /// command, recursive `rm`, and provider key files named by a command or a
 /// file tool's path. What it checks is documented at its top.
 const GUARD_SCRIPT: &str = include_str!("claude_cli_guard.py");
 
+/// The program each guard hook gives `python3 -c`: [`GUARD_SCRIPT`],
+/// zlib-compressed and base64-encoded, then unpacked and run. The plain
+/// script, once per hook, made `--settings` longer than the 128 KiB Linux
+/// allows one argument (`MAX_ARG_STRLEN`), so `execve` would fail with
+/// `E2BIG` (1223). The program holds no single quote.
+fn guard_program() -> &'static str {
+    static PROGRAM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PROGRAM.get_or_init(|| {
+        format!(
+            "import base64,zlib;exec(zlib.decompress(base64.b64decode(\"{}\")))",
+            guard_payload::zlib_base64(GUARD_SCRIPT.as_bytes())
+        )
+    })
+}
+
 /// Claude's file tools, whose path arguments the guard checks for provider
 /// key files.
 const FILE_TOOL_MATCHER: &str = "Read|Edit|MultiEdit|Write|NotebookEdit|Grep|Glob";
 
-/// The shell command of a guard hook running `check` (`bash` or `file`).
-/// Claude Code runs hooks with `sh -c` and blocks the tool call only on exit
-/// 2; any other failure is a non-blocking error that lets the call run. So a
-/// missing `python3`, and a guard that fails for any reason, exit 2 with a
-/// `BLOCKED:` message.
+/// The shell command of a guard hook running `check` (`bash` or `file`)
+/// with [`guard_program`]. Claude Code runs hooks with `sh -c` and blocks
+/// the tool call only on exit 2; any other failure is a non-blocking error
+/// that lets the call run. So a missing `python3`, and a guard that fails
+/// for any reason (unpacking included), exit 2 with a `BLOCKED:` message.
 fn guard_hook_command(check: &str) -> String {
     format!(
         "command -v python3 >/dev/null 2>&1 || {{ echo 'BLOCKED: the roko command guard needs python3 on PATH' >&2; exit 2; }}\n\
-         python3 -c '{script}' {check} || {{ status=$?; [ \"$status\" -eq 2 ] || echo \"BLOCKED: the roko command guard failed (python3 exit $status)\" >&2; exit 2; }}",
-        // Close the single-quoted string, add an escaped quote, reopen it.
-        script = GUARD_SCRIPT.replace('\'', r"'\''"),
+         python3 -c '{program}' {check} || {{ status=$?; [ \"$status\" -eq 2 ] || echo \"BLOCKED: the roko command guard failed (python3 exit $status)\" >&2; exit 2; }}",
+        program = guard_program(),
     )
 }
 
@@ -1934,6 +1950,10 @@ mod tests {
         Signal::builder(Kind::Prompt).body(Body::text(text)).build()
     }
 
+    /// The Bash hook is one command, with no condition field, and it denies
+    /// each destructive git subcommand and a recursive `rm` by what it does
+    /// when run: the guard inside it is packed (1223), so its text names
+    /// none of them.
     #[test]
     fn settings_json_contains_expected_hooks() {
         let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
@@ -1951,19 +1971,39 @@ mod tests {
             .get("command")
             .and_then(Value::as_str)
             .expect("hook command");
-        assert!(command.contains("tool_input"));
-        for subcommand in [
-            "checkout", "switch", "restore", "push", "reset", "stash", "clean",
+        for denied in [
+            "git checkout main",
+            "git switch main",
+            "git restore .",
+            "git push origin HEAD",
+            "git reset --hard",
+            "git stash",
+            "git clean -fdx",
+            "rm -rf target",
         ] {
-            assert!(
-                command.contains(subcommand),
-                "guard ignores git {subcommand}"
+            assert_eq!(
+                run_hook_command(command, denied).code(),
+                Some(2),
+                "the guard let `{denied}` through"
             );
         }
-        assert!(command.contains("rm"));
+        assert_eq!(run_hook_command(command, "git status").code(), Some(0));
         assert!(
             !command.contains("|| exit 0"),
             "the guard must not fail open"
+        );
+    }
+
+    /// 1223: Linux refuses one argument longer than 128 KiB
+    /// (`MAX_ARG_STRLEN`) with `E2BIG`, so `--settings` stays well under it,
+    /// with room for the guard to grow.
+    #[test]
+    fn settings_json_fits_one_linux_argument() {
+        let settings = build_settings_json();
+        assert!(
+            settings.len() < 96 * 1024,
+            "--settings is {} bytes",
+            settings.len()
         );
     }
 

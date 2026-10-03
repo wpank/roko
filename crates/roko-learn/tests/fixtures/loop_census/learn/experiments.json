@@ -1,0 +1,52 @@
+{
+ "attempt_assignments": {},
+ "experiments": {
+  "retrieval-strategy": {
+   "experiment_id": "retrieval-strategy",
+   "metric_stats": {},
+   "min_effect_size": 0.1,
+   "min_trials_per_variant": 5,
+   "role": null,
+   "section_name": "retrieval-strategy",
+   "stats": {
+    "hdc-only": {
+     "successes": 31,
+     "trials": 37
+    },
+    "hybrid": {
+     "successes": 40,
+     "trials": 45
+    },
+    "keyword": {
+     "successes": 35,
+     "trials": 40
+    }
+   },
+   "status": "Running",
+   "variants": [
+    {
+     "active": true,
+     "id": "keyword",
+     "name": "keyword",
+     "section_name": "retrieval-strategy",
+     "slug": null
+    },
+    {
+     "active": true,
+     "id": "hdc-only",
+     "name": "hdc-only",
+     "section_name": "retrieval-strategy",
+     "slug": null
+    },
+    {
+     "active": true,
+     "id": "hybrid",
+     "name": "hybrid",
+     "section_name": "retrieval-strategy",
+     "slug": null
+    }
+   ],
+   "winner_id": null
+  }
+ }
+}

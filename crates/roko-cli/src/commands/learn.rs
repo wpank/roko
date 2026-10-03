@@ -165,6 +165,17 @@ pub(crate) enum LearnCmd {
         #[arg(long, default_value_t = commands::learn_sizing::MIN_SAMPLE)]
         min_sample: usize,
     },
+    /// The M2 loop census: one row per registered learning loop with its
+    /// state, reason, qualifiers and evidence (S03; read-only, $0).
+    Loops {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// The report-only census over the logs, the only mode until the
+        /// measured audit (backlog 5123) lands.
+        #[arg(long)]
+        census: bool,
+    },
     /// Check a run's attempt records, or report routing outcomes from them (read-only).
     Telemetry {
         #[command(subcommand)]
@@ -302,6 +313,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::FeedbackProof { workdir }
         | LearnCmd::RoleCosts { workdir }
         | LearnCmd::Graduation { workdir }
+        | LearnCmd::Loops { workdir, .. }
         | LearnCmd::Sizing { workdir, .. } => {
             workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
         }
@@ -455,6 +467,19 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             } else {
                 print!("{}", commands::learn_sizing::render_text(&report));
             }
+            Ok(EXIT_SUCCESS)
+        }
+        LearnCmd::Loops { workdir, census } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            if !census {
+                tracing::info!(
+                    "the measured loop audit is not built yet (backlog 5123); printing the census"
+                );
+            }
+            print!(
+                "{}",
+                roko_cli::commands::learn_loops::loops_output(&wd, json)?
+            );
             Ok(EXIT_SUCCESS)
         }
         LearnCmd::Inspect { subsystem } => {
@@ -3202,6 +3227,25 @@ async fn cmd_learn_role_costs(workdir: &std::path::Path, json: bool) -> Result<i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S03 T15: `roko learn loops --census --json` parses.
+    #[test]
+    fn learn_loops_parses() {
+        use clap::Parser as _;
+
+        let cli = Cli::try_parse_from(["roko", "learn", "loops", "--census", "--json"])
+            .expect("parse learn loops");
+        assert!(cli.json);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Loops {
+                    workdir: None,
+                    census: true,
+                },
+            })
+        ));
+    }
 
     /// S01 P0-13: `roko learn telemetry check|route-report` parse, and
     /// `route-report --help` prints help.

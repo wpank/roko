@@ -1,0 +1,123 @@
+{
+ "generated_at": "2026-09-24T08:03:20.707807Z",
+ "pattern_summaries": [
+  {
+   "applies_to": [
+    "unknown-task"
+   ],
+   "confidence": 0.9797979593276978,
+   "description": "model=claude-sonnet-4-6 (258/262); outcome=success (214/262)",
+   "guidance": "Historical dream consolidation shows claude-sonnet-4-6 has a 82% success rate for this task shape across 262 episodes; this model/task pairing is reliable.",
+   "signature": 10198345618955817965
+  },
+  {
+   "applies_to": [
+    "unknown-task"
+   ],
+   "confidence": 0.959829568862915,
+   "description": "model=glm-5.1 (47/55); outcome=success (49/55)",
+   "guidance": "Historical dream consolidation shows glm-5.1 has a 89% success rate for this task shape across 55 episodes; this model/task pairing is reliable.",
+   "signature": 2135858823045081335
+  },
+  {
+   "applies_to": [
+    "unknown-task"
+   ],
+   "confidence": 0.9597685933113098,
+   "description": "model=gpt-oss-120b (142/172); outcome=success (164/172)",
+   "guidance": "Historical dream consolidation shows gpt-oss-120b has a 95% success rate for this task shape across 172 episodes; this model/task pairing is reliable.",
+   "signature": 3940504622519089675
+  },
+  {
+   "applies_to": [
+    "docs"
+   ],
+   "confidence": 0.9488525390625,
+   "description": "kind=agent_turn (4/4); agent_template=Strategist (4/4); model=o3 (3/4); trigger_kind=prd-draft-new (4/4); role=Strategist (4/4); task_category=docs (4/4); complexity_band=standard (4/4); outcome=success (4/4)",
+   "guidance": "Historical dream consolidation shows o3 has a 100% success rate for this task shape across 4 episodes; this model/task pairing is reliable.",
+   "signature": 11779003332025494543
+  },
+  {
+   "applies_to": [
+    "unknown-task"
+   ],
+   "confidence": 0.920319139957428,
+   "description": "model=glm-5v-turbo (19/30); outcome=failure (28/30)",
+   "guidance": "Historical dream consolidation shows glm-5v-turbo has a 7% success rate for this task shape across 30 episodes; consider a more capable model or narrower context.",
+   "signature": 16220944373608564813
+  },
+  {
+   "applies_to": [
+    "scaffolding"
+   ],
+   "confidence": 0.9157335758209229,
+   "description": "kind=agent_turn (9/9); agent_template=Strategist (9/9); model=claude-sonnet-4-6 (9/9); role=Strategist (9/9); task_category=scaffolding (6/9); complexity_band=standard (9/9); outcome=success (7/9)",
+   "guidance": "Dream consolidation found mixed results (78% success) for this task shape across 9 episodes; verify edge cases early.",
+   "signature": 936552662116243842
+  },
+  {
+   "applies_to": [
+    "unknown-task"
+   ],
+   "confidence": 0.8854101300239563,
+   "description": "outcome=failure (10/10)",
+   "guidance": "Historical dream consolidation shows the assigned model has a 0% success rate for this task shape across 10 episodes; consider a more capable model or narrower context.",
+   "signature": 11018434528530734466
+  }
+ ],
+ "recommendations": [
+  {
+   "complexity_band": "standard",
+   "confidence": 0.9797979593276978,
+   "deprioritize": [],
+   "pattern_signature": 10198345618955817965,
+   "recommended_model": "claude-sonnet-4-6",
+   "recommended_model_success_rate": 0.816793893129771,
+   "supporting_episodes": 262,
+   "task_category": "unknown-task"
+  },
+  {
+   "complexity_band": "standard",
+   "confidence": 0.959829568862915,
+   "deprioritize": [],
+   "pattern_signature": 2135858823045081335,
+   "recommended_model": "glm-5.1",
+   "recommended_model_success_rate": 0.8909090909090909,
+   "supporting_episodes": 55,
+   "task_category": "unknown-task"
+  },
+  {
+   "complexity_band": "standard",
+   "confidence": 0.9597685933113098,
+   "deprioritize": [],
+   "pattern_signature": 3940504622519089675,
+   "recommended_model": "gpt-oss-120b",
+   "recommended_model_success_rate": 0.9534883720930233,
+   "supporting_episodes": 172,
+   "task_category": "unknown-task"
+  },
+  {
+   "complexity_band": "standard",
+   "confidence": 0.9488525390625,
+   "deprioritize": [],
+   "pattern_signature": 11779003332025494543,
+   "recommended_model": "o3",
+   "recommended_model_success_rate": 1.0,
+   "supporting_episodes": 4,
+   "task_category": "docs"
+  },
+  {
+   "complexity_band": "standard",
+   "confidence": 0.920319139957428,
+   "deprioritize": [
+    "glm-5v-turbo"
+   ],
+   "pattern_signature": 16220944373608564813,
+   "recommended_model": "glm-5v-turbo",
+   "recommended_model_success_rate": 0.06666666666666667,
+   "supporting_episodes": 30,
+   "task_category": "unknown-task"
+  }
+ ],
+ "source_dream_report": "dream-1790237000707"
+}

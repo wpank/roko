@@ -320,9 +320,13 @@ impl SharedAgentFactory {
     /// dispatches from this factory.
     ///
     /// Runner v2 supplies the persisted workspace registry here so bridge and
-    /// CLI provider outcomes share one circuit-breaker state.
+    /// CLI provider outcomes share one circuit-breaker state. The router
+    /// built in [`Self::new`] reads it too, so a circuit the persisted
+    /// registry holds open steers the next route away (bug-cf1cf7).
     #[must_use]
     pub fn with_health_registry(mut self, registry: Arc<ProviderHealthRegistry>) -> Self {
+        self.dispatcher
+            .replace_provider_health(Arc::clone(&registry));
         self.health_registry = registry;
         self
     }

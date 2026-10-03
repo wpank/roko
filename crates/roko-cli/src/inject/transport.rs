@@ -3,7 +3,10 @@
 //!
 //! A run binds `.roko/runtime/inject/<pid>.sock` and writes the token a
 //! client must present first to `<pid>.token`, both owner-only (`0600`), as
-//! the StateHub IPC socket does; the frames are that socket's too (a 4-byte
+//! the StateHub IPC socket does. When that socket path is too long for a Unix
+//! socket (a deep checkout), the run binds `<pid>.sock` in a short private
+//! directory and names it in `<pid>.sock.path` instead, as the StateHub
+//! socket does too (1224). The frames are that socket's (a 4-byte
 //! big-endian length, then a JSON body). The client sends a hello carrying
 //! the token, then one [`InjectWireRequest`]. The socket turns it into an
 //! [`ExecutionCommand`](crate::execution_control::ExecutionCommand) for the
@@ -166,7 +169,8 @@ mod unix {
         InjectedText,
     };
     use crate::state_hub_ipc::{
-        mint_hub_token, read_frame, tokens_match, write_frame, write_hub_token,
+        bind_socket, bound_socket_path, mint_hub_token, read_frame, socket_pointer_path,
+        tokens_match, write_frame, write_hub_token,
     };
 
     /// The first frame a client sends: the token from the run's token file.
@@ -189,10 +193,14 @@ mod unix {
     const MAX_REMEMBERED_ANSWERS: usize = 1024;
 
     /// A plan run's inject socket. Dropping it stops the listener and
-    /// removes the socket and its token.
+    /// removes the socket, its pointer file and its token.
     pub struct InjectServer {
         shutdown: CancellationToken,
+        /// Where the socket is bound: its home in the workspace, or the path
+        /// the pointer file names.
         socket: PathBuf,
+        /// The file naming the socket's path when that is not its home.
+        pointer: PathBuf,
         token: PathBuf,
     }
 
@@ -200,6 +208,7 @@ mod unix {
         fn drop(&mut self) {
             self.shutdown.cancel();
             let _ = std::fs::remove_file(&self.socket);
+            let _ = std::fs::remove_file(&self.pointer);
             let _ = std::fs::remove_file(&self.token);
         }
     }
@@ -210,9 +219,11 @@ mod unix {
         let dir = super::inject_socket_dir(workdir);
         std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         let pid = std::process::id();
-        let server = InjectServer {
+        let home = dir.join(format!("{pid}.sock"));
+        let mut server = InjectServer {
             shutdown: CancellationToken::new(),
-            socket: dir.join(format!("{pid}.sock")),
+            pointer: socket_pointer_path(&home),
+            socket: home,
             token: dir.join(format!("{pid}.token")),
         };
         // What an earlier process with this pid left behind.
@@ -221,13 +232,11 @@ mod unix {
         // finds the token it has to present.
         let token: Arc<str> = mint_hub_token().into();
         write_hub_token(&server.token, &token)?;
-        let listener = UnixListener::bind(&server.socket)
+        // Owner-only (0600), at its home or, when that is too long for a
+        // Unix socket, at the path its pointer file names.
+        let (listener, socket) = bind_socket(workdir, &server.socket)
             .with_context(|| format!("bind inject socket {}", server.socket.display()))?;
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&server.socket, std::fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("chmod 0600 inject socket {}", server.socket.display()))?;
-        }
+        server.socket = socket;
         let exchange = Arc::new(tokio::sync::Mutex::new(Exchange::new(link)));
         tokio::spawn(accept_requests(
             listener,
@@ -460,10 +469,10 @@ mod unix {
         let mut sockets: Vec<PathBuf> = std::fs::read_dir(super::inject_socket_dir(workdir))
             .ok()?
             .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "sock"))
+            .filter_map(|entry| socket_home(&entry.path()))
             .collect();
         sockets.sort();
+        sockets.dedup();
         let mut unknown = None;
         for socket in sockets {
             match ask(&socket, request).await {
@@ -481,11 +490,26 @@ mod unix {
         unknown
     }
 
-    /// One exchange with the run listening on `socket`.
+    /// The home of the run socket an inject directory entry stands for: the
+    /// socket itself (`<pid>.sock`), or the pointer file of one bound
+    /// elsewhere (`<pid>.sock.path`, 1224).
+    fn socket_home(entry: &Path) -> Option<PathBuf> {
+        let home = if entry.extension().is_some_and(|ext| ext == "path") {
+            entry.with_extension("")
+        } else {
+            entry.to_path_buf()
+        };
+        home.extension()
+            .is_some_and(|ext| ext == "sock")
+            .then_some(home)
+    }
+
+    /// One exchange with the run whose socket's home is `socket`.
     async fn ask(socket: &Path, request: &InjectWireRequest) -> Result<InjectWireReply> {
         let token = std::fs::read_to_string(socket.with_extension("token"))
             .context("read the run's inject token")?;
-        let mut stream = tokio::time::timeout(FRAME_TIMEOUT, UnixStream::connect(socket))
+        let bound = bound_socket_path(socket);
+        let mut stream = tokio::time::timeout(FRAME_TIMEOUT, UnixStream::connect(&bound))
             .await
             .context("no connection in time")??;
         let hello = InjectHello {
@@ -711,6 +735,43 @@ mod unix {
                     ceiling_micro_usd: 250_000,
                     requested_by: "roko plan budget raise".to_string(),
                 }
+            );
+        }
+
+        /// 1224: in a workspace whose inject socket path is longer than a
+        /// Unix socket allows, the run binds in a short private directory
+        /// and names it in `<pid>.sock.path`; `deliver` follows the pointer,
+        /// and the request reaches the run. Stopping the run removes the
+        /// socket and the pointer.
+        #[tokio::test]
+        async fn inject_socket_binds_under_a_long_workspace_path() {
+            let root = tempdir().expect("tempdir");
+            let workdir = root
+                .path()
+                .join("a-checkout-nested-deeply-enough".repeat(3));
+            std::fs::create_dir_all(&workdir).expect("create the deep workspace");
+            let home = super::super::inject_socket_dir(&workdir)
+                .join(format!("{}.sock", std::process::id()));
+            assert!(home.as_os_str().len() > 110, "{}", home.display());
+            let (link, mut run) = link(Duration::from_secs(5));
+            let server = start_inject_server(&workdir, link).expect("listen");
+            let bound = bound_socket_path(&home);
+            assert_ne!(bound, home, "the socket is bound away from its home");
+            assert!(bound.exists(), "{}", bound.display());
+            let accepted = tokio::spawn(async move { run.accept_next().await });
+
+            let reply = deliver(&workdir, &request("plan-1"))
+                .await
+                .expect("an answer");
+
+            assert_eq!(reply.outcome, InjectOutcome::Accepted);
+            let command = accepted.await.expect("run");
+            assert_eq!(command.command_id, "req-plan-1");
+            drop(server);
+            assert!(!bound.exists(), "the socket is removed");
+            assert!(
+                !socket_pointer_path(&home).exists(),
+                "the pointer is removed"
             );
         }
 

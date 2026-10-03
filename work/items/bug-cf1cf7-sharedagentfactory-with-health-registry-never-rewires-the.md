@@ -97,3 +97,7 @@ every real run with a persisted `provider-health.json`, not just an edge case.
 
 - Do not confuse this with `with_disabled_models`/`replace_routing_ladder` (a different, config-driven exclusion
   mechanism already wired correctly) — this item is specifically about the live, persisted circuit-breaker state.
+
+## Progress
+
+- 2026-10-03: implemented on `work/gap-d90a93` at 8dfe5c7c3; `with_health_registry` swaps the registry into the router through `Dispatcher::replace_provider_health`. Cargo verification deferred to the batch gate.

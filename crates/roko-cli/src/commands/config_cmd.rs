@@ -278,6 +278,16 @@ pub(crate) enum ConfigProviderCmd {
         #[arg(long)]
         check_credits: bool,
     },
+    /// Clear a provider's persisted circuit once its cause is fixed (a CLI
+    /// logged in again, a bill paid), so runs route to it again. Without a
+    /// provider, clears every provider held out of routing.
+    ResetHealth {
+        /// Provider name from `[providers.*]`; omit to clear every held provider.
+        provider: Option<String>,
+        /// Directory containing `.roko/` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Send a minimal request to verify provider connectivity.
     Test {
         /// Provider name from `[providers.*]`.  Omit when using `--all`.
@@ -518,6 +528,10 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
                 let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
                 cmd_provider_health(&wd, check_credits).await?;
                 Ok(())
+            }
+            ConfigProviderCmd::ResetHealth { provider, workdir } => {
+                let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+                cmd_provider_reset_health(&wd, provider.as_deref())
             }
             ConfigProviderCmd::Test {
                 provider,
@@ -1187,6 +1201,83 @@ pub(crate) async fn cmd_provider_health(workdir: &Path, check_credits: bool) -> 
     }
 
     Ok(())
+}
+
+/// `roko config providers reset-health`: clear the circuit of `provider`, or
+/// of every provider held out of routing, in `.roko/learn/provider-health.json`
+/// (gap-d90a93), and say what was cleared.
+pub(crate) fn cmd_provider_reset_health(workdir: &Path, provider: Option<&str>) -> Result<()> {
+    let cleared = reset_provider_health(&provider_health_path(workdir), provider)?;
+    if cleared.is_empty() {
+        println!("no provider is held out of routing");
+        return Ok(());
+    }
+    for line in &cleared {
+        println!("{line}");
+    }
+    println!("a plan run already in progress keeps the provider health it loaded until it ends");
+    Ok(())
+}
+
+/// Clear the circuit of `provider`, or of every provider whose circuit is
+/// open, in the provider health file at `path`, and save it. Each provider
+/// keeps its lifetime counts. Returns one line per cleared provider, naming
+/// what held it.
+///
+/// # Errors
+///
+/// A file that cannot be read or parsed, a `provider` the file does not
+/// track, or a failed save.
+pub(crate) fn reset_provider_health(path: &Path, provider: Option<&str>) -> Result<Vec<String>> {
+    use roko_learn::provider_health::{ProviderHealthRegistry, normalize_provider_key};
+
+    // Read strictly first: the registry loads a file it cannot parse as
+    // empty, and saving that would erase it.
+    let snapshot = load_provider_health_snapshot(path)?;
+    let now_ms = unix_ms_now();
+    let targets: Vec<String> = match provider {
+        Some(provider) => {
+            let key = normalize_provider_key(provider);
+            if !snapshot.contains_key(&key) {
+                bail!(
+                    "provider `{provider}` has no recorded health in {}",
+                    path.display()
+                );
+            }
+            vec![key]
+        }
+        None => {
+            let mut held: Vec<String> = snapshot
+                .iter()
+                .filter(|(_, health)| !provider_is_available(Some(*health), now_ms))
+                .map(|(key, _)| key.clone())
+                .collect();
+            held.sort();
+            held
+        }
+    };
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let registry = ProviderHealthRegistry::load_or_new(path);
+    let mut cleared = Vec::with_capacity(targets.len());
+    for key in &targets {
+        let Some(before) = registry.clear(key) else {
+            continue;
+        };
+        let note = format_provider_health_note(Some(&before), now_ms);
+        let cause = match before.failure_window.back() {
+            Some(record) => format!("{:?}", record.error_class),
+            None => "no failure".to_string(),
+        };
+        cleared.push(format!(
+            "{key}: was {note} after {cause}; its circuit is closed"
+        ));
+    }
+    registry
+        .save(path)
+        .with_context(|| format!("save {}", path.display()))?;
+    Ok(cleared)
 }
 
 /// Make a minimal API call to verify that a provider account has credits.

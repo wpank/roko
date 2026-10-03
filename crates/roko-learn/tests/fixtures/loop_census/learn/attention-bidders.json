@@ -1,0 +1,38 @@
+{
+  "task_context": {
+    "subsystem_id": "task_context",
+    "section_betas": {
+      "task_context": [
+        39.0,
+        4.0
+      ],
+      "tool_instructions": [
+        39.0,
+        4.0
+      ],
+      "anti_patterns": [
+        39.0,
+        4.0
+      ],
+      "conventions": [
+        39.0,
+        4.0
+      ],
+      "context_layer": [
+        39.0,
+        4.0
+      ],
+      "role_identity": [
+        39.0,
+        4.0
+      ],
+      "domain_context": [
+        39.0,
+        4.0
+      ]
+    },
+    "section_costs": {},
+    "prior_bid": 1.0,
+    "round_observations": 41
+  }
+}

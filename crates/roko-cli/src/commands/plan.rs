@@ -1,7 +1,5 @@
 //! plan command handlers.
 
-use std::io::IsTerminal as _;
-
 use crate::*;
 use anyhow::Context as _;
 use roko_cli::plan_validate;
@@ -142,11 +140,14 @@ pub(crate) enum PlanCmd {
 Examples:
   roko plan run plans/              Run all plans (graph engine, default)
   roko plan run plans/my-plan       Run a specific plan
-  roko plan run plans/ --approval   Run with interactive TUI approval
+  roko plan run plans/ --no-tui     Plain log output instead of the inline TUI
   roko plan run plans/ --dry-run    Preview without executing
   roko plan run plans/ --fresh      Archive old state and start clean
   roko plan run plans/ --max-parallel-plans 3   Run up to 3 independent plans at once
   roko plan run plans/ --resume-plan .roko/state/graph                              Resume Graph Activities
+
+A plan with [meta] approval = \"per_task\" holds each verified task until it is approved or
+rejected: in the inline TUI (y or n), with `roko plan review`, or with the portal's Review action.
 
 The legacy Runner-v2 engine has been removed. --engine legacy is accepted but exits with an error.")]
     Run {
@@ -167,10 +168,15 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// pass a checkpoint directory, or a checkpoint file for a single plan.
         #[arg(long = "resume-plan", visible_alias = "resume-state", num_args = 0..=1, default_missing_value = ".roko/state/state-snapshot.json")]
         resume_plan: Option<PathBuf>,
-        /// Launch the connected inline TUI while Runner-v2 runs.
-        /// Use this to monitor agent output, tokens, and gate progress in real time.
-        /// The TUI remains open after completion or failure until you quit it.
-        /// Without this flag, plan run outputs plain text logs.
+        /// Open the inline TUI, which shows agent output, tokens and gate
+        /// progress live and closes when the run ends. The run already opens it
+        /// whenever stdout is a terminal, unless `--no-tui`, `--quiet` or
+        /// `--json` is given, so this flag changes nothing; scripts may pass it.
+        ///
+        /// A plan with `[meta] approval = "per_task"` holds each verified task
+        /// until someone approves or rejects it: in this TUI (y or n), with
+        /// `roko plan review <plan> <task> --approve|--reject`, or with the
+        /// Review action in the portal.
         #[arg(long, visible_alias = "tui")]
         approval: bool,
         /// Disable the inline TUI even in interactive terminals.
@@ -1140,7 +1146,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             engine,
             workdir,
             resume_plan,
-            approval,
+            // `--approval` (`--tui`) names the default: the Graph run opens
+            // the inline TUI itself whenever stdout is a terminal.
+            approval: _,
             no_tui,
             max_retries,
             max_tasks,
@@ -1179,11 +1187,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             // It populates `RunConfig.cli_model_override`, which the event
             // loop maps to `DispatchContext.force_backend`.
             let effective_model_override = cli.model.clone();
-
-            // Auto-enable inline TUI when stdout is an interactive terminal,
-            // unless the user explicitly opted out with --no-tui (item 108).
-            let approval =
-                approval || (!no_tui && !cli.quiet && !cli.json && std::io::stdout().is_terminal());
 
             // `--config` names the run's config (bug-4ed3c2): a file that does
             // not exist is an error, not a fall back to the workspace's.
@@ -1271,8 +1274,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 )
                 .await;
             }
-
-            validate_graph_execution_options(engine, approval)?;
 
             // ── Workspace server check ────────────────────────────────────
             // When a live `roko-serve` process owns this workspace, forward
@@ -3056,17 +3057,6 @@ fn validate_graph_selected_plans_before_run(
     Ok(())
 }
 
-/// Reject Graph options whose promised enforcement is not implemented.
-///
-/// The caller invokes this before acquiring the workspace lock or constructing
-/// any provider so `--approval` can never degrade into warning-and-continue.
-fn validate_graph_execution_options(_engine: PlanEngine, _approval: bool) -> Result<()> {
-    // Graph engine now supports approval mode via GraphExecutionControlAdapter.
-    // The approval TUI thread is spawned separately and communicates through
-    // the control channel. No validation needed.
-    Ok(())
-}
-
 /// The `plan run` flags the Graph engine, the only engine, does not
 /// implement (gap-d60281), each with what to use instead. `plan run` stops on
 /// any of them rather than run without it. `--force` (the disk-space
@@ -3399,12 +3389,6 @@ depends_on_plan = ["missing-foundation"]
             !lock_path.exists(),
             "Graph preflight must not create a lock"
         );
-    }
-
-    #[test]
-    fn graph_approval_is_accepted_for_all_engines() {
-        assert!(validate_graph_execution_options(PlanEngine::Graph, true).is_ok());
-        assert!(validate_graph_execution_options(PlanEngine::Graph, false).is_ok());
     }
 
     /// 3209: a task with an open question keeps its plan from running: plan

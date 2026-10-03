@@ -69,6 +69,25 @@ def test_confidence_sequence_is_the_running_intersection_and_matches_s05s_sequen
     assert shifted == [(2 + 2 * low, 2 + 2 * high) for low, high in sequence]
 
 
+def test_confidence_sequence_matches_the_rust_reference_fixture():
+    """roko-learn's betting CS is checked against this toolkit on shared fixed-seed sequences (backlog 5111): the
+    input is `widths.json` and the toolkit's widths are `reference.json`, both in roko-learn's fixtures. Recomputing
+    them here makes a change to cs.py fail on this side too, not only in the Rust test."""
+    import json
+    from pathlib import Path
+
+    fixtures = Path(__file__).resolve().parents[3] / "crates/roko-learn/tests/fixtures/loop_audit_cs"
+    shared = json.loads((fixtures / "widths.json").read_text())
+    reference = json.loads((fixtures / "reference.json").read_text())
+    assert [s["name"] for s in shared["sequences"]] == [s["name"] for s in reference["sequences"]]
+    for sequence, expected in zip(shared["sequences"], reference["sequences"]):
+        bound = sequence["bound"]
+        intervals = cs.confidence_sequence(sequence["values"], shared["alpha"], lo=-bound, hi=bound,
+                                           grid=shared["grid"])
+        widths = [None if interval is None else interval[1] - interval[0] for interval in intervals]
+        assert widths == expected["widths"], sequence["name"]
+
+
 def test_anytime_p_is_one_over_the_running_peak_of_the_capital():
     rng = Random(11)
     null_stream = bernoulli_stream(rng, 0.5, 120)

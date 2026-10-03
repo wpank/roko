@@ -1,3 +1,4 @@
 # Dev-only test dependencies. The benchmark itself is stdlib-only Python >= 3.11.
 # Regenerate the lock (README, "Tests") after changing this file.
 pytest
+hypothesis  # specops/refine.py's monotonicity property test (task 3235)

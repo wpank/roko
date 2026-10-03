@@ -777,10 +777,10 @@ impl GraphTaskDispatcher {
         let key_env = providers
             .get(&refusal.provider_id)
             .and_then(|provider| provider.api_key_env.as_deref());
+        let provider_id = &refusal.provider_id;
         format!(
-            "`{}` rejected its credentials: {}, then delete its entry in \
-             .roko/learn/provider-health.json to use it before its skip ends.",
-            refusal.provider_id,
+            "`{provider_id}` rejected its credentials: {}, then run `roko config providers \
+             reset-health {provider_id}` to use it before its skip ends.",
             credentials_fix(refusal.provider_kind, key_env)
         )
     }
@@ -1439,6 +1439,55 @@ exit 1
         );
     }
 
+    /// bug-c55f1c: one call refused for usage exhaustion is one failure in
+    /// its provider's health, though the bridge's classifier and failover's
+    /// quarantine both see it, and the quarantine ends at the reset the
+    /// provider reported, not at the classifier's default cooldown.
+    #[tokio::test]
+    async fn one_exhaustion_counts_as_one_failure_record() {
+        use roko_agent::provider::error_classify::detect_provider_exhaustion;
+        use roko_learn::provider_health::{ErrorClass, ProviderHealthRegistry};
+
+        let temp = tempdir().expect("tempdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        session_limit_claude(&claude, &calls);
+        let (base_url, _requests) = spawn_openai_mock(vec![final_turn("fallback finished")]);
+        let config = Arc::new(failover_config(&claude, &base_url, &["api-model"]));
+        let health = Arc::new(ProviderHealthRegistry::new());
+        let factory = Arc::new(
+            SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+                .await
+                .with_health_registry(Arc::clone(&health)),
+        );
+        let dispatcher = Arc::new(GraphTaskDispatcher::new(
+            factory,
+            Arc::clone(&config),
+            temp.path().to_path_buf(),
+        ));
+        failover_cell(dispatcher, "claude-sonnet-4-6")
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T08".to_string()),
+            )
+            .await
+            .expect("the task fails over to the API model");
+
+        assert_eq!(invocations(&calls), 1);
+        let claude_health = health.get("claude_cli");
+        assert_eq!(claude_health.total_failures, 1, "{claude_health:?}");
+        let classes: Vec<ErrorClass> = claude_health
+            .failure_window
+            .iter()
+            .map(|failure| failure.error_class)
+            .collect();
+        assert_eq!(classes, [ErrorClass::Exhausted]);
+        let refusal = "You\u{2019}ve hit your session limit \u{b7} resets 4pm (Europe/Berlin)";
+        let reset = detect_provider_exhaustion(refusal).and_then(|refused| refused.resets_at_ms);
+        assert!(reset.is_some());
+        assert_eq!(claude_health.cooldown_until, reset);
+    }
+
     /// backlog 1115: one auth failure takes its provider out of the run.
     /// With no usable alternative the attempt fails non-retryably before any
     /// call, and the error says how to log in rather than to wait.
@@ -1502,6 +1551,7 @@ exit 1
         );
         assert!(message.contains("run `claude /login`"), "{message}");
         assert!(message.contains("USER and HOME"), "{message}");
+        assert!(message.contains("reset-health claude_cli"), "{message}");
         assert!(message.contains("Then re-run."), "{message}");
         assert!(!message.contains("wait until"), "{message}");
         assert_eq!(invocations(&calls), 0, "no call reaches the provider");

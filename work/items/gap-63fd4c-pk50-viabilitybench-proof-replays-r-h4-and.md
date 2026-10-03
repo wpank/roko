@@ -57,3 +57,19 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK30 (gap-2ca903), PK47 (gap-62e1b9), PK48 (gap-d90ef6), PK49 (gap-7ec3ef).
 - Suggested model: sonnet.
+
+## Progress
+
+- 3355: implemented at `fd634a1c0`. New `analysis/replay_h4.py`, a `replay_runner` adapter: R-H4 hands LOG1's
+  own run records and `roko learn self-model replay`'s trace lines to `analysis.econ.build` (PK49), reusing its
+  VS/CPR/pass^k/bootstrap math, then checks SC2 (a policy's `cpr_usd` <= 0.85x the best static cheap arm's and
+  <= H4-B1's). R-M3 scores Brier/BSS, ECE (10 equal-mass bins) and AUROC from `{attempt_key, forecast, outcome}`
+  rows, in `fig_f6_reliability.py`'s own bin shape. Both halves need inputs from mechanisms outside this slice
+  (the self-model replay's traces, S04's own forecast/outcome pairs); without them each reports
+  `evaluated: false` with why, mirroring `replay_h5.py`'s own graceful degradation. Built and tested entirely on
+  a LOG1-shaped fixture (no pilot has run, so no real data was available or used); the item's verify passes, and
+  `replay_runner.run` gives byte-identical canonical output across two runs at one seed. Regression-checked
+  against `test_replay_runner.py`, `test_replay_h5.py` and `test_econ.py` (all green).
+  A natural follow-on once Pilots A/B or LOG1 produce real traces/forecasts: gap-8a26fc ("run the M3 replay on
+  the pilot matrix") would exercise this adapter's `--traces`/`--forecasts` path end to end; not attempted here
+  per this wave's "no live calls, no spend."

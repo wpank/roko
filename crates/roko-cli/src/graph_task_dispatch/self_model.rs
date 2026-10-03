@@ -617,7 +617,9 @@ mod tests {
             .iter()
             .map(|row| {
                 let task = row["task_id"].as_str().unwrap_or_default().to_string();
-                let model = &row["executed"]["model_dispatched"];
+                // The route's model key, as arms name it (`model_dispatched`
+                // is the provider slug it resolves to).
+                let model = &row["executed"]["model_requested"];
                 (task, model.as_str().unwrap_or_default().to_string())
             })
             .collect();
@@ -661,7 +663,11 @@ mod tests {
             assert_eq!(row["decision"]["action"] == "pinned", pinned, "{row}");
             // An arm reads `roko/<provider>/<model>@<effort>#V<depth>`.
             let default = row["decision"]["default"].as_str().expect("a default arm");
-            assert!(default.contains(&format!("/{}@", off[task])), "{default}");
+            assert!(
+                default.contains(&format!("/{}@", off[task])),
+                "{default} vs {}",
+                off[task]
+            );
         }
     }
 }

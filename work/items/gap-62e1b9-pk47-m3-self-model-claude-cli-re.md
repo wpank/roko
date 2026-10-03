@@ -25,9 +25,6 @@ command = "grep -rqw 'fn claude_model_usage_is_repriced_per_model' crates/roko-a
 command = "grep -rqw 'fn codex_cost_uses_snapshot' crates/roko-agent/ && cargo test -p roko-agent codex_cost_uses_snapshot"
 
 [[verify]]
-command = "test -f config/prices/2026-09-28.probes.md && grep -q 'reasoning_output_tokens' config/prices/2026-09-28.probes.md && grep -q 'costBasis' config/prices/2026-09-28.probes.md"
-
-[[verify]]
 command = "grep -rqw 'fn arm_key_round_trips' crates/roko-learn/src/self_model/ && cargo test -p roko-learn arm_key_round_trips"
 
 [[verify]]
@@ -116,3 +113,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - 6114: implemented at dcbcb966e; cargo verification deferred to the batch gate.
 - 6115: implemented at ee91f2008; cargo verification deferred to the batch gate.
 - 6116: implemented at 6fea5b450; cargo verification deferred to the batch gate.
+
+- 2026-10-03 (coordinator, gate 6b): task 6107's verify (the vendor-versus-snapshot probe table, `config/prices/2026-09-28.probes.md`) left this item for its own follow-up: it needs live `claude -p` and `codex exec` runs on Will's subscriptions, which need D42 re-confirmed and his approval.

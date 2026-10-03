@@ -477,3 +477,64 @@ fn a_plain_plan_run_isolates_its_tasks_by_default() {
         assert_eq!(fs::read_to_string(repo.join(file)).expect("read"), text);
     }
 }
+
+/// backlog 3112: `roko run "<prompt>"` follows `[runner] worktree_per_task`.
+/// With it on, the prompt's one task runs in its own worktree: the operator's
+/// checkout stays as it was, and the run's batch branch holds the edit. With
+/// it off, the edit lands in the checkout and no batch branch is made.
+#[test]
+fn roko_run_follows_worktree_per_task() {
+    for isolated in [true, false] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("repo dir");
+        let script = Script::new().task("T1", [Turn::reply().write("edit.txt", "edit\n")]);
+        let provider = ScriptedProvider::install(&temp.path().join("provider"), &script).command();
+        seed_repo(&repo, &provider, &[(".gitignore", ".roko/\n")]);
+        // The run's one task is checked by the workspace's gate.
+        let mut config = fs::read_to_string(repo.join("roko.toml")).expect("read roko.toml");
+        config.push_str(&format!(
+            "\n[runner]\nworktree_per_task = {isolated}\n\n\
+             [[gates.rungs]]\nname = \"edit\"\ncommand = \"test -f edit.txt\"\n"
+        ));
+        fs::write(repo.join("roko.toml"), config).expect("write roko.toml");
+        git(&repo, &["commit", "--quiet", "-am", "settings"]);
+        let before = operator_state(&repo);
+
+        let run = StdCommand::new(cargo_bin("roko"))
+            .current_dir(&repo)
+            .args(["run", "--complexity", "simple", "Write edit.txt"])
+            .arg("--workdir")
+            .arg(&repo)
+            .env("CARGO_TARGET_DIR", temp.path().join("target"))
+            .env_remove("ROKO_CONFIG")
+            .output()
+            .expect("run roko");
+        let log = format!(
+            "isolated = {isolated}\n{}\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert!(run.status.success(), "{log}");
+
+        let batch = git(
+            &repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads/roko/batch/",
+            ],
+        );
+        if isolated {
+            assert_eq!(batch.lines().count(), 1, "one batch branch: {batch}\n{log}");
+            let files = git(&repo, &["ls-tree", "--name-only", &batch]);
+            assert!(files.contains("edit.txt"), "{files}\n{log}");
+            assert_eq!(operator_state(&repo), before, "{log}");
+            assert!(!repo.join("edit.txt").exists(), "{log}");
+        } else {
+            assert!(batch.is_empty(), "no batch branch: {batch}\n{log}");
+            let edit = fs::read_to_string(repo.join("edit.txt")).expect("the edit");
+            assert_eq!(edit, "edit\n", "{log}");
+        }
+    }
+}

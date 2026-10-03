@@ -627,7 +627,12 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             cli_model_override,
             dangerously_skip_permissions: false,
             log_file: None,
-            worktree_per_task: false,
+            // `[runner] worktree_per_task`, resolved as `roko plan run`
+            // resolves it with no flag (backlog 3112).
+            worktree_per_task: crate::graph_execution::batch::resolve_worktree_per_task(
+                None,
+                run.workdir,
+            ),
             worktree_per_task_explicit: false,
             rich_topology: false,
             promote: None,

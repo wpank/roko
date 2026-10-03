@@ -78,3 +78,11 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Existing work items this package covers or touches: gap-f30b8e. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
 - 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. Task 3113 now covers `roko run` (`commands/run_cmd.rs::run_plan_execution` still sets `worktree_per_task: false`) and the cloud worker; the PRD auto-execute it also named is gone. The verify and anchors were re-pointed from `do_cmd.rs`/`prd.rs` to `run_cmd.rs`. Hold lifted.
+
+## Progress
+
+- 3112: implemented at 38f2ed811. Implemented on `work/gap-c1f4ac` at `38f2ed811`; cargo verification deferred to the batch gate.
+- 3113: implemented at 9ec9843d2. Implemented on `work/gap-c1f4ac` at `9ec9843d2`; cargo verification deferred to the batch gate.
+- 3115: implemented at cefec68c8. Implemented on `work/gap-c1f4ac` at `cefec68c8`; cargo verification deferred to the batch gate.
+- 3116: implemented at 06edfc5c8. Implemented on `work/gap-c1f4ac` at `06edfc5c8`; cargo verification deferred to the batch gate.
+- 3117: implemented at 6cd8b2997. Implemented on `work/gap-c1f4ac` at `6cd8b2997`; cargo verification deferred to the batch gate.

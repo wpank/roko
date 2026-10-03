@@ -323,13 +323,17 @@ async fn graph_dispatcher_production_wiring_census() {
     }
 
     // A sink that drops off the facade fails the census: without a router,
-    // the routing sink is never registered.
+    // the routing sink is never registered, nor the credit it applies.
     let without_router = production_census(workdir, &config, None).await;
     assert!(!without_router.facade_sinks.contains(&"routing"));
     let failures = census_failures(&without_router);
-    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(failures.len(), 2, "{failures:?}");
     assert!(
         failures[0].starts_with("sink.routing is not wired"),
+        "{failures:?}"
+    );
+    assert!(
+        failures[1].starts_with("sink.router_source_credit is not wired"),
         "{failures:?}"
     );
 }

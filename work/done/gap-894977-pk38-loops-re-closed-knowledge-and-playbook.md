@@ -2,7 +2,7 @@
 id = "gap-894977"
 kind = "gap"
 title = "PK38 Loops re-closed: Knowledge and playbook withhold arms: a withheld source stays out of the prompt and is… (+5 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 38
 size = "L"
 subsystem = ["roko-cli/learning"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "c1eb6c2c5"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK38"
 anchors = ["crates/roko-cli/src/dispatch/mod.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-cli/src/graph_task_dispatch/feedback.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs", "crates/roko-cli/src/graph_task_dispatch/wiring.rs", "crates/roko-cli/tests/learning_wiring_census.rs", "crates/roko-compose/src/role_prompts.rs"]
 lane = "rust-hot"
@@ -32,6 +33,17 @@ command = "! grep -rq 'retrieval_outcomes_path\\|retrieval_ctx' crates/roko-cli/
 
 [[verify]]
 command = "grep -q 'const EXPECTED_MISSING: &\\[&str\\] = &\\[\\];' crates/roko-cli/tests/learning_wiring_census.rs && cargo test -p roko-cli --test learning_wiring_census"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T07:36:24Z"
+commit = "c1eb6c2c5"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T04:13:02Z"
+forced = false
+evidence = "Gate 7b (work/backlog-batch-7b, merged into main as c1eb6c2c5): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 12,124 tests over roko-agent, -cli, -compose, -core, -fs, -gate, -graph, -learn and -serve (one OpenAPI coverage failure fixed in 484e172fe), roko-cli bin 430 passed, the golden-path canaries pass incl. golden_path_acceptance's fixture plan (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-graph and roko-agent integration tests pass, each parked feature builds (fault-injection lib 1,321), PK79's tree and chain checks pass; every [[verify]] passes. PK38 5/6 done, 4121 dropped by decision 4115 (no L-err arm); withhold arms, the section bandit and its persistence, retrieval-outcomes retired, the census's loop states. Gate fixes 08e85d2e4 (a test's DispatchContext) and 71ff4a6d0 (lints); the graph_task_dispatch.rs conflict with PK76 resolved in the merge."
 +++
 
 ## Problem

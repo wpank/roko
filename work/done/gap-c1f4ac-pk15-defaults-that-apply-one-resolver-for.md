@@ -2,7 +2,7 @@
 id = "gap-c1f4ac"
 kind = "gap"
 title = "PK15 Defaults that apply: One resolver for [runner] worktree_per_task, and roko run follows it (+4 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -10,8 +10,9 @@ rank = 15
 size = "L"
 subsystem = ["roko-cli/tests"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "c1eb6c2c5"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK15"
 anchors = [".github/workflows/ci.yml", "crates/roko-cli/src/commands/run_cmd.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/graph_execution/batch.rs", "crates/roko-cli/src/run.rs", "crates/roko-cli/src/worker/cloud.rs", "crates/roko-cli/tests/plan_branch_integration.rs"]
 lane = "rust-cold"
@@ -35,6 +36,17 @@ command = "grep -rqw 'fn golden_path_fixture_plan_merges_green' crates/roko-cli/
 
 [[verify]]
 command = "grep -B4 'fn golden_path_live' crates/roko-cli/tests/golden_path_acceptance.rs | grep -q 'ignore' && cargo test -p roko-cli --test golden_path_acceptance --no-run"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T07:36:23Z"
+commit = "c1eb6c2c5"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T04:13:01Z"
+forced = false
+evidence = "Gate 7b (work/backlog-batch-7b, merged into main as c1eb6c2c5): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 12,124 tests over roko-agent, -cli, -compose, -core, -fs, -gate, -graph, -learn and -serve (one OpenAPI coverage failure fixed in 484e172fe), roko-cli bin 430 passed, the golden-path canaries pass incl. golden_path_acceptance's fixture plan (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-graph and roko-agent integration tests pass, each parked feature builds (fault-injection lib 1,321), PK79's tree and chain checks pass; every [[verify]] passes. PK15 5/5: roko run follows [runner] worktree_per_task through one resolver; the golden-path fixture plan merges green (18 s, TypeScript checks ran)."
 +++
 
 ## Problem

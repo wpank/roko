@@ -2,7 +2,7 @@
 id = "gap-c2b1a3"
 kind = "gap"
 title = "PK41 Loops re-closed: `roko learn telemetry check --srm` compares each randomised layer's arm shares with…"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 41
 size = "S"
 subsystem = ["roko-cli/commands"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "c1eb6c2c5"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK41"
 anchors = ["crates/roko-cli/src/commands/learn.rs", "crates/roko-learn/src/telemetry/report.rs"]
 lane = "rust-cold"
@@ -20,6 +21,17 @@ links = { depends_on = ["gap-943046", "gap-1f4bec"], blocks = [], related = [], 
 
 [[verify]]
 command = "grep -rqw 'fn srm_check_flags_a_skewed_layer' crates/roko-learn/src/ && cargo test -p roko-learn srm_check_flags_a_skewed_layer"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T07:36:25Z"
+commit = "c1eb6c2c5"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T04:13:03Z"
+forced = false
+evidence = "Gate 7b (work/backlog-batch-7b, merged into main as c1eb6c2c5): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 12,124 tests over roko-agent, -cli, -compose, -core, -fs, -gate, -graph, -learn and -serve (one OpenAPI coverage failure fixed in 484e172fe), roko-cli bin 430 passed, the golden-path canaries pass incl. golden_path_acceptance's fixture plan (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-graph and roko-agent integration tests pass, each parked feature builds (fault-injection lib 1,321), PK79's tree and chain checks pass; every [[verify]] passes. PK41 1/1: roko learn telemetry check --srm."
 +++
 
 ## Problem

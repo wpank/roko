@@ -2,7 +2,7 @@
 id = "bug-d5d55f"
 kind = "bug"
 title = "An agent can weaken the schema rung's own schema file in the same diff as the artefact it checks"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-gate/attempt-diff", "roko-cli/graph-task-dispatch"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "c1eb6c2c5"
 source = "wave-6 follow-up reports 2026-10-03 (PK75 gap-3c3729)"
 discovered_from = "gap-3c3729"
 anchors = ["crates/roko-gate/src/attempt_diff.rs::AttemptDiffPolicy", "crates/roko-gate/src/attempt_diff.rs::DiffFindingKind", "crates/roko-cli/src/graph_task_dispatch/pack_rungs.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn schema_file_edited_in_the_same_diff_is_tamper' crates/roko-gate/ && cargo test -p roko-gate schema_file_edited_in_the_same_diff_is_tamper"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T07:36:28Z"
+commit = "c1eb6c2c5"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T04:58:23Z"
+forced = false
+evidence = "Gate 7b (work/backlog-batch-7b, merged into main as c1eb6c2c5): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 12,124 tests over roko-agent, -cli, -compose, -core, -fs, -gate, -graph, -learn and -serve (one OpenAPI coverage failure fixed in 484e172fe), roko-cli bin 430 passed, the golden-path canaries pass incl. golden_path_acceptance's fixture plan (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-graph and roko-agent integration tests pass, each parked feature builds (fault-injection lib 1,321), PK79's tree and chain checks pass; every [[verify]] passes. Editing a configured rung's schema or rubric file is a tamper finding (RungFileEdited), wired into the pre-verify screen and the audit worker's A1."
 +++
 
 ## Problem

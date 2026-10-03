@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 14 anchor gone · 121 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 119 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -24,19 +24,19 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- **P1** [bug-d5d55f](items/bug-d5d55f-an-agent-can-weaken-the-schema-rung.md) An agent can weaken the schema rung's own schema file in the same diff as the artefact it checks [bug] · size M · verified 2026-10-03
+- **P1** [bug-0b7695](items/bug-0b7695-after-a-failover-to-another-model-the.md) After a failover to another model, the attempt record still names the planned model, so bench Roko arms end infra_error (shakedown D3, D7) [bug] · size M · verified 2026-10-03
 - **P2** [bug-412a5e](items/bug-412a5e-a-graph-attempt-s-model-call-efficiency.md) A Graph attempt's model-call efficiency row is written under its own worktree, not the workspace root [bug] · size M · verified 2026-10-03
 - **P2** [bug-dd20bd](items/bug-dd20bd-a-frozen-roko-run-still-appends-a.md) A frozen roko run still appends a workflow_complete episode, because record_workflow_feedback ignores [learning] frozen [bug] · size S · verified 2026-10-03
 
-_16 more open · on hold: gap-3698cd · `goal = "truth"`_
+_17 more open · on hold: gap-3698cd · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
-- **P1** [gap-c1f4ac](items/gap-c1f4ac-pk15-defaults-that-apply-one-resolver-for.md) PK15 Defaults that apply: One resolver for [runner] worktree_per_task, and roko run follows it (+4 more) · size L · verified 2026-10-02
 - **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
 - **P2** [dec-55532d](items/dec-55532d-confirm-nine-worker-choices-from-waves-3.md) Confirm nine worker choices from waves 3-5 (budget raise transport, failover retries, 24h auth quarantine, frozen allow-list, CLI billing, cold-start knowledge, domain packs, secret scrubbing) [decision] · size S · verified 2026-10-03
+- **P2** [bug-261c02](items/bug-261c02-five-tracked-plans-fail-roko-plan-validate.md) Five tracked plans fail roko plan validate, predating PK14 [bug] · size M · verified 2026-10-03
 
-_3 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_2 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -48,11 +48,11 @@ _15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- **P2** [gap-894977](items/gap-894977-pk38-loops-re-closed-knowledge-and-playbook.md) PK38 Loops re-closed: Knowledge and playbook withhold arms: a withheld source stays out of the prompt and is… (+5 more) · size L · verified 2026-10-02
-- **P2** [gap-c2b1a3](items/gap-c2b1a3-pk41-loops-re-closed-roko-learn-telemetry.md) PK41 Loops re-closed: `roko learn telemetry check --srm` compares each randomised layer's arm shares with… · size S · verified 2026-10-02
-- **P2** [gap-2b3c1b](items/gap-2b3c1b-pk42-m2-loop-liveness-loop-state-machine.md) PK42 M2 loop-liveness: Loop state machine with the six false-demotion guards (+7 more) · size L · verified 2026-10-02
+- **P2** [gap-c1d920](items/gap-c1d920-pk43-m2-loop-liveness-loopauditor-facade-and.md) PK43 M2 loop-liveness: LoopAuditor facade and the [learning.audit] config section (+5 more) · size L · verified 2026-10-02
+- **P2** [gap-85d176](items/gap-85d176-pk44-m2-loop-liveness-dryrunplanner-over-dispatcher.md) PK44 M2 loop-liveness: DryRunPlanner over Dispatcher::plan (probes P4 and P5) (+6 more) · size L · verified 2026-10-02
+- **P2** [gap-7ec3ef](items/gap-7ec3ef-pk49-m3-self-model-compute-the-m3.md) PK49 M3 self-model: Compute the M3 economics report from policy replays (+7 more) · size L · verified 2026-10-02
 
-_23 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_19 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -80,19 +80,19 @@ _4 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 
 ## 10. Tooling, CLI polish and code hygiene
 
-- **P1** [gap-821c93](items/gap-821c93-dead-config-key-learning-replan-on-gate.md) Dead config key learning.replan_on_gate_failure still written by the demo config, its widget, and the ViabilityBench pinned template · size S · verified 2026-10-03
 - **P2** [spec-0b3a32](items/spec-0b3a32-backlog-phase-9-domains-assistant-held-and.md) Backlog Phase 9 — domains, assistant, held and parked work, cleanup, showcase and deploy [spec] · verified 2026-10-02
 - **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
+- **P2** [gap-082a14](items/gap-082a14-graph-runs-never-write-task-status-back.md) Graph runs never write task status back to tasks.toml · verified 2026-10-01
 
-_14 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_13 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
-- **P2** [gap-99c9ae](items/gap-99c9ae-pk76-domains-and-assistant-a-plan-run.md) PK76 Domains and assistant: A plan.run cell: a trigger can run a plan (+7 more) · size L · verified 2026-10-02
 - **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-10-01
 - **P2** [gap-3d5cce](items/gap-3d5cce-provider-f036-actcell-cognitive-loop-llm-dispatch.md) ActCell (cognitive loop LLM dispatch point) is a stub pass-through · verified 2026-10-01
+- **P2** [gap-666a64](items/gap-666a64-deprecate-all-jsonl-file-i-o-statehub.md) Deprecate All JSONL File I/O — StateHub as Single Source of Truth · verified 2026-10-01
 
-_6 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
+_5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
 
 ## 12. Hermes and ACP integration
 

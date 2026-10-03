@@ -2,7 +2,7 @@
 id = "gap-821c93"
 kind = "gap"
 title = "Dead config key learning.replan_on_gate_failure still written by the demo config, its widget, and the ViabilityBench pinned template"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["demo/demo-app", "benchmarks/viabilitybench", "roko-core/config"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "c1eb6c2c5"
 source = "wave-5 follow-up reports 2026-10-02 (PK32 gap-b5caf3)"
 discovered_from = "gap-b5caf3 (backlog task 4110)"
 anchors = ["demo/demo-resources/roko.toml", "benchmarks/viabilitybench/driver/testdata/planemit/pinned.roko.toml", "demo/demo-app/src/components/ConfigWidget.tsx", "benchmarks/viabilitybench/driver/planemit.py", "benchmarks/viabilitybench/driver/run_roko_plan.py"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'replan_on_gate_failure' demo/demo-resources/roko.toml benchmarks/viabilitybench/driver/testdata/planemit/pinned.roko.toml demo/demo-app/src/components/ConfigWidget.tsx benchmarks/viabilitybench/driver/planemit.py benchmarks/viabilitybench/driver/run_roko_plan.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_planemit.py -q"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T07:36:30Z"
+commit = "c1eb6c2c5"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T06:08:06Z"
+forced = false
+evidence = "Gate 7b (work/backlog-batch-7b, merged into main as c1eb6c2c5): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 12,124 tests over roko-agent, -cli, -compose, -core, -fs, -gate, -graph, -learn and -serve (one OpenAPI coverage failure fixed in 484e172fe), roko-cli bin 430 passed, the golden-path canaries pass incl. golden_path_acceptance's fixture plan (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-graph and roko-agent integration tests pass, each parked feature builds (fault-injection lib 1,321), PK79's tree and chain checks pass; every [[verify]] passes. The driver no longer writes the removed key (planemit-4, golden files and pinned hash regenerated); demo config and widget cleaned. test_planemit.py 11 passed with a real binary. The shakedown now runs: 5/8 pass against main's binary; D1, D3 and D7 are filed as bug-ef82eb and bug-0b7695."
 +++
 
 ## Problem

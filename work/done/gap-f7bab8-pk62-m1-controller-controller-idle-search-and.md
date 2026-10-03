@@ -2,7 +2,7 @@
 id = "gap-f7bab8"
 kind = "gap"
 title = "PK62 M1 controller: Controller: IDLE, SEARCH and HOLD with Thompson plus Ashby moves, dwell, rollback and… (+9 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 62
 size = "L"
 subsystem = ["roko-learn/homeostasis"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "c1eb6c2c5"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK62"
 anchors = ["crates/roko-core/src/lib.rs"]
 lane = "rust-cold"
@@ -47,6 +48,17 @@ command = "grep -rqw 'fn canonical_disturbances_meet_c1_c2_c5_c7' crates/roko-le
 
 [[verify]]
 command = "grep -rqw 'fn m3_prior_weight_follows_ece' crates/roko-learn/ && cargo test -p roko-learn m3_prior_weight_follows_ece"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T07:36:26Z"
+commit = "c1eb6c2c5"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T04:13:06Z"
+forced = false
+evidence = "Gate 7b (work/backlog-batch-7b, merged into main as c1eb6c2c5): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 12,124 tests over roko-agent, -cli, -compose, -core, -fs, -gate, -graph, -learn and -serve (one OpenAPI coverage failure fixed in 484e172fe), roko-cli bin 430 passed, the golden-path canaries pass incl. golden_path_acceptance's fixture plan (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-graph and roko-agent integration tests pass, each parked feature builds (fault-injection lib 1,321), PK79's tree and chain checks pass; every [[verify]] passes. PK62 10/10: the M1 controller, LKG, ledger rows, replay, SASO, the A0-A5 evaluator, the harness_policy layer, disturbances and M3 priors. C2 failed for provider_fault seed 6 at first; the worker's fix (3ba140113) reads auxiliary signals over the last 5 resolutions too. Gate fix 36bafb343 (a clippy false positive)."
 +++
 
 ## Problem

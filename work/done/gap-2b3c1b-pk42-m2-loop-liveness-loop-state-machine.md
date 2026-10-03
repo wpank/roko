@@ -2,7 +2,7 @@
 id = "gap-2b3c1b"
 kind = "gap"
 title = "PK42 M2 loop-liveness: Loop state machine with the six false-demotion guards (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 42
 size = "L"
 subsystem = ["roko-learn/loop_audit"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "c1eb6c2c5"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK42"
 anchors = ["crates/roko-cli/src/commands/experiment.rs", "crates/roko-core/src/dashboard_snapshot.rs", "crates/roko-learn/Cargo.toml", "crates/roko-learn/src/model_experiment.rs", "crates/roko-learn/src/prompt_experiment.rs"]
 lane = "rust-cold"
@@ -41,6 +42,17 @@ command = "grep -rqw 'fn fault_flags_expire_and_are_invisible_to_estimators' cra
 
 [[verify]]
 command = "grep -rqw 'fn canary_localizes_injected_cut' crates/roko-learn/src/loop_audit/ && cargo test -p roko-learn --features fault-injection canary_localizes_injected_cut"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T07:36:25Z"
+commit = "c1eb6c2c5"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T04:13:04Z"
+forced = false
+evidence = "Gate 7b (work/backlog-batch-7b, merged into main as c1eb6c2c5): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 12,124 tests over roko-agent, -cli, -compose, -core, -fs, -gate, -graph, -learn and -serve (one OpenAPI coverage failure fixed in 484e172fe), roko-cli bin 430 passed, the golden-path canaries pass incl. golden_path_acceptance's fixture plan (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-graph and roko-agent integration tests pass, each parked feature builds (fault-injection lib 1,321), PK79's tree and chain checks pass; every [[verify]] passes. PK42 8/8: the loop state machine and ledger, LoopHealth events, the false-demotion simulator (5117 at the gate: C4 0/10000, 95% CI 0-0.0004; legacy A/A 0.3352), anytime-valid prompt and model experiments, fault flags, the canary driver. Gate fix c9d4320d1 (one [features] table with PK80's)."
 +++
 
 ## Problem

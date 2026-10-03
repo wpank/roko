@@ -16,7 +16,7 @@ source = "tmp/backlog/2026-10-02-complete-and-wire PK36"
 anchors = ["benchmarks/viabilitybench/analysis/test_analysis.py", "benchmarks/viabilitybench/driver/stub_provider.py"]
 lane = "bench"
 parent = "spec-446a41"
-links = { depends_on = ["gap-625195", "gap-e00238", "gap-f548c1", "gap-cc5051", "gap-de0b87", "gap-5ebb4f", "gap-1149aa", "gap-943046"], blocks = [], related = ["gap-c33709", "gap-d9e9fe"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-0b7695", "bug-ef82eb", "gap-625195", "gap-e00238", "gap-f548c1", "gap-cc5051", "gap-de0b87", "gap-5ebb4f", "gap-1149aa", "gap-943046"], blocks = [], related = ["gap-c33709", "gap-d9e9fe"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -x target/debug/roko && test \"$(grep -c 'def test_shakedown_' benchmarks/viabilitybench/driver/test_shakedown.py)\" -ge 8 && VB_REQUIRE_REAL_ROKO=1 benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_shakedown.py -k shakedown -q"
@@ -76,3 +76,4 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - 2026-10-03 (coordinator, gate 7a): task 3315's verify (Pilot C's committed metrics) left this item for its own held follow-up: it needs a live, paid run after Pilot A's checks, and Pilot A waits on its key file.
 - 2026-10-03 (coordinator, gate 7a): task 3316's verify left this item for its own follow-up, which waits on gap-d9e9fe (the pilot page itself).
 - 2026-10-03 (coordinator, gate 7a): 3314's shakedown, run with the batch's own binary (`VB_REQUIRE_REAL_ROKO=1`), fails all eight scenarios at setup: the driver's config template still writes the removed `[learning] replan_on_gate_failure` (planemit.py, run_roko_plan.py), so `roko plan validate --strict` refuses every Roko arm's plan (gap-821c93). This item stays open until that lands and the shakedown's real verdicts are read.
+- 2026-10-03 (coordinator, gate 7b): gap-821c93 landed (c1eb6c2c5), so the shakedown runs. Against main's binary 5 of 8 pass (D2, D4, D5, D6, D10). D3 and D7 fail on one cause (the attempt record keeps the planned model after a failover), filed as bug-0b7695 (p1); D1 (a retry after a blank answer ends gate_failed) as bug-ef82eb. This item closes when all eight pass.

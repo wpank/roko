@@ -2,7 +2,7 @@
 id = "gap-99c9ae"
 kind = "gap"
 title = "PK76 Domains and assistant: A plan.run cell: a trigger can run a plan (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "features"
@@ -10,8 +10,9 @@ rank = 76
 size = "L"
 subsystem = ["roko-cli/graph"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "c1eb6c2c5"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK76"
 anchors = ["crates/roko-agent/src/dispatcher/mod.rs", "crates/roko-agent/src/mcp/client.rs", "crates/roko-agent/src/mcp/to_tool_def.rs", "crates/roko-agent/src/safety/mod.rs", "crates/roko-cli/src/commands/graph.rs", "crates/roko-cli/src/graph_task_dispatch/attempt_workspace.rs", "crates/roko-cli/src/lib.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/orchestrator/mod.rs", "crates/roko-cli/src/serve_runtime.rs", "crates/roko-cli/src/task_parser.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-core/src/task.rs", "crates/roko-fs/src/layout.rs", "crates/roko-serve/src/routes/mod.rs", "crates/roko-serve/src/routes/route_permissions.rs", "crates/roko-serve/src/runtime.rs", "examples/graphs/task-execution.toml"]
 lane = "rust-cold"
@@ -41,6 +42,17 @@ command = "grep -rqw 'fn task_workspace_kind_parses_scratch_dir' crates/roko-cli
 
 [[verify]]
 command = "grep -rqw 'fn scratch_dir_attempt_gets_cow_copy_and_manifest' crates/roko-cli/ && cargo test -p roko-cli scratch_dir_attempt_gets_cow_copy_and_manifest"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T07:36:28Z"
+commit = "c1eb6c2c5"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T04:13:35Z"
+forced = false
+evidence = "Gate 7b (work/backlog-batch-7b, merged into main as c1eb6c2c5): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 12,124 tests over roko-agent, -cli, -compose, -core, -fs, -gate, -graph, -learn and -serve (one OpenAPI coverage failure fixed in 484e172fe), roko-cli bin 430 passed, the golden-path canaries pass incl. golden_path_acceptance's fixture plan (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-graph and roko-agent integration tests pass, each parked feature builds (fault-injection lib 1,321), PK79's tree and chain checks pass; every [[verify]] passes. PK76 8/8: plan.run cell, trigger example graph, outbound-effect classification and staging, roko effects, the effects routes (documented in OpenAPI at the gate, 484e172fe), workspace kinds and scratch leases."
 +++
 
 ## Problem

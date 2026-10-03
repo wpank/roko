@@ -1436,6 +1436,7 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "profiles",
     "agent.roles",
     "agent.tier_models",
+    "audit.families",
     "gates.max_output_tokens",
     "gates.packs",
     "retrieval.role_token_budgets",
@@ -1813,6 +1814,13 @@ fn build_schema_tree() -> toml::Value {
     // Populate Optional/skip_serializing_if agent fields with non-default
     // values so they appear in the serialized schema tree and are not
     // stripped by `strip_unknown_fields`.
+    // `[audit] home` (the vault override, 7112) is optional, and
+    // `[audit.families]` maps a family name to model globs.
+    config.audit.home = Some(PathBuf::new());
+    config
+        .audit
+        .families
+        .insert("_schema_sentinel".to_string(), Vec::new());
     config.agent.command = Some(String::new());
     config.agent.args = Some(Vec::new());
     config.agent.timeout_ms = Some(0);

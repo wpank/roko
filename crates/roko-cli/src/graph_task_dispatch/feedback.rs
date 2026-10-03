@@ -67,6 +67,11 @@ pub struct GraphFeedbackContext {
     /// attempts, folded into `.roko/learn/section-bandit.json` when the run
     /// ends. `None` in a frozen run (decision 2218).
     pub section_outcomes: Option<Arc<SectionOutcomes>>,
+
+    /// M3, the self-model (S04): it forecasts each routed attempt before
+    /// routing and learns the attempt's verdict. `None` unless
+    /// `[self_model] mode` is on.
+    pub self_model: Option<Arc<super::self_model::SelfModelRuntime>>,
 }
 
 /// What the section bandit learns from one run (S02 L9): the draws of each
@@ -183,6 +188,7 @@ impl Default for GraphFeedbackContext {
             runs_dir: None,
             provenance_sinks: None,
             section_outcomes: None,
+            self_model: None,
         }
     }
 }

@@ -2411,6 +2411,8 @@ pub fn build_graph_feedback_context(
         provenance_sinks: None,
         // S02 L9: the section bandit's outcomes, saved when the run ends.
         section_outcomes: learning.then(Arc::default),
+        // M3 (S04): the self-model, loaded when `[self_model] mode` is on.
+        self_model: crate::graph_task_dispatch::self_model::SelfModelRuntime::load(workdir, config),
     }
 }
 

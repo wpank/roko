@@ -1690,7 +1690,7 @@ pub struct PredictionPredictor {
 /// snapshot, latencies in seconds; an unknown value is `null`, never 0.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PredictionCandidate {
-    /// The arm, in its string form (`harness/provider/model/effort/V<depth>`).
+    /// The arm, in its string form (`<harness>/<provider>/<model>@<effort>#V<depth>`).
     pub arm: String,
     /// P(every gate rung passes).
     pub p_gate: f64,

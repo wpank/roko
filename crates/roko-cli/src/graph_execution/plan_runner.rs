@@ -2459,7 +2459,8 @@ pub fn build_graph_feedback_facade(
     let graph_episodes_path = graph_layout.root_episodes_path();
     let mut facade = crate::runtime_feedback::FeedbackFacade::new()
         .with_sink(std::sync::Arc::new(
-            crate::runtime_feedback::EpisodeSink::at(&graph_episodes_path),
+            crate::runtime_feedback::EpisodeSink::at(&graph_episodes_path)
+                .with_hdc_fingerprint(config.learning.episode_hdc_fingerprint),
         ))
         // Reads back the failed episode the episode sink just wrote, so
         // it must follow it.

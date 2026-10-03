@@ -3,7 +3,7 @@
  * disk, for specs that check contracts without a browser. Fixture bundles carry
  * `kind: "fixture"`, so a production build refuses every one of them (S10 §4.5).
  */
-import { expect, type APIRequestContext } from '@playwright/test';
+import { expect, type APIRequestContext, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +20,33 @@ export const SCHEMA_ROOT = fileURLToPath(new URL('../../src/showcase/schemas/', 
 
 /** Bundles that conform: the golden one, the negative results (S10 SC4), and P1 without audits. */
 export const VALID_BUNDLES = ['fx-golden', 'fx-negatives', 'fx-p1-only'] as const;
+
+export interface ShowcaseRoute {
+  path: string;
+  /** The page's `data-showcase-page`. */
+  page: string;
+  /** An element inside the page that renders once its data has loaded. */
+  ready: string;
+}
+
+/**
+ * Every showcase route (S10 §4.2), for specs that check whole pages. The replay route shows the
+ * negative-results bundle, so its copy is checked as well as the golden one's.
+ */
+export const SHOWCASE_ROUTES: ShowcaseRoute[] = [
+  { path: '/', page: 'overview', ready: '[data-view="overview"]' },
+  { path: '/p1/head-to-head', page: 'head-to-head', ready: '[data-view="p1-head-to-head"]' },
+  { path: '/p2/audits', page: 'audits', ready: '[data-view="m4-audits"]' },
+  { path: '/replays', page: 'replays', ready: '[data-bundle]' },
+  { path: '/replay/fx-negatives', page: 'replay', ready: '[data-view="m4-audits"]' },
+];
+
+/** Open a showcase route and wait until it has rendered its data. */
+export async function openShowcaseRoute(page: Page, route: ShowcaseRoute): Promise<void> {
+  await page.goto(route.path, { waitUntil: 'domcontentloaded' });
+  const ready = page.locator(`[data-showcase-page="${route.page}"] ${route.ready}`).first();
+  await expect(ready).toBeVisible({ timeout: 15_000 });
+}
 
 /** One poisoned bundle per refusal the client must make (S10 §7 scenario 2). */
 export const POISONED_BUNDLES = {

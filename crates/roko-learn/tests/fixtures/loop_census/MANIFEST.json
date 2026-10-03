@@ -1,0 +1,42 @@
+{
+ "expectations": "derived at e55d4c20f: census_flags_known_dormant_loops (backlog 5106) and S03 v1.3 section 7 A1",
+ "rows": {
+  "episodes.jsonl": 601,
+  "learn/attention-bidders.json": {
+   "sections": 7,
+   "subsystems": 1
+  },
+  "learn/cascade-router.json": {
+   "linucb_observations": 1,
+   "total_observations": 275
+  },
+  "learn/dream-routing-advice.json": {
+   "recommendations": 5
+  },
+  "learn/efficiency.jsonl": 1522,
+  "learn/experiments.json": {
+   "experiments": [
+    "retrieval-strategy"
+   ]
+  },
+  "learn/gate-thresholds.json": {
+   "rungs": 9
+  },
+  "learn/holdout-state.json": {
+   "assignments": 81
+  },
+  "learn/playbooks/": 26,
+  "learn/retrieval-outcomes.jsonl": 269,
+  "learn/section-outcomes.jsonl": 1702
+ },
+ "schema": "roko.loop_census_fixture/1",
+ "snapshot": "2026-09-29T10:50 local time, the last write to learn/",
+ "source": "the main checkout's untracked .roko directory (backlog 5105)",
+ "trimming": [
+  "Each file keeps only the fields the census (loop_audit/census.rs) reads, plus row identity; fields absent in the source stay absent, so dormancy shows.",
+  "Dropped: queries, reasoning summaries, headlines, reflections, prompt and section text, failure reasons, workspace ids and every path.",
+  "cascade-router.json keeps the counters, model list and stage transitions; the LinUCB matrices are cut to their observation count.",
+  "experiments.json drops each variant's content; playbooks are id-only files.",
+  "Row counts are exact: no row was dropped."
+ ]
+}

@@ -13,9 +13,10 @@ draws randomness only from `rng`, a `random.Random` seeded with the replay's see
 an adapter in a module of its own (`replay_h5.py`, 3356) is imported by name on first use (`ADAPTER_MODULES`).
 
 **The outcome matrix** (`OutcomeMatrix`): one `Row` per run record, in `replay.load`'s stable order (experiment, run,
-record id): its experiment, run, seed, arm, model, task (family, instance, level, spec variant), status, VS label
-(`metrics.vs_minus`), API-equivalent cost and stream position. Its `sha256` is over the rows' canonical JSON, so a
-replay's output names exactly the data it read.
+record id): its experiment, run, seed, arm, model, task (family, instance, level, spec variant), stream, status, VS
+label (`metrics.vs_minus`), API-equivalent cost and stream position, with the (blinded) records themselves beside the
+rows for an adapter that needs more of them (R-H5 builds S05's census labels from them). Its `sha256` is over the
+canonical JSON of both, so a replay's output names exactly the data it read.
 
 **Arm-hashed data.** Before the pre-registration lock, `replay.load` reads every arm through 3341's `Blinder`, whose
 salt file (`--salt`, else `blind.DEFAULT_SALT`) the operator keeps: rows name `arm-<hash>` labels, never arm ids.
@@ -41,7 +42,7 @@ API:
     canonical(doc) -> str; export(doc, path) -> Path
     aa_split(matrix, arm, rng) -> dict; aa_check(matrix, rng, arm=None, reps=AA_REPS) -> dict
     mean_difference(a, b, z=Z95) -> (diff, low, high); wilson(successes, n, z=Z95) -> (low, high)
-    main(argv) -> int
+    main(argv) -> int        # --risk FILE and --lam L reach the adapters that take them (R-H5's tilted cells)
 """
 
 from __future__ import annotations
@@ -84,6 +85,7 @@ class Row:
     instance: str
     level: int
     spec_variant: str
+    stream: str
     status: str
     vs: int
     cost_usd: float | None
@@ -98,9 +100,10 @@ class Row:
 @dataclass(frozen=True)
 class OutcomeMatrix:
     rows: tuple[Row, ...]
+    records: tuple[dict, ...] = ()  # the run records behind the rows, in the same order
 
     def sha256(self) -> str:
-        text = canonical([asdict(row) for row in self.rows])
+        text = canonical({"rows": [asdict(row) for row in self.rows], "records": list(self.records)})
         return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def arms(self) -> list[str]:
@@ -147,10 +150,11 @@ def matrix(campaign: replay.Campaign) -> OutcomeMatrix:
         rows.append(Row(experiment=record["experiment_id"], run_id=record["run_id"], seed=record["seed"],
                         arm=record["arm"], model=models.pop() if len(models) == 1 else None, family=task["family"],
                         instance=task["instance_id"], level=task["ladder"],
-                        spec_variant=task.get("spec_variant", "precise"), status=record["execution"]["status"],
+                        spec_variant=task.get("spec_variant", "precise"),
+                        stream=str(record["stream"].get("id", "")), status=record["execution"]["status"],
                         vs=metrics.vs_minus(record), cost_usd=float(cost) if cost is not None else None,
                         position=record["stream"].get("position")))
-    return OutcomeMatrix(tuple(rows))
+    return OutcomeMatrix(tuple(rows), tuple(entry.record for entry in campaign.entries))
 
 
 def run(results: Path, experiments: Sequence[str] | None, name: str, *, seed: int,
@@ -160,7 +164,8 @@ def run(results: Path, experiments: Sequence[str] | None, name: str, *, seed: in
     campaign = replay.load(Path(results), experiments, blind=blind)
     found = matrix(campaign)
     chosen = adapter(name)
-    taken = {key: value for key, value in (params or {}).items() if key in chosen.params and value is not None}
+    taken = {key: str(value) if isinstance(value, Path) else value for key, value in (params or {}).items()
+             if key in chosen.params and value is not None}
     estimates = chosen.estimate(found, random.Random(seed), **taken)
     return {"schema_version": REPLAY_SCHEMA, "adapter": chosen.name, "adapter_version": chosen.version,
             "seed": seed, "params": taken, "experiments": sorted({row.experiment for row in found.rows}),
@@ -262,7 +267,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--adapter", required=True, help=f"one of {', '.join(sorted({*ADAPTERS, *ADAPTER_MODULES}))}")
     parser.add_argument("--seed", type=int, default=1, help="the replay's seed (default 1)")
     parser.add_argument("--arm", help="aa: the arm label to split (default: the arm with the most rows)")
-    parser.add_argument("--reps", type=int, help=f"aa: the number of splits (default {AA_REPS})")
+    parser.add_argument("--reps", type=int, help=f"aa: the number of splits (default {AA_REPS}); h5: lotteries")
+    parser.add_argument("--risk", type=Path, help='h5: M3\'s risk per unit, JSONL {"attempt_key", "r"}')
+    parser.add_argument("--lam", type=float, help="h5: the tilt lambda that goes with --risk")
     parser.add_argument("--salt", type=Path, help=f"the blinding salt (default {blind.DEFAULT_SALT})")
     parser.add_argument("--unblinded", action="store_true", help="read arm ids: only once the lock is committed")
     parser.add_argument("--out", type=Path, help="write the replay here as well as to stdout")
@@ -275,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             labels = blind.Blinder.from_file(args.salt or blind.DEFAULT_SALT).label
         doc = run(results, args.experiment, args.adapter, seed=args.seed, blind=labels,
-                  params={"arm": args.arm, "reps": args.reps})
+                  params={"arm": args.arm, "reps": args.reps, "risk": args.risk, "lam": args.lam})
     except (blind.BlindError, lock.LockError, replay.ReplayError, KeyError, ValueError, OSError) as err:
         print(f"replay: {err}", file=sys.stderr)
         return 2

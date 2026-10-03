@@ -26,12 +26,6 @@ use crate::types::{
     EdgeCondition, ExecutionClass, Graph, GraphError, GraphNodeIdx, GraphPolicy, Node, NodeId,
 };
 
-// ─── MergeEnqueuer trait ────────────────────────────────────────────────────
-
-// MergeRequest and MergeEnqueuer are now defined in delivery.rs. Re-export
-// them here for backward compatibility with existing callers.
-pub use crate::delivery::{MergeEnqueuer, MergeRequest};
-
 // ─── GraphSnapshot ──────────────────────────────────────────────────────────
 
 // Snapshot types are now defined in snapshot.rs (#251). Re-export them here
@@ -368,9 +362,6 @@ pub struct GraphEngine {
     /// Optional replayer — when present, Activity node outputs are read from
     /// the JSONL file instead of re-executing the cell.
     replayer: Option<ActivityReplayer>,
-    /// Optional merge queue — when present, a [`MergeRequest`] is enqueued
-    /// after a successful graph execution that represents a plan.
-    merge_queue: Option<Arc<dyn MergeEnqueuer>>,
     /// Optional passive lifecycle-event sink for the telemetry Lens runtime.
     telemetry: Option<Arc<dyn TelemetryEventSink>>,
     /// Optional graph execution event sink (#246).
@@ -407,7 +398,6 @@ impl GraphEngine {
             root_inputs: Vec::new(),
             recorder: None,
             replayer: None,
-            merge_queue: None,
             telemetry: None,
             event_sink: None,
             event_seq: crate::events::EventSeqCounter::new(),
@@ -475,19 +465,6 @@ impl GraphEngine {
     #[must_use]
     pub fn with_replayer(mut self, replayer: ActivityReplayer) -> Self {
         self.replayer = Some(replayer);
-        self
-    }
-
-    /// Attach a [`MergeEnqueuer`] to this engine.
-    ///
-    /// After a successful graph execution, the engine will enqueue a
-    /// [`MergeRequest`] containing the graph name as `plan_id` and any
-    /// `files_changed` collected from Activity node outputs. The caller
-    /// (typically the plan runner) is responsible for providing an
-    /// implementation that bridges to the real merge queue.
-    #[must_use]
-    pub fn with_merge_queue(mut self, queue: Arc<dyn MergeEnqueuer>) -> Self {
-        self.merge_queue = Some(queue);
         self
     }
 
@@ -986,27 +963,6 @@ impl GraphEngine {
             .await;
         }
 
-        // After successful execution, enqueue a merge request if a merge queue
-        // is attached. Collect files_changed from Activity node outputs via
-        // the "files_changed" tag convention.
-        if success && let Some(merge_queue) = &self.merge_queue {
-            let files_changed = Self::collect_files_changed(&outputs);
-            if !files_changed.is_empty() {
-                let request = MergeRequest {
-                    plan_id: graph_name.clone(),
-                    branch_name: String::new(), // caller sets via merge queue impl
-                    files_changed,
-                    priority: 0,
-                };
-                let accepted = merge_queue.enqueue(request);
-                info!(
-                    graph = %graph_name,
-                    accepted,
-                    "merge request enqueued after successful execution"
-                );
-            }
-        }
-
         self.persist_tick_outputs(&outputs);
 
         Ok(GraphOutput {
@@ -1116,19 +1072,6 @@ impl GraphEngine {
                 &graph_ancestry,
             )
             .await;
-        }
-
-        if success && let Some(merge_queue) = &self.merge_queue {
-            let files_changed = Self::collect_files_changed(&outputs);
-            if !files_changed.is_empty() {
-                let accepted = merge_queue.enqueue(MergeRequest {
-                    plan_id: graph_name.clone(),
-                    branch_name: String::new(),
-                    files_changed,
-                    priority: 0,
-                });
-                info!(graph = %graph_name, accepted, "parallel merge request enqueued");
-            }
         }
 
         self.persist_tick_outputs(&outputs);
@@ -2611,30 +2554,6 @@ impl GraphEngine {
                 },
             },
         }
-    }
-
-    /// Extract `files_changed` from completed node outputs.
-    ///
-    /// Convention: nodes that modify files include a `"files_changed"` tag in
-    /// their output signals. The tag value is a comma-separated list of file
-    /// paths. This method scans all node outputs and collects those paths.
-    fn collect_files_changed(outputs: &HashMap<NodeId, Vec<roko_core::Signal>>) -> Vec<String> {
-        let mut files = Vec::new();
-        for signals in outputs.values() {
-            for signal in signals {
-                if let Some(value) = signal.tags.get("files_changed") {
-                    for path in value.split(',') {
-                        let trimmed = path.trim();
-                        if !trimmed.is_empty() {
-                            files.push(trimmed.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        files.sort();
-        files.dedup();
-        files
     }
 }
 

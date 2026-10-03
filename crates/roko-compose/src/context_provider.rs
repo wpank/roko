@@ -25,7 +25,9 @@ use crate::symbol_resolver::SymbolResolver;
 use crate::task_brief::TaskBriefGenerator;
 use roko_core::config::RetrievalConfig;
 use roko_core::{Body, InclusionMode, Kind, OperatingFrequency, PromptPolicy, RoleProfile, Signal};
-use roko_learn::error_pattern_store::{ErrorPatternStore, FailurePatternQuery};
+use roko_learn::error_pattern_store::{
+    ERROR_PATTERNS_FILE, ErrorPatternStore, FailurePatternQuery,
+};
 use roko_learn::section_effect::{
     DEFAULT_SECTION_EFFECTS_PATH, SectionEffect, SectionEffectivenessRegistry,
 };
@@ -924,6 +926,7 @@ impl ContextBidder for RecentFailurePatternsBidder {
                 task_id: Some(&request.task_id),
                 gate: None,
                 classification: None,
+                ..Default::default()
             },
             5,
             1_600,
@@ -1484,11 +1487,12 @@ impl ContextProvider {
         self
     }
 
+    /// The error-pattern store plan runs write (backlog 4204).
     fn failure_pattern_store_path(&self) -> PathBuf {
         self.workdir
             .join(".roko")
             .join("learn")
-            .join("discovered-patterns.json")
+            .join(ERROR_PATTERNS_FILE)
     }
 
     fn section_effects_path(&self) -> PathBuf {
@@ -2847,6 +2851,50 @@ mod tests {
         );
     }
 
+    /// The source ids the failure-patterns bidder proposes for a workspace
+    /// whose `.roko/learn/<file>` holds one pattern of the request's plan.
+    fn failure_pattern_sources(file: &str) -> Vec<String> {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pattern_path = tmp.path().join(".roko").join("learn").join(file);
+        let mut store = ErrorPatternStore::load(&pattern_path);
+        store.append(
+            "error[E0432]: unresolved import",
+            "compile",
+            "plan-test",
+            Some("check module paths before retry"),
+        );
+        store.save(&pattern_path).expect("save pattern store");
+        let provider = ContextProvider::new(tmp.path().to_path_buf());
+        let request = test_request(10_000);
+        let registry = ContextBidderRegistry::new().with_bidder(RecentFailurePatternsBidder);
+        let resolved = provider.select_candidates(
+            &request,
+            registry.propose_context(&provider, &request),
+            ContextInjectionPolicy::default(),
+        );
+        resolved
+            .injection_manifest()
+            .iter()
+            .filter_map(|record| record.source_id.clone())
+            .collect()
+    }
+
+    /// backlog 4204: the failure-patterns bidder reads the store plan runs
+    /// write, and nothing from Runner-v2's legacy pattern file.
+    #[test]
+    fn failure_patterns_bidder_reads_error_patterns_json() {
+        let live = failure_pattern_sources(ERROR_PATTERNS_FILE);
+        let plan_source = "failure-patterns:plan-test";
+        assert!(live.iter().any(|id| id.contains(plan_source)), "{live:?}");
+        let legacy = failure_pattern_sources(
+            roko_learn::error_pattern_store::LEGACY_DISCOVERED_PATTERNS_FILE,
+        );
+        assert!(
+            !legacy.iter().any(|id| id.contains("failure-patterns")),
+            "{legacy:?}"
+        );
+    }
+
     #[test]
     fn cold_start_static_bidders_emit_structured_provenance() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2854,7 +2902,7 @@ mod tests {
             .path()
             .join(".roko")
             .join("learn")
-            .join("discovered-patterns.json");
+            .join(ERROR_PATTERNS_FILE);
         let mut store = ErrorPatternStore::load(&pattern_path);
         store.append(
             "error[E0432]: unresolved import",

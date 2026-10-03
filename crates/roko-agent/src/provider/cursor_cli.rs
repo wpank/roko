@@ -168,6 +168,7 @@ for line in sys.stdin:
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(10_000),
@@ -209,6 +210,7 @@ for line in sys.stdin:
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let options = AgentOptions {
             name: "default-cmd".to_string(),

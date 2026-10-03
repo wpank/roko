@@ -482,6 +482,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(

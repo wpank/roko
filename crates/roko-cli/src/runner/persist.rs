@@ -8,7 +8,7 @@ use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use crate::orchestrator::{ExecutorSnapshot, OrchestratorSnapshot, PlanRevisionRequest};
+use crate::orchestrator::{ExecutorSnapshot, PlanRevisionRequest};
 use anyhow::{Context, Result};
 use roko_fs::RokoLayout;
 use roko_runtime::StateSnapshot;
@@ -825,17 +825,6 @@ pub fn append_runner_event(paths: &PersistPaths, event: &RunnerEvent) -> Result<
 pub fn save_executor_snapshot(paths: &PersistPaths, snapshot: &ExecutorSnapshot) -> Result<()> {
     let json = serde_json::to_string_pretty(snapshot).context("serializing executor snapshot")?;
     atomic_write(&paths.executor_json, json.as_bytes())
-}
-
-/// Save the aggregate orchestrator snapshot atomically.
-pub fn save_orchestrator_snapshot(
-    paths: &PersistPaths,
-    snapshot: &OrchestratorSnapshot,
-) -> Result<()> {
-    let json = snapshot
-        .to_json()
-        .context("serializing orchestrator snapshot")?;
-    atomic_write(&paths.orchestrator_json, json.as_bytes())
 }
 
 /// Atomically write the runner-owned [`RunStateSnapshot`].

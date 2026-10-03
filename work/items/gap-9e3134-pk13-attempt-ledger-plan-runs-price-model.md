@@ -67,3 +67,8 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK07 (gap-f548c1), PK08 (gap-a0043b), PK12 (gap-08120e).
 - Suggested model: opus.
+
+## Progress
+
+- 2114: implemented at 90b936ac8; cargo verification deferred to the batch gate.
+- 2115: implemented at b95a1549b; cargo verification deferred to the batch gate.

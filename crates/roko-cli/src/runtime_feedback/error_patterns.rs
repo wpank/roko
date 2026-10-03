@@ -5,10 +5,12 @@
 //! dispatch factory's shared [`ErrorPatternStore`], and dispatch formats its
 //! top patterns into every prompt. This sink records each failed attempt in
 //! that same store, so the run's later attempts see the failure at once, and
-//! saves the store, so the next run starts from it. Only an attempt whose
-//! settled learning label is a failure (S01 §4.1) counts: a verify failure, a
-//! turn-cap stop or a timeout after output. Provider and harness failures say
-//! nothing about the agent's work.
+//! saves the store, so the next run starts from it. Only a verify failure
+//! whose settled learning label is a failure (S01 §4.1) counts. A turn-cap
+//! stop or a timeout after output fails the agent too, but says nothing about
+//! the code: the retry's turn policy, the episode and the router keep those
+//! (backlog 4208). Provider and harness failures say nothing about the
+//! agent's work.
 //!
 //! It is the one error-pattern writer on the Graph path.
 
@@ -48,14 +50,15 @@ impl FeedbackSink for ErrorPatternSink {
         "error_patterns"
     }
 
-    /// A failure of the agent's work (learning label 0) with its reason.
+    /// A verify failure of the agent's work (learning label 0) with its
+    /// reason.
     fn interested(&self, event: &FeedbackEvent) -> bool {
         matches!(
             event,
             FeedbackEvent::TaskCompleted {
-                failure_reason: Some(_),
+                failure_reason: Some(reason),
                 ..
-            }
+            } if failure_class(reason) == VERIFY_CLASS
         ) && event.learning_success() == Some(false)
     }
 
@@ -90,10 +93,23 @@ impl FeedbackSink for ErrorPatternSink {
     }
 }
 
+/// The `failure_reason` class of a verify failure.
+const VERIFY_CLASS: &str = "verify";
+
+/// The class of a class-prefixed `failure_reason`: `verify`, `turn_cap`,
+/// `timeout`, …
+fn failure_class(failure_reason: &str) -> &str {
+    failure_reason
+        .split_once(": ")
+        .map_or("failure", |(class, _)| class)
+}
+
 /// The error-pattern observation of a failed attempt's class-prefixed
-/// `failure_reason` (`"verify: …"`, `"turn_cap: …"`). Its key is the class and
-/// the failure's digest, so a failure that recurs across attempts, tasks and
-/// plans merges into one pattern.
+/// `failure_reason`, when it is a verify failure (`"verify: …"`). Its key is
+/// the class and the failure's digest, so a failure that recurs across
+/// attempts, tasks and plans merges into one pattern. Its gate is the failing
+/// step's command, so prompts select it for the tasks that run that command
+/// (backlog 4210); a failure that quotes none keeps the class.
 fn observation(
     plan_id: &str,
     task_id: &str,
@@ -102,24 +118,37 @@ fn observation(
     let (class, detail) = failure_reason
         .split_once(": ")
         .unwrap_or(("failure", failure_reason));
+    if class != VERIFY_CLASS {
+        return None;
+    }
     let digest = failure_digest(detail);
     if digest.is_empty() {
         return None;
     }
-    let source = if class == "verify" {
-        GateFailureSource::GateClassification
-    } else {
-        GateFailureSource::RetryClassifier
-    };
     Some(GateFailureObservation::new(
         format!("{class}::{digest}"),
         plan_id,
         Some(task_id.to_string()),
-        class,
+        failing_command(detail).unwrap_or(class),
         class,
         digest,
-        source,
+        GateFailureSource::GateClassification,
     ))
+}
+
+/// The command a verify failure's first step line quotes, as in
+/// ``verify[0:test] `cargo test -p app` failed: exit code: 101``, or a
+/// workspace rung's ``rung[clippy] `…` failed: …``.
+fn failing_command(detail: &str) -> Option<&str> {
+    detail.lines().find_map(|line| {
+        let line = line.trim_start();
+        if !(line.starts_with("verify[") || line.starts_with("rung[")) {
+            return None;
+        }
+        let (_, quoted) = line.split_once(" `")?;
+        let (command, _) = quoted.split_once('`')?;
+        (!command.trim().is_empty()).then_some(command)
+    })
 }
 
 /// A failure's digest: the first line after its summary line (a verify
@@ -206,7 +235,8 @@ mod tests {
         assert_eq!(saved.len(), 1, "one recurring failure is one pattern");
         let pattern = saved.top_patterns(1)[0];
         assert_eq!(pattern.occurrences, 2);
-        assert_eq!(pattern.gate.as_deref(), Some("verify"));
+        assert_eq!(pattern.gate.as_deref(), Some("cargo test -p app"));
+        assert_eq!(pattern.category, "verify");
         assert_eq!(pattern.task_ids.len(), 2);
         assert!(
             pattern.digest.contains("cargo test -p app"),
@@ -215,5 +245,34 @@ mod tests {
         );
         let prompt = store.read().unwrap().format_for_prompt(5);
         assert!(prompt.contains("cargo test -p app"), "{prompt}");
+    }
+
+    /// backlog 4208: a turn-cap stop or a timeout after output fails the
+    /// agent, but says nothing about the code, so it adds no error pattern
+    /// and the store is not written.
+    #[tokio::test]
+    async fn turn_cap_failure_records_no_error_pattern() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join(".roko/learn/error-patterns.json");
+        let store = Arc::new(RwLock::new(ErrorPatternStore::empty()));
+        let sink = ErrorPatternSink::new(Arc::clone(&store), &path);
+        let cases = [
+            (
+                AttemptOutcome::TurnCap,
+                "turn_cap: agent turn cap reached (turns=12, cap=12)",
+            ),
+            (
+                AttemptOutcome::Timeout,
+                "timeout: attempt timed out after 600s",
+            ),
+        ];
+        for (outcome, reason) in cases {
+            let event = completed("T1", outcome, reason);
+            assert_eq!(event.learning_success(), Some(false), "{reason}");
+            assert!(!sink.interested(&event), "{reason}");
+            sink.on_event(&event).await.expect("on_event");
+        }
+        assert_eq!(store.read().expect("store").len(), 0);
+        assert!(!path.exists(), "nothing was saved");
     }
 }

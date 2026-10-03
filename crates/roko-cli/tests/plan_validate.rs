@@ -599,8 +599,10 @@ evidence_ref = "crates/roko-gate/src/acceptance_contract.rs"
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    // The contract is accepted: its one finding is the PLAN_046 warning
+    // that contracts are not enforced at run time (3230).
     assert!(
-        stdout.contains("0 diagnostics in 1 plan"),
+        stdout.contains("1 diagnostics in 1 plan") && stdout.contains("PLAN_046"),
         "unexpected stdout: {stdout}"
     );
 }
@@ -703,8 +705,10 @@ evidence_ref = "crates/roko-core/src/config/schema.rs"
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    // The contract is accepted: its one finding is the PLAN_046 warning
+    // that contracts are not enforced at run time (3230).
     assert!(
-        stdout.contains("0 diagnostics in 1 plan"),
+        stdout.contains("1 diagnostics in 1 plan") && stdout.contains("PLAN_046"),
         "unexpected stdout: {stdout}"
     );
 }
@@ -914,9 +918,11 @@ evidence_ref = "plans/architecture-core-queue/tasks.toml"
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    // Both discovered plans validate, including the intentionally absent output.
+    // Both discovered plans validate, including the intentionally absent
+    // output. The only diagnostic is 3230's warning that an acceptance
+    // contract is not enforced at run time (PLAN_046).
     assert!(
-        stdout.contains("0 diagnostics in 2 plans"),
+        stdout.contains("1 diagnostics in 2 plans") && stdout.contains("PLAN_046"),
         "unexpected stdout: {stdout}"
     );
 }
@@ -1025,4 +1031,57 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
     assert_eq!(t2["hard_fail"], serde_json::json!([]));
     assert_eq!(t2["rules"]["SQ05"], 1.0);
     assert_eq!(t2["verify_classes"], serde_json::json!(["test"]));
+}
+
+/// 3230 (decision 3205): the AcceptanceContract evaluator is retired, so
+/// `plan validate` warns that a task's contract is not enforced (PLAN_046)
+/// without failing the plan, and an archived plan with contracts still
+/// parses.
+#[test]
+fn acceptance_contract_is_reported_as_not_enforced() {
+    let temp = TempDir::new().unwrap();
+    write_plan(
+        temp.path(),
+        "contract",
+        r#"
+[meta]
+plan = "contract"
+
+[[task]]
+id = "T1"
+title = "Implement the validator"
+role = "implementer"
+files = ["src/lib.rs"]
+depends_on = []
+verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
+
+[task.acceptance_contract]
+version = 1
+gates = [{ id = "compile", kind = "compile", command = "cargo check -p roko-cli" }]
+"#,
+    );
+
+    let assert = run_validate(&temp, &["plans", "--json"]).success();
+    let report: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("JSON report");
+    let warnings: Vec<&serde_json::Value> = report["plans"]
+        .as_array()
+        .expect("plans")
+        .iter()
+        .flat_map(|plan| plan["diagnostics"].as_array().expect("diagnostics"))
+        .filter(|diagnostic| diagnostic["rule_id"] == "PLAN_046")
+        .collect();
+    assert_eq!(warnings.len(), 1, "{report}");
+    assert_eq!(warnings[0]["severity"], "warning", "{report}");
+    let message = warnings[0]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("not enforced at run time"), "{message}");
+
+    let archived = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plans/archive/architecture-core-queue/tasks.toml");
+    let plan = roko_cli::task_parser::TasksFile::parse(&archived).expect("parse the archived plan");
+    assert!(
+        plan.tasks
+            .iter()
+            .any(|task| task.acceptance_contract.is_some())
+    );
 }

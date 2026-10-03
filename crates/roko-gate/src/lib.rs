@@ -140,12 +140,10 @@ pub mod verdict_publisher;
 pub mod verify_chain_gate;
 
 pub use acceptance_contract::{
-    AcceptanceContract, AcceptanceDecision, AcceptanceEvidence, AcceptanceIssue, AcceptanceOutcome,
-    GateEvidence, GateRequirement, GateRequirementKind, NoStubEvidence, NoStubRequirement,
-    ParityLedgerEvidenceRow, ParityLedgerRequirement, ParityLedgerRequirementRow,
-    ParityLedgerStatus, RecoveryEvidence, RecoveryRequirement, RequiredNextAction,
-    ReviewVerdictEvidence, ReviewVerdictRequirement, StructuredAgentOutputRequirement,
-    StructuredOutputEvidence,
+    AcceptanceContract, AcceptanceDecision, AcceptanceIssue, AcceptanceOutcome, GateRequirement,
+    GateRequirementKind, NoStubRequirement, ParityLedgerRequirement, ParityLedgerRequirementRow,
+    RecoveryRequirement, RequiredNextAction, ReviewVerdictEvidence, ReviewVerdictRequirement,
+    StructuredAgentOutputRequirement,
 };
 pub use adaptive_threshold::{AdaptiveThresholds, RungStats, TOTAL_RUNGS};
 pub use agent_judge::AgentJudgeOracle;

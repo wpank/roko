@@ -205,7 +205,7 @@ verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
 [[loop]]
 id = "L-err"
 name = "error patterns"
-decision_point = "dispatch::factory::SharedAgentFactory::format_error_patterns_for_prompt"
+decision_point = "dispatch::factory::SharedAgentFactory::error_patterns_for_task"
 layer = "error_patterns"
 opportunity = "a discovered error pattern matches the task"
 default_policy = "no error-pattern section"
@@ -221,9 +221,9 @@ pointer = "crates/roko-cli/src/graph_execution/plan_runner.rs::ErrorPatternSink"
 verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
 
 [[loop.static_findings]]
-claim = "Graph dispatch formats the top five error patterns into every prompt."
-pointer = "crates/roko-cli/src/graph_task_dispatch.rs::format_error_patterns_for_prompt"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+claim = "Graph dispatch selects the error patterns of the task or its verify commands (4209, 4210)."
+pointer = "crates/roko-cli/src/graph_task_dispatch/verification.rs::error_patterns_for_task"
+verified_at = "024384f015a9808e4a16ba2a4e42c7161cbd8807"
 
 [[loop]]
 id = "L-dream"

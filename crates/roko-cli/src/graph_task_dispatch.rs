@@ -211,11 +211,11 @@ pub struct GraphTaskDispatcher {
     agg_dispatch_count: AtomicU64,
     /// Run-scoped cache of static prompt context that does not change per task.
     ///
-    /// Contains `(workspace_map, workspace_context, cfactor_context)`.
+    /// Contains `(workspace_map, workspace_context)`.
     /// Computed at most once per plan run on the first dispatch call, then
     /// cloned into every `DispatchContext` to avoid repeated blocking I/O
     /// (filesystem reads + `git` subprocess spawns) on the Tokio reactor.
-    static_prompt_cache: std::sync::OnceLock<(String, String, String)>,
+    static_prompt_cache: std::sync::OnceLock<(String, String)>,
     /// Turn caps and timeouts learned per tier from the workspace's settled
     /// attempts, read on the first dispatch (gap-5a6e01).
     learned_tier_limits: std::sync::OnceLock<roko_learn::tier_limits::LearnedTierLimits>,
@@ -703,7 +703,7 @@ impl GraphTaskDispatcher {
                 .max(1)
                 .saturating_mul(1_000),
         };
-        Some(HelperAgent::new(agent, target))
+        Some(HelperAgent::new(agent, target, self.pricing_snapshot()))
     }
 
     /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`
@@ -1095,11 +1095,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
 
         // Load persisted dream routing advice once; both the cross-cut
         // arbitration and the P1-18 dream bias read it. Plans that skip
-        // enrichment get neither.
+        // enrichment get neither, and no plan reads it while plan runs do
+        // not dream (backlog 4207).
         let routing_bias = if skip_enrichment {
             None
         } else {
-            let dream_advice = roko_dreams::load_dream_routing_advice(&self.workdir).ok();
+            let dream_advice =
+                routing_context::plan_dream_routing_advice(&self.config.learning, &self.workdir);
             // P1-16: Run cross-cut arbitration to detect safety-critical
             // overrides before applying dream routing advice.
             let task_category = task.domain.as_ref().map_or("implementation", |d| d.label());
@@ -1158,21 +1160,18 @@ impl TaskDispatcher for GraphTaskDispatcher {
         routing_context::mark_attempt(&mut routing_ctx, &task, attempt_number);
         routing_context::mark_attempt(&mut routing_ctx_for_feedback, &task, attempt_number);
 
-        let (cached_workspace_map, cached_workspace_context, cached_cfactor_context) =
+        let (cached_workspace_map, cached_workspace_context) =
             self.static_prompt_cache.get_or_init(|| {
                 let ws_map =
                     crate::dispatch::prompt_builder::generate_workspace_map_pub(&self.workdir);
                 let ws_ctx =
                     crate::dispatch::prompt_builder::generate_workspace_context_pub(&self.workdir);
-                let cf_ctx =
-                    crate::dispatch::prompt_builder::generate_cfactor_context_pub(&self.workdir);
                 tracing::debug!(
                     ws_map_bytes = ws_map.len(),
                     ws_ctx_bytes = ws_ctx.len(),
-                    cf_ctx_bytes = cf_ctx.len(),
                     "static_prompt_cache: computed once for this run"
                 );
-                (ws_map, ws_ctx, cf_ctx)
+                (ws_map, ws_ctx)
             });
         // Express mode sets force_backend to the fast model unless the operator
         // has already supplied a --model override (cli_model_override takes
@@ -1213,10 +1212,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
             routing_context: Some(routing_ctx),
             routing_bias,
             dependency_outputs: upstream_outputs(&input),
-            error_patterns_context: self.factory.format_error_patterns_for_prompt(5),
+            error_patterns_context: self.task_error_patterns(spec, &task).text,
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
-            cached_cfactor_context: cached_cfactor_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
         };
         let prompt_assembly_started = std::time::Instant::now();
@@ -1500,6 +1498,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     let (dispatch, failover) = interrupted.into_dispatch(
                         &error.to_string(),
                         u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
+                        self.pricing_snapshot().as_deref(),
                     );
                     let cost_usd = f64::from(dispatch.result.usage.cost_usd);
                     self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
@@ -1861,6 +1860,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -2123,6 +2123,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -2311,6 +2312,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -2447,6 +2449,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         }
     }
 
@@ -3096,6 +3099,7 @@ sleep 30
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(

@@ -309,8 +309,10 @@ async fn run_agent_capture_impl(
     }
 
     let mut usage = result.usage;
+    let snapshot = crate::dispatch_v2::pricing_snapshot(&routing_config.pricing, opts.workdir);
     crate::dispatch_v2::fill_usage_cost_from_pricing(
         &mut usage,
+        snapshot.as_deref(),
         resolved.profile.as_ref(),
         &resolved.slug,
     );

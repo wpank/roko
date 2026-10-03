@@ -104,3 +104,20 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: nothing.
 - Suggested model: sonnet.
 - 2026-10-02 (roko-7d): Tasks 9202 and 9203 are done in merge bfd36512f (the workflow-audit migration): no next-step hint names `roko develop` (`commands/prd.rs` is deleted), and the hidden `Develop` variant, `commands/develop.rs` and `DevelopInput` are gone, so the first two verifies pass. Tasks 9204-9213 remain. Hold lifted.
+
+## Progress
+
+Implemented on `work/gap-2339e2`; cargo verification of the Rust tasks (9204-9208) is deferred to the batch gate.
+
+- 9202: already done (roko-7d, merge bfd36512f)
+- 9203: already done (roko-7d, merge bfd36512f)
+- 9204: implemented at 8721fe5df
+- 9205: implemented at 84ca1a2e7
+- 9206: implemented at e23d01942
+- 9207: implemented at ca7db2706
+- 9208: implemented at 0d6484adc
+- 9209: implemented at 6ade75928
+- 9210: implemented at 1bb3bee1b
+- 9211: implemented at fda0e42bc
+- 9212: implemented at 16afd36ae
+- 9213: implemented at a065d94cb

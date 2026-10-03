@@ -921,6 +921,21 @@ fn validate_tasks_file(
         }
 
         if let Some(contract_value) = &task.acceptance_contract {
+            // 3230 (decision 3205): the contract evaluator is retired. A
+            // contract still parses and its shape is still checked, but
+            // nothing enforces it at run time.
+            diagnostics.push(Diagnostic {
+                severity: Severity::Warning,
+                rule_id: "PLAN_046".to_string(),
+                plan_id: Some(plan_id.clone()),
+                task_id: task.task_id.clone(),
+                message: format!(
+                    "task '{}' has an acceptance_contract, which is not enforced at run time; \
+                     state its criteria in `acceptance` with verify `covers`, or pin a test \
+                     with `[task.accept]`",
+                    task.label()
+                ),
+            });
             match contract_value.clone().try_into::<AcceptanceContract>() {
                 Ok(contract) => {
                     let decision = contract.validate_contract();

@@ -317,6 +317,7 @@ impl GraphTaskDispatcher {
                 &SideCall::of(
                     &dispatch,
                     u64::try_from(call_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    self.pricing_snapshot().as_deref(),
                 ),
             )
             .await;
@@ -989,6 +990,7 @@ exit 1
                     limits: None,
                     require_confirmation: false,
                     stream_usage: None,
+                    billing: None,
                 }
             };
         let api_model = |provider: &str, slug: &str| ModelProfile {
@@ -1873,6 +1875,7 @@ printf '%s\n' '{"type":"result","session_id":"s","total_cost_usd":0,"usage":{"in
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let mut config = RokoConfig::default();
         config.providers.clear();
@@ -1984,6 +1987,7 @@ exec sleep 5
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let mut config = RokoConfig::default();
         config.providers.clear();
@@ -2078,6 +2082,7 @@ exec sleep 5
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         };
         let mut config = RokoConfig::default();
         config.providers.clear();
@@ -2266,6 +2271,7 @@ printf '%s\n' '{{"type":"result","session_id":"s","total_cost_usd":0,"usage":{{"
                 limits: None,
                 require_confirmation: false,
                 stream_usage: None,
+                billing: None,
             },
         );
         config.models.insert(
@@ -2302,6 +2308,7 @@ printf '%s\n' '{{"type":"result","session_id":"s","total_cost_usd":0,"usage":{{"
                     limits: None,
                     require_confirmation: false,
                     stream_usage: None,
+                    billing: None,
                 },
             );
         }

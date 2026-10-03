@@ -81,7 +81,6 @@ pub use plan_generator::{
     PlanGeneratorRequest, PlanSource, ValidatedPlan, ValidationEvidence,
 };
 pub use prompt::builder::PromptBuildHandle;
-pub use prompt::cache::PromptCacheHandle;
 
 // ---- Authored graph controller re-exports (#267) ----------------------------
 

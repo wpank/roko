@@ -167,6 +167,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
                         limits: None,
                         require_confirmation: false,
                         stream_usage: None,
+                        billing: None,
                     },
                 );
                 config.models.insert(

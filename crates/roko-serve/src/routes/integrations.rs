@@ -99,7 +99,9 @@ mod tests {
             .await
             .unwrap();
         let resp: IntegrationListResponse = serde_json::from_slice(&body).unwrap();
-        assert!(resp.total >= 6);
+        // github, slack, generic-webhook, cron and file-watch; `scripts` went
+        // with 9208.
+        assert!(resp.total >= 5);
         assert!(resp.integrations.iter().any(|i| i.name == "github"));
     }
 

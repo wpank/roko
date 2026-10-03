@@ -90,6 +90,12 @@ pub struct GraphFeedbackContext {
 struct SettledCostRow<R> {
     outcome: AttemptOutcome,
     learning_label: Option<u8>,
+    /// The verdict's `cost.api_equiv_usd`: the attempt's tokens at the rates
+    /// of `price_snapshot_id`, `null` when that snapshot does not list the
+    /// model or the usage is unknown (backlog 2115).
+    api_equiv_usd: Option<f64>,
+    /// The price snapshot behind `api_equiv_usd` (backlog 2115).
+    price_snapshot_id: Option<String>,
     #[serde(flatten)]
     row: R,
 }
@@ -332,6 +338,7 @@ impl GraphTaskDispatcher {
             // row records none; a price list never undercuts the reported cost.
             let eff_cost_without_cache = crate::dispatch_v2::usage_cost_without_cache(
                 &dispatch.result.usage,
+                self.pricing_snapshot().as_deref(),
                 dispatch.target.model_profile.as_ref(),
                 &dispatch.target.model_slug,
             )
@@ -462,6 +469,7 @@ impl GraphTaskDispatcher {
                 // An unknown cost reads as unknown, not as $0 (backlog 2109).
                 priced: Some(crate::dispatch_v2::usage_is_priced(
                     &dispatch.result.usage,
+                    self.pricing_snapshot().as_deref(),
                     dispatch.target.model_profile.as_ref(),
                     &dispatch.target.model_slug,
                 )),
@@ -471,6 +479,8 @@ impl GraphTaskDispatcher {
                 row: SettledCostRow {
                     outcome: settled.verdict.outcome,
                     learning_label: settled.verdict.learning_label,
+                    api_equiv_usd: settled.verdict.cost.api_equiv_usd,
+                    price_snapshot_id: settled.verdict.cost.price_snapshot_id.clone(),
                     row: roko_learn::efficiency::ExecutedRow::new(
                         &cost_record,
                         &settled.verdict.executed,
@@ -899,8 +909,7 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix,
-        verify_step,
+        jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
     };
 
     /// Save a prompt experiment on the implementer's role section at
@@ -973,10 +982,10 @@ mod tests {
         (confidence.unwrap_or_default(), router.total_observations())
     }
 
-    /// Provider that answers like [`VERIFY_PROVIDER`], except that a call
-    /// finding `fail-next` beside it fails with a transport error, and one
-    /// finding `exhaust-next` reports exhausted usage. Each marker fails one
-    /// call.
+    /// Provider that answers like [`LESSON_PROVIDER`], ending with a lesson
+    /// a verified pass stores, except that a call finding `fail-next`
+    /// beside it fails with a transport error, and one finding
+    /// `exhaust-next` reports exhausted usage. Each marker fails one call.
     const FLAKY_PROVIDER: &str = r#"#!/bin/sh
 set -eu
 cat >/dev/null
@@ -991,7 +1000,7 @@ if [ -f "$dir/exhaust-next" ]; then
   echo "You've hit your usage limit" >&2
   exit 1
 fi
-printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output"}}'
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output\nLesson: The greeting banner reads its text from banner.txt."}}'
 printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
 "#;
 
@@ -1509,7 +1518,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             cost_output_per_m: Some(15.0),
             ..ModelProfile::default()
         };
-        let uncached = usage_cost_without_cache(&usage, Some(&profile), "unpriced-model")
+        let uncached = usage_cost_without_cache(&usage, None, Some(&profile), "unpriced-model")
             .expect("the profile prices the model");
         assert!(
             uncached > f64::from(usage.cost_usd),
@@ -1517,7 +1526,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             usage.cost_usd
         );
         assert_eq!(
-            usage_cost_without_cache(&usage, None, "unpriced-model"),
+            usage_cost_without_cache(&usage, None, None, "unpriced-model"),
             None
         );
     }
@@ -1581,7 +1590,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
     /// learning label, so none of them moves a learner (router, playbooks,
     /// daimon, prompt experiments, durable knowledge). The first two still
     /// leave episodes, labelled `null`, and all three leave verdicts, so none
-    /// reads as abandoned. A pass then moves every learner.
+    /// reads as abandoned. A pass then moves every learner; durable
+    /// knowledge grows from the lesson its agent states (backlog 4216).
     #[tokio::test]
     async fn learning_sinks_skip_attempts_without_a_learning_label() {
         let temp = tempdir().expect("tempdir");
@@ -1666,7 +1676,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
         let null = serde_json::Value::Null;
         assert_eq!(labels, [("unverified", &null), ("provider_error", &null)]);
 
-        // A pass is evidence for every learner.
+        // A pass is evidence for every learner, and its agent's lesson is
+        // the durable knowledge it adds.
         task.verify = vec![verify_step("check", "true")];
         dispatcher
             .dispatch(&make_spec(&task), Vec::new(), &ctx)
@@ -1711,10 +1722,20 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
         assert_eq!(verdicts, expected);
     }
 
+    /// [`VERIFY_PROVIDER`] whose agent ends its answer with a lesson, which a
+    /// verified pass stores (backlog 4216).
+    const LESSON_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"Rendered the banner.\nLesson: The greeting banner reads its text from banner.txt."}}'
+printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
     /// Through the batch dispatch path: a verified attempt grows durable
-    /// knowledge and credits its prompt treatment and the playbook its prompt
-    /// used with a success; a verify failure credits both with a failure and
-    /// keeps the failing step and its output on the episode.
+    /// knowledge, the lesson its agent stated, and credits its prompt
+    /// treatment and the playbook its prompt used with a success; a verify
+    /// failure credits both with a failure and keeps the failing step and its
+    /// output on the episode.
     #[tokio::test]
     async fn dispatch_outcomes_feed_knowledge_experiments_playbooks_and_episodes() {
         let temp = tempdir().expect("tempdir");
@@ -1737,7 +1758,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             ..GraphFeedbackContext::default()
         };
         let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+            make_test_dispatcher(&temp, LESSON_PROVIDER, no_auto_fix, feedback).await;
         task.title = "Render the greeting banner".into();
         task.verify = vec![verify_step("structural", "true")];
         dispatcher
@@ -1762,7 +1783,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
         assert!(
             knowledge.iter().any(|entry| {
                 entry.source.as_deref() == Some("runtime:gate_verdict")
-                    && entry.content.contains("Render the greeting banner")
+                    && entry.content == "The greeting banner reads its text from banner.txt."
             }),
             "{knowledge:#?}"
         );

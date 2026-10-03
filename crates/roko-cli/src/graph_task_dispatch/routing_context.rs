@@ -402,6 +402,28 @@ pub(super) fn dream_routing_bias(
     Some(bias)
 }
 
+/// Whether a plan run dreams, so that dream routing advice may steer its
+/// dispatches: `[learning] dream_on_completion` and
+/// `dreams.trigger_on_plan_complete` are both on. Dreams are held
+/// (dec-e70592), and the first is off by default (backlog 4207).
+pub(super) const fn dreams_feed_plan_routing(learning: &roko_core::config::LearningConfig) -> bool {
+    learning.dream_on_completion && learning.dreams.trigger_on_plan_complete
+}
+
+/// The dream routing advice a dispatch reads: none while plan runs do not
+/// dream ([`dreams_feed_plan_routing`]), else the advice on disk, which
+/// [`roko_dreams::load_dream_routing_advice`] empties once it is older than
+/// [`roko_dreams::ROUTING_ADVICE_DEFAULT_TTL`], one hour.
+pub(super) fn plan_dream_routing_advice(
+    learning: &roko_core::config::LearningConfig,
+    workdir: &Path,
+) -> Option<roko_dreams::DreamRoutingAdvice> {
+    if !dreams_feed_plan_routing(learning) {
+        return None;
+    }
+    roko_dreams::load_dream_routing_advice(workdir).ok()
+}
+
 /// RAG-11: assign the retrieval-strategy arm from the experiment store.
 ///
 /// Blocking file I/O: call it from `spawn_blocking`. Assignment is a pure
@@ -560,6 +582,70 @@ mod tests {
             .map(|tool| tool.name.clone())
             .filter(|name| contract.permits_tool(name))
             .collect()
+    }
+
+    /// Write dream routing advice, generated at `generated_at`, that
+    /// deprioritises `model-x` for a focused implementer task.
+    fn save_dream_advice(workdir: &Path, generated_at: chrono::DateTime<chrono::Utc>) {
+        let routing = build_routing_context("implementer", &make_task_def("focused"), &None);
+        let advice = roko_dreams::DreamRoutingAdvice {
+            generated_at,
+            recommendations: vec![roko_dreams::RoutingRecommendation {
+                task_category: "implementation".to_string(),
+                complexity_band: routing.complexity.label().to_string(),
+                recommended_model: "model-y".to_string(),
+                deprioritize: vec!["model-x".to_string()],
+                confidence: 0.9,
+                supporting_episodes: 5,
+                recommended_model_success_rate: 0.8,
+                pattern_signature: 1,
+            }],
+            ..roko_dreams::DreamRoutingAdvice::default()
+        };
+        roko_dreams::save_dream_routing_advice(workdir, &advice).expect("save dream advice");
+    }
+
+    /// The dream routing bias a focused implementer task's dispatch gets
+    /// under `learning` in `workdir`.
+    fn dream_bias(
+        learning: &roko_core::config::LearningConfig,
+        workdir: &Path,
+    ) -> Option<roko_learn::cascade_router::RoutingBias> {
+        let routing = build_routing_context("implementer", &make_task_def("focused"), &None);
+        let advice = plan_dream_routing_advice(learning, workdir);
+        dream_routing_bias(advice.as_ref(), "implementation", &routing)
+    }
+
+    /// A learning config under which plan runs dream.
+    fn dreaming() -> roko_core::config::LearningConfig {
+        let mut learning = roko_core::config::LearningConfig::default();
+        learning.dream_on_completion = true;
+        learning.dreams.trigger_on_plan_complete = true;
+        learning
+    }
+
+    /// backlog 4207: fresh advice on disk steers no dispatch while plan runs
+    /// do not dream, which is the default; a dreaming run reads it.
+    #[test]
+    fn dream_advice_ignored_while_dreams_are_held() {
+        let temp = tempdir().expect("tempdir");
+        save_dream_advice(temp.path(), chrono::Utc::now());
+        let held = roko_core::config::LearningConfig::default();
+        assert!(!dreams_feed_plan_routing(&held));
+        assert!(dream_bias(&held, temp.path()).is_none());
+        assert!(
+            dream_bias(&dreaming(), temp.path()).is_some(),
+            "fresh advice steers a dreaming run"
+        );
+    }
+
+    /// backlog 4207: with dreams on, advice past its one-hour TTL yields no
+    /// routing bias.
+    #[test]
+    fn stale_dream_advice_yields_no_routing_bias() {
+        let temp = tempdir().expect("tempdir");
+        save_dream_advice(temp.path(), chrono::Utc::now() - chrono::Duration::hours(2));
+        assert!(dream_bias(&dreaming(), temp.path()).is_none());
     }
 
     /// gap-585bd2: the task's domain decides whether the `chain.*` tools,

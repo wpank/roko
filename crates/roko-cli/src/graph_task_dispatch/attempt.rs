@@ -23,6 +23,8 @@
 //! learner. That includes the T0 reflex rule that served an attempt
 //! (`reflex_credit`).
 
+use roko_core::config::schema::ProviderBilling;
+use roko_core::pricing_snapshot::{PriceSnapshot, PricedUsage, TokenCounts};
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::records::{
     AttemptCost, AttemptUsage, CacheWriteClass, VerifyStepVerdict,
@@ -240,6 +242,7 @@ impl AttemptBook {
             live_tool_calls: LiveToolCalls::default(),
             verify_steps: Vec::new(),
             exposures: None,
+            pricing: None,
             run,
         }
     }
@@ -269,6 +272,8 @@ pub(super) struct AttemptContext {
     /// How many content items the attempt's prompt retrieved and included,
     /// once it was planned (S01 P0-9).
     exposures: Option<ExposureCounts>,
+    /// The run's price snapshot, which prices the verdict (backlog 2115).
+    pricing: Option<Arc<PriceSnapshot>>,
     run: Arc<RunAttempts>,
 }
 
@@ -412,6 +417,15 @@ impl AttemptContext {
         verdict.executed = executed_model(model_requested, dispatch, self.failover);
         verdict.usage = dispatch.map(attempt_usage).unwrap_or_default();
         verdict.cost = attempt_cost(dispatch);
+        // What the attempt's tokens cost at the run's price snapshot, the
+        // figure cost per verified task reads (backlog 2115).
+        if let Some(snapshot) = self.pricing.as_deref()
+            && let Some(priced) = snapshot_price(snapshot, &verdict.usage, &verdict.executed)
+        {
+            verdict.cost.api_equiv_usd = Some(priced.api_equiv_usd);
+            verdict.cost.without_cache_usd = Some(priced.without_cache_usd);
+            verdict.cost.price_snapshot_id = Some(snapshot.id().to_string());
+        }
         verdict.helpers = self.helpers;
         let agent_failed = verdict.blame == Blame::Agent;
         verdict.ladder = self.ladder.map(|(mut ladder, last_chance)| {
@@ -622,13 +636,15 @@ impl GraphTaskDispatcher {
                 .or_default();
             *started = started.saturating_add(1);
         }
-        self.attempts.open(
+        let mut attempt = self.attempts.open(
             self.feedback.runs_dir.as_deref(),
             self.attempts.run_id(ctx),
             spec,
             task,
             ctx.cell_id.as_deref(),
-        )
+        );
+        attempt.pricing = self.pricing_snapshot();
+        attempt
     }
 
     /// Close run `run_id`'s attempt log once its plan has finished: wait
@@ -835,9 +851,11 @@ const fn cache_write_class(kind: roko_core::ProviderKind) -> CacheWriteClass {
 /// CLI's own figure for a CLI agent, and for an API provider the priced cost
 /// the plan budget settled. An unpriced call, or one whose usage is unknown,
 /// leaves `billed_usd` unknown. An API provider's usage cost is roko's own
-/// price, not a vendor figure, so it never fills `vendor_usd`. What a
-/// subscription CLI bills waits for the billing rule (backlog 2113), and the
-/// API-equivalent figures for the price snapshot (backlog 2115).
+/// price, not a vendor figure, so it never fills `vendor_usd`. A CLI agent
+/// bills what its provider's `billing` says (decision 2113): nothing on a
+/// subscription, the CLI's own figure when metered, and unknown when unset.
+/// The API-equivalent figures come from the run's price snapshot
+/// ([`snapshot_price`]).
 fn attempt_cost(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> AttemptCost {
     let mut cost = AttemptCost {
         source: cost_source(dispatch),
@@ -853,10 +871,45 @@ fn attempt_cost(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> A
             .usage_obs
             .as_ref()
             .and_then(|observation| observation.cost_usd);
+        let billing = dispatch
+            .target
+            .provider_config
+            .as_ref()
+            .and_then(|provider| provider.billing);
+        cost.billed_usd = match billing {
+            Some(ProviderBilling::Subscription) => Some(0.0),
+            Some(ProviderBilling::Metered) => cost.vendor_usd,
+            None => None,
+        };
     } else if cost.source != CostSource::Unknown && usage.has_known_cost() {
         cost.billed_usd = Some(f64::from(usage.cost_usd));
     }
     cost
+}
+
+/// What the attempt's `usage` costs at the rates of the run's price
+/// `snapshot` (S01 §4.4, backlog 2115): `api_equiv_usd` and
+/// `without_cache_usd`, for the model that served it, the one the provider
+/// reported, else the one the bridge launched. `None`, so all three
+/// snapshot figures stay unknown, when the snapshot does not list that
+/// model or the provider reported no input or output count. A cache class
+/// it did not report holds no tokens.
+fn snapshot_price(
+    snapshot: &PriceSnapshot,
+    usage: &AttemptUsage,
+    executed: &ExecutedModel,
+) -> Option<PricedUsage> {
+    let reported = executed.model_reported.as_deref();
+    let model = reported.or(executed.model_dispatched.as_deref())?;
+    let tokens = TokenCounts {
+        input: usage.tokens_in?,
+        cache_read: usage.tokens_cache_read.unwrap_or(0),
+        cache_write_5m: usage.tokens_cache_write_5m.unwrap_or(0),
+        cache_write_1h: usage.tokens_cache_write_1h.unwrap_or(0),
+        output: usage.tokens_out?,
+        reasoning: usage.tokens_reasoning.unwrap_or(0),
+    };
+    snapshot.price(model, &tokens)
 }
 
 /// Where the attempt's priced usage came from (S01 §4.4). CLI agents report
@@ -1556,6 +1609,148 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         let recorded = costs[0]["cost_usd"].as_f64().expect("cost row");
         assert!(billed > 0.0, "{verdict}");
         assert!((billed - recorded).abs() < 1e-12, "{billed} != {recorded}");
+    }
+
+    /// The verdict and the cost row of one verified attempt of `slug` on the
+    /// OpenAI-compatible mock, which reports `usage`, in a workspace whose
+    /// run prices from `prices-2026-09-28` (backlog 2115).
+    async fn snapshot_priced_attempt(
+        slug: &str,
+        usage: serde_json::Value,
+    ) -> (serde_json::Value, serde_json::Value) {
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        // The workspace's own copy of the snapshot, which a newer built-in
+        // one does not replace.
+        let prices = temp.path().join("config/prices");
+        std::fs::create_dir_all(&prices).expect("prices dir");
+        std::fs::write(
+            prices.join("2026-09-28.toml"),
+            include_str!("../../../../config/prices/2026-09-28.toml"),
+        )
+        .expect("write the snapshot");
+        let mut answer = final_turn("done");
+        answer["usage"] = usage;
+        let (base_url, _requests) = spawn_openai_mock(vec![answer.clone(), answer]);
+        let mut config = priced_api_config(base_url);
+        config.pricing.snapshot = "prices-2026-09-28".to_string();
+        config.models.get_mut("api-model").expect("api model").slug = slug.to_string();
+        let feedback = GraphFeedbackContext {
+            costs_path: Some(roko.join("learn/costs.jsonl")),
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_feedback(feedback);
+        let task = TaskDef {
+            model_hint: Some("api-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+        let attempts = jsonl_rows(&roko.join("runs").join(RUN).join("attempts.jsonl"), 2).await;
+        let costs = jsonl_rows(&roko.join("learn/costs.jsonl"), 1).await;
+        (attempts[1].clone(), costs[0].clone())
+    }
+
+    /// backlog 2115: a verified attempt of a model the run's price snapshot
+    /// lists carries the snapshot price on its verdict and its cost row: the
+    /// API-equivalent cost, the uncached cost and the snapshot's id. Cached
+    /// input makes the uncached cost the higher one. An attempt of a model
+    /// the snapshot lacks has none of them.
+    #[tokio::test]
+    async fn verdict_and_cost_rows_carry_the_snapshot_price() {
+        // S01 §5.5: 38,211 tokens in at $0.35 and 2,904 out at $0.75 per
+        // million.
+        let usage = serde_json::json!({
+            "prompt_tokens": 38_211,
+            "completion_tokens": 2_904,
+            "total_tokens": 41_115
+        });
+        let (verdict, row) = snapshot_priced_attempt("gpt-oss-120b", usage).await;
+        let cost = &verdict["cost"];
+        let api_equiv = cost["api_equiv_usd"].as_f64().expect("api_equiv_usd");
+        assert!((api_equiv - 0.01555185).abs() < 1e-9, "{verdict}");
+        assert_eq!(cost["price_snapshot_id"], "prices-2026-09-28", "{verdict}");
+        let uncached = cost["without_cache_usd"].as_f64().expect("uncached");
+        assert!((uncached - api_equiv).abs() < 1e-12, "{verdict}");
+        let recorded = row["api_equiv_usd"].as_f64().expect("cost row");
+        assert!((recorded - api_equiv).abs() < 1e-12, "{row}");
+        assert_eq!(row["price_snapshot_id"], "prices-2026-09-28", "{row}");
+
+        // kimi-k2.6 reads cached input at $0.16 per million, not at its
+        // $0.95 input rate: 60 tokens in, 40 cached and 10 out at $4.00.
+        let usage = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110,
+            "prompt_tokens_details": { "cached_tokens": 40 }
+        });
+        let (verdict, _) = snapshot_priced_attempt("kimi-k2.6", usage).await;
+        let cost = &verdict["cost"];
+        let api_equiv = cost["api_equiv_usd"].as_f64().expect("api_equiv_usd");
+        let uncached = cost["without_cache_usd"].as_f64().expect("uncached");
+        assert!((api_equiv - 103.4e-6).abs() < 1e-12, "{verdict}");
+        assert!((uncached - 135e-6).abs() < 1e-12, "{verdict}");
+        assert!(uncached > api_equiv, "{verdict}");
+
+        // The snapshot does not list the mock's own model.
+        let usage = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110
+        });
+        let (verdict, row) = snapshot_priced_attempt("api-model-1", usage).await;
+        for figure in ["api_equiv_usd", "without_cache_usd", "price_snapshot_id"] {
+            assert!(verdict["cost"][figure].is_null(), "{figure}: {verdict}");
+        }
+        assert!(row["api_equiv_usd"].is_null(), "{row}");
+        assert!(row["price_snapshot_id"].is_null(), "{row}");
+    }
+
+    /// backlog 2115 (decision 2113): a CLI attempt bills what its provider's
+    /// `billing` says: nothing on a subscription, the CLI's own figure when
+    /// metered. With no `billing` what it bills is unknown
+    /// (`settle_fills_usage_and_cost_amounts`).
+    #[tokio::test]
+    async fn a_cli_attempt_bills_by_its_providers_billing() {
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for (billing, billed) in [
+            (ProviderBilling::Subscription, 0.0),
+            (ProviderBilling::Metered, 0.01),
+        ] {
+            let temp = tempdir().expect("tempdir");
+            let runs_dir = temp.path().join(".roko/runs");
+            let feedback = GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            };
+            let configure = |config: &mut RokoConfig| {
+                no_auto_fix(config);
+                let provider = config.providers.get_mut("stream-cli").expect("provider");
+                provider.billing = Some(billing);
+            };
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, VERIFY_PROVIDER, configure, feedback).await;
+            task.verify = vec![verify_step("structural", "true")];
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await
+                .expect("the verified attempt passes");
+            drop(dispatcher);
+            let attempts = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+            let cost = &attempts[1]["cost"];
+            assert_eq!(cost["source"], "cli_usage", "{billing:?}: {cost}");
+            assert_eq!(cost["vendor_usd"], 0.01, "{billing:?}: {cost}");
+            assert_eq!(cost["billed_usd"], billed, "{billing:?}: {cost}");
+        }
     }
 
     /// backlog 2109: a cost row says whether roko could price the call. A

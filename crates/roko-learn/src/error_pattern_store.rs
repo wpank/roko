@@ -59,6 +59,38 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// The store's file name in `.roko/learn`: the one pattern file plan runs
+/// write and every reader loads (backlog 4204).
+pub const ERROR_PATTERNS_FILE: &str = "error-patterns.json";
+
+/// Runner-v2's pattern file in `.roko/learn`, which nothing writes any more.
+/// [`retire_legacy_discovered_patterns`] sets it aside.
+pub const LEGACY_DISCOVERED_PATTERNS_FILE: &str = "discovered-patterns.json";
+
+/// Set aside Runner-v2's pattern file in `learn_dir`: rename it to
+/// `discovered-patterns.json.v2-legacy`, the suffix roko-fs migrations use,
+/// and log it. Its rows carry no task or command key, so keyed selection
+/// would never pick them: they are not imported. A file already set aside is
+/// never overwritten. Returns whether a file was set aside (backlog 4204).
+///
+/// # Errors
+///
+/// Returns the I/O error of a rename that failed.
+pub fn retire_legacy_discovered_patterns(learn_dir: &Path) -> std::io::Result<bool> {
+    let legacy = learn_dir.join(LEGACY_DISCOVERED_PATTERNS_FILE);
+    let retired = learn_dir.join(format!("{LEGACY_DISCOVERED_PATTERNS_FILE}.v2-legacy"));
+    if !legacy.is_file() || retired.exists() {
+        return Ok(false);
+    }
+    std::fs::rename(&legacy, &retired)?;
+    tracing::info!(
+        from = %legacy.display(),
+        to = %retired.display(),
+        "set aside Runner-v2's pattern file; plan runs read {ERROR_PATTERNS_FILE}"
+    );
+    Ok(true)
+}
+
 /// A single normalized error pattern with occurrence tracking.
 ///
 /// Patterns are keyed by [`ErrorPattern::key`]. Older digest-only rows are
@@ -189,6 +221,10 @@ pub struct FailurePatternQuery<'a> {
     pub gate: Option<&'a str>,
     /// Failure class to prefer.
     pub classification: Option<&'a str>,
+    /// The task's verify commands. A keyed summary
+    /// ([`ErrorPatternStore::bounded_summary_keyed`]) selects the patterns
+    /// whose gate is one of them (backlog 4209).
+    pub verify_commands: &'a [String],
 }
 
 /// A bounded prompt/context summary for failure memory.
@@ -437,6 +473,8 @@ impl ErrorPatternStore {
     }
 
     /// Return a bounded, relevance-ranked summary for retry prompt context.
+    /// Every pattern that scores against `query` qualifies, or every pattern
+    /// when the query is empty; prompts use [`Self::bounded_summary_keyed`].
     #[must_use]
     pub fn bounded_summary(
         &self,
@@ -444,12 +482,40 @@ impl ErrorPatternStore {
         limit: usize,
         max_chars: usize,
     ) -> FailurePatternSummary {
+        self.summary_where(query, limit, max_chars, |pattern| {
+            pattern.relevance_score(query) > 0 || query.is_empty()
+        })
+    }
+
+    /// [`Self::bounded_summary`] for a prompt (backlog 4209): a pattern
+    /// qualifies only when it was seen on the query's task, or its gate is
+    /// one of the query's verify commands, compared with whitespace
+    /// collapsed. Plan and class only order the qualifying patterns. A query
+    /// with neither a task nor commands selects none.
+    #[must_use]
+    pub fn bounded_summary_keyed(
+        &self,
+        query: FailurePatternQuery<'_>,
+        limit: usize,
+        max_chars: usize,
+    ) -> FailurePatternSummary {
+        self.summary_where(query, limit, max_chars, |pattern| pattern.keyed_to(query))
+    }
+
+    /// The bounded summary of the unresolved patterns that `qualifies`
+    /// accepts, ranked by relevance to `query`.
+    fn summary_where(
+        &self,
+        query: FailurePatternQuery<'_>,
+        limit: usize,
+        max_chars: usize,
+        qualifies: impl Fn(&ErrorPattern) -> bool,
+    ) -> FailurePatternSummary {
         let mut candidates: Vec<(usize, &ErrorPattern)> = self
             .patterns
             .iter()
-            .filter(|pattern| !pattern.resolved)
+            .filter(|pattern| !pattern.resolved && qualifies(pattern))
             .map(|pattern| (pattern.relevance_score(query), pattern))
-            .filter(|(score, _)| *score > 0 || query.is_empty())
             .collect();
         candidates.sort_by(|(score_a, a), (score_b, b)| {
             score_b
@@ -490,11 +556,13 @@ impl ErrorPatternStore {
         }
     }
 
-    /// Format the top patterns as a markdown-ish block suitable for
-    /// injection into an agent system prompt.
+    /// Format the top patterns as a markdown-ish block.
     ///
     /// Each entry shows the digest, category, occurrence count, and any
     /// known resolution or suggestion. Output is capped at `limit` entries.
+    /// It is unkeyed, every pattern qualifying, so it suits display
+    /// (`roko learn`); prompts use [`Self::bounded_summary_keyed`]
+    /// (backlog 4209).
     pub fn format_for_prompt(&self, limit: usize) -> String {
         self.bounded_summary(FailurePatternQuery::default(), limit, 2_000)
             .format_for_prompt()
@@ -519,6 +587,10 @@ impl ErrorPatternStore {
     }
 
     fn repair_loaded_patterns(&mut self) {
+        // A turn cap or a timeout says nothing about the code; older runs
+        // recorded them as patterns (backlog 4208).
+        self.patterns
+            .retain(|pattern| !matches!(pattern.category.as_str(), "turn_cap" | "timeout"));
         for pattern in &mut self.patterns {
             if pattern.key.is_empty() {
                 pattern.key = pattern.digest.clone();
@@ -607,14 +679,33 @@ impl ErrorPattern {
         }
         score
     }
+
+    /// Whether the pattern is about the query's work (backlog 4209): it was
+    /// seen on the query's task, or it is the failure of one of the query's
+    /// verify commands (its gate), compared with whitespace collapsed.
+    fn keyed_to(&self, query: FailurePatternQuery<'_>) -> bool {
+        let same_task = query
+            .task_id
+            .is_some_and(|task_id| self.task_ids.contains(task_id));
+        let same_command = self.gate.as_deref().is_some_and(|gate| {
+            let gate = collapse_whitespace(gate);
+            query
+                .verify_commands
+                .iter()
+                .any(|command| collapse_whitespace(command) == gate)
+        });
+        same_task || same_command
+    }
 }
 
+/// `text` with each run of whitespace made one space, and none at the ends.
 impl FailurePatternQuery<'_> {
     fn is_empty(self) -> bool {
         self.plan_id.is_none()
             && self.task_id.is_none()
             && self.gate.is_none()
             && self.classification.is_none()
+            && self.verify_commands.is_empty()
     }
 }
 
@@ -730,6 +821,93 @@ fn truncate_chars(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// backlog 4209: a keyed summary selects a pattern of the same task, or
+    /// of one of the task's verify commands from another task, and skips a
+    /// pattern of another task and command, though it shares the plan.
+    #[test]
+    fn keyed_summary_skips_patterns_of_other_tasks_and_commands() {
+        let mut store = ErrorPatternStore::empty();
+        for (task, command) in [
+            ("T1", "cargo test -p app"),
+            ("T2", "cargo  clippy -p app"),
+            ("T3", "cargo test -p other"),
+        ] {
+            store.observe_gate_failure(GateFailureObservation::new(
+                format!("verify::{task}"),
+                "plan-1",
+                Some(task.to_string()),
+                command,
+                "verify",
+                format!("{command} failed"),
+                GateFailureSource::GateClassification,
+            ));
+        }
+        let commands = vec!["cargo clippy -p app".to_string()];
+        let query = FailurePatternQuery {
+            plan_id: Some("plan-1"),
+            task_id: Some("T1"),
+            verify_commands: &commands,
+            ..FailurePatternQuery::default()
+        };
+
+        let summary = store.bounded_summary_keyed(query, 5, 2_000);
+        let mut gates: Vec<&str> = summary
+            .patterns
+            .iter()
+            .filter_map(|pattern| pattern.gate.as_deref())
+            .collect();
+        gates.sort_unstable();
+        assert_eq!(gates, ["cargo  clippy -p app", "cargo test -p app"]);
+        let unkeyed = FailurePatternQuery::default();
+        let keyed = store.bounded_summary_keyed(unkeyed, 5, 2_000);
+        assert!(keyed.patterns.is_empty(), "no key selects nothing");
+        assert_eq!(store.bounded_summary(unkeyed, 5, 2_000).patterns.len(), 3);
+    }
+
+    /// backlog 4208: loading drops the turn-cap and timeout rows older runs
+    /// recorded, and keeps verify failures.
+    #[test]
+    fn load_drops_turn_cap_and_timeout_patterns() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(ERROR_PATTERNS_FILE);
+        let mut store = ErrorPatternStore::empty();
+        for class in ["verify", "turn_cap", "timeout"] {
+            store.observe_gate_failure(GateFailureObservation::new(
+                format!("{class}::digest"),
+                "plan-1",
+                Some("T1".to_string()),
+                class,
+                class,
+                format!("{class} failure"),
+                GateFailureSource::RetryClassifier,
+            ));
+        }
+        assert_eq!(store.len(), 3);
+        store.save(&path).expect("save");
+
+        let loaded = ErrorPatternStore::load(&path);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.top_patterns(1)[0].category, "verify");
+    }
+
+    /// backlog 4204: Runner-v2's pattern file is renamed aside, never
+    /// deleted or imported, and a second call finds nothing to do.
+    #[test]
+    fn legacy_discovered_patterns_file_is_set_aside() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let legacy = tmp.path().join(LEGACY_DISCOVERED_PATTERNS_FILE);
+        std::fs::write(&legacy, "{\"patterns\":{}}").expect("write the legacy file");
+
+        assert!(retire_legacy_discovered_patterns(tmp.path()).expect("set aside"));
+        assert!(!legacy.exists());
+        let retired = tmp.path().join("discovered-patterns.json.v2-legacy");
+        let kept = std::fs::read_to_string(&retired).expect("the file set aside");
+        assert_eq!(kept, "{\"patterns\":{}}");
+        let imported = tmp.path().join(ERROR_PATTERNS_FILE);
+        assert!(!imported.exists(), "nothing imported");
+        assert!(!retire_legacy_discovered_patterns(tmp.path()).expect("nothing to do"));
+    }
 
     #[test]
     fn append_upserts_by_digest() {
@@ -1028,6 +1206,7 @@ mod tests {
                 task_id: Some("task-a"),
                 gate: Some("compile:cargo"),
                 classification: Some("type_error"),
+                ..FailurePatternQuery::default()
             },
             5,
             500,

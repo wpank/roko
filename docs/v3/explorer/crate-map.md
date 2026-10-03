@@ -81,8 +81,6 @@ graph TB
         direction LR
         mcp_gh["<b>roko-mcp-github</b><br/><sub>GitHub plan PRs,<br/>CI integration</sub>"]
         mcp_stdio["<b>roko-mcp-stdio</b><br/><sub>JSON-RPC 2.0<br/>transport</sub>"]
-        mcp_slack["<b>roko-mcp-slack</b><br/><sub>Slack MCP</sub>"]
-        mcp_scripts["<b>roko-mcp-scripts</b><br/><sub>Script exec MCP</sub>"]
         plugin["<b>roko-plugin</b><br/><sub>Signed deps, WASM,<br/>strict admission</sub>"]
         gateway["<b>roko-gateway</b><br/><sub>9-stage inference,<br/>cache, cost, backpressure</sub>"]
         eval["<b>roko-eval</b><br/><sub>Evidence, criterion,<br/>profile traits</sub>"]
@@ -185,8 +183,6 @@ graph TB
     %% T7 depends on T1
     mcp_gh --> mcp_stdio
     mcp_gh --> core
-    mcp_slack --> mcp_stdio
-    mcp_scripts --> mcp_stdio
     mcp_stdio --> core
     plugin --> core
     gateway --> core
@@ -246,8 +242,6 @@ graph TB
     click lang_go "/depth/34-code-intel/language-providers" "Go provider"
     click mcp_gh "/depth/19-tools/mcp-github" "GitHub MCP"
     click mcp_stdio "/depth/19-tools/mcp-architecture" "MCP transport"
-    click mcp_slack "/depth/19-tools/mcp-architecture" "Slack MCP"
-    click mcp_scripts "/depth/19-tools/mcp-architecture" "Scripts MCP"
     click plugin "/depth/19-tools/plugin-sdk" "Plugin SDK"
     click gateway "/20-GATEWAY" "Inference gateway"
     click eval "/depth/07-gates/evaluation-lifecycle" "Evaluation framework"
@@ -306,8 +300,6 @@ sorted by dependency count (most dependent first):
 | roko-eval | 1 | T7 |
 | roko-plugin | 1 | T7 |
 | roko-mcp-stdio | 1 | T7 |
-| roko-mcp-slack | 1 | T7 |
-| roko-mcp-scripts | 1 | T7 |
 | roko-lang-rust | 1 | T6 |
 | roko-lang-typescript | 1 | T6 |
 | roko-lang-go | 1 | T6 |

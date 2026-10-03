@@ -973,6 +973,22 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
                             .join("\n")
                     ));
                 }
+                // 3225 (decision 3203): a task over its tier's size limits is
+                // a spec defect the planner fixes before a cheap model meets
+                // it. Its tier is never raised here, since that would move
+                // the work to a pricier rung without the planner choosing to.
+                let size_issues = crate::plan_policy::validate_tier_sizes(&parsed, policy);
+                if !size_issues.is_empty() {
+                    return Err(format!(
+                        "generated plan has tasks over their tier's size limits; split each \
+                         on independent outputs with disjoint files, or raise its tier:\n{}",
+                        size_issues
+                            .iter()
+                            .map(|issue| format!("  - {issue}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ));
+                }
 
                 // Run the same context check that plan_loader.rs enforces at
                 // load time so the written tasks.toml is guaranteed to pass.
@@ -2530,6 +2546,75 @@ mod tests {
     /// bug-a5cd6b: generation writes the plan it was asked for and no other.
     /// An old-format plan and a generated plan, which names no model, keep
     /// their tasks.toml byte for byte, and the planner is called once.
+    /// 3225 (decision 3203): a generated task over its tier's size limits
+    /// fails validation. A mechanical task with six files goes back to the
+    /// planner with the limit it exceeds, and the split plan is written.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generation_rejects_a_task_over_its_tier_size() {
+        const OVERSIZED: &str = "\
+            [meta]\nplan = \"widget\"\ntotal = 1\ndone = 0\nstatus = \"ready\"\n\n\
+            [[task]]\nid = \"T1\"\ntitle = \"Add the widget modules\"\n\
+            description = \"Create the six widget modules.\"\nstatus = \"ready\"\n\
+            role = \"implementer\"\ntier = \"mechanical\"\nfiles = [\"src/a.rs\", \
+            \"src/b.rs\", \"src/c.rs\", \"src/d.rs\", \"src/e.rs\", \"src/f.rs\"]\n\
+            depends_on = []\n\n[task.context]\nread_files = []\n\n\
+            [[task.verify]]\nphase = \"check\"\ncommand = \"test -f src/a.rs\"\n";
+        const SPLIT: &str = "\
+            [meta]\nplan = \"widget\"\ntotal = 2\ndone = 0\nstatus = \"ready\"\n\n\
+            [[task]]\nid = \"T1\"\ntitle = \"Add the first widget modules\"\n\
+            description = \"Create src/a.rs, src/b.rs and src/c.rs.\"\nstatus = \"ready\"\n\
+            role = \"implementer\"\ntier = \"mechanical\"\n\
+            files = [\"src/a.rs\", \"src/b.rs\", \"src/c.rs\"]\n\
+            depends_on = []\n\n[task.context]\nread_files = []\n\n\
+            [[task.verify]]\nphase = \"check\"\n\
+            command = \"test -f src/a.rs && test -f src/b.rs && test -f src/c.rs\"\n\n\
+            [[task]]\nid = \"T2\"\ntitle = \"Add the other widget modules\"\n\
+            description = \"Create src/d.rs, src/e.rs and src/f.rs.\"\nstatus = \"ready\"\n\
+            role = \"implementer\"\ntier = \"mechanical\"\n\
+            files = [\"src/d.rs\", \"src/e.rs\", \"src/f.rs\"]\n\
+            depends_on = []\n\n[task.context]\nread_files = []\n\n\
+            [[task.verify]]\nphase = \"check\"\n\
+            command = \"test -f src/d.rs && test -f src/e.rs && test -f src/f.rs\"\n";
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let bin = tempfile::tempdir().expect("tempdir");
+        let calls = write_scripted_planner(
+            workdir,
+            bin.path(),
+            &[OVERSIZED, SPLIT],
+            "allow_threshold = 0.0\nblock_threshold = 0.0\n",
+        );
+        let request = PlanRequest {
+            model: Some("planner"),
+            ..PlanRequest::new(WIDGET_REQUEST, "widget", workdir)
+        };
+        generate_plan(request)
+            .await
+            .expect("generate the widget plan");
+        let written = std::fs::read_to_string(workdir.join("plans/widget/tasks.toml"))
+            .expect("the widget plan");
+        let plan = TasksFile::parse_str(&written).expect("parse the written plan");
+        assert_eq!(plan.tasks.len(), 2, "{written}");
+        assert!(
+            plan.tasks.iter().all(|task| task.files.len() == 3),
+            "{written}"
+        );
+        let log = std::fs::read_to_string(&calls).expect("planner call log");
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "the oversized plan, then the split one"
+        );
+        let retry = std::fs::read_to_string(bin.path().join("prompt-1.txt")).expect("retry");
+        assert!(
+            retry.contains("PLAN_TIER_SIZE [T1]: mechanical task is over its tier's size limits"),
+            "{retry}"
+        );
+        assert!(retry.contains("raise its tier to"), "{retry}");
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn generation_does_not_regenerate_other_plans() {

@@ -4,13 +4,15 @@
 //!
 //! ## Lifecycle
 //!
-//! The cache is built once before the runner event loop starts, and
-//! refreshed every `max_age` (default 5 min) or after gate failures that
-//! may have updated the knowledge store. When stale, the caller rebuilds
-//! with [`PromptCache::load`] and swaps the `Arc`.
+//! A plan run takes one snapshot when it starts (decision 4202, option A):
+//! every prompt of the run is built from it, and nothing refreshes it. What
+//! the run itself records (knowledge, episodes, hindsight relabels) reaches
+//! the next run. Within a run, retry feedback and the shared error-pattern
+//! store carry what earlier attempts learned. [`PromptCache::digest`] names
+//! the snapshot, for the decision records that read it (backlog 4214).
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use roko_learn::episode_logger::Episode;
 use roko_learn::playbook::Playbook;
@@ -18,15 +20,12 @@ use roko_learn::section_effect::SectionEffectivenessRegistry;
 use roko_neuro::KnowledgeEntry;
 use tracing::debug;
 
-/// Default maximum age before the cache is considered stale.
-const DEFAULT_MAX_AGE: Duration = Duration::from_secs(300);
-
 /// Pre-loaded prompt context data.
 ///
-/// All fields are read-only snapshots taken at `built_at`. The cache is
-/// intentionally cheap to clone (inner vecs are behind `Arc` when shared
-/// across tasks, but the cache itself is typically wrapped in `Arc` by the
-/// caller).
+/// All fields are read-only snapshots taken when the cache was loaded. The
+/// cache is intentionally cheap to clone (inner vecs are behind `Arc` when
+/// shared across tasks, but the cache itself is typically wrapped in `Arc` by
+/// the caller).
 #[derive(Debug, Clone)]
 pub struct PromptCache {
     /// Knowledge entries loaded from the neuro store.
@@ -37,10 +36,37 @@ pub struct PromptCache {
     pub playbooks: Vec<Playbook>,
     /// Section effectiveness registry loaded from disk.
     pub effectiveness: SectionEffectivenessRegistry,
-    /// Instant when this cache was built.
-    built_at: Instant,
-    /// Configured staleness threshold.
-    max_age: Duration,
+}
+
+/// What a prompt-cache snapshot holds (S01 P0-10, backlog 4214): for each
+/// store, how many items it loaded and a digest of their ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptCacheDigest {
+    /// The hot knowledge entries.
+    pub knowledge: SnapshotPart,
+    /// The episodes.
+    pub episodes: SnapshotPart,
+    /// The playbooks.
+    pub playbooks: SnapshotPart,
+}
+
+/// One store's part of a [`PromptCacheDigest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotPart {
+    /// The items the snapshot loaded.
+    pub count: usize,
+    /// `b3:` digest of their ids, one per line, in load order.
+    pub digest: String,
+}
+
+impl SnapshotPart {
+    fn of<'a>(ids: impl Iterator<Item = &'a str>) -> Self {
+        let ids: Vec<&str> = ids.collect();
+        Self {
+            count: ids.len(),
+            digest: roko_learn::telemetry::records::b3_digest(ids.join("\n").as_bytes()),
+        }
+    }
 }
 
 impl PromptCache {
@@ -77,26 +103,19 @@ impl PromptCache {
             episodes,
             playbooks,
             effectiveness,
-            built_at: now,
-            max_age: DEFAULT_MAX_AGE,
         }
     }
 
-    /// Returns `true` if the cache has exceeded its maximum age.
-    pub fn is_stale(&self) -> bool {
-        self.built_at.elapsed() > self.max_age
-    }
-
-    /// Override the maximum age for staleness checks.
+    /// What this snapshot holds, for the decision records that name it (S01
+    /// P0-10, backlog 4214): each store's item count and a digest of their
+    /// ids. What is written after the snapshot changes neither.
     #[must_use]
-    pub fn with_max_age(mut self, max_age: Duration) -> Self {
-        self.max_age = max_age;
-        self
-    }
-
-    /// Age of this cache snapshot.
-    pub fn age(&self) -> Duration {
-        self.built_at.elapsed()
+    pub fn digest(&self) -> PromptCacheDigest {
+        PromptCacheDigest {
+            knowledge: SnapshotPart::of(self.neuro_entries.iter().map(|entry| entry.id.as_str())),
+            episodes: SnapshotPart::of(self.episodes.iter().map(|episode| episode.id.as_str())),
+            playbooks: SnapshotPart::of(self.playbooks.iter().map(|playbook| playbook.id.as_str())),
+        }
     }
 }
 
@@ -165,14 +184,6 @@ mod tests {
         assert!(cache.neuro_entries.is_empty());
         assert!(cache.episodes.is_empty());
         assert!(cache.playbooks.is_empty());
-        assert!(!cache.is_stale());
-    }
-
-    #[test]
-    fn staleness_check() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache = PromptCache::load(tmp.path()).with_max_age(Duration::from_millis(0));
-        // After construction with 0ms max_age, the cache is immediately stale.
-        assert!(cache.is_stale());
+        assert_eq!(cache.digest().knowledge.count, 0);
     }
 }

@@ -7,6 +7,9 @@ use super::tui_forward::append_jsonl_line_async;
 use super::turn_policy::head_and_tail;
 use super::*;
 
+/// The most error patterns a prompt carries.
+const PROMPT_ERROR_PATTERN_LIMIT: usize = 5;
+
 /// What verifying an attempt found (S01 §4.3): its verdict, and what each
 /// verify step did.
 pub(super) struct VerificationReport {
@@ -1410,6 +1413,40 @@ impl GraphTaskDispatcher {
         attempt_verify_steps(task, self.task_rungs(spec, task))
     }
 
+    /// The error patterns `task`'s prompt carries (backlog 4210): those of
+    /// its own earlier attempts and of the commands its verify steps run, the
+    /// workspace rungs included. None when `[learning]
+    /// knowledge_error_patterns` is off.
+    pub(super) fn task_error_patterns(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+    ) -> crate::dispatch::factory::ErrorPatternSelection {
+        if !self.config.learning.knowledge_error_patterns {
+            return crate::dispatch::factory::ErrorPatternSelection::default();
+        }
+        let commands: Vec<String> = self
+            .verify_steps(spec, task)
+            .iter()
+            .map(|(_, step)| crate::task_accept::prompt_command(&step.command).to_string())
+            .collect();
+        let selection = self.factory.error_patterns_for_task(
+            &spec.plan_id,
+            &task.id,
+            &commands,
+            PROMPT_ERROR_PATTERN_LIMIT,
+        );
+        if !selection.keys.is_empty() {
+            tracing::debug!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                keys = ?selection.keys,
+                "error patterns keyed to the task"
+            );
+        }
+        selection
+    }
+
     /// `task` as its prompt shows it: with every verify step that will judge
     /// it, its own and then the workspace rungs, so the agent sees each check.
     pub(super) fn prompt_task(&self, spec: &TaskExecutionSpec, task: &TaskDef) -> TaskDef {
@@ -1730,6 +1767,58 @@ mod tests {
             "{message}"
         );
         assert!(!marker.exists(), "fail-fast must not run later steps");
+    }
+
+    /// backlog 4210: a verify failure's pattern reaches a later attempt of
+    /// its own task, and no task that runs other commands; with
+    /// `[learning] knowledge_error_patterns` off no prompt carries it.
+    #[tokio::test]
+    async fn error_pattern_from_other_crate_not_in_prompt() {
+        use roko_learn::error_pattern_store::{GateFailureObservation, GateFailureSource};
+
+        for enabled in [true, false] {
+            let temp = tempdir().expect("tempdir");
+            let (dispatcher, task) = make_test_dispatcher(
+                &temp,
+                VERIFY_PROVIDER,
+                |config| config.learning.knowledge_error_patterns = enabled,
+                GraphFeedbackContext::default(),
+            )
+            .await;
+            let task_a = TaskDef {
+                id: "T-A".to_string(),
+                verify: vec![verify_step("test", "cargo test -p crate-a")],
+                ..task.clone()
+            };
+            let task_b = TaskDef {
+                id: "T-B".to_string(),
+                verify: vec![verify_step("test", "cargo test -p crate-b")],
+                ..task
+            };
+            dispatcher
+                .factory
+                .error_pattern_store()
+                .write()
+                .expect("error pattern store")
+                .observe_gate_failure(GateFailureObservation::new(
+                    "verify::E0425",
+                    "stream-plan",
+                    Some("T-A".to_string()),
+                    "cargo test -p crate-a",
+                    "verify",
+                    "error[E0425]: cannot find value `total` in this scope",
+                    GateFailureSource::GateClassification,
+                ));
+            let patterns = |task: &TaskDef| dispatcher.task_error_patterns(&make_spec(task), task);
+
+            let other = patterns(&task_b);
+            assert!(other.text.is_empty(), "{enabled}: {}", other.text);
+            let retry = patterns(&task_a);
+            assert_eq!(retry.text.contains("E0425"), enabled, "{}", retry.text);
+            let keys: Vec<&str> = retry.keys.iter().map(String::as_str).collect();
+            let expected: &[&str] = if enabled { &["verify::E0425"] } else { &[] };
+            assert_eq!(keys, expected);
+        }
     }
 
     /// backlog 2104: the attempt's verdict lists what each verify step did:

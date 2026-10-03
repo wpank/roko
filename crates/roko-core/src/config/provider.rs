@@ -330,6 +330,12 @@ pub struct ProviderConfig {
     /// `false` for a server that rejects the field (backlog 2101).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_usage: Option<bool>,
+    /// How the account behind a CLI provider pays for its calls (decision
+    /// 2113), which an attempt's `cost.billed_usd` records: 0 on a
+    /// `"subscription"`, the CLI's own cost figure when `"metered"`. Unset
+    /// leaves it unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<ProviderBilling>,
 }
 
 impl Default for ProviderConfig {
@@ -348,8 +354,22 @@ impl Default for ProviderConfig {
             limits: None,
             require_confirmation: false,
             stream_usage: None,
+            billing: None,
         }
     }
+}
+
+/// How the account behind a CLI provider pays for its calls:
+/// `[providers.<name>] billing` (decision 2113).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderBilling {
+    /// A subscription login: a call adds nothing to the bill, so an
+    /// attempt's `billed_usd` is 0.
+    Subscription,
+    /// A metered API key: an attempt's `billed_usd` is the CLI's own cost
+    /// figure.
+    Metered,
 }
 
 /// Per-provider request and token budget enforced by the shared rate limiter.
@@ -842,6 +862,25 @@ mod model_profile_tests {
 
         let encoded = toml::to_string(&limits).expect("serialize limits");
         assert!(!encoded.contains("network"));
+    }
+
+    /// decision 2113: `billing` says how a CLI provider's account pays, and
+    /// a provider without it serializes none.
+    #[test]
+    fn provider_billing_parses_from_toml() {
+        let parse = |billing: &str| {
+            toml::from_str::<ProviderConfig>(&format!("kind = \"claude_cli\"\n{billing}"))
+        };
+        let subscription = parse("billing = \"subscription\"").expect("a subscription provider");
+        assert_eq!(subscription.billing, Some(ProviderBilling::Subscription));
+        let metered = parse("billing = \"metered\"").expect("a metered provider");
+        assert_eq!(metered.billing, Some(ProviderBilling::Metered));
+        assert!(parse("billing = \"free\"").is_err());
+
+        let unset = parse("").expect("a provider without billing");
+        assert_eq!(unset.billing, None);
+        let encoded = toml::to_string(&unset).expect("serialize the provider");
+        assert!(!encoded.contains("billing"), "{encoded}");
     }
 
     #[test]

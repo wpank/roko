@@ -1,0 +1,26 @@
+# S07 §4.6, F7 rust-iter "after", written out as TSS v1 from the section's description.
+[[task]]
+id = "F7-0003"
+title = "Make CountUp count inclusively"
+goal = "`CountUp::new(start, end)` yields every integer from start to end, inclusive."
+description = """Finish the iterator in `src/count_up.rs`; follow the crate's iterator conventions (see CONTRIBUTING.md). AC ids refer to the acceptance list."""
+non_goals = ["Keep the public signature of `CountUp::new`", "`DoubleEndedIterator` is not required"]
+acceptance = [
+  "AC1: `CountUp::new(1, 3).collect::<Vec<_>>() == vec![1, 2, 3]`",
+  "AC2: the iterator is empty when start > end",
+  "AC3: no `todo!()` remains in `src/count_up.rs`",
+]
+files = ["src/count_up.rs"]
+max_loc = 40
+[task.context]
+read_files = [{ path = "src/count_up.rs", why = "the stub and its signature" }]
+symbols = ["CountUp", "Iterator::size_hint"]
+[task.hidden]
+suite = "auto"
+interface = ["src/count_up.rs::CountUp"]
+properties = ["exact size_hint"]
+[[task.verify]]
+phase = "test"
+command = "cargo test --lib count_up"
+covers = ["AC1", "AC2"]
+expect = "fail_on_base"

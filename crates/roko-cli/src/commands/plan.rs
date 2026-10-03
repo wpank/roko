@@ -278,23 +278,17 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// directly.
         #[arg(long, conflicts_with = "worktree_per_task")]
         no_worktree_per_task: bool,
-        /// Use the rich 11-node-per-task production topology instead of the
+        /// Use the rich 5-node-per-task production topology instead of the
         /// simple single-Activity-per-task converter.
         ///
         /// When enabled, each task becomes a subgraph of:
-        ///   [TaskContext] -> 6 parallel enrichers (knowledge, episodes,
-        ///   playbook, modulation, safety, experiment) -> [Compose] ->
-        ///   [TaskExecutor] -> [Gate] -> [SuccessBoundary]
+        ///   [TaskContext] -> [Compose] -> [TaskExecutor] -> [Gate] -> [SuccessBoundary]
         ///
         /// Each task's [Gate] runs the compile, lint and test rungs in the
         /// worktree its attempt ran in, and accepts the attempt onto the plan
         /// branch when they pass, so this needs per-task worktrees (the
-        /// default; see `--worktree-per-task`).
-        ///
-        /// Note: enricher cells are currently passthrough stubs. The richer
-        /// topology does not yet add runtime value over the simple converter,
-        /// but makes the structure available for incremental implementation of
-        /// each enricher cell type. Only applies to the Graph engine.
+        /// default; see `--worktree-per-task`). Only applies to the Graph
+        /// engine.
         #[arg(long)]
         rich_topology: bool,
         /// After every plan is delivered into the run's batch branch
@@ -421,6 +415,17 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// Preview changes without overwriting.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Revise a plan from feedback with the planner model and print what
+    /// changed, task by task. The planner also sees how the plan's last run
+    /// failed, gate output included. The revision is written only when it
+    /// validates; otherwise the command exits 1 and the plan is untouched.
+    Revise {
+        /// The plan: its directory, or its id.
+        plan: String,
+        /// What to change.
+        #[arg(long)]
+        feedback: String,
     },
     /// Queue manifest operations: show, validate, and init milestone definitions.
     Queue {
@@ -1652,10 +1657,15 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             // once the regenerated plan passes validation, keeping done
             // tasks done.
             let slug = roko_cli::plan_generate::plan_dir_slug(&plan_dir);
+            // 3228: the planner sees how the plan's last run failed (3215),
+            // and the command prints what the regeneration changed (3216).
+            let before = std::fs::read_to_string(&tasks_path).unwrap_or_default();
+            let failure = last_run_failure_for(&workdir, &slug, &model_key);
             let request = roko_cli::plan_generate::PlanRequest {
                 context: Some(pre_validation_context.as_str()),
                 model: Some(model_key.as_str()),
                 effort: Some("high"),
+                failure_context: failure.as_deref(),
                 ..roko_cli::plan_generate::PlanRequest::new(
                     roko_cli::plan_generate::PlanSource::Regenerate(&plan_dir),
                     &slug,
@@ -1664,6 +1674,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             };
             let (_, outcome) = roko_cli::plan_generate::generate_plan(request).await?;
             if outcome.artifact_valid {
+                let after = std::fs::read_to_string(&tasks_path).unwrap_or_default();
+                print_plan_diff(
+                    &roko_cli::plan_authoring::plan_diff(&before, &after),
+                    cli.json,
+                )?;
                 Ok(EXIT_SUCCESS)
             } else {
                 tracing::error!(
@@ -1672,6 +1687,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 Ok(1)
             }
         }
+        PlanCmd::Revise { plan, feedback } => cmd_plan_revise(cli, &plan, &feedback).await,
         PlanCmd::Queue { cmd } => cmd_plan_queue(cli, cmd).await,
 
         // ── Plan control commands (#146, 1209) ──────────────────────
@@ -2410,6 +2426,126 @@ pub(crate) async fn cmd_plan_dry_run(
     Ok(EXIT_SUCCESS)
 }
 
+/// 3228: `roko plan revise`: revise the plan with the planner model
+/// ([`roko_cli::plan_authoring::revise_plan_source`]), then print the plan
+/// diff and the validation result, or with `--json` both as one object. Exit
+/// 1 when the revision was rejected, which leaves `tasks.toml` as it was.
+async fn cmd_plan_revise(cli: &Cli, plan: &str, feedback: &str) -> Result<i32> {
+    let workdir = resolve_workdir(cli);
+    let tasks_path = plan_tasks_path(&workdir, plan)?;
+    let plan_id = roko_cli::task_parser::TasksFile::parse(&tasks_path)?
+        .meta
+        .plan;
+    let resolved = roko_cli::load_resolved_config(&workdir)?;
+    let outcome = roko_cli::plan_authoring::revise_plan_source(
+        &workdir,
+        &plan_id,
+        &tasks_path,
+        feedback,
+        &resolved.config.models,
+        None,
+    )
+    .await?;
+    let diagnostics: Vec<serde_json::Value> = outcome
+        .report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let severity = match diagnostic.severity {
+                plan_validate::Severity::Error => "error",
+                plan_validate::Severity::Warning => "warning",
+            };
+            serde_json::json!({
+                "severity": severity,
+                "rule_id": diagnostic.rule_id,
+                "task_id": diagnostic.task_id,
+                "message": diagnostic.message,
+            })
+        })
+        .collect();
+    if cli.json {
+        let output = serde_json::json!({
+            "revised": outcome.written,
+            "task_count": outcome.task_count,
+            "diff": outcome.diff,
+            "diagnostics": diagnostics,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        if outcome.written {
+            println!(
+                "plan revise: wrote {} ({} tasks)",
+                tasks_path.display(),
+                outcome.task_count
+            );
+            if let Some(diff) = &outcome.diff {
+                println!("{}", diff.render_text());
+            }
+        } else {
+            println!(
+                "plan revise: the revision was rejected; {} is unchanged",
+                tasks_path.display()
+            );
+        }
+        println!(
+            "validation: {} errors, {} warnings",
+            outcome.report.errors, outcome.report.warnings
+        );
+        for diagnostic in &diagnostics {
+            println!(
+                "  {} {} [{}]: {}",
+                diagnostic["severity"].as_str().unwrap_or_default(),
+                diagnostic["rule_id"].as_str().unwrap_or_default(),
+                diagnostic["task_id"].as_str().unwrap_or("-"),
+                diagnostic["message"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    Ok(if outcome.written { EXIT_SUCCESS } else { 1 })
+}
+
+/// The `tasks.toml` of `plan`: a plan directory, relative to `workdir` or
+/// absolute, or a plan id.
+fn plan_tasks_path(workdir: &Path, plan: &str) -> Result<PathBuf> {
+    let dir = workdir.join(plan);
+    if dir.join("tasks.toml").is_file() {
+        return Ok(dir.join("tasks.toml"));
+    }
+    let info = roko_cli::plan::discover_plan_by_id(workdir, plan)
+        .with_context(|| format!("find plan `{plan}` in {}", workdir.display()))?
+        .ok_or_else(|| anyhow!("no plan `{plan}` in {}", workdir.display()))?;
+    roko_cli::plan::tasks_path(&info)
+        .filter(|path| path.is_file())
+        .ok_or_else(|| anyhow!("plan `{plan}` has no tasks.toml"))
+}
+
+/// How `plan_id`'s last run failed, for its planner, within a quarter of the
+/// planner model's context window (3215); `None` when it has no failed run.
+fn last_run_failure_for(workdir: &Path, plan_id: &str, model_key: &str) -> Option<String> {
+    let window = roko_cli::load_resolved_config(workdir)
+        .ok()
+        .and_then(|resolved| {
+            resolved
+                .config
+                .models
+                .get(model_key)
+                .map(|model| model.context_window)
+        })
+        .filter(|window| *window > 0);
+    let budget = roko_cli::plan_authoring::revision_failure_budget(window);
+    roko_cli::plan_authoring::last_run_failure_context(workdir, plan_id, budget)
+}
+
+/// Print a plan diff: its text, or with `--json` the diff itself.
+fn print_plan_diff(diff: &roko_cli::plan_authoring::PlanDiff, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(diff)?);
+    } else {
+        println!("{}", diff.render_text());
+    }
+    Ok(())
+}
+
 /// Run plan validation before `plan run` starts any agents.
 ///
 /// Returns `Some(exit_code)` when validation fails, or `None` when the plan
@@ -2469,7 +2605,11 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
     if blocking.is_empty() {
         spec_gate_before_run(plans_dir, workdir)
     } else {
-        tracing::error!(report = %plan_validate::render_text(&report), "plan validation failed — fix the errors above before running");
+        let rendered = plan_validate::render_text(&report);
+        // On stderr as well as in the log: without `--verbose` an operator
+        // sees no tracing output.
+        eprintln!("plan validation failed; fix these errors before running:\n{rendered}");
+        tracing::error!(report = %rendered, "plan validation failed — fix the errors above before running");
         Some(1)
     }
 }
@@ -2492,33 +2632,19 @@ fn spec_gate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
             return Some(1);
         }
     };
-    // gap-0ee70b: prove each task's shell checks red on the base first; a
-    // check that already passes there is HF3. Cargo checks are left to the
-    // batch gate unless `[spec_quality] red_on_base_cargo` is set.
-    let red_on_base = match roko_cli::spec_red_on_base::gate_results(&files, workdir, &config) {
-        Ok(results) => results,
-        Err(interrupted) => {
-            tracing::error!("{interrupted}");
-            return Some(128 + interrupted.signal);
-        }
-    };
-    let report = roko_cli::spec_gate::check_plans(&files, workdir, &config, &red_on_base);
-    for decision in report.blocked() {
-        for finding in &decision.findings {
-            tracing::error!(
-                plan = %decision.plan_path,
-                task = %decision.task_id,
-                rule = finding.rule,
-                detail = %finding.detail,
-                "spec gate: task blocked"
-            );
-        }
-    }
+    // A vacuous check (HF2) is refused here, before the run starts. The
+    // red-on-base check (gap-0ee70b) runs once, in the plan-load gate every
+    // run passes before its first dispatch (3231), so it is not repeated.
+    let red_on_base = std::collections::BTreeMap::new();
+    let mut report = roko_cli::spec_gate::check_plans(&files, workdir, &config, &red_on_base);
+    // The same holdout draw as the plan-load gate (3232), so a held-out task
+    // is not refused here on its score.
+    let epoch = roko_cli::spec_gate::holdout_epoch();
+    roko_cli::spec_gate::apply_holdout(&mut report, config.holdout_frac, &epoch);
     if report.blocks() {
-        tracing::error!(
-            "plan refused before dispatch: fix the task specs above ([spec_quality] in roko.toml \
-             sets what the gate checks)"
-        );
+        // On stderr as well as in the log: without `--verbose` an operator
+        // sees no tracing output.
+        roko_cli::spec_gate::log_blocked(&report);
         Some(1)
     } else {
         None

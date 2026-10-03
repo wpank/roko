@@ -34,6 +34,17 @@ use super::{
     Dispatcher, PromptAssembler, PromptCache, ResolvedAgentRuntime, RoutingLadder, WarmPool,
 };
 
+/// The error patterns a task's prompt carries (backlog 4210): the rendered
+/// block, and the keys of the patterns in it, which the attempt's exposure
+/// record can name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ErrorPatternSelection {
+    /// The rendered block; empty when no pattern is keyed to the task.
+    pub text: String,
+    /// The keys of the selected patterns, in display order.
+    pub keys: Vec<String>,
+}
+
 /// Shared, reusable components for agent dispatch.
 ///
 /// Constructed once at the start of a plan run.  The factory owns:
@@ -83,6 +94,9 @@ pub struct SharedAgentFactory {
     /// Uses `std::sync::RwLock` because `ErrorPatternStore` performs only
     /// brief CPU-bound operations (no I/O under the lock).
     error_pattern_store: Arc<std::sync::RwLock<ErrorPatternStore>>,
+    /// What the run's prompt-cache snapshot holds, when the factory's
+    /// prompts are built from one (backlog 4214).
+    prompt_snapshot: Option<crate::dispatch::prompt_cache::PromptCacheDigest>,
 }
 
 /// Bridge task returned only after its worker reaches the provider boundary.
@@ -150,6 +164,7 @@ impl SharedAgentFactory {
             None => None,
         };
 
+        let prompt_snapshot = prompt_cache.as_deref().map(PromptCache::digest);
         let prompt_assembler = match prompt_cache {
             Some(cache) => PromptAssembler::with_cache(cache),
             None => PromptAssembler::new(),
@@ -254,7 +269,15 @@ impl SharedAgentFactory {
             // Start with an empty in-memory store. Callers should replace it
             // via `with_error_pattern_store` or `with_error_patterns_from_disk`.
             error_pattern_store: Arc::new(std::sync::RwLock::new(ErrorPatternStore::empty())),
+            prompt_snapshot,
         }
+    }
+
+    /// What the run's prompt-cache snapshot holds, when this factory's
+    /// prompts are built from one: the decision records name it (backlog
+    /// 4214).
+    pub fn prompt_snapshot(&self) -> Option<&crate::dispatch::prompt_cache::PromptCacheDigest> {
+        self.prompt_snapshot.as_ref()
     }
 
     /// Read-only access to the shared dispatcher (for plan/route without acting).
@@ -345,10 +368,14 @@ impl SharedAgentFactory {
     /// Load the error pattern store from disk at the given workspace root.
     #[must_use]
     pub fn with_error_patterns_from_disk(mut self, workdir: &Path) -> Self {
-        let path = workdir
-            .join(".roko")
-            .join("learn")
-            .join("error-patterns.json");
+        let learn_dir = workdir.join(".roko").join("learn");
+        // Runner-v2's pattern file is set aside, never read (backlog 4204).
+        if let Err(error) =
+            roko_learn::error_pattern_store::retire_legacy_discovered_patterns(&learn_dir)
+        {
+            tracing::warn!(%error, "factory: Runner-v2's pattern file could not be set aside");
+        }
+        let path = learn_dir.join(roko_learn::error_pattern_store::ERROR_PATTERNS_FILE);
         let store = ErrorPatternStore::load(&path);
         tracing::debug!(
             pattern_count = store.len(),
@@ -372,17 +399,36 @@ impl SharedAgentFactory {
         &self.error_pattern_store
     }
 
-    /// Format the top error patterns from the shared store for prompt injection.
-    ///
-    /// Returns an empty string when the store is empty or the lock is
-    /// poisoned (fail-open: missing context is better than a panic).
-    pub fn format_error_patterns_for_prompt(&self, limit: usize) -> String {
-        match self.error_pattern_store.read() {
-            Ok(store) => store.format_for_prompt(limit),
-            Err(_) => {
-                tracing::warn!("error pattern store lock poisoned; skipping prompt injection");
-                String::new()
-            }
+    /// The error patterns keyed to task `task_id` of plan `plan_id`, whose
+    /// verify steps run `verify_commands`: those its own earlier attempts hit
+    /// and those of its verify commands, at most `limit` (backlog 4210).
+    /// Empty when none is keyed to the task, or the lock is poisoned
+    /// (fail-open: missing context is better than a panic).
+    pub fn error_patterns_for_task(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        verify_commands: &[String],
+        limit: usize,
+    ) -> ErrorPatternSelection {
+        let Ok(store) = self.error_pattern_store.read() else {
+            tracing::warn!("error pattern store lock poisoned; skipping prompt injection");
+            return ErrorPatternSelection::default();
+        };
+        let query = roko_learn::error_pattern_store::FailurePatternQuery {
+            plan_id: Some(plan_id),
+            task_id: Some(task_id),
+            verify_commands,
+            ..Default::default()
+        };
+        let summary = store.bounded_summary_keyed(query, limit, 2_000);
+        ErrorPatternSelection {
+            text: summary.format_for_prompt(),
+            keys: summary
+                .patterns
+                .iter()
+                .map(|pattern| pattern.key.clone())
+                .collect(),
         }
     }
 
@@ -416,62 +462,6 @@ impl SharedAgentFactory {
         self.cli_plugin_mcp_bridge
             .as_ref()
             .and_then(|bridge| bridge.session_config(worktree, immune_root, contract))
-    }
-
-    /// Swap the prompt assembler's cache without rebuilding expensive factory
-    /// components (semaphores, MCP tools, resolver).
-    ///
-    /// Called after gate failures or when the periodic staleness check fires.
-    pub fn update_prompt_cache(&mut self, cache: Arc<PromptCache>) {
-        let learning_bidders = self.dispatcher.prompt_assembler().learning_bidders();
-        let assembler = PromptAssembler::with_cache(cache)
-            .with_composition_strategy(self.config.prompt.composition_strategy)
-            .with_vcg_warmup_observations(self.config.prompt.vcg_warmup_observations)
-            .with_learning_bidders(learning_bidders);
-        let configured_models: HashSet<String> = self
-            .config
-            .available_model_slugs_for_cascade()
-            .into_iter()
-            .collect();
-        let model_providers = crate::config_helpers::routing_model_provider_map(&self.config);
-        let disabled_providers: HashSet<String> = self
-            .config
-            .routing
-            .disabled_providers
-            .iter()
-            .cloned()
-            .collect();
-        let warm_pool_size = self.config.runner.warm_pool_size;
-        let mut dispatcher = Dispatcher::new(
-            self.dispatcher.cascade_router_arc(),
-            assembler,
-            WarmPool::new(warm_pool_size),
-            configured_models.clone(),
-        )
-        .with_provider_health(Arc::clone(&self.health_registry), model_providers);
-        if !disabled_providers.is_empty() {
-            dispatcher = dispatcher.with_disabled_providers(disabled_providers);
-        }
-        // Preserve tool-capability filter across cache updates.
-        let tool_capable: HashSet<String> =
-            self.config.models_supporting_tools().into_iter().collect();
-        let models_without_tools: HashSet<String> = configured_models
-            .iter()
-            .filter(|slug| !tool_capable.contains(*slug))
-            .cloned()
-            .collect();
-        if !models_without_tools.is_empty() {
-            dispatcher = dispatcher.with_tool_capability_filter(models_without_tools);
-        }
-        // Keep the ladder bound at construction rather than logging its
-        // skipped rungs again.
-        if let Some(ladder) = self.dispatcher.routing_ladder() {
-            dispatcher = dispatcher.with_routing_ladder(ladder.clone());
-        }
-        if let Some(store) = self.dispatcher.knowledge_store() {
-            dispatcher = dispatcher.with_knowledge_store(store.clone());
-        }
-        self.dispatcher = dispatcher;
     }
 
     /// Set persisted learning bidders on the prompt assembler.

@@ -152,6 +152,19 @@ pub(crate) enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// First-try verified pass rate by task tier and size, with the size
+    /// limits it supports (decision 3203).
+    Sizing {
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// The first-try pass rate a size bucket must reach.
+        #[arg(long, default_value_t = commands::learn_sizing::TARGET)]
+        target: f64,
+        /// The fewest first tries a bucket needs before it counts.
+        #[arg(long, default_value_t = commands::learn_sizing::MIN_SAMPLE)]
+        min_sample: usize,
+    },
     /// Check a run's attempt records, or report routing outcomes from them (read-only).
     Telemetry {
         #[command(subcommand)]
@@ -288,7 +301,8 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::Tools { workdir }
         | LearnCmd::FeedbackProof { workdir }
         | LearnCmd::RoleCosts { workdir }
-        | LearnCmd::Graduation { workdir } => {
+        | LearnCmd::Graduation { workdir }
+        | LearnCmd::Sizing { workdir, .. } => {
             workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
         }
         LearnCmd::Experiments { workdir, cmd: sub } => {
@@ -427,6 +441,21 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         LearnCmd::Graduation { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_learn_graduation(&wd, json).await
+        }
+        LearnCmd::Sizing {
+            workdir,
+            target,
+            min_sample,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let (rows, excluded) = commands::learn_sizing::load_rows(&wd);
+            let report = commands::learn_sizing::sizing_report(&rows, excluded, target, min_sample);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", commands::learn_sizing::render_text(&report));
+            }
+            Ok(EXIT_SUCCESS)
         }
         LearnCmd::Inspect { subsystem } => {
             let wd = inspect_workdir(cli, &subsystem);

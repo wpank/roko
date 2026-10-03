@@ -18,9 +18,10 @@ two categories:
 2. **Infrastructure services** -- LLM providers, compute backends, and
    payment protocols that agents depend on for operation.
 
-Operations adapters are primarily accessed via MCP servers
-(`roko-mcp-github`, `roko-mcp-slack`, `roko-mcp-scripts`). Infrastructure
-services are accessed through the provider layer in `roko-agent`.
+Operations adapters are accessed via MCP servers: `roko-mcp-github` is the
+only one roko builds. Slack reaches roko through its webhook alone, with no MCP
+tool server, and no Slack or scripts MCP crate exists. Infrastructure services
+are accessed through the provider layer in `roko-agent`.
 
 ---
 
@@ -41,8 +42,6 @@ Layer 2: Agent Execution
 
 Layer 3: MCP Tool Adapters
     +-- github.* tools (via roko-mcp-github)
-    +-- slack.* tools (via roko-mcp-slack)
-    +-- scripts.* tools (via roko-mcp-scripts)
 ```
 
 Events arrive at Layer 1, are converted to Signals, matched to agent
@@ -77,7 +76,7 @@ state, plan PR/CI state, and failure issues.
 |---|---|
 | **Protocols** | Socket Mode (preferred), HTTP webhook (fallback) |
 | **Authentication** | Bot token + signing secret |
-| **MCP server** | `roko-mcp-slack` (partial) |
+| **MCP server** | None: Slack has webhook reception only (`POST /webhooks/slack`) |
 | **Rate limits** | 1 message/second per channel (Tier 3) |
 
 Socket Mode is preferred for self-hosted deployments (no public endpoint
@@ -183,11 +182,6 @@ name = "github"
 command = "roko-mcp-github"
 args = ["--repo", "nunchi/roko"]
 env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
-
-[[agent.mcp_servers]]
-name = "slack"
-command = "roko-mcp-slack"
-env = { SLACK_BOT_TOKEN = "${SLACK_BOT_TOKEN}" }
 
 [[subscription]]
 pattern = "github.pull_request"

@@ -39,7 +39,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use parking_lot::RwLock;
 use roko_compose::{
@@ -65,6 +64,11 @@ use crate::task_parser::TaskDef;
 const PINNED_STEP_NOTE: &str = "The harness runs each `# roko accept:` step itself: it copies the \
      pinned test over its destination, so edits to that copy are lost, and requires exactly the \
      stated number of passing tests.";
+
+/// Appended to the user prompt of a task with authored verify steps: a verified pass stores the
+/// line as durable knowledge (decision 4201, backlog 4215).
+const LESSON_NOTE: &str = "When you finish, end your final message with one line, `Lesson: <one \
+     sentence about this repository that a later task should know>`, or `Lesson: none`.";
 
 /// Appended to the user prompt of a task that sets `research_before_edit` (gap-404fdb).
 const RESEARCH_BEFORE_EDIT_NOTE: &str = "\n## Before You Edit\nResearch first: find the code that \
@@ -163,9 +167,6 @@ pub struct PromptContext {
     /// Ported from the legacy `workspace_context()` helper; includes
     /// git state (best-effort, bounded) and crate scan from `crates/*/Cargo.toml`.
     pub workspace_context: String,
-    /// C-Factor collective-intelligence policy text.
-    /// Loaded from `.roko/learn/c-factor.jsonl` when history exists.
-    pub cfactor_context: String,
     /// Pre-rendered error patterns from the shared in-memory store.
     ///
     /// Carried from `DispatchContext::error_patterns_context` so the prompt
@@ -181,11 +182,11 @@ pub struct PromptContext {
 impl PromptContext {
     /// Construct a `PromptContext` from runner inputs.
     ///
-    /// When `ctx` carries pre-computed `cached_workspace_map`,
-    /// `cached_workspace_context`, or `cached_cfactor_context` (non-empty),
-    /// those values are used directly — no filesystem I/O is performed for
-    /// those fields.  This avoids blocking the Tokio reactor on repeated
-    /// directory walks and `git` subprocess spawns.
+    /// When `ctx` carries pre-computed `cached_workspace_map` or
+    /// `cached_workspace_context` (non-empty), those values are used
+    /// directly — no filesystem I/O is performed for those fields.  This
+    /// avoids blocking the Tokio reactor on repeated directory walks and
+    /// `git` subprocess spawns.
     ///
     /// `GraphTaskDispatcher` populates the cache fields via a `OnceLock` so
     /// the work is done at most once per plan run, on the first dispatch.
@@ -244,13 +245,6 @@ impl PromptContext {
                 role_limits.workspace_context,
             )
         };
-        let cfactor_context = if bounded_context_only {
-            String::new()
-        } else if !ctx.cached_cfactor_context.is_empty() {
-            ctx.cached_cfactor_context.clone()
-        } else {
-            generate_cfactor_context(&ctx.workdir)
-        };
         let impact_context = declared_impact_context(task, bounded_context_only);
         let plan_brief = if skip_enrichment {
             String::new()
@@ -269,10 +263,8 @@ impl PromptContext {
             workspace_map_bytes = workspace_map.len(),
             tasks_toml_bytes = tasks_toml.len(),
             workspace_context_bytes = workspace_context.len(),
-            cfactor_context_bytes = cfactor_context.len(),
             workspace_map_from_cache = !ctx.cached_workspace_map.is_empty(),
             workspace_context_from_cache = !ctx.cached_workspace_context.is_empty(),
-            cfactor_context_from_cache = !ctx.cached_cfactor_context.is_empty(),
             "PromptContext enrichment sizes (role-scoped)"
         );
         Self {
@@ -294,7 +286,6 @@ impl PromptContext {
             tasks_toml,
             dependency_outputs: ctx.dependency_outputs.clone(),
             workspace_context,
-            cfactor_context,
             error_patterns_context: ctx.error_patterns_context.clone(),
             concurrent_plans: ctx.concurrent_plans.clone(),
             plan_brief,
@@ -799,141 +790,6 @@ fn scan_crate_descriptions(workdir: &Path) -> Vec<(String, String)> {
     crates
 }
 
-// ─── C-Factor context (ported from legacy orchestrator) ────────────────
-
-/// Load C-Factor history and generate policy context for the system prompt.
-///
-/// Reads `.roko/learn/c-factor.jsonl`, computes a summary, and runs the
-/// [`roko_core::CFactorPolicy`] to produce coordination guidance text.
-/// Returns an empty string when no history exists or the episode count
-/// is below the minimum threshold.
-fn generate_cfactor_context(workdir: &Path) -> String {
-    use roko_core::{CFactorPolicy, CFactorSource, Context, React};
-    use roko_learn::cfactor::CFactor;
-    use std::sync::Arc;
-
-    let cfactor_path = roko_fs::RokoLayout::for_project(workdir)
-        .learn_dir()
-        .join("c-factor.jsonl");
-
-    let contents = match std::fs::read_to_string(&cfactor_path) {
-        Ok(c) => c,
-        Err(_) => return String::new(),
-    };
-
-    let mut history: Vec<CFactor> = contents
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
-    history.sort_by(|left, right| left.computed_at.cmp(&right.computed_at));
-
-    let Some(current) = history.last().cloned() else {
-        return String::new();
-    };
-
-    let historical_average = if history.len() > 1 {
-        history[..history.len() - 1]
-            .iter()
-            .map(|snapshot| snapshot.overall)
-            .sum::<f64>()
-            / (history.len() - 1) as f64
-    } else {
-        current.overall
-    };
-    let trend = current.overall - historical_average;
-    let regression = roko_learn::cfactor::detect_cfactor_regression(
-        &history,
-        Duration::from_secs(7 * 24 * 60 * 60),
-        0.08,
-    );
-
-    // Collect top contributors.
-    let mut positive: Vec<_> = current
-        .agent_contributions
-        .iter()
-        .filter(|c| c.contribution_score > 0.0)
-        .cloned()
-        .collect();
-    positive.sort_by(|a, b| {
-        b.contribution_score
-            .total_cmp(&a.contribution_score)
-            .then(a.agent_id.cmp(&b.agent_id))
-    });
-    let mut negative: Vec<_> = current
-        .agent_contributions
-        .iter()
-        .filter(|c| c.contribution_score < 0.0)
-        .cloned()
-        .collect();
-    negative.sort_by(|a, b| {
-        a.contribution_score
-            .total_cmp(&b.contribution_score)
-            .then(a.agent_id.cmp(&b.agent_id))
-    });
-
-    let top_positive: Vec<String> = positive
-        .iter()
-        .take(3)
-        .map(|c| c.agent_id.clone())
-        .collect();
-    let top_negative: Vec<String> = negative
-        .iter()
-        .take(3)
-        .map(|c| c.agent_id.clone())
-        .collect();
-
-    let summary = roko_core::CFactorSummary {
-        overall: current.overall,
-        trend,
-        regression_drop: regression.map_or(0.0, |entry| entry.drop_fraction),
-        gate_pass_rate: current.components.gate_pass_rate,
-        turn_taking_equality: current.components.turn_taking_equality,
-        social_perceptiveness: current.components.social_perceptiveness,
-        citation_reciprocity: current.components.knowledge_integration_rate,
-        delivery_rate: current.components.information_flow_rate,
-        hdc_diversity: current.components.hdc_diversity,
-        episode_count: current.episode_count,
-        top_positive_contributors: top_positive,
-        top_negative_contributors: top_negative,
-    };
-
-    // Use CFactorPolicy to generate signals, then extract their text bodies.
-    #[derive(Clone)]
-    struct StaticSource(Option<roko_core::CFactorSummary>);
-    impl CFactorSource for StaticSource {
-        fn summary(&self) -> Option<roko_core::CFactorSummary> {
-            self.0.clone()
-        }
-    }
-
-    let source: Arc<dyn CFactorSource> = Arc::new(StaticSource(Some(summary)));
-    let policy = CFactorPolicy::new(source).with_min_episode_count(6);
-    let signals = policy.decide(&[], &Context::now());
-
-    if signals.is_empty() {
-        return String::new();
-    }
-
-    let mut out = String::from("# Collective calibration\n");
-    for signal in &signals {
-        if let Ok(text) = signal.body.as_text() {
-            let text = text.trim();
-            if !text.is_empty() {
-                out.push_str(text);
-                out.push('\n');
-            }
-        }
-    }
-
-    if out.trim() == "# Collective calibration" {
-        return String::new();
-    }
-
-    out
-}
-
 // ─── Public adapters for run-scoped caching ───────────────────────────────
 //
 // `GraphTaskDispatcher` computes these once per plan run (via `OnceLock`) and
@@ -948,11 +804,6 @@ pub fn generate_workspace_map_pub(workdir: &Path) -> String {
 /// Public adapter — see [`generate_workspace_context`].
 pub fn generate_workspace_context_pub(workdir: &Path) -> String {
     generate_workspace_context(workdir)
-}
-
-/// Public adapter — see [`generate_cfactor_context`].
-pub fn generate_cfactor_context_pub(workdir: &Path) -> String {
-    generate_cfactor_context(workdir)
 }
 
 /// Structured gate feedback injected into retry prompts.
@@ -1668,10 +1519,6 @@ fn build_runner_context(
         parts.push(ctx.workspace_context.clone());
     }
 
-    if !ctx.cfactor_context.is_empty() {
-        parts.push(ctx.cfactor_context.clone());
-    }
-
     if !ctx.error_patterns_context.is_empty() {
         parts.push(ctx.error_patterns_context.clone());
     }
@@ -2058,11 +1905,7 @@ impl PromptAssembler {
         // every entry carries the source Signal's content hash and the exact
         // score result used by selection.
         let section_effectiveness = self.resolve_section_effectiveness(&ctx.workdir);
-        let mut group_context = load_group_context(&ctx.workdir, &ctx.role, task, ctx);
-        // P1-14: Load pheromone records from pheromones.jsonl and merge into
-        // the pheromone context so dispatch sees gate-deposited signals.
-        let jsonl_pheromones = load_pheromone_jsonl_context(&ctx.workdir, &ctx.plan_id);
-        group_context.extend(jsonl_pheromones);
+        let group_context = load_group_context(&ctx.workdir, &ctx.role, task, ctx);
         let has_mcp = task.mcp_servers.as_ref().is_some_and(|s| !s.is_empty());
         let mut spec = RoleSystemPromptSpec::new(role, task_context, tools_csv)
             .with_cache_markers()
@@ -2305,6 +2148,11 @@ impl PromptAssembler {
                 user_prompt.push_str(PINNED_STEP_NOTE);
                 user_prompt.push('\n');
             }
+            // Only a verified pass writes knowledge: ask for its lesson
+            // (backlog 4215).
+            user_prompt.push('\n');
+            user_prompt.push_str(LESSON_NOTE);
+            user_prompt.push('\n');
         }
 
         Ok(AssembledPrompt {
@@ -2320,10 +2168,10 @@ impl PromptSectionSource for WorkdirKnowledgeSource {
     fn collect(&self, task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection> {
         let mut sections = Vec::new();
         if let Some(cache) = &self.cache {
-            if let Some(section) = collect_neuro_knowledge_cached(task, ctx, &cache.neuro_entries) {
+            if let Some(section) = collect_neuro_knowledge_cached(task, &cache.neuro_entries) {
                 sections.push(section);
             }
-            if let Some(section) = collect_episode_knowledge_cached(task, ctx, &cache.episodes) {
+            if let Some(section) = collect_episode_knowledge_cached(task, &cache.episodes) {
                 sections.push(section);
             }
         } else {
@@ -2341,7 +2189,7 @@ impl PromptSectionSource for WorkdirKnowledgeSource {
 impl PromptSectionSource for WorkdirPlaybookSource {
     fn collect(&self, task: &TaskDef, ctx: &PromptContext) -> Vec<PromptSection> {
         if let Some(cache) = &self.cache {
-            collect_playbooks_cached(task, ctx, &cache.playbooks)
+            collect_playbooks_cached(task, &cache.playbooks)
                 .into_iter()
                 .collect()
         } else {
@@ -2390,130 +2238,43 @@ fn render_effectiveness_section(
 }
 
 fn collect_neuro_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
-    let store = roko_neuro::KnowledgeStore::for_workdir(&ctx.workdir);
-    // store.query -> read_all handles NotFound internally (returns empty Vec).
-    let query = task_query_text(task, ctx);
-    // Group-tagged entries have a separate membership-gated auction path.
-    // Query extra candidates first so private group entries cannot crowd public
-    // workspace knowledge out of this section before filtering.
-    let mut entries = store.query(&query, 64).ok()?;
-    entries.retain(|entry| !is_group_scoped_knowledge(entry));
-    entries.truncate(3);
-    if entries.is_empty() {
-        return None;
-    }
-
-    let ids = entries
-        .iter()
-        .map(|entry| entry.id.clone())
-        .filter(|id| !id.is_empty())
-        .collect::<Vec<_>>();
-    let mut body = String::from("# Neuro knowledge\nRelevant durable knowledge from prior runs:\n");
-    let mut items = Vec::new();
-    for (index, entry) in entries.iter().enumerate() {
-        let source = entry.source.as_deref().unwrap_or("neuro");
-        let line = format!(
-            "- [{}] {} (confidence {:.2}, source: {})\n",
-            entry.id,
-            truncate_chars(&entry.content, 420),
-            entry.confidence,
-            source
-        );
-        // The store's query ranks the entries without a score.
-        let kind = ExposureItemKind::Knowledge;
-        items.extend(PromptItem::ranked(kind, &entry.id, index, None, &line));
-        body.push_str(&line);
-    }
-    let section = PromptSection::new("knowledge", body, 7).with_knowledge_ids(ids);
-    Some(section.with_items(items))
+    // The uncached path ranks the hot entries as a plan run's cache does
+    // (backlog 4211).
+    let entries = roko_neuro::KnowledgeStore::for_workdir(&ctx.workdir)
+        .hot_entries()
+        .ok()?;
+    collect_neuro_knowledge_cached(task, &entries)
 }
 
 fn collect_episode_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSection> {
-    let keywords = query_keywords(&task_query_text(task, ctx));
-    if keywords.is_empty() {
-        return None;
-    }
-
-    let mut scored = Vec::new();
+    let mut episodes: Vec<roko_learn::episode_logger::Episode> = Vec::new();
     for path in episode_paths(&ctx.workdir) {
-        let file = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => continue,
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
         };
-        let reader = std::io::BufReader::new(file);
-        for line in std::io::BufRead::lines(reader).map_while(Result::ok) {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let Ok(episode) = serde_json::from_str::<roko_learn::episode_logger::Episode>(trimmed)
-            else {
-                continue;
-            };
-            let haystack = format!(
-                "{} {} {} {} {}",
-                episode.task_id,
-                episode.agent_id,
-                episode.model,
-                episode.reasoning_summary.as_deref().unwrap_or(""),
-                episode.failure_reason.as_deref().unwrap_or("")
-            )
-            .to_ascii_lowercase();
-            let score = keywords
-                .iter()
-                .filter(|keyword| haystack.contains(keyword.as_str()))
-                .count();
-            if score > 0 {
-                scored.push((score, episode));
-            }
-        }
-    }
-    if scored.is_empty() {
-        return None;
-    }
-    scored.sort_by(|a, b| {
-        b.1.success
-            .cmp(&a.1.success)
-            .then_with(|| b.0.cmp(&a.0))
-            .then_with(|| b.1.completed_at.cmp(&a.1.completed_at))
-    });
-    scored.truncate(3);
-
-    let ids = scored
-        .iter()
-        .map(|(_, episode)| cited_episode_id(episode).to_string())
-        .filter(|id| !id.is_empty())
-        .collect::<Vec<_>>();
-    let mut body =
-        String::from("# Learned patterns from prior episodes\nSimilar prior work suggests:\n");
-    let mut items = Vec::new();
-    for (index, (score, episode)) in scored.iter().enumerate() {
-        let outcome = if episode.success { "passed" } else { "failed" };
-        let summary = episode
-            .reasoning_summary
-            .as_deref()
-            .or(episode.reflection.as_deref())
-            .or(episode.failure_reason.as_deref())
-            .unwrap_or("no summary recorded");
-        let line = format!(
-            "- {} ({}, model: {}): {}\n",
-            episode.task_id,
-            outcome,
-            if episode.model.is_empty() {
-                "unknown"
-            } else {
-                &episode.model
-            },
-            truncate_chars(summary, 420)
+        episodes.extend(
+            text.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .filter_map(|line| serde_json::from_str(line).ok()),
         );
-        // The score is the task keywords the episode matched.
-        let (kind, score) = (ExposureItemKind::Episode, Some(*score as f64));
-        let id = cited_episode_id(episode);
-        items.extend(PromptItem::ranked(kind, id, index, score, &line));
-        body.push_str(&line);
     }
-    let section = PromptSection::new("episode_knowledge", body, 7).with_knowledge_ids(ids);
-    Some(section.with_items(items))
+    // The uncached path ranks episodes as a plan run's cache does
+    // (backlog 4213).
+    collect_episode_knowledge_cached(task, &episodes)
+}
+
+/// What an episode says, in order: its reasoning summary, reflection and
+/// failure reason, each when it is not empty (backlog 4213).
+fn episode_statements(episode: &roko_learn::episode_logger::Episode) -> impl Iterator<Item = &str> {
+    [
+        episode.reasoning_summary.as_deref(),
+        episode.reflection.as_deref(),
+        episode.failure_reason.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|text| !text.trim().is_empty())
 }
 
 /// The id a prompt cites an episode by: its id, else its episode id, else
@@ -2532,79 +2293,17 @@ fn collect_playbooks(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSectio
     let root = roko_core::Workspace::open(&ctx.workdir)
         .map(|ws| ws.playbooks_dir())
         .unwrap_or_else(|_| ctx.workdir.join(".roko").join("learn").join("playbooks"));
-    let query = query_keywords(&task_query_text(task, ctx));
-    let mut scored = Vec::new();
-    let read_dir = match std::fs::read_dir(&root) {
-        Ok(rd) => rd,
-        Err(_) => return None,
-    };
-    for entry in read_dir {
-        let entry = entry.ok()?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).ok()?;
-        let Ok(playbook) = serde_json::from_str::<roko_learn::playbook::Playbook>(&text) else {
-            continue;
-        };
-        let haystack = playbook_text(&playbook).to_ascii_lowercase();
-        let lexical_score = query
-            .iter()
-            .filter(|keyword| haystack.contains(keyword.as_str()))
-            .count();
-        let outcome_score = playbook
-            .success_count
-            .saturating_sub(playbook.failure_count) as usize;
-        let score = lexical_score
-            .saturating_mul(10)
-            .saturating_add(outcome_score);
-        if score > 0 || scored.len() < 3 {
-            scored.push((score, playbook));
-        }
-    }
-    if scored.is_empty() {
-        return None;
-    }
-    scored.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then_with(|| b.1.success_count.cmp(&a.1.success_count))
-            .then_with(|| a.1.id.cmp(&b.1.id))
-    });
-    scored.truncate(3);
-
-    let ids = scored
-        .iter()
-        .map(|(_, playbook)| playbook.id.clone())
-        .collect::<Vec<_>>();
-    let mut body = String::from("# Relevant playbooks\nReusable proven procedures:\n");
-    let mut items = Vec::new();
-    for (index, (score, playbook)) in scored.iter().enumerate() {
-        let mut text = format!(
-            "- {}: {} (successes {}, failures {})\n",
-            playbook.id, playbook.goal, playbook.success_count, playbook.failure_count
-        );
-        for step in playbook.steps.iter().take(5) {
-            text.push_str(&format!(
-                "  - {} via {}; expect {}\n",
-                step.description,
-                step.action_kind,
-                if step.expected_signals.is_empty() {
-                    "task-local verification".to_string()
-                } else {
-                    step.expected_signals.join(", ")
-                }
-            ));
-        }
-        // The score is the task keywords the playbook holds, ten each, plus
-        // its successes over its failures.
-        let (kind, score) = (ExposureItemKind::Playbook, Some(*score as f64));
-        let item = PromptItem::ranked(kind, &playbook.id, index, score, &text);
-        items.extend(item);
-        body.push_str(&text);
-    }
-    let section = PromptSection::new("playbooks", body, 7).with_playbook_ids(ids);
-    Some(section.with_items(items))
+    let playbooks: Vec<roko_learn::playbook::Playbook> = std::fs::read_dir(&root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .filter_map(|text| serde_json::from_str(&text).ok())
+        .collect();
+    // The uncached path ranks playbooks as a plan run's cache does
+    // (backlog 4212).
+    collect_playbooks_cached(task, &playbooks)
 }
 
 // ─── Cached variants ──────────────────────────────────────────────────
@@ -2614,24 +2313,27 @@ fn collect_playbooks(task: &TaskDef, ctx: &PromptContext) -> Option<PromptSectio
 
 fn collect_neuro_knowledge_cached(
     task: &TaskDef,
-    ctx: &PromptContext,
     entries: &[roko_neuro::KnowledgeEntry],
 ) -> Option<PromptSection> {
     if entries.is_empty() {
         return None;
     }
-    let query = task_query_text(task, ctx);
-    let keywords = query_keywords(&query);
-    if keywords.is_empty() {
+    let terms = task_topic_terms(task);
+    if terms.is_empty() {
         return None;
     }
 
-    // Count the task keywords an entry holds as whole words: a substring test
-    // also finds them inside longer words ("log" in "catalog").
+    // Count the topic terms an entry holds as whole words: a substring test
+    // also finds them inside longer words ("log" in "catalog"). An entry
+    // needs `MIN_TOPIC_OVERLAP` of them and `MIN_KNOWLEDGE_CONFIDENCE`, and
+    // a runtime success note holds no lesson (backlog 4211).
     let mut scored: Vec<(usize, &roko_neuro::KnowledgeEntry)> = entries
         .iter()
         .filter_map(|entry| {
-            if is_group_scoped_knowledge(entry) {
+            if is_group_scoped_knowledge(entry)
+                || is_runtime_success_note(entry)
+                || entry.confidence < MIN_KNOWLEDGE_CONFIDENCE
+            {
                 return None;
             }
             let words = query_words(&format!(
@@ -2640,12 +2342,8 @@ fn collect_neuro_knowledge_cached(
                 entry.tags.join(" "),
                 entry.source.as_deref().unwrap_or("")
             ));
-            let score = keywords.intersection(&words).count();
-            if score > 0 {
-                Some((score, entry))
-            } else {
-                None
-            }
+            let score = terms.intersection(&words).count();
+            (score >= MIN_TOPIC_OVERLAP).then_some((score, entry))
         })
         .collect();
     scored.sort_by(|a, b| {
@@ -2675,7 +2373,7 @@ fn collect_neuro_knowledge_cached(
             entry.confidence,
             source
         );
-        // The score is the task keywords the entry holds.
+        // The score is the task's topic terms the entry holds.
         let (kind, score) = (ExposureItemKind::Knowledge, Some(*score as f64));
         items.extend(PromptItem::ranked(kind, &entry.id, index, score, &line));
         body.push_str(&line);
@@ -2686,40 +2384,30 @@ fn collect_neuro_knowledge_cached(
 
 fn collect_episode_knowledge_cached(
     task: &TaskDef,
-    ctx: &PromptContext,
     episodes: &[roko_learn::episode_logger::Episode],
 ) -> Option<PromptSection> {
-    let keywords = query_keywords(&task_query_text(task, ctx));
-    if keywords.is_empty() {
+    let terms = task_topic_terms(task);
+    if terms.is_empty() {
         return None;
     }
 
-    let mut scored: Vec<(usize, &roko_learn::episode_logger::Episode)> = Vec::new();
-    for episode in episodes {
-        let haystack = format!(
-            "{} {} {} {} {}",
-            episode.task_id,
-            episode.agent_id,
-            episode.model,
-            episode.reasoning_summary.as_deref().unwrap_or(""),
-            episode.failure_reason.as_deref().unwrap_or("")
-        )
-        .to_ascii_lowercase();
-        let score = keywords
-            .iter()
-            .filter(|keyword| haystack.contains(keyword.as_str()))
-            .count();
-        if score > 0 {
-            scored.push((score, episode));
-        }
-    }
+    // An episode matches on what it says, never on its task id, its agent
+    // (the role) or its model. One that says nothing is skipped, and one
+    // needs `MIN_TOPIC_OVERLAP` of the task's topic terms as whole words; the
+    // most overlap, then the most recent, rank first (backlog 4213).
+    let mut scored: Vec<(usize, &roko_learn::episode_logger::Episode)> = episodes
+        .iter()
+        .filter_map(|episode| {
+            let said = episode_statements(episode).collect::<Vec<_>>().join(" ");
+            let overlap = terms.intersection(&query_words(&said)).count();
+            (overlap >= MIN_TOPIC_OVERLAP).then_some((overlap, episode))
+        })
+        .collect();
     if scored.is_empty() {
         return None;
     }
     scored.sort_by(|a, b| {
-        b.1.success
-            .cmp(&a.1.success)
-            .then_with(|| b.0.cmp(&a.0))
+        b.0.cmp(&a.0)
             .then_with(|| b.1.completed_at.cmp(&a.1.completed_at))
     });
     scored.truncate(5);
@@ -2734,12 +2422,7 @@ fn collect_episode_knowledge_cached(
     let mut items = Vec::new();
     for (index, (score, episode)) in scored.iter().enumerate() {
         let outcome = if episode.success { "passed" } else { "failed" };
-        let summary = episode
-            .reasoning_summary
-            .as_deref()
-            .or(episode.reflection.as_deref())
-            .or(episode.failure_reason.as_deref())
-            .unwrap_or("no summary recorded");
+        let summary = episode_statements(episode).next().unwrap_or_default();
         let line = format!(
             "- {} ({}, model: {}): {}\n",
             episode.task_id,
@@ -2751,7 +2434,7 @@ fn collect_episode_knowledge_cached(
             },
             truncate_chars(summary, 420)
         );
-        // The score is the task keywords the episode matched.
+        // The score is the task's topic terms the episode holds.
         let (kind, score) = (ExposureItemKind::Episode, Some(*score as f64));
         let id = cited_episode_id(episode);
         items.extend(PromptItem::ranked(kind, id, index, score, &line));
@@ -2763,36 +2446,35 @@ fn collect_episode_knowledge_cached(
 
 fn collect_playbooks_cached(
     task: &TaskDef,
-    ctx: &PromptContext,
     playbooks: &[roko_learn::playbook::Playbook],
 ) -> Option<PromptSection> {
     if playbooks.is_empty() {
         return None;
     }
-    let query = query_keywords(&task_query_text(task, ctx));
-    let mut scored: Vec<(usize, &roko_learn::playbook::Playbook)> = Vec::new();
-    for playbook in playbooks {
-        let haystack = playbook_text(playbook).to_ascii_lowercase();
-        let lexical_score = query
-            .iter()
-            .filter(|keyword| haystack.contains(keyword.as_str()))
-            .count();
-        let outcome_score = playbook
-            .success_count
-            .saturating_sub(playbook.failure_count) as usize;
-        let score = lexical_score
-            .saturating_mul(10)
-            .saturating_add(outcome_score);
-        if score > 0 || scored.len() < 3 {
-            scored.push((score, playbook));
-        }
-    }
+    // A playbook needs `MIN_TOPIC_OVERLAP` of the task's topic terms as whole
+    // words. Its successes over its failures only break ties, and no floor
+    // tops the section up with unrelated playbooks (backlog 4212).
+    let terms = task_topic_terms(task);
+    let mut scored: Vec<(usize, &roko_learn::playbook::Playbook)> = playbooks
+        .iter()
+        .filter_map(|playbook| {
+            let overlap = terms
+                .intersection(&query_words(&playbook_text(playbook)))
+                .count();
+            (overlap >= MIN_TOPIC_OVERLAP).then_some((overlap, playbook))
+        })
+        .collect();
     if scored.is_empty() {
         return None;
     }
+    let net_successes = |playbook: &roko_learn::playbook::Playbook| {
+        playbook
+            .success_count
+            .saturating_sub(playbook.failure_count)
+    };
     scored.sort_by(|a, b| {
         b.0.cmp(&a.0)
-            .then_with(|| b.1.success_count.cmp(&a.1.success_count))
+            .then_with(|| net_successes(b.1).cmp(&net_successes(a.1)))
             .then_with(|| a.1.id.cmp(&b.1.id))
     });
     scored.truncate(3);
@@ -2820,8 +2502,7 @@ fn collect_playbooks_cached(
                 }
             ));
         }
-        // The score is the task keywords the playbook holds, ten each, plus
-        // its successes over its failures.
+        // The score is the task's topic terms the playbook holds.
         let (kind, score) = (ExposureItemKind::Playbook, Some(*score as f64));
         let item = PromptItem::ranked(kind, &playbook.id, index, score, &text);
         items.extend(item);
@@ -2829,6 +2510,92 @@ fn collect_playbooks_cached(
     }
     let section = PromptSection::new("playbooks", body, 7).with_playbook_ids(ids);
     Some(section.with_items(items))
+}
+
+/// Distinct topic terms ([`task_topic_terms`]) a knowledge entry, a playbook
+/// or an episode must share with a task to reach its prompt (backlogs 4211,
+/// 4212, 4213).
+const MIN_TOPIC_OVERLAP: usize = 2;
+
+/// The least confidence of a knowledge entry a prompt shows (backlog 4211).
+const MIN_KNOWLEDGE_CONFIDENCE: f64 = 0.3;
+
+/// Path pieces, file extensions and verbs that say nothing about a task's
+/// topic (backlog 4211).
+const GENERIC_TOPIC_TERMS: &[&str] = &[
+    "crates",
+    "src",
+    "tests",
+    "test",
+    "lib",
+    "mod",
+    "main",
+    "bin",
+    "docs",
+    "rs",
+    "py",
+    "ts",
+    "js",
+    "md",
+    "toml",
+    "json",
+    "yaml",
+    "yml",
+    "txt",
+    "add",
+    "fix",
+    "update",
+    "implement",
+    "create",
+    "make",
+    "write",
+    "use",
+    "new",
+];
+
+/// The words that say what `task` is about, for matching knowledge against
+/// it (backlog 4211): the words of its title, description and acceptance,
+/// and its declared files' crate or package names and file stems. Never its
+/// id, its plan's id or its role, nor a stopword, a generic path piece or a
+/// generic verb.
+fn task_topic_terms(task: &TaskDef) -> HashSet<String> {
+    let mut text = vec![task.title.clone()];
+    text.extend(task.description.clone());
+    text.extend(task.acceptance.iter().cloned());
+    text.extend(task.files.iter().flat_map(|file| file_topic_words(file)));
+    let mut terms = query_words(&text.join(" "));
+    terms.retain(|word| {
+        word.len() > 2
+            && !QUERY_STOPWORDS.contains(&word.as_str())
+            && !GENERIC_TOPIC_TERMS.contains(&word.as_str())
+    });
+    terms
+}
+
+/// The topic words of a declared file: its crate or package name (the
+/// directory after `crates/` or `packages/`, else its first directory) and
+/// its file stem.
+fn file_topic_words(file: &str) -> Vec<String> {
+    let path = Path::new(file);
+    let parts: Vec<&str> = path.iter().filter_map(|part| part.to_str()).collect();
+    let package = match parts
+        .iter()
+        .position(|part| matches!(*part, "crates" | "packages"))
+    {
+        Some(index) => parts.get(index + 1).copied(),
+        None if parts.len() > 1 => parts.first().copied(),
+        None => None,
+    };
+    let stem = path.file_stem().and_then(|stem| stem.to_str());
+    package.into_iter().chain(stem).map(String::from).collect()
+}
+
+/// A runtime success note: the "Successful runtime episode for …" entry a
+/// verified pass wrote, which holds no lesson (backlog 4211; 4216 stops
+/// writing them).
+fn is_runtime_success_note(entry: &roko_neuro::KnowledgeEntry) -> bool {
+    entry.source.as_deref() == Some("runtime:gate_verdict")
+        && entry.content.starts_with("Successful runtime episode for")
 }
 
 fn task_query_text(task: &TaskDef, ctx: &PromptContext) -> String {
@@ -3096,96 +2863,6 @@ fn knowledge_group_ids(entry: &roko_neuro::KnowledgeEntry) -> Vec<GroupId> {
         .collect()
 }
 
-// ─── P1-14: Pheromone JSONL loading ─────────────────────────────────────
-
-/// Maximum number of pheromone JSONL records to load.
-const MAX_PHEROMONE_JSONL_RECORDS: usize = 50;
-/// Maximum number of pheromone context chunks to inject.
-const MAX_PHEROMONE_JSONL_CHUNKS: usize = 8;
-
-/// Load recent pheromone records from `.roko/learn/pheromones.jsonl` and
-/// convert them to `ContextChunk` values for prompt injection.
-///
-/// Records are filtered by plan scope (matching `plan_id` or global) and
-/// sorted by recency. Only the most recent records are returned so the
-/// context window is not exhausted.
-fn load_pheromone_jsonl_context(workdir: &Path, plan_id: &str) -> Vec<ContextChunk> {
-    let path = workdir.join(".roko").join("learn").join("pheromones.jsonl");
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-
-    let scope_needle = format!("plan:{plan_id}");
-    let mut records: Vec<serde_json::Value> = contents
-        .lines()
-        .rev()
-        .take(MAX_PHEROMONE_JSONL_RECORDS)
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .filter(|record: &serde_json::Value| {
-            let scope = record
-                .get("scope")
-                .and_then(|v| v.as_str())
-                .unwrap_or("global");
-            scope == scope_needle || scope == "global"
-        })
-        .collect();
-    records.truncate(MAX_PHEROMONE_JSONL_CHUNKS);
-
-    records
-        .into_iter()
-        .enumerate()
-        .map(|(index, record)| {
-            let signal_type = record
-                .get("signal_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let task_id = record
-                .get("task_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let model = record
-                .get("model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let passed = record
-                .get("passed")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let intensity = record
-                .get("intensity")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.5);
-            let files = record
-                .get("files")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str())
-                        .take(5)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            let outcome = if passed { "PASS" } else { "FAIL" };
-            ContextChunk {
-                content: format!(
-                    "[Pheromone {signal_type}] task={task_id} model={model} outcome={outcome} files=[{files}]"
-                ),
-                source: ContextSource::Pheromone {
-                    kind: signal_type.to_owned(),
-                    source: format!("pheromone-jsonl-{index}"),
-                },
-                relevance: intensity,
-                track_record: Some(intensity),
-                confidence: Some(intensity),
-                recency: None,
-                emotional_tag: None,
-            }
-        })
-        .collect()
-}
-
 fn playbook_text(playbook: &roko_learn::playbook::Playbook) -> String {
     let mut text = format!("{} {} {}", playbook.id, playbook.name, playbook.goal);
     for step in &playbook.steps {
@@ -3332,7 +3009,6 @@ mod tests {
             error_patterns_context: String::new(),
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
-            cached_cfactor_context: String::new(),
             concurrent_plans: Vec::new(),
         }
     }
@@ -3753,7 +3429,7 @@ mod tests {
         .expect("group entry");
         let public_entry: roko_neuro::KnowledgeEntry = serde_json::from_value(serde_json::json!({
             "id": "public-entry",
-            "content": "public wiring knowledge",
+            "content": "public wiring knowledge to explain",
             "confidence": 0.8,
             "tags": ["wiring"],
             "created_at": now,
@@ -3821,17 +3497,18 @@ mod tests {
 
     /// A plan run's assembler reads knowledge from a cache loaded once
     /// (bug-86117a). The cache holds every hot entry, and each prompt carries
-    /// those that share a content word with its task, not those that share
+    /// those that share two topic words with its task, not those that share
     /// only stopwords.
     #[test]
     fn cached_prompt_surfaces_matching_durable_knowledge() {
         let temp = tempfile::tempdir().expect("tempdir");
-        // The task explains "the wiring": the first entry shares "wiring",
-        // the second only "the", which a substring test also finds in "other".
+        // The task explains "the wiring": the first entry shares "wiring" and
+        // "wire", the second only "the", which a substring test also finds in
+        // "other".
         write_knowledge(
             temp.path(),
             &[
-                ("k-wiring", "Register new wiring in the dispatcher table"),
+                ("k-wiring", "Register new wiring for the wire table"),
                 ("k-stopwords", "Keep the other notes short"),
             ],
         );
@@ -3845,7 +3522,7 @@ mod tests {
         let system = &prompt.system_prompt;
         assert!(system.contains("# Neuro knowledge"), "{system}");
         assert!(
-            system.contains("- [k-wiring] Register new wiring in the dispatcher table"),
+            system.contains("- [k-wiring] Register new wiring for the wire table"),
             "{system}"
         );
         assert!(!system.contains("Keep the other notes short"), "{system}");
@@ -3860,7 +3537,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         write_knowledge(
             temp.path(),
-            &[("k-wiring", "Register new wiring in the dispatcher table")],
+            &[("k-wiring", "Register new wiring for the wire table")],
         );
         let mut long_task = task();
         long_task.description = Some(format!(
@@ -3887,11 +3564,232 @@ mod tests {
         assert!(
             prompt
                 .system_prompt
-                .contains("- [k-wiring] Register new wiring in the dispatcher table"),
+                .contains("- [k-wiring] Register new wiring for the wire table"),
             "{}",
             prompt.system_prompt
         );
         assert_eq!(prompt.diagnostics.knowledge_ids, ["k-wiring"]);
+    }
+
+    /// Writes `entries`, knowledge entries as JSON, to `workdir`'s store.
+    fn write_knowledge_json(workdir: &Path, entries: &[serde_json::Value]) {
+        let neuro_dir = workdir.join(".roko/neuro");
+        std::fs::create_dir_all(&neuro_dir).expect("neuro dir");
+        let lines = entries
+            .iter()
+            .map(|entry| {
+                let entry: roko_neuro::KnowledgeEntry =
+                    serde_json::from_value(entry.clone()).expect("knowledge entry");
+                serde_json::to_string(&entry).expect("knowledge json") + "\n"
+            })
+            .collect::<String>();
+        std::fs::write(neuro_dir.join("knowledge.jsonl"), lines).expect("write knowledge");
+    }
+
+    /// backlog 4211 (G36): a task's id, role and path words never match
+    /// knowledge. A hot entry about another plan's `T01`, tagged with another
+    /// crate's file, shares only those with task `T01`, so the task's prompt
+    /// has no knowledge section.
+    #[test]
+    fn knowledge_section_ignores_id_and_path_word_matches() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_knowledge_json(
+            temp.path(),
+            &[serde_json::json!({
+                "id": "k-other-t01",
+                "content": "Implementer notes for T01: keep the crates and src tidy",
+                "confidence": 0.9,
+                "tags": ["crates/b/src/x.rs"],
+                "created_at": Utc::now(),
+            })],
+        );
+        let mut market = task();
+        market.id = "T01".into();
+        market.title = "Summarise the market close".into();
+        market.description = None;
+        market.acceptance = vec!["prints the closing prices".into()];
+        market.files = vec!["crates/a/src/lib.rs".into()];
+
+        let prompt = assemble_cached(&market, temp.path());
+        assert!(
+            !prompt.system_prompt.contains("# Neuro knowledge"),
+            "{}",
+            prompt.system_prompt
+        );
+        assert!(prompt.diagnostics.knowledge_ids.is_empty());
+    }
+
+    /// backlog 4211: a runtime success note holds no lesson, so it stays out
+    /// of the prompt, while an entry with the same topic words gets in.
+    #[test]
+    fn knowledge_section_skips_success_notes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let entry = |id: &str, content: &str, source: &str| {
+            serde_json::json!({
+                "id": id,
+                "content": content,
+                "confidence": 0.9,
+                "source": source,
+                "created_at": Utc::now(),
+            })
+        };
+        write_knowledge_json(
+            temp.path(),
+            &[
+                entry(
+                    "k-success",
+                    "Successful runtime episode for explain wiring passed verify[0:test]",
+                    "runtime:gate_verdict",
+                ),
+                entry(
+                    "k-lesson",
+                    "Explain the wiring before editing the dispatcher",
+                    "runtime:lesson",
+                ),
+            ],
+        );
+
+        let prompt = assemble_cached(&task(), temp.path());
+        assert_eq!(prompt.diagnostics.knowledge_ids, ["k-lesson"]);
+        assert!(
+            !prompt.system_prompt.contains("Successful runtime episode"),
+            "{}",
+            prompt.system_prompt
+        );
+    }
+
+    /// backlog 4212: a playbook reaches a prompt only when it shares two topic
+    /// words with the task. Three proven playbooks about other work give no
+    /// section, and one about the task's work gives a section with it alone.
+    #[test]
+    fn playbooks_without_overlap_are_not_injected() {
+        let proven = |id: &str, goal: &str| {
+            let mut playbook = roko_learn::playbook::Playbook::new(id, goal);
+            playbook.success_count = 9;
+            playbook
+        };
+        let mut playbooks = vec![
+            proven("pb-deploy", "Deploy the service to staging"),
+            proven("pb-css", "Tidy the stylesheet colours"),
+            proven("pb-sql", "Index the orders table"),
+        ];
+        assert!(collect_playbooks_cached(&task(), &playbooks).is_none());
+
+        playbooks.push(proven("pb-wiring", "Explain the wiring map"));
+        let section = collect_playbooks_cached(&task(), &playbooks).expect("a playbooks section");
+        assert_eq!(section.playbook_ids, ["pb-wiring"]);
+        assert!(!section.body.contains("pb-deploy"), "{}", section.body);
+    }
+
+    /// An episode of `task_id` by the implementer on `model`, saying
+    /// `summary`.
+    fn episode(
+        task_id: &str,
+        model: &str,
+        summary: Option<&str>,
+    ) -> roko_learn::episode_logger::Episode {
+        let mut episode = roko_learn::episode_logger::Episode::new("implementer", task_id);
+        episode.model = model.to_string();
+        episode.success = true;
+        episode.reasoning_summary = summary.map(str::to_string);
+        episode
+    }
+
+    /// backlog 4213: an episode with no summary, reflection or failure reason
+    /// says nothing, so it never fills a line with "no summary recorded".
+    #[test]
+    fn episode_section_skips_episodes_with_nothing_to_say() {
+        let episodes = [
+            episode("wire-quiet", "claude-haiku-4-5", None),
+            episode(
+                "wire-said",
+                "claude-haiku-4-5",
+                Some("Explain the wiring map before editing it"),
+            ),
+        ];
+        let section = collect_episode_knowledge_cached(&task(), &episodes).expect("episodes");
+        assert!(section.body.contains("wire-said"), "{}", section.body);
+        assert!(!section.body.contains("wire-quiet"), "{}", section.body);
+        assert!(!section.body.contains("no summary"), "{}", section.body);
+    }
+
+    /// backlog 4213: an episode's task id, agent (the role) and model never
+    /// match a task, so one that shares only those gives no section.
+    #[test]
+    fn episode_section_ignores_role_and_model_matches() {
+        let episodes = [episode(
+            "wire-and-explain",
+            "wire-explain-7b",
+            Some("Bumped the lockfile"),
+        )];
+        assert!(collect_episode_knowledge_cached(&task(), &episodes).is_none());
+    }
+
+    /// backlog 4214 (decision 4202, option A): a run's prompts come from one
+    /// prompt-cache snapshot. Knowledge and an episode written after it was
+    /// taken reach no later prompt of the run, and its digest stays the same;
+    /// the next run's snapshot holds them.
+    #[test]
+    fn prompt_cache_is_one_snapshot_per_run() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache = Arc::new(PromptCache::load(temp.path()));
+        let digest = cache.digest();
+        let mut dispatch = ctx();
+        dispatch.workdir = temp.path().to_path_buf();
+        let prompt_ctx = PromptContext::from_task(&task(), &dispatch);
+        let assemble = || {
+            PromptAssembler::with_cache(Arc::clone(&cache))
+                .assemble(&task(), &prompt_ctx)
+                .expect("assemble")
+        };
+        let first = assemble();
+
+        write_knowledge(
+            temp.path(),
+            &[("k-late", "Explain the wiring after the snapshot")],
+        );
+        let mut late = roko_learn::episode_logger::Episode::new("implementer", "t-late");
+        late.reasoning_summary = Some("Explain the wiring after the snapshot".into());
+        let episodes = roko_learn::runtime_feedback::resolve_project_episode_path(temp.path());
+        std::fs::create_dir_all(episodes.parent().expect("episode dir")).expect("episode dir");
+        let line = serde_json::to_string(&late).expect("episode json") + "\n";
+        std::fs::write(&episodes, line).expect("write the episode");
+
+        let second = assemble();
+        assert!(
+            !second.system_prompt.contains("after the snapshot"),
+            "{}",
+            second.system_prompt
+        );
+        assert_eq!(
+            second.diagnostics.knowledge_ids,
+            first.diagnostics.knowledge_ids
+        );
+        assert_eq!(cache.digest(), digest);
+        let next_run = PromptCache::load(temp.path()).digest();
+        assert_eq!((next_run.knowledge.count, next_run.episodes.count), (1, 1));
+        assert_ne!(next_run, digest);
+    }
+
+    /// backlog 4215: a task with verify steps asks its agent to end with a
+    /// `Lesson:` line, which a verified pass stores; a task without verify
+    /// steps writes no knowledge, so its prompt asks for none.
+    #[test]
+    fn verified_task_prompt_asks_for_a_lesson_line() {
+        let assembler = PromptAssembler::minimal();
+        let prompt_for = |task: &TaskDef| {
+            let pctx = PromptContext::from_task(task, &ctx());
+            let assembled = assembler.assemble(task, &pctx).expect("assemble");
+            assembled.user_prompt
+        };
+        let verified = prompt_for(&task());
+        assert!(verified.contains(LESSON_NOTE), "{verified}");
+        assert!(verified.contains("`Lesson: none`"), "{verified}");
+
+        let mut unverified = task();
+        unverified.verify.clear();
+        let prompt = prompt_for(&unverified);
+        assert!(!prompt.contains("Lesson:"), "{prompt}");
     }
 
     /// The item of `kind` and `id` in `prompt`'s diagnostics.
@@ -3919,20 +3817,22 @@ mod tests {
         const CRITICAL: [&str; 3] = ["role_identity", "context_layer", "task_context"];
 
         let temp = tempfile::tempdir().expect("tempdir");
-        // "explain" and "wiring" are task keywords; "wiring" alone ranks lower.
+        // "explain", "wiring" and "wire" are topic words of the task; the
+        // entry with two of them ranks below the one with three.
         write_knowledge(
             temp.path(),
             &[
-                ("k-wiring", "Register new wiring in the dispatcher table"),
+                ("k-wiring", "Register new wiring for the wire table"),
                 (
                     "k-explain",
-                    "Explain the dispatcher wiring before you edit it",
+                    "Explain the dispatcher wiring before you wire it",
                 ),
             ],
         );
         let playbooks = temp.path().join(".roko/learn/playbooks");
         std::fs::create_dir_all(&playbooks).expect("playbook dir");
-        let playbook = roko_learn::playbook::Playbook::new("pb-wiring", "Wire the dispatcher");
+        let playbook =
+            roko_learn::playbook::Playbook::new("pb-wiring", "Wire the dispatcher wiring");
         let json = serde_json::to_string(&playbook).expect("playbook json");
         std::fs::write(playbooks.join("pb-wiring.json"), json).expect("write playbook");
         let cache = Arc::new(PromptCache::load(temp.path()));
@@ -3943,7 +3843,7 @@ mod tests {
         let roomy = PromptAssembler::with_cache(Arc::clone(&cache))
             .assemble(&task(), &prompt_ctx)
             .expect("assemble");
-        let line = "- pb-wiring: Wire the dispatcher (successes 0, failures 0)\n";
+        let line = "- pb-wiring: Wire the dispatcher wiring (successes 0, failures 0)\n";
         assert!(
             roomy.system_prompt.contains(line),
             "{}",
@@ -3958,8 +3858,8 @@ mod tests {
         let explain = prompt_item(&roomy, Knowledge, "k-explain");
         let wiring = prompt_item(&roomy, Knowledge, "k-wiring");
         assert!(explain.included && wiring.included);
-        assert_eq!((explain.rank, explain.score), (Some(1), Some(2.0)));
-        assert_eq!((wiring.rank, wiring.score), (Some(2), Some(1.0)));
+        assert_eq!((explain.rank, explain.score), (Some(1), Some(3.0)));
+        assert_eq!((wiring.rank, wiring.score), (Some(2), Some(2.0)));
         assert_ne!(explain.rendered_sha256, wiring.rendered_sha256);
         assert!(prompt_item(&roomy, Section, "domain_context").included);
 
@@ -4339,23 +4239,37 @@ covers = ["AC1"]
         assert!(ws_ctx.is_empty());
     }
 
+    /// backlog 4206: plan prompts carry no `# Collective calibration` block,
+    /// even in a workspace whose bench runs left c-factor history.
     #[test]
-    fn cfactor_context_included_when_present() {
-        let assembler = PromptAssembler::minimal();
-        let mut pctx = PromptContext::from_task(&task(), &ctx());
-        pctx.cfactor_context = "# Collective calibration\nC-Factor 0.72\n".to_string();
-        let p = assembler.assemble(&task(), &pctx).unwrap();
-        assert!(
-            p.system_prompt.contains("# Collective calibration"),
-            "cfactor context should appear in system_prompt via context_layer"
-        );
-    }
+    fn plan_prompt_has_no_collective_calibration_block() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let learn_dir = temp.path().join(".roko/learn");
+        std::fs::create_dir_all(&learn_dir).expect("learn dir");
+        let history: String = (0..8)
+            .map(|hours| {
+                let snapshot = roko_learn::cfactor::CFactor {
+                    overall: 0.72,
+                    episode_count: 12,
+                    computed_at: chrono::Utc::now() - chrono::Duration::hours(hours),
+                    ..roko_learn::cfactor::CFactor::default()
+                };
+                serde_json::to_string(&snapshot).expect("snapshot") + "\n"
+            })
+            .collect();
+        std::fs::write(learn_dir.join("c-factor.jsonl"), history).expect("c-factor history");
 
-    #[test]
-    fn cfactor_context_empty_when_no_history() {
-        // /tmp has no .roko/learn/c-factor.jsonl — cfactor_context should be empty.
-        let ctx = generate_cfactor_context(Path::new("/tmp"));
-        assert!(ctx.is_empty());
+        let mut dispatch = ctx();
+        dispatch.workdir = temp.path().to_path_buf();
+        let pctx = PromptContext::from_task(&task(), &dispatch);
+        let prompt = PromptAssembler::minimal()
+            .assemble(&task(), &pctx)
+            .expect("prompt");
+        assert!(
+            !prompt.system_prompt.contains("# Collective calibration"),
+            "{}",
+            prompt.system_prompt
+        );
     }
 
     #[test]
@@ -4408,7 +4322,6 @@ covers = ["AC1"]
             tasks_toml: String::new(),
             dependency_outputs: Vec::new(),
             workspace_context: String::new(),
-            cfactor_context: String::new(),
             error_patterns_context: String::new(),
             concurrent_plans: Vec::new(),
             plan_brief: String::new(),

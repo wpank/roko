@@ -118,21 +118,18 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // the real dispatch-time context to the routing observation sink.
         let mut routing_ctx_for_feedback = routing_ctx.clone();
 
-        let (cached_workspace_map, cached_workspace_context, cached_cfactor_context) =
+        let (cached_workspace_map, cached_workspace_context) =
             self.static_prompt_cache.get_or_init(|| {
                 let ws_map =
                     crate::dispatch::prompt_builder::generate_workspace_map_pub(&self.workdir);
                 let ws_ctx =
                     crate::dispatch::prompt_builder::generate_workspace_context_pub(&self.workdir);
-                let cf_ctx =
-                    crate::dispatch::prompt_builder::generate_cfactor_context_pub(&self.workdir);
                 tracing::debug!(
                     ws_map_bytes = ws_map.len(),
                     ws_ctx_bytes = ws_ctx.len(),
-                    cf_ctx_bytes = cf_ctx.len(),
                     "static_prompt_cache: computed once for this run (streaming path)"
                 );
-                (ws_map, ws_ctx, cf_ctx)
+                (ws_map, ws_ctx)
             });
         let express_force_backend_streaming = if express_active && self.cli_model_override.is_none()
         {
@@ -179,10 +176,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             routing_context: Some(routing_ctx),
             routing_bias: None,
             dependency_outputs: upstream_outputs(&input),
-            error_patterns_context: self.factory.format_error_patterns_for_prompt(5),
+            error_patterns_context: self.task_error_patterns(spec, &task).text,
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
-            cached_cfactor_context: cached_cfactor_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
         };
         let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
@@ -295,6 +291,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                         let (dispatch, _) = call.into_dispatch(
                             &error.to_string(),
                             u64::try_from(wall_duration.as_millis()).unwrap_or(u64::MAX),
+                            self.pricing_snapshot().as_deref(),
                         );
                         let cost_usd = f64::from(dispatch.result.usage.cost_usd);
                         self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);

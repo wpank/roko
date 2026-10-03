@@ -45,6 +45,8 @@ pub struct DataAudit {
     pub rows: usize,
     /// Lines or rows that did not parse.
     pub unreadable: usize,
+    /// Legacy rows with no plan or task id, which no unit can hold.
+    pub unkeyed: usize,
     /// Attempts found.
     pub attempts: usize,
     /// Attempts opened and never settled, skipped.
@@ -316,7 +318,10 @@ mod tests {
         let pass = unit("run-a:plan-1:T1:1");
         assert_eq!(pass.label.y_gate, Some(true));
         assert_eq!(pass.label.source, LabelSource::GatePassed);
-        assert_eq!(pass.arm.to_string(), "roko/cerebras/gpt-oss-120b@default#V0");
+        assert_eq!(
+            pass.arm.to_string(),
+            "roko/cerebras/gpt-oss-120b@default#V0"
+        );
         assert_eq!(pass.role, "implementer");
         assert_eq!(pass.tier, "focused");
         assert_eq!(pass.family, "focused");
@@ -341,7 +346,11 @@ mod tests {
         assert_eq!(retry.failure_class.as_deref(), Some("verify:0/test"));
         assert_eq!(retry.cost_source, CostSource::CliUsage);
 
-        assert_eq!(report.training_units().count(), 4, "the failover unit is left out");
+        assert_eq!(
+            report.training_units().count(),
+            4,
+            "the failover unit is left out"
+        );
     }
 
     #[test]

@@ -386,15 +386,22 @@ mod tests {
     #[test]
     fn arm_key_rejects_what_is_not_an_arm() {
         let error = |key: &str| key.parse::<ArmKey>().expect_err(key);
-        assert!(matches!(error("roko/cerebras@default"), ArmKeyError::Malformed(_)));
-        assert!(matches!(error("roko/cerebras/m"), ArmKeyError::Malformed(_)));
-        assert!(matches!(error("aider/p/m@default"), ArmKeyError::UnknownHarness(_)));
-        assert!(matches!(error("roko/p/m@max#V0"), ArmKeyError::UnknownEffort(_)));
-        assert!(matches!(error("roko/p/m@low#V5"), ArmKeyError::BadDepth(_)));
-        assert!(matches!(
+        for malformed in ["roko/cerebras@default", "roko/cerebras/m", "roko//m@low"] {
+            assert_eq!(error(malformed), ArmKeyError::Malformed(malformed.into()));
+        }
+        assert_eq!(
+            error("aider/p/m@default"),
+            ArmKeyError::UnknownHarness("aider".into())
+        );
+        assert_eq!(
+            error("roko/p/m@max#V0"),
+            ArmKeyError::UnknownEffort("max".into())
+        );
+        assert_eq!(error("roko/p/m@low#V5"), ArmKeyError::BadDepth("V5".into()));
+        assert_eq!(
             error("codex-cli/openai/gpt-5.5@high#V1"),
-            ArmKeyError::DepthOnDirectArm(_)
-        ));
+            ArmKeyError::DepthOnDirectArm("codex-cli".into())
+        );
     }
 
     #[test]

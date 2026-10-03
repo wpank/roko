@@ -9,18 +9,18 @@
 //! = false` still opts a plan out of all of them.
 //!
 //! A `command` rung runs its command as a verify step. A `citations` rung
-//! (9122) and a `judge` rung (9123) check the files their artefacts match
-//! once the attempt's verify steps pass
+//! (9122), a `judge` rung (9123) and a `schema` rung (9124) check the files
+//! their artefacts match once the attempt's verify steps pass
 //! ([`GraphTaskDispatcher::check_kind_rungs`]); an advisory one, as a judge
 //! is by default, is recorded and never fails the attempt. The other kinds
-//! are not built yet (9124 schema, 9137 confirm, and receipt with 9132's
-//! effects): an advisory or optional rung of such a kind is skipped, and a
-//! task that must pass one fails before its agent runs.
+//! are not built yet (9137 confirm, and receipt with 9132's effects): an
+//! advisory or optional rung of such a kind is skipped, and a task that must
+//! pass one fails before its agent runs.
 
 use roko_core::config::GateRungConfig;
 use roko_core::config::schema::RungKind;
 use roko_core::{TaskDomain, Verdict};
-use roko_gate::evidence_judge;
+use roko_gate::{evidence_judge, schema_gate};
 use roko_learn::telemetry::VerifyStepVerdict;
 
 use super::verification::{published_gate_output, rung_step_label};
@@ -34,12 +34,13 @@ const MAX_ARTEFACT_FILES: usize = 50;
 const MAX_ARTEFACT_BYTES: u64 = 1 << 20;
 
 /// Whether rungs of `kind` have a check: `command` rungs run as verify
-/// steps, `citations` rungs through `roko_gate`'s citation check (9122), and
-/// `judge` rungs through an evidence-citing judge (9123).
+/// steps, `citations` rungs through `roko_gate`'s citation check (9122),
+/// `judge` rungs through an evidence-citing judge (9123), and `schema` rungs
+/// through `roko_gate`'s schema check (9124).
 fn is_built(kind: RungKind) -> bool {
     matches!(
         kind,
-        RungKind::Command | RungKind::Citations | RungKind::Judge
+        RungKind::Command | RungKind::Citations | RungKind::Judge | RungKind::Schema
     )
 }
 
@@ -150,7 +151,10 @@ impl GraphTaskDispatcher {
     /// Each checks the files its `artefacts` match, and fails when none
     /// matches. A `citations` rung looks up every citation in them
     /// (`roko_gate::check_citations`); a `judge` rung has a helper model
-    /// score them against its rubric, quoting them ([`Self::judge_rung`]).
+    /// score them against its rubric, quoting them ([`Self::judge_rung`]); a
+    /// `schema` rung checks them against its schema, read from the main
+    /// workspace so that the attempt cannot loosen it
+    /// (`roko_gate::schema_gate`).
     /// A rung that must pass and fails gives a line for the attempt's
     /// failure, and one that could not run (a lookup it could not make, a
     /// judge that quoted nothing) leaves the attempt unverified, never
@@ -189,6 +193,18 @@ impl GraphTaskDispatcher {
                             artefacts: &artefacts,
                         };
                         self.judge_rung(spec, task, rung, &judged).await
+                    }
+                    RungKind::Schema => {
+                        let schema = rung.schema.as_deref().unwrap_or_default();
+                        match std::fs::read_to_string(self.workdir.join(schema)) {
+                            Ok(text) => {
+                                schema_gate::check_schema(&label, schema, &text, &artefacts)
+                            }
+                            Err(error) => {
+                                let reason = format!("cannot read the schema {schema}: {error}");
+                                Verdict::skip(&label, reason)
+                            }
+                        }
                     }
                     // A rung of a kind not built yet refused the attempt
                     // before its agent ran (`unbuilt_rung`).
@@ -422,6 +438,10 @@ fn checks(rung: &GateRungConfig) -> String {
         }
         RungKind::Judge => {
             format!("a judge scores {artefacts} against its rubric, quoting it as evidence")
+        }
+        RungKind::Schema => {
+            let schema = rung.schema.as_deref().unwrap_or_default();
+            format!("{artefacts} must match the schema {schema}")
         }
         _ => format!("it checks {artefacts}"),
     }

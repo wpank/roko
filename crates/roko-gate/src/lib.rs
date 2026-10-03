@@ -134,6 +134,8 @@ pub mod registry;
 pub mod review_verdict;
 pub mod rung_dispatch;
 pub mod rung_selector;
+/// The schema rung: JSON, JSONL and CSV artefacts match a schema (9124).
+pub mod schema_gate;
 pub mod shell;
 /// Statistical Process Control extensions: CUSUM, EWMA Control Chart, BOCPD (GATE-01).
 pub mod spc;

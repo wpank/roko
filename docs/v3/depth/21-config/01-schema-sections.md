@@ -197,9 +197,16 @@ runs then too: a helper model, from another model family than the attempt's when
 scores the files its `artefacts` match against each line of `rubric` (or the task's acceptance
 criteria), with the attempt's diff as context. A score counts only when the judge quotes an artefact
 word for word; a criterion without such a quote is `no_evidence`, and a rung with no counted score
-is skipped. The gate output names the judge model and `cross_family`. `schema`, `receipt` and
-`confirm` parse and are validated but are not built yet: a plan task that must pass one fails
-before its agent runs, and an advisory or optional one is skipped. Loading fails when a rung lacks what its kind needs: a `command` rung a command, a
+is skipped. The gate output names the judge model and `cross_family`. `schema` checks JSON and JSONL
+artefacts against `schema` as a JSON Schema (the draft 2020-12 keywords data contracts use: `type`,
+`enum`, `const`, `properties`, `required`, `additionalProperties`, `items`, length, count and range
+bounds, `pattern`, `allOf`, `anyOf`, `oneOf`, `not` and local `$ref`s), and CSV artefacts against it
+as a table schema (`fields` with `name`, a `type` among `string`, `integer`, `number`, `boolean` and
+`date`, and `constraints.required`; `primaryKey`). It reads `schema` from the main workspace, lists
+the first 20 violations by JSON pointer or CSV row, and is skipped when the schema uses a keyword it
+does not check. `receipt` and `confirm` parse and are validated but are not built yet: a plan task
+that must pass one fails before its agent runs, and an advisory or optional one is skipped. Loading
+fails when a rung lacks what its kind needs: a `command` rung a command, a
 `schema` rung `schema` (a file relative to the task's workspace), and a `citations`, `judge` or
 `schema` rung `artefacts` (globs relative to the task's workspace). `rubric` is a `judge` rung's
 rubric, as text or a file path. A rung with `advisory = true` only advises: its verdict is recorded

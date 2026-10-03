@@ -231,6 +231,13 @@ impl GateForecaster {
         }
     }
 
+    /// Learn the VS label of a pass whose rungs were learned before: the false-green head
+    /// alone.
+    pub fn observe_vs(&mut self, x: &FeatureVector, verified: bool, w: f64) {
+        let offset = logit(self.fg_prior);
+        self.false_green.update(x, offset, !verified, w);
+    }
+
     /// The model of `rung`, when it has learned.
     #[must_use]
     pub fn rung(&self, rung: &str) -> Option<&OnlineLogit> {

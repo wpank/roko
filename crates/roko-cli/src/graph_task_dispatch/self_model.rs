@@ -7,7 +7,7 @@
 //! A pinned attempt (`--model`, a task's `model_hint`) is forecast for its pinned model and
 //! marked as not routable. Without a ladder rung that can run, nothing is forecast.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ use roko_learn::self_model::features::TaskFeatures;
 use roko_learn::self_model::gate::{CalibrationGate, CalibrationWindow, GateReport, WindowOutcome};
 use roko_learn::self_model::model::{MODEL_CLASS, SelfModel, StateLoad};
 use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, RouteAction, expected_cost};
-use roko_learn::self_model::{ArmKey, CandidateForecast, PredictorVersion, Unit};
+use roko_learn::self_model::{ArmKey, CandidateForecast, LabelSource, PredictorVersion, Unit};
 use roko_learn::telemetry::AttemptIdentity;
 use roko_learn::telemetry::records::{
     AttemptPredictionRecord, PredictionCandidate, PredictionDecision, PredictionPredictor,
@@ -34,6 +34,9 @@ use crate::dispatch::{LadderStartRung, RoutingInputs, RoutingLadder};
 
 /// The version of the feature schema a prediction row names (`m3-features/1`).
 const FEATURES_SCHEMA: u32 = 1;
+
+/// Settled attempts a run keeps for late VS labels (6129); older ones are let go.
+const SETTLED_KEPT: usize = 4_096;
 
 /// A plan run's self-model: loaded at plan start when `[self_model] mode` is not off, and shared
 /// by dispatch, which forecasts each routed attempt, and the outcome sink, which teaches it each
@@ -52,6 +55,29 @@ pub struct SelfModelRuntime {
     lcb: parking_lot::Mutex<LcbAci>,
     /// The calibration gate's window of settled forecasts (6122).
     window: parking_lot::Mutex<CalibrationWindow>,
+    /// The attempts the run settled, for late VS labels (6129).
+    settled: parking_lot::Mutex<SettledUnits>,
+}
+
+/// The units a run settled, by attempt key, oldest first; past [`SETTLED_KEPT`] the oldest go.
+#[derive(Debug, Default)]
+struct SettledUnits {
+    order: VecDeque<String>,
+    units: HashMap<String, (Unit, TaskFeatures)>,
+}
+
+impl SettledUnits {
+    fn insert(&mut self, unit: Unit, features: TaskFeatures) {
+        let key = unit.attempt_key.attempt_key();
+        if self.units.insert(key.clone(), (unit, features)).is_none() {
+            self.order.push_back(key);
+        }
+        while self.order.len() > SETTLED_KEPT {
+            if let Some(oldest) = self.order.pop_front() {
+                self.units.remove(&oldest);
+            }
+        }
+    }
 }
 
 /// One attempt's forecast, kept until its verdict settles.
@@ -139,6 +165,7 @@ impl SelfModelRuntime {
             last_rung: parking_lot::Mutex::new(HashMap::new()),
             lcb: parking_lot::Mutex::new(lcb),
             window: parking_lot::Mutex::new(window),
+            settled: parking_lot::Mutex::new(SettledUnits::default()),
         }
     }
 
@@ -154,6 +181,17 @@ impl SelfModelRuntime {
         self.model.read().version.clone()
     }
 
+    /// Labelled outcomes the model has learned.
+    #[must_use]
+    pub fn outcomes(&self) -> usize {
+        self.model.read().outcomes
+    }
+
+    /// Keep `forecast` for the attempt `attempt_key` until its verdict settles.
+    pub fn remember(&self, attempt_key: impl Into<String>, forecast: AttemptForecast) {
+        self.forecasts.lock().insert(attempt_key.into(), forecast);
+    }
+
     /// The forecast of the attempt `attempt_key`, taken out of the cache.
     pub fn take_forecast(&self, attempt_key: &str) -> Option<AttemptForecast> {
         self.forecasts.lock().remove(attempt_key)
@@ -162,6 +200,43 @@ impl SelfModelRuntime {
     /// Teach the model `unit`, whose features were `features`, with weight `w`.
     pub fn observe(&self, unit: &Unit, features: &TaskFeatures, w: f64) {
         self.model.write().observe_with(unit, features, w);
+    }
+
+    /// Teach the model a settled attempt it forecast (6129): `unit` under the forecast's
+    /// features, and the calibration window with the forecast for the model that ran. The unit
+    /// stays for a late VS label.
+    pub fn settle(&self, unit: Unit, forecast: AttemptForecast) {
+        let w = unit.label.weight;
+        self.observe(&unit, &forecast.features, w);
+        if let Some(candidate) = forecast.for_model(&unit.arm.model) {
+            let outcome = WindowOutcome {
+                p: candidate.p_gate,
+                y: unit.label.y_gate == Some(true),
+                w,
+                routed: forecast.routed,
+            };
+            self.record_outcome(&forecast.version, outcome, candidate.p_fg);
+        }
+        self.settled.lock().insert(unit, forecast.features);
+    }
+
+    /// A late VS label of a settled attempt (S05's `vs.label`, weight 1/π): only the
+    /// false-green head learns it. `false` when the run settled no such attempt.
+    pub fn observe_label(
+        &self,
+        attempt_key: &str,
+        y_vs: bool,
+        weight: f64,
+        source: LabelSource,
+    ) -> bool {
+        let Some((mut unit, features)) = self.settled.lock().units.get(attempt_key).cloned() else {
+            return false;
+        };
+        unit.label.y_vs = Some(y_vs);
+        unit.label.weight = weight;
+        unit.label.source = source;
+        self.model.write().observe_vs(&unit, &features, weight);
+        true
     }
 
     /// Add a settled forecast to the calibration gate's window, under the version that made
@@ -232,9 +307,7 @@ impl SelfModelRuntime {
             pinned: candidates.pinned,
             routed: false,
         };
-        self.forecasts
-            .lock()
-            .insert(identity.attempt_key.clone(), forecast);
+        self.remember(identity.attempt_key.clone(), forecast);
         record
     }
 

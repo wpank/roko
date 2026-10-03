@@ -48,6 +48,7 @@ use roko_gate::attempt_diff::{
     scripts_run_by,
 };
 use roko_gate::{DiffPayload, analyze_diff};
+use roko_learn::telemetry::ScopeFinding;
 
 use super::diff_snapshot::AttemptDiff;
 use super::sibling_settle::declares;
@@ -100,7 +101,9 @@ impl GraphTaskDispatcher {
     /// verify steps run. A rejection is an `Err`, a verify failure of gate
     /// `pre_verify:<check>`, and its message is left as the next attempt's
     /// feedback. An attempt that changed nothing, at a task with authored
-    /// verify steps, is left to them ([`Screened::UnchangedTree`]).
+    /// verify steps, is left to them ([`Screened::UnchangedTree`]). The
+    /// paths the attempt changed outside its task's `files` go to
+    /// `scope_findings`, for its verdict, whatever the screen decides.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn screen_attempt(
         &self,
@@ -111,6 +114,7 @@ impl GraphTaskDispatcher {
         attempt_key: &str,
         attempt_number: u32,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
+        scope_findings: &mut Vec<ScopeFinding>,
     ) -> Result<Screened> {
         let role = task.role.as_deref().unwrap_or("implementer");
         // First, so the attempt's changed files are kept whatever the screen
@@ -131,10 +135,16 @@ impl GraphTaskDispatcher {
         if rejection.is_none()
             && let Some(diff) = &diff
         {
-            rejection = match self
+            let (diff_rejection, outside) = self
                 .attempt_diff_red_flag(spec, task, workdir, attempt_number, diff)
-                .await
-            {
+                .await;
+            for finding in outside {
+                scope_findings.push(ScopeFinding {
+                    path: finding.path,
+                    kind: finding.kind.label().to_string(),
+                });
+            }
+            rejection = match diff_rejection {
                 Some(rejection) => Some(rejection),
                 None => no_changes_red_flag(task, role, diff, attempt_number).await,
             };
@@ -372,7 +382,9 @@ impl GraphTaskDispatcher {
 
     /// The attempt diff check (S05 check A1) over the task's changes: a
     /// tamper finding rejects the attempt; scope findings are logged, and
-    /// reject it only under `[gates] diff_scope = "enforce"`.
+    /// reject it only under `[gates] diff_scope = "enforce"`. Returns the
+    /// rejection, if any, with the scope findings, which the attempt's
+    /// verdict records either way (backlog 1125).
     async fn attempt_diff_red_flag(
         &self,
         spec: &TaskExecutionSpec,
@@ -380,7 +392,7 @@ impl GraphTaskDispatcher {
         workdir: &Path,
         attempt_number: u32,
         diff: &AttemptDiff,
-    ) -> Option<Rejection> {
+    ) -> (Option<Rejection>, Vec<DiffFinding>) {
         let policy = self.attempt_diff_policy(spec, task, workdir);
         let mut changes = Vec::with_capacity(diff.changes.len());
         for changed in &diff.changes {
@@ -425,7 +437,7 @@ impl GraphTaskDispatcher {
             } else {
                 "Restore them."
             };
-            return Some(Rejection {
+            let rejection = Rejection {
                 check: "tamper",
                 unchanged_tree: false,
                 message: format!(
@@ -434,9 +446,11 @@ impl GraphTaskDispatcher {
                      gate configuration; add new tests instead.",
                     finding_list(&tamper)
                 ),
-            });
+            };
+            return (Some(rejection), scope);
         }
-        (!scope.is_empty() && self.config.gates.diff_scope == DiffScope::Enforce).then(|| {
+        let enforced = self.config.gates.diff_scope == DiffScope::Enforce;
+        let rejection = (enforced && !scope.is_empty()).then(|| {
             let files = named_files(&task.files);
             let next = if fresh {
                 format!(
@@ -455,7 +469,8 @@ impl GraphTaskDispatcher {
                     finding_list(&scope)
                 ),
             }
-        })
+        });
+        (rejection, scope)
     }
 
     /// What the task may change: its `files`, the scripts its verify steps
@@ -1180,6 +1195,69 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
                 assert!(message.contains("outside_scope `README.md`"), "{message}");
             }
         }
+    }
+
+    /// backlog 1125: under `diff_scope = "record"` an attempt that also edits
+    /// a file outside its task's `files` passes its gates, and its verdict
+    /// row lists that path, not only the log.
+    #[tokio::test]
+    async fn scope_findings_reach_the_attempt_verdict() {
+        let temp = tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[
+                ("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n"),
+                ("README.md", "# c5\n"),
+            ],
+        );
+        let wanders = provider(
+            "printf 'pub fn two() -> u8 {\\n    one() + one()\\n}\\n' >> src/lib.rs\n\
+             printf 'Also this.\\n' >> README.md",
+            "done",
+            10,
+        );
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            &wanders,
+            |config| {
+                no_auto_fix(config);
+                config.gates.diff_scope = DiffScope::Record;
+            },
+            feedback,
+        )
+        .await;
+        task.files = vec!["src/lib.rs".to_string()];
+        task.verify = vec![verify_step("structural", "grep -q 'fn two' src/lib.rs")];
+        let ctx = CellContext::new().with_run_id("scope-run".to_string());
+
+        let outputs = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("a scope finding is only recorded");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+        // Closing the run's writer flushes its lines.
+        drop(dispatcher);
+        let verdicts = jsonl_rows_where(
+            &runs_dir.join("scope-run").join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let verdict = &verdicts[0];
+        assert_eq!(verdict["outcome"], "passed");
+        assert_eq!(
+            verdict["scope_findings"],
+            serde_json::json!([{ "path": "README.md", "kind": "outside_scope" }]),
+            "{verdict}"
+        );
     }
 
     #[tokio::test]

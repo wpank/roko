@@ -271,6 +271,7 @@ impl AttemptBook {
             reflex_rule: None,
             live_tool_calls: LiveToolCalls::default(),
             verify_steps: Vec::new(),
+            scope_findings: Vec::new(),
             exposures: None,
             pricing: None,
             run,
@@ -299,6 +300,9 @@ pub(super) struct AttemptContext {
     live_tool_calls: LiveToolCalls,
     /// What each verify step did, once verification settled (backlog 2104).
     verify_steps: Vec<VerifyStepVerdict>,
+    /// The paths the attempt changed outside its task's `files`, as the
+    /// pre-verify screen found them (backlog 1125).
+    scope_findings: Vec<roko_learn::telemetry::ScopeFinding>,
     /// How many content items the attempt's prompt retrieved and included,
     /// once it was planned (S01 P0-9).
     exposures: Option<ExposureCounts>,
@@ -337,6 +341,15 @@ impl AttemptContext {
     /// verdict lists (backlog 2104).
     pub(super) fn record_verify_steps(&mut self, steps: Vec<VerifyStepVerdict>) {
         self.verify_steps = steps;
+    }
+
+    /// The pre-verify screen found `findings`: paths the attempt changed
+    /// outside its task's `files`, which the verdict lists (backlog 1125).
+    pub(super) fn record_scope_findings(
+        &mut self,
+        findings: Vec<roko_learn::telemetry::ScopeFinding>,
+    ) {
+        self.scope_findings = findings;
     }
 
     /// Provider failover passed over `failover`'s models before the one
@@ -431,6 +444,7 @@ impl AttemptContext {
         verdict.gate_verdict = gate_verdict;
         verdict.failure_class = failure_class(outcome, failure_reason.as_deref(), rung);
         verdict.steps = self.verify_steps;
+        verdict.set_scope_findings(self.scope_findings);
         verdict.timing = self.timing;
         // The call's time to first token, measured from its start
         // (gap-7a8474), places the first token. A call that streamed no

@@ -1,7 +1,7 @@
 //! Authored verify steps of a Graph task attempt, and the gate-dependent learning
 //! records their verdict settles.
 
-use roko_learn::telemetry::VerifyStepVerdict;
+use roko_learn::telemetry::{ScopeFinding, VerifyStepVerdict};
 
 use super::tui_forward::append_jsonl_line_async;
 use super::turn_policy::head_and_tail;
@@ -19,6 +19,9 @@ pub(super) struct VerificationReport {
     /// post-auto-fix re-run replaces the first run's steps. A pre-verify
     /// rejection ends the list as one failed step, `pre_verify:<check>`.
     pub(super) steps: Vec<VerifyStepVerdict>,
+    /// The paths the attempt changed outside its task's `files`, as the
+    /// pre-verify screen found them, for its verdict (backlog 1125).
+    pub(super) scope_findings: Vec<ScopeFinding>,
 }
 
 impl GraphTaskDispatcher {
@@ -50,6 +53,7 @@ impl GraphTaskDispatcher {
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
     ) -> VerificationReport {
         let mut steps = Vec::new();
+        let mut scope_findings = Vec::new();
         let result = self
             .screen_and_verify(
                 spec,
@@ -61,6 +65,7 @@ impl GraphTaskDispatcher {
                 attempt_key,
                 progress_tx,
                 &mut steps,
+                &mut scope_findings,
             )
             .await;
         if let Err(RokoError::Verify { gate, .. }) = &result
@@ -72,11 +77,16 @@ impl GraphTaskDispatcher {
                 ..VerifyStepVerdict::default()
             });
         }
-        VerificationReport { result, steps }
+        VerificationReport {
+            result,
+            steps,
+            scope_findings,
+        }
     }
 
     /// [`Self::settle_task_verification`]'s verdict; `steps` gathers what
-    /// each verify step did.
+    /// each verify step did, and `scope_findings` what the pre-verify screen
+    /// found outside the task's `files`.
     #[allow(clippy::too_many_arguments)]
     async fn screen_and_verify(
         &self,
@@ -89,6 +99,7 @@ impl GraphTaskDispatcher {
         attempt_key: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
         steps: &mut Vec<VerifyStepVerdict>,
+        scope_findings: &mut Vec<ScopeFinding>,
     ) -> Result<TaskGateVerdict> {
         let screened = self
             .screen_attempt(
@@ -99,6 +110,7 @@ impl GraphTaskDispatcher {
                 attempt_key,
                 attempt_number,
                 progress_tx,
+                scope_findings,
             )
             .await?;
         let unchanged_tree = matches!(screened, red_flags::Screened::UnchangedTree(_));

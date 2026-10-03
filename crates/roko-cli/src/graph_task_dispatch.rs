@@ -1696,6 +1696,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .await;
         attempt.verify_ended();
         attempt.record_verify_steps(report.steps);
+        attempt.record_scope_findings(report.scope_findings);
         let verification = report.result;
         // The helper model calls verification made count toward this
         // attempt, the background ones included (bug-62e3f4).

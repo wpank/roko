@@ -463,6 +463,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                         .await;
                     attempt.verify_ended();
                     attempt.record_verify_steps(report.steps);
+                    attempt.record_scope_findings(report.scope_findings);
                     Some(report.result)
                 } else {
                     None

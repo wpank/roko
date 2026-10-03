@@ -2408,6 +2408,39 @@ mod tests {
         }
     }
 
+    /// 9319: a runtime that answers every task, with no gate result, passes
+    /// none. Its verdict is `unverified`; with no executed check every task
+    /// is skipped, the summary counts no pass and the index has no pass rate.
+    #[tokio::test]
+    async fn a_bench_run_without_gates_records_no_pass() {
+        let runtime = ServedRuntime {
+            served: Some("gpt-5.4"),
+        };
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let answer = crate::runtime::CliRuntime::run_once(&runtime, scratch.path(), "Say hello.")
+            .await
+            .expect("answer");
+        assert_eq!(answer.verdict(), crate::state::RunState::Unverified);
+        let (_dir, state) = bench_state_with(Arc::new(runtime));
+        let run_id = run_smoke_bench(&state, "minimal", "gpt-5.4").await;
+
+        let run = bench::load_bench_run(&state.workdir, &run_id)
+            .await
+            .expect("load run")
+            .expect("run stored");
+        assert!(!run.results.is_empty());
+        let skipped = run.results.iter().filter(|r| r.skipped()).count();
+        assert_eq!(skipped, run.results.len(), "{:?}", run.results);
+        let summary = run.summary.as_ref().expect("summary");
+        assert_eq!((summary.passed, summary.skipped), (0, run.results.len()));
+        let entries = bench::load_index_entries(&state.workdir).await;
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == run_id)
+            .expect("indexed");
+        assert_eq!(entry.pass_rate, None);
+    }
+
     /// Start a smoke-suite run through the handler, wait until it is done,
     /// and return its id.
     async fn run_smoke_bench(state: &Arc<AppState>, strategy: &str, model: &str) -> String {

@@ -15,8 +15,10 @@
 
 use std::path::{Path, PathBuf};
 
+use roko_learn::cascade_router::canary_scope;
 use roko_learn::loop_audit::canary::{CanaryTask, DryRunPlanner, PlanProbe};
 use roko_learn::loop_audit::faults;
+use roko_learn::model_router::RoutingContext;
 
 use super::{DispatchContext, Dispatcher, ModelChoiceSource};
 use crate::loop_canary::{canary_id, canary_task};
@@ -50,8 +52,10 @@ impl DryRunPlanner for DispatchPlanner<'_> {
     fn plan(&mut self, task: &CanaryTask, _dry_run: bool) -> Result<PlanProbe, String> {
         let canary = canary_task(&task.nonce);
         let ctx = canary_context(&canary, &self.workdir);
-        let plan = faults::dry_run(|| self.dispatcher.plan(&canary, &ctx))
-            .map_err(|error| format!("dispatch could not plan the canary: {error}"))?;
+        let plan = faults::dry_run(|| {
+            canary_scope(&task.category, || self.dispatcher.plan(&canary, &ctx))
+        })
+        .map_err(|error| format!("dispatch could not plan the canary: {error}"))?;
         let artifact = canary_id(&task.nonce);
         let prompt = &plan.prompt;
         let prompt_contains =
@@ -65,7 +69,9 @@ impl DryRunPlanner for DispatchPlanner<'_> {
 }
 
 /// The dispatch context of the canary task `task` in the workspace
-/// `workdir`: its role, no budget pressure, no experiment, no arms.
+/// `workdir`: its role, a default routing context, so a dispatcher with a
+/// cascade router routes it there, no budget pressure, no experiment, no
+/// arms.
 fn canary_context(task: &TaskDef, workdir: &Path) -> DispatchContext {
     DispatchContext {
         plan_id: CANARY_PLAN.to_string(),
@@ -78,7 +84,7 @@ fn canary_context(task: &TaskDef, workdir: &Path) -> DispatchContext {
         ladder_step: 0,
         prompt_experiment: None,
         gate_feedback: None,
-        routing_context: None,
+        routing_context: Some(RoutingContext::default()),
         dependency_outputs: Vec::new(),
         error_patterns_context: String::new(),
         cached_workspace_map: String::new(),

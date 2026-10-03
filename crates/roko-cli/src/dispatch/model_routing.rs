@@ -990,6 +990,11 @@ impl ModelRouter {
     /// The cascade router's pick for `ctx`, among the models the provider
     /// guards accept when they accept some ([`Self::eligible_models`]).
     fn cascade_pick(&self, router: &CascadeRouter, ctx: &RoutingContext) -> CascadeModel {
+        // The L-route canary's preference, read inside its canary scope only
+        // (S03 §4.7).
+        if let Some(canary) = router.canary_route() {
+            return canary;
+        }
         // S02.P1-2: the guards mask the models that cannot run before the
         // cascade's argmax, so it picks the best one that can.
         let eligible = self.eligible_models(router, ctx);

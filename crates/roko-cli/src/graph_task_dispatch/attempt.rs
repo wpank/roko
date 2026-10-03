@@ -636,9 +636,14 @@ impl AttemptContext {
         verdict.harness = self.harness.as_ref().map(|decision| decision.stamp());
         self.run.submit(verdict.clone());
         // DP1: a green attempt draws its audit ticket; the draw is only logged.
+        // M1's audit boost of the θ it ran raises its rate (B7, 8127).
         if let Some(audit) = &self.run.audit {
             let output = dispatch.and_then(|dispatch| dispatch.result.output.body.as_text().ok());
-            audit.draw(&verdict, output);
+            let boost = self
+                .harness
+                .as_ref()
+                .map_or(1, |decision| decision.applied.audit_boost);
+            audit.draw(&verdict, output, boost);
         }
         SettledAttempt {
             verdict: Arc::new(verdict),
@@ -851,6 +856,8 @@ impl GraphTaskDispatcher {
             let learner = self.feedback.self_model.clone();
             let learner = learner.map(|model| model as Arc<dyn crate::audit::labels::VsLearner>);
             let selector = selector.with_phase_b(self.audit_phase_b());
+            // M1's audit boosts and couplings raise its rate (8127).
+            let selector = selector.with_m1(self.feedback.homeostasis.clone());
             Some(Arc::new(selector.with_learner(learner)))
         });
         let mut attempt = self.attempts.open(

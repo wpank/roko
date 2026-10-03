@@ -28,6 +28,11 @@
 //!   noted when its attempt opened ([`AuditSelector::note_task`]), and the
 //!   run's close waits for it to drain, for at most `[audit] drain_secs`,
 //!   before the key is revealed.
+//! - Under M1 (8127), a green attempt's ρ is M4's own raised by the audit
+//!   boost of the θ it ran (B7) and doubled while the audit coupling of a
+//!   cost- or verification-reducing move on its tier runs
+//!   ([`HomeostasisSink::audit_rate`]), within S5's bounds; π records the
+//!   rate it was drawn at, so the estimates stay unbiased.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -43,8 +48,9 @@ use roko_gate::audit::canary::{CanaryHit, CanaryScanner, scan_text};
 use roko_gate::audit::hidden::HiddenStore;
 use roko_gate::audit::ledger::{AuditEvent, AuditLedger};
 use roko_gate::audit::policy::{
-    InclusionParams, RunKey, inclusion_probability, select, workspace_secret,
+    InclusionParams, RHO_MAX, RunKey, inclusion_probability, select, workspace_secret,
 };
+use roko_learn::homeostasis::coupling::ALL_CLASSES;
 use roko_learn::telemetry::records::{AttemptOutcome, AttemptVerdictRecord, GateVerdictTag};
 
 use crate::audit::b1::{B1, FactoryAuthor, SuiteAuthor};
@@ -54,6 +60,7 @@ use crate::audit::labels::VsLearner;
 use crate::audit::worker::{
     AuditTask, AuditUnit, AuditWorker, GamingWatch, PhaseB, WorkerContext, queue_unit,
 };
+use crate::runtime_feedback::HomeostasisSink;
 use crate::task_parser::TaskDef;
 
 /// Every stratum a run reports, in order.
@@ -76,6 +83,8 @@ pub(super) struct AuditSelector {
     trees: parking_lot::Mutex<HashMap<String, (String, String)>>,
     /// Attempt key → what an audit needs of its task, noted at open.
     tasks: parking_lot::Mutex<HashMap<String, AuditTask>>,
+    /// Attempt key → its task's tier, the class M1's audit coupling names.
+    classes: parking_lot::Mutex<HashMap<String, String>>,
     runs: parking_lot::Mutex<HashMap<String, RunDraws>>,
     vault: AuditVault,
     config: AuditConfig,
@@ -86,6 +95,8 @@ pub(super) struct AuditSelector {
     gaming: GamingWatch,
     /// The self-model audited VS labels teach (DP5, 7134).
     learner: Option<Arc<dyn VsLearner>>,
+    /// M1's sink, whose audit boosts and couplings raise ρ (8127).
+    m1: Option<Arc<HomeostasisSink>>,
     /// Draw every green unit at π = 1 ([`Self::census`]).
     census: AtomicBool,
 }
@@ -138,12 +149,14 @@ impl AuditSelector {
             gaming: GamingWatch::new(&vault),
             trees: parking_lot::Mutex::new(HashMap::new()),
             tasks: parking_lot::Mutex::new(HashMap::new()),
+            classes: parking_lot::Mutex::new(HashMap::new()),
             runs: parking_lot::Mutex::new(HashMap::new()),
             vault,
             config: config.clone(),
             gates: gates.clone(),
             phase_b: PhaseB::default(),
             learner: None,
+            m1: None,
             census: AtomicBool::new(false),
         })
     }
@@ -160,6 +173,14 @@ impl AuditSelector {
     #[must_use]
     pub(super) fn with_learner(mut self, learner: Option<Arc<dyn VsLearner>>) -> Self {
         self.learner = learner;
+        self
+    }
+
+    /// The lottery, whose ρ M1's `sink` raises (B7 and the audit coupling,
+    /// 8127).
+    #[must_use]
+    pub(super) fn with_m1(mut self, sink: Option<Arc<HomeostasisSink>>) -> Self {
+        self.m1 = sink;
         self
     }
 
@@ -272,6 +293,8 @@ impl AuditSelector {
     /// Note what an audit needs of `task`, which the attempt `attempt_key`
     /// runs.
     pub(super) fn note_task(&self, attempt_key: &str, task: &TaskDef) {
+        let class = task.tier_class().to_string();
+        self.classes.lock().insert(attempt_key.to_string(), class);
         let task = audit_task(task);
         self.tasks.lock().insert(attempt_key.to_string(), task);
     }
@@ -284,12 +307,14 @@ impl AuditSelector {
     }
 
     /// DP1: draw `verdict`'s attempt when it is green, and scan its output
-    /// for canaries; a selected unit goes to the run's audit worker. Logs
-    /// and returns; never fails the attempt.
-    pub(super) fn draw(&self, verdict: &AttemptVerdictRecord, output: Option<&str>) {
+    /// for canaries; a selected unit goes to the run's audit worker. The
+    /// attempt ran θ's audit `boost` (1 without M1). Logs and returns; never
+    /// fails the attempt.
+    pub(super) fn draw(&self, verdict: &AttemptVerdictRecord, output: Option<&str>, boost: u32) {
         let identity = &verdict.identity;
         let trees = self.trees.lock().remove(&identity.attempt_key);
         let task = self.tasks.lock().remove(&identity.attempt_key);
+        let class = self.classes.lock().remove(&identity.attempt_key);
         if let Some(output) = output {
             self.scan(output);
         }
@@ -316,7 +341,7 @@ impl AuditSelector {
         let pi = if census || self.census.load(Ordering::Relaxed) {
             Ok(1.0)
         } else {
-            inclusion_probability(&self.params, None, None)
+            inclusion_probability(&self.params_for(class.as_deref(), boost), None, None)
         };
         let (base_tree, result_tree) =
             trees.map_or((None, None), |(base, result)| (Some(base), Some(result)));
@@ -377,6 +402,18 @@ impl AuditSelector {
         if let Some(unit) = unit {
             self.queue(unit);
         }
+    }
+
+    /// The lottery's knobs for a green attempt of task class `class` that
+    /// ran θ's audit `boost`: `[audit]`'s, with ρ as M1's sink raises it
+    /// (8127), and never past what the lottery admits.
+    fn params_for(&self, class: Option<&str>, boost: u32) -> InclusionParams {
+        let Some(sink) = self.m1.as_deref() else {
+            return self.params;
+        };
+        let class = class.unwrap_or(ALL_CLASSES);
+        let rho = sink.audit_rate(self.params.rho, boost, class).min(RHO_MAX);
+        InclusionParams { rho, ..self.params }
     }
 
     /// Hand a selected unit to its run's worker, once its task inputs are
@@ -890,5 +927,68 @@ mod tests {
         assert!(!downgraded, "the model keeps its trust");
         let trust = TrustBook::load(&trust_path(&vault)).expect("the trust book");
         assert!(trust.estimates.is_empty(), "{trust:?}");
+    }
+
+    /// S06 B7 and the audit coupling (8127): under M1, a green attempt's ρ
+    /// is `[audit]`'s times the audit boost of the θ it ran, and doubled on
+    /// its tier for the next 20 passes after an applied cost-reducing move
+    /// on that tier, within S5's `p_max` (0.40 by default). Without M1, or
+    /// at θ₀'s boost of 1 without a coupling, ρ stays `[audit]`'s.
+    #[test]
+    fn audit_boost_and_coupling_raise_the_draw_rate() {
+        use roko_core::config::harness_params::Block;
+        use roko_core::config::homeostasis::HomeostasisMode;
+        use roko_learn::homeostasis::controller::MoveReason;
+        use roko_learn::homeostasis::ledger::{
+            AUDIT_BOOST_PASSES, AuditCoupling, ParamChange, Validator,
+        };
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("repo");
+        std::fs::create_dir_all(&workspace).expect("mkdir");
+        let config = AuditConfig {
+            enabled: true,
+            home: Some(temp.path().join("vault")),
+            rho: 0.10,
+            ..AuditConfig::default()
+        };
+        let gates = GatesConfig::default();
+        let selector = AuditSelector::for_config(&config, &gates, &workspace).expect("a lottery");
+        let close = |rho: f64, expected: f64| (rho - expected).abs() < 1e-9;
+        assert!(close(selector.params_for(Some("focused"), 4).rho, 0.10));
+
+        let sink = Arc::new(HomeostasisSink::new(&workspace, None, None));
+        let selector = selector.with_m1(Some(Arc::clone(&sink)));
+        let rho = |class: &str, boost: u32| selector.params_for(Some(class), boost).rho;
+        assert!(close(rho("focused", 1), 0.10));
+        assert!(close(rho("focused", 2), 0.20));
+        assert!(close(rho("focused", 4), 0.40));
+
+        // A lower focused tier cap, applied: twenty passes at twice the rate.
+        sink.arm_audit_coupling(&ParamChange {
+            change_id: "ch-0001".to_string(),
+            episode_id: Some("ep-0001".to_string()),
+            mode: HomeostasisMode::On,
+            applied: true,
+            block: Block::B1,
+            param: "tier_cap.focused".to_string(),
+            from: serde_json::json!("top"),
+            to: serde_json::json!("strong"),
+            reason: MoveReason::Directed,
+            predicted: None,
+            validator: Validator {
+                safety_box: "pass".to_string(),
+                e42: "pass".to_string(),
+            },
+            audit_coupling: Some(AuditCoupling {
+                class: "focused".to_string(),
+                boost_until_passes: AUDIT_BOOST_PASSES,
+            }),
+        });
+        for pass in 0..AUDIT_BOOST_PASSES {
+            assert!(close(rho("mechanical", 1), 0.10), "pass {pass}");
+            assert!(close(rho("focused", 1), 0.20), "pass {pass}");
+        }
+        assert!(close(rho("focused", 1), 0.10));
     }
 }

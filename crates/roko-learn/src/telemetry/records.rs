@@ -1285,6 +1285,106 @@ pub struct ContentDecisionRecord {
     /// of the attempt carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arm_set: Option<crate::loop_audit::arm_set::ArmSet>,
+    /// What each policy proposed (A-DEC); `None` on rows written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposals: Option<ContentProposals>,
+    /// S03's fields (A-DEC).
+    #[serde(flatten)]
+    pub audit: AuditFields,
+}
+
+/// What each policy proposed for a set decision (S01 §5.3 `proposals`, as
+/// arrays of ids).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContentProposals {
+    /// The ids the learned reader would include, computed on both arms.
+    pub learned: Option<Vec<String>>,
+    /// The ids the default policy π⁰ includes: none for knowledge, the
+    /// seeded ones for playbooks.
+    pub default: Option<Vec<String>>,
+}
+
+/// Whether a decision was an opportunity of its loop (S01 §5.3
+/// `opportunity`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionOpportunity {
+    /// The loop's opportunity predicate held.
+    pub eligible: bool,
+    /// Why, e.g. `no_override_no_hint_ge2_eligible`.
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// A decision's draw on its loop's layer: S01 §4.6's assignment with S03's
+/// A-DEC fields (S01 §5.3 `assignment`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionAssignment {
+    /// The draw: unit, layer, salt id, u, h, g, arm and propensity.
+    #[serde(flatten)]
+    pub draw: Assignment,
+    /// The value hashed: the chain key unless the layer says otherwise.
+    pub unit_key: String,
+    /// The assignment epoch, e.g. the UTC day.
+    pub audit_epoch: String,
+    /// The all-learning-off arm was drawn.
+    pub global_off: bool,
+    /// When the arm was drawn, in unix ms.
+    pub assigned_at: i64,
+}
+
+/// Proof that a decision reached the executed request (S01 §5.3 `receipt`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionReceipt {
+    /// What it checks: `route` (the executed model is the pick) or `content`
+    /// (the rendered sections are in the request).
+    pub kind: String,
+    /// The check passed.
+    pub ok: bool,
+    /// `b3:` hash of the request it checked.
+    #[serde(default)]
+    pub request_hash: Option<String>,
+    /// `b3:` hashes of the rendered sections it looked for.
+    #[serde(default)]
+    pub exposure_hashes: Vec<String>,
+}
+
+/// S03's fields on a decision row (A-DEC, S01 §5.3): the loops that share
+/// the decision, its layer, whether it was an opportunity, the draw and its
+/// time, the decision's time and the receipt. A row written before them has
+/// none, and the census counts it as pre-instrumentation.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AuditFields {
+    /// The loop whose layer drew the arm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_id: Option<String>,
+    /// Every loop that shares the decision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loop_ids: Vec<String>,
+    /// The decision's layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// Whether it was an opportunity of its loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opportunity: Option<DecisionOpportunity>,
+    /// The draw on the layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<DecisionAssignment>,
+    /// When the decision was made, in unix ms. S03 §4.6's ordering check
+    /// reads `assigned_at < decided_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<i64>,
+    /// Proof the decision reached the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<DecisionReceipt>,
+}
+
+impl AuditFields {
+    /// Whether a row carries them: one without a layer predates A-DEC.
+    #[must_use]
+    pub const fn present(&self) -> bool {
+        self.layer.is_some()
+    }
 }
 
 /// `b3(attempt_key|item_kind|item_id)`: one item's exposure in one attempt
@@ -2193,6 +2293,8 @@ mod tests {
             state: Some(state),
             thresholds_digest: None,
             arm_set: None,
+            proposals: None,
+            audit: Default::default(),
         };
         let json = serde_json::to_value(&record).expect("serialize");
         assert_eq!(json["decision_point"], "knowledge");

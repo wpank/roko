@@ -7,17 +7,34 @@
 //! `verified_at`. The census spends nothing, makes no transitions and writes
 //! nothing: [`render_json`] (`roko.loop_census/1`) and [`render_text`] print
 //! it. A retired loop keeps its last reason, for its history, and no state.
-//! The measured mode, over per-run decision and exposure rows, is backlog
-//! 5123.
+//!
+//! The measured mode (backlog 5123) reads every run's decision rows through
+//! `telemetry::report` ([`measure`]) and folds the ones that carry S03's
+//! fields (A-DEC) into each loop's opportunities: ε with its decomposition
+//! and ι_net (S03 §4.4). Once a loop's learned arm has N_ε opportunities,
+//! the measured verdict decides its reason; before that, its logs and its
+//! declared findings do. Rows written before A-DEC count as
+//! pre-instrumentation.
 
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::Value;
 
+use super::arm_set::ArmSet;
+use super::assign::takes_default;
+use super::exposure::{Action, ExposureEstimator, InfluenceEstimator, Opportunity, ReadStatus};
+use super::ledger::EpsilonFields;
 use super::spec::{AuditState, Lifecycle, LoopSpec, Qualifier, ReasonCode, Registry};
+use super::state::AuditParams;
 use crate::prompt_experiment::ExperimentStore;
+use crate::routing_log::{DecisionState, RoutingDecisionLog};
 use crate::runtime_feedback::LearningPaths;
+use crate::telemetry::records::{
+    AuditFields, ContentDecisionPoint, ContentDecisionRecord, DecisionSource, ExecutedModel,
+};
+use crate::telemetry::report::{RunRecords, undated};
 
 /// Schema of [`render_json`]'s output.
 pub const CENSUS_SCHEMA: &str = "roko.loop_census/1";
@@ -39,11 +56,17 @@ const RETRIEVAL_OUTCOMES: &str = "retrieval-outcomes.jsonl";
 const HOLDOUT_STATE: &str = "holdout-state.json";
 /// The dream cycle's routing advice, under the learn directory.
 const DREAM_ROUTING_ADVICE: &str = "dream-routing-advice.json";
+/// The run directories, under the `.roko` directory.
+const RUNS_DIR: &str = "runs";
+/// The loop whose layer a route row without a `loop_id` drew on.
+const ROUTE_LOOP: &str = "L-route";
 
 /// Where a row's reason comes from (S03 §9.11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Evidence {
+    /// The runs' decision rows measure it.
+    Measured,
     /// The workspace's logs show it.
     Log,
     /// A code-review finding in the registry says it.
@@ -84,6 +107,33 @@ pub struct CensusRow {
     pub facts: Vec<String>,
     /// The loop's declared findings.
     pub findings: Vec<DeclaredFinding>,
+    /// What the runs' decision rows measure, when any row is the loop's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measured: Option<MeasuredLoop>,
+}
+
+/// One loop's exposure and influence over the runs' decision rows (S03
+/// §4.4; backlog 5123).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MeasuredLoop {
+    /// Opportunities with S03's fields, on both arms.
+    pub n_opp: u64,
+    /// Learned-arm opportunities.
+    #[serde(rename = "n_L")]
+    pub n_learned: u64,
+    /// Default-arm opportunities.
+    #[serde(rename = "n_D")]
+    pub n_default: u64,
+    /// The loop's decision rows written before S03's fields.
+    pub pre_instrumentation: u64,
+    /// ε and its decomposition over the learned-arm opportunities.
+    pub eps: EpsilonFields,
+    /// ι_net over every opportunity, net of the A/A floor.
+    pub iota_net: f64,
+    /// The learned arm has N_ε opportunities, so ε is judged.
+    pub judged: bool,
+    /// The dormant reason ε gives once judged, while it stays below ε_min.
+    pub reason: Option<ReasonCode>,
 }
 
 /// The census of every registered loop, in registry order.
@@ -112,18 +162,40 @@ pub fn run(workdir: &Path, registry: &Registry, harness_sha: Option<&str>) -> Ce
     run_in(&LearningPaths::for_project(workdir), registry, harness_sha)
 }
 
-/// The census of the logs at `paths` against `registry`.
+/// The census of the logs at `paths`, and of the runs beside them in the
+/// `.roko` directory, against `registry`.
 #[must_use]
 pub fn run_in(
     paths: &LearningPaths,
     registry: &Registry,
     harness_sha: Option<&str>,
 ) -> CensusReport {
+    let runs = paths
+        .root
+        .parent()
+        .map(|roko_dir| read_runs(&roko_dir.join(RUNS_DIR)))
+        .unwrap_or_default();
+    run_with(paths, &runs, registry, harness_sha)
+}
+
+/// The census of the logs at `paths` and of the run records `runs` against
+/// `registry`.
+#[must_use]
+pub fn run_with(
+    paths: &LearningPaths,
+    runs: &[RunRecords],
+    registry: &Registry,
+    harness_sha: Option<&str>,
+) -> CensusReport {
     let logs = Logs::read(paths);
+    let measured = measure(runs);
     let rows = registry
         .loops()
         .iter()
-        .map(|spec| census_row(spec, &logs, harness_sha))
+        .map(|spec| {
+            let measured = measured.get(spec.id.as_str());
+            census_row(spec, &logs, measured, harness_sha)
+        })
         .collect();
     CensusReport {
         schema: CENSUS_SCHEMA.to_string(),
@@ -201,9 +273,15 @@ fn serde_label(value: &impl Serialize) -> String {
         .unwrap_or_default()
 }
 
-/// One loop's row: its log rules and declared findings, resolved by S03
-/// §4.6's precedence (log evidence first on a tie).
-fn census_row(spec: &LoopSpec, logs: &Logs, harness_sha: Option<&str>) -> CensusRow {
+/// One loop's row. A judged measurement decides the reason (S03 §9.11:
+/// measured, then log, then declared); otherwise its log rules and declared
+/// findings do, by S03 §4.6's precedence, log evidence first on a tie.
+fn census_row(
+    spec: &LoopSpec,
+    logs: &Logs,
+    measured: Option<&MeasuredLoop>,
+    harness_sha: Option<&str>,
+) -> CensusRow {
     let mut facts = Vec::new();
     let mut candidates: Vec<(ReasonCode, Evidence, bool)> = Vec::new();
     let mut qualifiers = Vec::new();
@@ -230,7 +308,14 @@ fn census_row(spec: &LoopSpec, logs: &Logs, harness_sha: Option<&str>) -> Census
     // The cheapest code wins; on a tie, log evidence beats a declaration.
     candidates
         .sort_by_key(|(code, evidence, _)| (code.precedence(), *evidence == Evidence::Declared));
-    let winner = candidates.first().copied();
+    let mut winner = candidates.first().copied();
+    let judged = measured.filter(|measured| measured.judged);
+    if let Some(measured) = measured {
+        facts.push(measured_fact(measured));
+    }
+    if let Some(measured) = judged {
+        winner = measured.reason.map(|code| (code, Evidence::Measured, false));
+    }
     if winner.is_some_and(|(_, evidence, stale)| evidence == Evidence::Declared && stale) {
         qualifiers.push(Qualifier::DeclaredStale);
     }
@@ -248,9 +333,279 @@ fn census_row(spec: &LoopSpec, logs: &Logs, harness_sha: Option<&str>) -> Census
         state,
         reason,
         qualifiers,
-        evidence: winner.map(|(_, evidence, _)| evidence),
+        evidence: judged
+            .map(|_| Evidence::Measured)
+            .or(winner.map(|(_, evidence, _)| evidence)),
         facts,
         findings,
+        measured: measured.cloned(),
+    }
+}
+
+/// What the runs' decision rows show about a loop, in a sentence.
+fn measured_fact(measured: &MeasuredLoop) -> String {
+    let (n, learned) = (measured.n_opp, measured.n_learned);
+    let pre = measured.pre_instrumentation;
+    let (eps, iota) = (measured.eps, measured.iota_net);
+    format!(
+        "{n} opportunities measured, {learned} on the learned arm, and {pre} rows from before \
+         S03's fields: ε {:.2} (read {:.2}, reach {:.2}, honest {:.2}, receipt {:.2}), \
+         ι_net {iota:.2}",
+        eps.est, eps.read, eps.reach, eps.honest, eps.receipt
+    )
+}
+
+/// Every run directory under `runs_dir`, in name order, read by
+/// `telemetry::report`; a run that cannot be read is skipped.
+#[must_use]
+pub fn read_runs(runs_dir: &Path) -> Vec<RunRecords> {
+    let Ok(entries) = std::fs::read_dir(runs_dir) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    dirs.sort();
+    dirs.iter()
+        .filter_map(|dir| RunRecords::load(dir).ok())
+        .collect()
+}
+
+/// Each loop's exposure and influence over the decision rows of `runs`
+/// (S03 §4.4), by loop id. A route row belongs to its `loop_id`, L-route by
+/// default; knowledge and playbook rows belong to L-know and L-play. A row
+/// without S03's fields counts as pre-instrumentation, and a pin (a task
+/// hint, an override, a ladder rung) is no opportunity.
+#[must_use]
+pub fn measure(runs: &[RunRecords]) -> BTreeMap<String, MeasuredLoop> {
+    let params = AuditParams::default();
+    let mut tallies: BTreeMap<String, Tally> = BTreeMap::new();
+    for run in runs {
+        let executed: HashMap<&str, &ExecutedModel> = run
+            .verdicts
+            .iter()
+            .map(|line| (line.record.identity.attempt_key.as_str(), &line.record.executed))
+            .collect();
+        for line in &run.decisions {
+            let row = &line.record;
+            let loop_id = row.audit.loop_id.as_deref().unwrap_or(ROUTE_LOOP);
+            let loop_tally = tally_of(&mut tallies, loop_id, params.alpha);
+            if !row.audit.present() {
+                loop_tally.pre_instrumentation += 1;
+                continue;
+            }
+            let ran = row
+                .attempt_key
+                .as_deref()
+                .and_then(|key| executed.get(key).copied());
+            if let Some(opportunity) = route_opportunity(row, ran) {
+                loop_tally.push(&opportunity);
+            }
+        }
+        for line in &run.content_decisions {
+            let row = &line.record;
+            let loop_id = row.audit.loop_id.as_deref();
+            let Some(loop_id) = loop_id.or_else(|| content_loop(row.decision_point)) else {
+                continue;
+            };
+            let loop_tally = tally_of(&mut tallies, loop_id, params.alpha);
+            if !row.audit.present() {
+                loop_tally.pre_instrumentation += 1;
+                continue;
+            }
+            if let Some(opportunity) = content_opportunity(row) {
+                loop_tally.push(&opportunity);
+            }
+        }
+    }
+    tallies
+        .into_iter()
+        .map(|(loop_id, tally)| (loop_id, tally.finish(&params)))
+        .collect()
+}
+
+/// `loop_id`'s tally in `tallies`, started at level `alpha` when new.
+fn tally_of<'a>(
+    tallies: &'a mut BTreeMap<String, Tally>,
+    loop_id: &str,
+    alpha: f64,
+) -> &'a mut Tally {
+    tallies
+        .entry(loop_id.to_string())
+        .or_insert_with(|| Tally::new(alpha))
+}
+
+/// The loop that reads a content decision point's outcome, for the points
+/// whose rows carry proposals (backlog 5125).
+const fn content_loop(point: ContentDecisionPoint) -> Option<&'static str> {
+    match point {
+        ContentDecisionPoint::Knowledge => Some("L-know"),
+        ContentDecisionPoint::Playbooks => Some("L-play"),
+        _ => None,
+    }
+}
+
+/// The opportunity a route row records, if it is one: the router proposed a
+/// pick (`proposals.learned`), and no pin decided. The receipt is the row's
+/// own or, failing that, the provider's report on the attempt's verdict
+/// (backlog 5124's option a), and the label is honest when that report
+/// names the labelled model.
+fn route_opportunity(
+    row: &RoutingDecisionLog,
+    ran: Option<&ExecutedModel>,
+) -> Option<Opportunity<String>> {
+    let pinned = matches!(
+        row.source,
+        Some(DecisionSource::TaskHint | DecisionSource::Override | DecisionSource::Ladder)
+    );
+    if pinned || !eligible(&row.audit) {
+        return None;
+    }
+    let learned = row.proposals.learned.clone()?;
+    let reported = ran.and_then(|ran| ran.model_reported.as_deref());
+    let (honest, receipt) = match (&row.audit.receipt, reported) {
+        (Some(receipt), _) => (receipt.ok, true),
+        (None, Some(reported)) => (undated(reported) == undated(&row.selected_model), true),
+        (None, None) => (true, false),
+    };
+    let (learned_arm, propensity) = arm_of(&row.audit, row.arm_set.as_ref());
+    let default = row
+        .proposals
+        .default
+        .clone()
+        .or_else(|| row.default_model.clone());
+    Some(Opportunity {
+        learned_arm,
+        propensity,
+        learned,
+        default: default.unwrap_or_default(),
+        learned_again: row.proposals.aa.clone(),
+        executed: row.selected_model.clone(),
+        honest,
+        read: read_status(row.state.as_ref()),
+        receipt,
+        cites: None,
+    })
+}
+
+/// The opportunity a content row records, if it is one: the store offered
+/// candidates. Its proposals are id sets, and its receipt, the rendered
+/// sections found in the request, says whether the label is honest.
+fn content_opportunity(row: &ContentDecisionRecord) -> Option<Opportunity<BTreeSet<String>>> {
+    let offered = !row.candidates.is_empty();
+    let eligible = row
+        .audit
+        .opportunity
+        .as_ref()
+        .map_or(offered, |opportunity| opportunity.eligible);
+    if !eligible {
+        return None;
+    }
+    let proposals = row.proposals.clone().unwrap_or_default();
+    let set = |ids: Option<Vec<String>>| -> BTreeSet<String> {
+        ids.unwrap_or_default().into_iter().collect()
+    };
+    let (learned_arm, propensity) = arm_of(&row.audit, row.arm_set.as_ref());
+    let receipt = row.audit.receipt.as_ref();
+    Some(Opportunity {
+        learned_arm,
+        propensity,
+        learned: set(proposals.learned),
+        default: set(proposals.default),
+        learned_again: None,
+        executed: row.chosen.iter().cloned().collect(),
+        honest: receipt.is_none_or(|receipt| receipt.ok),
+        read: read_status(row.state.as_ref()),
+        receipt: receipt.is_some(),
+        cites: None,
+    })
+}
+
+/// Whether S03's fields leave the row an opportunity: they say so, or say
+/// nothing.
+fn eligible(audit: &AuditFields) -> bool {
+    audit
+        .opportunity
+        .as_ref()
+        .is_none_or(|opportunity| opportunity.eligible)
+}
+
+/// Whether the row's unit drew the learned arm, and that arm's logged
+/// propensity: from S03's `assignment`, else from the chain's arm set on the
+/// row's layer. A row with neither ran learned, at propensity 1.
+fn arm_of(audit: &AuditFields, arm_set: Option<&ArmSet>) -> (bool, f64) {
+    let draw = audit
+        .assignment
+        .as_ref()
+        .map(|assignment| &assignment.draw)
+        .or_else(|| arm_set?.get(audit.layer.as_deref()?));
+    draw.map_or((true, 1.0), |draw| (!takes_default(draw.arm), draw.propensity))
+}
+
+/// What a decision's reader loaded: its state, an empty one, or none.
+fn read_status(state: Option<&DecisionState>) -> ReadStatus {
+    match state {
+        Some(state) if state.read => ReadStatus::Loaded,
+        Some(_) => ReadStatus::Empty,
+        None => ReadStatus::Missing,
+    }
+}
+
+/// One loop's opportunities, as the census folds them.
+#[derive(Debug, Clone)]
+struct Tally {
+    exposure: ExposureEstimator,
+    influence: InfluenceEstimator,
+    n_learned: u64,
+    n_default: u64,
+    pre_instrumentation: u64,
+}
+
+impl Tally {
+    fn new(alpha: f64) -> Self {
+        Self {
+            exposure: ExposureEstimator::new(alpha),
+            influence: InfluenceEstimator::new(alpha),
+            n_learned: 0,
+            n_default: 0,
+            pre_instrumentation: 0,
+        }
+    }
+
+    fn push<A: Action>(&mut self, opportunity: &Opportunity<A>) {
+        self.exposure.push(opportunity);
+        self.influence.push(opportunity);
+        if opportunity.learned_arm {
+            self.n_learned += 1;
+        } else {
+            self.n_default += 1;
+        }
+    }
+
+    fn finish(&self, params: &AuditParams) -> MeasuredLoop {
+        let exposure = self.exposure.estimate();
+        let judged = exposure.opportunities >= params.n_eps;
+        MeasuredLoop {
+            n_opp: self.n_learned + self.n_default,
+            n_learned: self.n_learned,
+            n_default: self.n_default,
+            pre_instrumentation: self.pre_instrumentation,
+            eps: EpsilonFields {
+                est: exposure.epsilon,
+                ucb: exposure.interval.map_or(exposure.epsilon, |(_, high)| high),
+                read: exposure.read,
+                reach: exposure.reach,
+                honest: exposure.honest,
+                receipt: exposure.receipt,
+            },
+            iota_net: self.influence.estimate().iota_net,
+            judged,
+            reason: judged
+                .then(|| exposure.dormant_reason(params.eps_min))
+                .flatten(),
+        }
     }
 }
 
@@ -497,6 +852,12 @@ fn read_jsonl(path: &Path) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry::assign::{Arm, Assignment, AssignmentUnit};
+    use crate::telemetry::records::{
+        AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, ContentCandidate,
+        ContentProposals, DECISION_SCHEMA, DecisionAssignment, DecisionReceipt, RunFile, Stamped,
+        VERDICT_SCHEMA,
+    };
 
     /// The 09-29 snapshot fixture (backlog 5105), laid out like `.roko`.
     fn fixture() -> LearningPaths {
@@ -649,5 +1010,197 @@ mod tests {
         assert_eq!(parsed["schema"], CENSUS_SCHEMA);
         assert_eq!(parsed["rows"][0]["loop"], "L-route");
         assert!(render_text(&report).contains("retired(4101)"));
+    }
+
+    /// `record` as one run-file line, in the writer's envelope.
+    fn line<T: Serialize>(schema: &str, seq: u64, record: T) -> String {
+        let stamped = Stamped {
+            schema_version: schema.to_string(),
+            record_id: format!("b3:{seq}"),
+            seq,
+            ts: "2026-10-03T09:00:00Z".to_string(),
+            record,
+        };
+        serde_json::to_string(&stamped).expect("serialize a run line") + "\n"
+    }
+
+    /// A learned state that was read.
+    fn read_state() -> DecisionState {
+        DecisionState {
+            read: true,
+            version: "v1".to_string(),
+            digest: "b3:state".to_string(),
+            age_s: None,
+            n_obs: 1,
+        }
+    }
+
+    /// A draw on `layer` for `chain_key` that landed in `arm`, at h = 0.2.
+    fn draw(layer: &str, chain_key: &str, arm: Arm) -> DecisionAssignment {
+        let propensity = if arm == Arm::Learned { 0.8 } else { 0.2 };
+        DecisionAssignment {
+            draw: Assignment {
+                unit: AssignmentUnit::Chain,
+                layer: layer.to_string(),
+                salt_id: format!("{layer}@2026-10-03"),
+                u: 0.5,
+                h: 0.2,
+                g: 0.0,
+                arm,
+                propensity,
+            },
+            unit_key: chain_key.to_string(),
+            audit_epoch: "2026-10-03".to_string(),
+            global_off: false,
+            assigned_at: 1,
+        }
+    }
+
+    /// Attempt `key`'s content decision at `point` on `layer`, with S03's
+    /// fields: the learned reader proposes `item`, which only the learned arm
+    /// includes, and with `receipt` the rendered section was found in the
+    /// request.
+    fn content_row(
+        key: &AttemptKey,
+        point: ContentDecisionPoint,
+        layer: &str,
+        item: &str,
+        arm: Arm,
+        receipt: bool,
+    ) -> ContentDecisionRecord {
+        let included = if arm == Arm::Learned {
+            vec![item.to_string()]
+        } else {
+            Vec::new()
+        };
+        let candidate = ContentCandidate {
+            id: item.to_string(),
+            rank: Some(1),
+            score: None,
+            eligible: true,
+            p: None,
+        };
+        let receipt = receipt.then(|| DecisionReceipt {
+            kind: "content".to_string(),
+            ok: true,
+            request_hash: Some("b3:request".to_string()),
+            exposure_hashes: vec!["b3:section".to_string()],
+        });
+        ContentDecisionRecord {
+            identity: AttemptIdentity::new(key),
+            decision_point: point,
+            policy: "keyword_overlap_top3".to_string(),
+            candidates: vec![candidate],
+            chosen: included,
+            chosen_propensity: Some(1.0),
+            source: None,
+            state: Some(read_state()),
+            thresholds_digest: None,
+            arm_set: None,
+            proposals: Some(ContentProposals {
+                learned: Some(vec![item.to_string()]),
+                default: Some(Vec::new()),
+            }),
+            audit: AuditFields {
+                layer: Some(layer.to_string()),
+                assignment: Some(draw(layer, &key.chain_key(), arm)),
+                decided_at: Some(2),
+                receipt,
+                ..AuditFields::default()
+            },
+        }
+    }
+
+    /// Attempt `key`'s route row: the router proposed `model-a`, the row
+    /// labels `model-b`, and with `adec` it carries S03's fields.
+    fn route_row(key: &AttemptKey, adec: bool) -> RoutingDecisionLog {
+        let template = serde_json::json!({
+            "task_id": key.task_id,
+            "selected_model": "model-b",
+            "candidates": [],
+        });
+        let mut row: RoutingDecisionLog = serde_json::from_value(template).expect("a route row");
+        row.attempt_key = Some(key.attempt_key());
+        row.source = Some(DecisionSource::Router);
+        row.proposals.learned = Some("model-a".to_string());
+        row.proposals.default = Some("model-c".to_string());
+        row.state = Some(read_state());
+        if adec {
+            row.audit.layer = Some("route".to_string());
+            row.audit.decided_at = Some(2);
+        }
+        row
+    }
+
+    /// S03 §7 A3 on a synthetic run: L-know's repaired rows measure ε > 0;
+    /// L-route's masked rows (the router proposed one model, the provider
+    /// served another) give `dormant:mask`; L-play's rows without receipts
+    /// give `dormant:unlogged`; route rows from before S03's fields count as
+    /// pre-instrumentation. A judged measurement decides the reason.
+    #[test]
+    fn census_measures_exposure_from_decision_rows() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let run_dir = dir.path().join(".roko").join(RUNS_DIR).join("gr-measured");
+        std::fs::create_dir_all(&run_dir).expect("the run dir");
+        let (mut decisions, mut verdicts, mut seq) = (String::new(), String::new(), 0_u64);
+        let mut next = || {
+            seq += 1;
+            seq
+        };
+        for index in 0..40 {
+            let key = AttemptKey::new("gr-measured", "plan", format!("t{index}"), 1);
+            let arm = if index % 5 == 0 {
+                Arm::Default
+            } else {
+                Arm::Learned
+            };
+            let know = ContentDecisionPoint::Knowledge;
+            let row = content_row(&key, know, "knowledge", "kn-1", arm, true);
+            decisions.push_str(&line(DECISION_SCHEMA, next(), row));
+            let play = ContentDecisionPoint::Playbooks;
+            let row = content_row(&key, play, "playbooks", "pb-1", Arm::Learned, false);
+            decisions.push_str(&line(DECISION_SCHEMA, next(), row));
+            decisions.push_str(&line(DECISION_SCHEMA, next(), route_row(&key, true)));
+            let identity = AttemptIdentity::new(&key);
+            let mut verdict = AttemptVerdictRecord::settle(identity, AttemptOutcome::Passed, true);
+            verdict.executed.model_reported = Some("model-b".to_string());
+            verdicts.push_str(&line(VERDICT_SCHEMA, next(), verdict));
+        }
+        for index in 0..3 {
+            let key = AttemptKey::new("gr-measured", "plan", format!("old{index}"), 1);
+            decisions.push_str(&line(DECISION_SCHEMA, next(), route_row(&key, false)));
+        }
+        std::fs::write(RunFile::Decisions.path_in(&run_dir), decisions).expect("decisions");
+        std::fs::write(RunFile::Attempts.path_in(&run_dir), verdicts).expect("verdicts");
+
+        let registry = Registry::embedded().expect("the embedded registry");
+        let report = run(dir.path(), &registry, None);
+
+        let know = report.row("L-know").expect("L-know");
+        let measured = know.measured.as_ref().expect("L-know is measured");
+        let counts = (measured.n_opp, measured.n_learned, measured.n_default);
+        assert_eq!(counts, (40, 32, 8));
+        assert!(measured.judged && measured.eps.est > 0.0, "{measured:?}");
+        assert_eq!(measured.eps.est, 1.0);
+        assert_eq!(measured.iota_net, 1.0);
+        assert_eq!(know.reason, None);
+        assert_eq!(know.state, Some(AuditState::Probation));
+        assert_eq!(know.evidence, Some(Evidence::Measured));
+
+        let route = report.row("L-route").expect("L-route");
+        assert_eq!(route.reason, Some(ReasonCode::Mask), "{:?}", route.measured);
+        assert_eq!(route.evidence, Some(Evidence::Measured));
+        let measured = route.measured.as_ref().expect("L-route is measured");
+        assert_eq!((measured.n_learned, measured.pre_instrumentation), (40, 3));
+        assert_eq!((measured.eps.read, measured.eps.reach), (1.0, 0.0));
+
+        let play = report.row("L-play").expect("L-play");
+        let measured = play.measured.as_ref();
+        assert_eq!(play.reason, Some(ReasonCode::Unlogged), "{measured:?}");
+        assert_eq!(play.evidence, Some(Evidence::Measured));
+        assert_eq!(measured.map(|measured| measured.eps.receipt), Some(0.0));
+
+        // A loop no row belongs to keeps its unmeasured verdict.
+        assert!(report.row("L-sec").is_some_and(|row| row.measured.is_none()));
     }
 }

@@ -235,6 +235,8 @@ fn content_decision(
         state: read,
         thresholds_digest: state.thresholds.clone(),
         arm_set: None,
+        proposals: None,
+        audit: Default::default(),
     }
 }
 

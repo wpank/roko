@@ -816,6 +816,7 @@ impl ModelRouter {
             influences,
             state: self.learned_state(),
             arm_set: None,
+            audit: Default::default(),
         }
     }
 

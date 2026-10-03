@@ -61,8 +61,7 @@ impl AuditVault {
     /// The vault of the workspace at `workspace_root`, from `ROKO_AUDIT_HOME`
     /// or `~/.roko/audit`, created with mode 0700.
     pub fn resolve(workspace_root: &Path) -> Result<Self, AuditVaultError> {
-        let audit_home = std::env::var_os(AUDIT_HOME_ENV)
-            .filter(|value| !value.is_empty());
+        let audit_home = std::env::var_os(AUDIT_HOME_ENV).filter(|value| !value.is_empty());
         let home = std::env::var_os("HOME").filter(|value| !value.is_empty());
         Self::resolve_with(
             workspace_root,
@@ -181,8 +180,7 @@ pub fn workspace_id(canonical_root: &Path) -> String {
 /// exists, without creating it: `ROKO_AUDIT_HOME`, else `~/.roko/audit`.
 #[must_use]
 pub fn vault_root() -> Option<PathBuf> {
-    let audit_home = std::env::var_os(AUDIT_HOME_ENV)
-        .filter(|value| !value.is_empty());
+    let audit_home = std::env::var_os(AUDIT_HOME_ENV).filter(|value| !value.is_empty());
     let home = std::env::var_os("HOME").filter(|value| !value.is_empty());
     root_path(
         audit_home.as_deref().map(Path::new),
@@ -284,8 +282,7 @@ fn create_private_dir(path: &Path) -> Result<(), AuditVaultError> {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         builder.mode(0o700);
         builder.create(path).map_err(io)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .map_err(io)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(io)?;
     }
     #[cfg(not(unix))]
     builder.create(path).map_err(io)?;
@@ -304,9 +301,11 @@ mod tests {
 
         // A vault inside the workspace root, or its plan worktrees.
         for inner in [root.join("vault"), root.join(".roko/worktrees/vault")] {
-            let error = AuditVault::resolve_with(root, Some(&inner), None)
-                .expect_err("inside");
-            assert!(matches!(error, AuditVaultError::InsideWorkspace { .. }), "{error}");
+            let error = AuditVault::resolve_with(root, Some(&inner), None).expect_err("inside");
+            assert!(
+                matches!(error, AuditVaultError::InsideWorkspace { .. }),
+                "{error}"
+            );
             assert!(error.to_string().contains("ROKO_AUDIT_HOME"), "{error}");
             assert!(!inner.exists(), "nothing is created inside the workspace");
         }
@@ -317,21 +316,21 @@ mod tests {
             std::fs::create_dir(root.join("secrets")).expect("dir");
             let link = outside.path().join("link");
             std::os::unix::fs::symlink(root.join("secrets"), &link).expect("symlink");
-            let error = AuditVault::resolve_with(root, Some(&link), None)
-                .expect_err("symlink");
-            assert!(matches!(error, AuditVaultError::InsideWorkspace { .. }), "{error}");
+            let error = AuditVault::resolve_with(root, Some(&link), None).expect_err("symlink");
+            assert!(
+                matches!(error, AuditVaultError::InsideWorkspace { .. }),
+                "{error}"
+            );
         }
 
         // A HOME that is the workdir puts ~/.roko/audit in the workspace.
-        let error = AuditVault::resolve_with(root, None, Some(root))
-            .expect_err("home");
+        let error = AuditVault::resolve_with(root, None, Some(root)).expect_err("home");
         assert!(error.to_string().contains("ROKO_AUDIT_HOME"), "{error}");
         assert!(!root.join(".roko/audit").exists());
 
         // A directory outside is accepted, private, and stable.
         let wanted = outside.path().join("audit");
-        let vault = AuditVault::resolve_with(root, Some(&wanted), Some(root))
-            .expect("outside");
+        let vault = AuditVault::resolve_with(root, Some(&wanted), Some(root)).expect("outside");
         assert_eq!(vault.root(), wanted.canonicalize().expect("canonical"));
         assert_eq!(vault.dir(), vault.root().join(vault.workspace_id()));
         assert_eq!(vault.workspace_id().len(), 16);
@@ -347,8 +346,7 @@ mod tests {
                 assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
             }
         }
-        let again = AuditVault::resolve_with(root, Some(&wanted), None)
-            .expect("again");
+        let again = AuditVault::resolve_with(root, Some(&wanted), None).expect("again");
         assert_eq!(again, vault);
         assert!(vault.contains(&vault.hidden_dir().join("suite/../suite.py")));
         assert!(!vault.contains(&root.join(".roko/audit/messages.jsonl")));
@@ -361,9 +359,15 @@ mod tests {
         std::fs::create_dir_all(vault.join("ws/hidden")).expect("vault");
         let workdir = outside.path().join("work");
         std::fs::create_dir_all(&workdir).expect("workdir");
-        assert!(is_under_root(&workdir.join("../vault/ws/hidden/x.py"), &vault));
+        assert!(is_under_root(
+            &workdir.join("../vault/ws/hidden/x.py"),
+            &vault
+        ));
         assert!(is_under_root(&vault.join("not-yet/created"), &vault));
-        assert!(!is_under_root(&workdir.join(".roko/audit/messages.jsonl"), &vault));
+        assert!(!is_under_root(
+            &workdir.join(".roko/audit/messages.jsonl"),
+            &vault
+        ));
         #[cfg(unix)]
         {
             let link = workdir.join("peek");

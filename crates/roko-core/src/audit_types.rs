@@ -264,7 +264,10 @@ mod tests {
         assert_eq!(serde_json::to_value(&label).expect("serialize"), row);
         let mut extra = row;
         extra["surprise"] = serde_json::json!(1);
-        assert!(serde_json::from_value::<VsLabel>(extra).is_err(), "the row is closed");
+        assert!(
+            serde_json::from_value::<VsLabel>(extra).is_err(),
+            "the row is closed"
+        );
 
         assert_eq!(VerifyDepth::V4.deeper(), VerifyDepth::V4);
         assert_eq!(VerifyDepth::V0.shallower(), VerifyDepth::V0);

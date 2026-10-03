@@ -404,8 +404,8 @@ fn cli_parses_run_flags() {
 /// 9121: `roko run --domain <label>` names the one-task run's work domain.
 #[test]
 fn cli_parses_run_domain() {
-    let cli = Cli::try_parse_from(["roko", "run", "--domain", "research", "summarise", "it"])
-        .unwrap();
+    let cli =
+        Cli::try_parse_from(["roko", "run", "--domain", "research", "summarise", "it"]).unwrap();
     assert!(matches!(
         cli.command,
         Some(Command::Run { domain: Some(ref domain), .. }) if domain == "research"

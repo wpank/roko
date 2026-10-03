@@ -219,7 +219,9 @@ impl HiddenStore {
         ledger: &mut AuditLedger,
         draft: SuiteDraft,
     ) -> Result<SuiteMeta, HiddenError> {
-        let plain = Path::new(&draft.file_name).file_name().and_then(|name| name.to_str());
+        let plain = Path::new(&draft.file_name)
+            .file_name()
+            .and_then(|name| name.to_str());
         if plain != Some(draft.file_name.as_str()) || draft.file_name == META_FILE {
             return Err(HiddenError::BadFileName(draft.file_name));
         }
@@ -376,7 +378,9 @@ impl HiddenStore {
     ///
     /// An unknown suite, or a `meta.json` that does not parse.
     pub fn meta(&self, suite_id: &str) -> Result<SuiteMeta, HiddenError> {
-        let plain = Path::new(suite_id).file_name().and_then(|name| name.to_str());
+        let plain = Path::new(suite_id)
+            .file_name()
+            .and_then(|name| name.to_str());
         if plain != Some(suite_id) {
             return Err(HiddenError::Unknown(suite_id.to_string()));
         }
@@ -520,29 +524,46 @@ pub(crate) mod tests {
         }
 
         let illegal = |store: &HiddenStore, ledger: &mut AuditLedger, to| {
-            let error = store.transition(ledger, id, to, "test").expect_err("illegal");
+            let error = store
+                .transition(ledger, id, to, "test")
+                .expect_err("illegal");
             assert!(matches!(error, HiddenError::Illegal { .. }), "{error}");
         };
         illegal(&store, &mut ledger, Active);
         illegal(&store, &mut ledger, Exposed);
-        store.transition(&mut ledger, id, Validated, "validated").expect("validate");
+        store
+            .transition(&mut ledger, id, Validated, "validated")
+            .expect("validate");
         illegal(&store, &mut ledger, Drafted);
-        store.transition(&mut ledger, id, Active, "activated").expect("activate");
+        store
+            .transition(&mut ledger, id, Active, "activated")
+            .expect("activate");
         illegal(&store, &mut ledger, Validated);
-        store.transition(&mut ledger, id, Exposed, "canary_hit").expect("expose");
+        store
+            .transition(&mut ledger, id, Exposed, "canary_hit")
+            .expect("expose");
         illegal(&store, &mut ledger, Active);
-        store.transition(&mut ledger, id, Retired, "canary_hit").expect("retire");
+        store
+            .transition(&mut ledger, id, Retired, "canary_hit")
+            .expect("retire");
         for to in [Drafted, Validated, Active, Exposed, Rejected] {
             illegal(&store, &mut ledger, to);
         }
-        let other = store.draft(&mut ledger, draft("T2")).expect("a second draft");
+        let other = store
+            .draft(&mut ledger, draft("T2"))
+            .expect("a second draft");
         let other_id = other.suite_id.as_str();
-        store.transition(&mut ledger, other_id, Rejected, "fails on base").expect("reject");
+        store
+            .transition(&mut ledger, other_id, Rejected, "fails on base")
+            .expect("reject");
         let error = store
             .transition(&mut ledger, other_id, Validated, "again")
             .expect_err("rejected is terminal");
         assert!(matches!(error, HiddenError::Illegal { .. }), "{error}");
-        assert!(matches!(store.meta("hs-none"), Err(HiddenError::Unknown(_))));
+        assert!(matches!(
+            store.meta("hs-none"),
+            Err(HiddenError::Unknown(_))
+        ));
         assert!(matches!(store.meta("../x"), Err(HiddenError::Unknown(_))));
 
         // Every move is logged; no body is.
@@ -565,8 +586,12 @@ pub(crate) mod tests {
         let activate = |store: &HiddenStore, ledger: &mut AuditLedger, task: &str| {
             let meta = store.draft(ledger, draft(task)).expect("a draft");
             let id = meta.suite_id;
-            store.transition(ledger, &id, SuiteState::Validated, "ok").expect("validate");
-            store.transition(ledger, &id, SuiteState::Active, "ok").expect("activate");
+            store
+                .transition(ledger, &id, SuiteState::Validated, "ok")
+                .expect("validate");
+            store
+                .transition(ledger, &id, SuiteState::Active, "ok")
+                .expect("activate");
             id
         };
 

@@ -466,11 +466,7 @@ fn recall_args(arguments: &Value) -> Result<(String, usize), JsonRpcError> {
 }
 
 /// The non-blank string argument `name` of a call to the tool `tool`.
-fn required_str<'a>(
-    arguments: &'a Value,
-    tool: &str,
-    name: &str,
-) -> Result<&'a str, JsonRpcError> {
+fn required_str<'a>(arguments: &'a Value, tool: &str, name: &str) -> Result<&'a str, JsonRpcError> {
     arguments
         .get(name)
         .and_then(Value::as_str)
@@ -1024,7 +1020,10 @@ mod tests {
             assert_eq!(tool["annotations"]["openWorldHint"], true, "{tool}");
             assert_eq!(tool["_meta"]["roko/paid"], true, "{tool}");
         }
-        assert_eq!(spec("plan_generate")["annotations"]["destructiveHint"], false);
+        assert_eq!(
+            spec("plan_generate")["annotations"]["destructiveHint"],
+            false
+        );
         assert_eq!(spec("run_cancel")["annotations"]["idempotentHint"], true);
 
         let alpha = call(2, "plan_run", json!({ "plan_id": "alpha", "max_usd": 1.0 }));
@@ -1069,8 +1068,14 @@ mod tests {
 
         let refused = [
             ("run_prompt", json!({ "prompt": "fix the parser" })),
-            ("run_prompt", json!({ "prompt": "fix the parser", "max_usd": 0 })),
-            ("run_prompt", json!({ "prompt": "fix the parser", "max_usd": 4.5 })),
+            (
+                "run_prompt",
+                json!({ "prompt": "fix the parser", "max_usd": 0 }),
+            ),
+            (
+                "run_prompt",
+                json!({ "prompt": "fix the parser", "max_usd": 4.5 }),
+            ),
             ("plan_run", json!({ "plan_id": "alpha" })),
             ("plan_run", json!({ "plan_id": "alpha", "max_usd": 9.0 })),
         ];
@@ -1121,7 +1126,10 @@ mod tests {
         let (_dir, state, open) = state_and_router(runtime.clone(), config.clone());
 
         let calls = [
-            ("run_prompt", json!({ "prompt": "fix the parser", "max_usd": 1.0 })),
+            (
+                "run_prompt",
+                json!({ "prompt": "fix the parser", "max_usd": 1.0 }),
+            ),
             ("plan_run", json!({ "plan_id": "alpha", "max_usd": 1.0 })),
         ];
         for (id, (name, arguments)) in (1..).zip(calls) {

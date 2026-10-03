@@ -144,7 +144,10 @@ impl AuditConfig {
         }
         if self.per_audit_usd.is_nan() || self.per_audit_usd < 0.0 {
             let usd = self.per_audit_usd;
-            problems.push(("per_audit_usd", format!("per_audit_usd ({usd}) cannot be negative")));
+            problems.push((
+                "per_audit_usd",
+                format!("per_audit_usd ({usd}) cannot be negative"),
+            ));
         }
         for (key, value) in [
             ("window_units", self.window_units),
@@ -246,7 +249,11 @@ mod tests {
         assert_eq!(config.audit.validate(), Ok(()));
         let mut shared = config.audit;
         shared.families.insert("other".into(), vec!["glm-*".into()]);
-        assert!(shared.validate().is_err_and(|error| error.contains("two families")));
+        assert!(
+            shared
+                .validate()
+                .is_err_and(|error| error.contains("two families"))
+        );
         assert!(RokoConfig::from_toml("[audit]\nsurprise = 1\n").is_err());
     }
 }

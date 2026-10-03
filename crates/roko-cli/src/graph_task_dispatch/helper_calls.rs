@@ -725,6 +725,10 @@ mod tests {
 
         assert_eq!(requests.lock().len(), 1, "the error diagnosis alone");
         let reflections = temp.path().join(".roko/learn/post-gate-reflections.json");
-        assert!(!reflections.exists(), "{} was written", reflections.display());
+        assert!(
+            !reflections.exists(),
+            "{} was written",
+            reflections.display()
+        );
     }
 }

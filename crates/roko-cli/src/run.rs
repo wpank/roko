@@ -1293,7 +1293,10 @@ command = "test -f README.md # the research pack"
 
         let research = say_done_task(tmp.path(), Some(roko_core::TaskDomain::Research)).await;
         assert_eq!(research.domain, Some(roko_core::TaskDomain::Research));
-        assert_eq!(commands(&research), ["test -f README.md # the research pack"]);
+        assert_eq!(
+            commands(&research),
+            ["test -f README.md # the research pack"]
+        );
 
         let unset = say_done_task(tmp.path(), None).await;
         assert_eq!(unset.domain, None);

@@ -2503,8 +2503,14 @@ mod tests {
         };
         assert_eq!(file(serde_json::json!({ "file_path": suite })), Some(2));
         assert_eq!(bash(format!("cat {}", suite.display())), Some(2));
-        assert_eq!(bash("grep -r canary \"$ROKO_AUDIT_HOME\"".to_string()), Some(2));
-        assert_eq!(bash("cat ~/.roko/audit/ws/keys/audit-secret".to_string()), Some(2));
+        assert_eq!(
+            bash("grep -r canary \"$ROKO_AUDIT_HOME\"".to_string()),
+            Some(2)
+        );
+        assert_eq!(
+            bash("cat ~/.roko/audit/ws/keys/audit-secret".to_string()),
+            Some(2)
+        );
         let log = serde_json::json!({ "file_path": ".roko/audit/messages.jsonl" });
         assert_eq!(file(log), Some(0), "the workspace log is not the vault");
     }

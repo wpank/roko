@@ -361,7 +361,9 @@ impl AuditLedger {
 
     fn append_locked(&mut self, event: AuditEvent) -> std::io::Result<LedgerRecord> {
         let now = chrono::Utc::now();
-        let file = self.dir.join(format!("audit-{}.jsonl", now.format("%Y%m%d")));
+        let file = self
+            .dir
+            .join(format!("audit-{}.jsonl", now.format("%Y%m%d")));
         let (seq, prev_hash) = self.tail_state()?;
         let seq = seq + 1;
         let (attempt_key, item) = event.identity();
@@ -537,7 +539,10 @@ fn last_line(path: &Path) -> std::io::Result<Option<String>> {
         file.seek(SeekFrom::Start(start))?;
         let mut tail = Vec::new();
         file.read_to_end(&mut tail)?;
-        let end = tail.iter().rposition(|&byte| byte != b'\n').map_or(0, |at| at + 1);
+        let end = tail
+            .iter()
+            .rposition(|&byte| byte != b'\n')
+            .map_or(0, |at| at + 1);
         let trimmed = &tail[..end];
         match trimmed.iter().rposition(|&byte| byte == b'\n') {
             Some(at) => return Ok(Some(String::from_utf8_lossy(&trimmed[at + 1..]).into())),
@@ -591,7 +596,9 @@ mod tests {
         let mut other = AuditLedger::open_dir(&dir).expect("another writer");
         let record = other.append(selection(10_000)).expect("append");
         assert_eq!(record.seq, 10_001);
-        ledger.append(selection(10_001)).expect("the first writer sees the new tail");
+        ledger
+            .append(selection(10_001))
+            .expect("the first writer sees the new tail");
         assert_eq!(verify_chain(&dir), Ok(10_002));
 
         // Flip one byte of record 5,000: the chain breaks exactly there.

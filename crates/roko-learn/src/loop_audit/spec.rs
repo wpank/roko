@@ -1139,7 +1139,10 @@ receipt = "artifact_hash_in_request"
             ("L-prompt-exp", "::RETRIEVAL_STRATEGY_EXPERIMENT_ID"),
             ("L-gate-thr", "retry_budget.rs::AdaptiveThresholds"),
             ("L-rag11", "retrieval_outcome.rs::STRATEGY_KEYWORD"),
-            ("L-holdout", "holdout.rs::HoldoutExperiment::should_update_learning"),
+            (
+                "L-holdout",
+                "holdout.rs::HoldoutExperiment::should_update_learning",
+            ),
             ("L-bid", "::load_attention_bidders"),
             ("L-bid", "::ATTENTION_BIDDERS_FILENAME"),
             ("L-err", "::ErrorPatternSink"),

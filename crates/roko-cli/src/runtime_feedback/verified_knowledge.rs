@@ -243,8 +243,12 @@ fn agent_blamed_failure(event: &FeedbackEvent) -> Option<(&str, &[String])> {
     else {
         return None;
     };
-    (settled.learning_label == Some(0) && settled.blame == Blame::Agent)
-        .then(|| (settled.identity.attempt_key.as_str(), knowledge_ids.as_slice()))
+    (settled.learning_label == Some(0) && settled.blame == Blame::Agent).then(|| {
+        (
+            settled.identity.attempt_key.as_str(),
+            knowledge_ids.as_slice(),
+        )
+    })
 }
 
 #[cfg(test)]

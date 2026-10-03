@@ -24,11 +24,7 @@ impl GraphTaskDispatcher {
     /// `verification` keeps those an attempt runs. A task of a domain other
     /// than `code` with no pack faces none, which is logged once per plan
     /// and domain.
-    pub(super) fn pack_rungs(
-        &self,
-        spec: &TaskExecutionSpec,
-        task: &TaskDef,
-    ) -> &[GateRungConfig] {
+    pub(super) fn pack_rungs(&self, spec: &TaskExecutionSpec, task: &TaskDef) -> &[GateRungConfig] {
         let gates = &self.config.gates;
         let domain = task.effective_domain(self.config.project.default_domain.as_ref());
         let unpacked = domain.as_ref().filter(|domain| {

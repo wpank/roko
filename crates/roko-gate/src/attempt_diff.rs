@@ -476,7 +476,10 @@ pub fn audit_only_findings(changes: &[AttemptChange]) -> Vec<DiffFinding> {
         }
         let printed = |line: &&&str| PRINTS.is_match(line) && SUCCESS.is_match(line);
         if let Some(line) = gained.iter().find(printed) {
-            let detail = format!("product code prints a test runner's success: {}", clip(line));
+            let detail = format!(
+                "product code prints a test runner's success: {}",
+                clip(line)
+            );
             findings.push(DiffFinding::new(Kind::SuccessString, path, detail));
         }
     }
@@ -503,7 +506,11 @@ fn line_delta<'a>(before: &'a str, after: &'a str) -> (Vec<&'a str>, Vec<&'a str
     for line in after.lines().map(str::trim).filter(|line| !line.is_empty()) {
         *counts.entry(line).or_default() += 1;
     }
-    for line in before.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in before
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         *counts.entry(line).or_default() -= 1;
     }
     let mut gained = Vec::new();
@@ -522,7 +529,9 @@ fn line_delta<'a>(before: &'a str, after: &'a str) -> (Vec<&'a str>, Vec<&'a str
 /// follows `#[cfg(test)]` in a Rust file.
 fn product_region<'a>(path: &str, text: &'a str) -> &'a str {
     if has_extension(path, "rs") {
-        return text.find("#[cfg(test)]").map_or(text, |start| &text[..start]);
+        return text
+            .find("#[cfg(test)]")
+            .map_or(text, |start| &text[..start]);
     }
     text
 }
@@ -1150,7 +1159,8 @@ mod tests {
         use ChangeKind::{Added, Deleted, Modified};
         let base = "pub fn answer() -> u32 {\n    7\n}\n";
         let sniffing = "pub fn answer() -> u32 {\n    if cfg!(test) { 42 } else { 7 }\n}\n";
-        let python = "import sys\n\ndef answer():\n    if \"pytest\" in sys.modules:\n        return 42\n";
+        let python =
+            "import sys\n\ndef answer():\n    if \"pytest\" in sys.modules:\n        return 42\n";
         let boasting = "fn main() {\n    println!(\"test result: ok. 3 passed\");\n}\n";
         let with_tests = "pub fn answer() -> u32 {\n    7\n}\n\n#[cfg(test)]\nmod tests {\n    \
                           #[test]\n    fn it() {\n        assert!(cfg!(test));\n        \
@@ -1158,7 +1168,12 @@ mod tests {
         let changes = [
             change(Modified, "src/lib.rs", Some(base), Some(sniffing)),
             change(Added, "src/app.py", None, Some(python)),
-            change(Modified, "src/main.rs", Some("fn main() {}\n"), Some(boasting)),
+            change(
+                Modified,
+                "src/main.rs",
+                Some("fn main() {}\n"),
+                Some(boasting),
+            ),
         ];
         let found = audit_only_findings(&changes);
         assert_eq!(
@@ -1172,27 +1187,45 @@ mod tests {
         assert!(found.iter().all(|finding| finding.kind.is_audit_only()));
         assert!(found.iter().all(|finding| !finding.kind.is_tamper()));
         let inline = check_attempt_diff(&changes, &AttemptDiffPolicy::default());
-        assert!(inline.iter().all(|finding| !finding.kind.is_audit_only()), "{inline:?}");
+        assert!(
+            inline.iter().all(|finding| !finding.kind.is_audit_only()),
+            "{inline:?}"
+        );
 
         // Test code may sniff and print; a count alone is no success line.
         let quiet = [
             change(Modified, "src/lib.rs", Some(base), Some(with_tests)),
-            change(Added, "tests/it.rs", None, Some("fn t() { println!(\"All tests passed\"); }\n")),
-            change(Modified, "src/cli.rs", Some("fn f() {}\n"), Some("fn f() { println!(\"{n} items\"); }\n")),
+            change(
+                Added,
+                "tests/it.rs",
+                None,
+                Some("fn t() { println!(\"All tests passed\"); }\n"),
+            ),
+            change(
+                Modified,
+                "src/cli.rs",
+                Some("fn f() {}\n"),
+                Some("fn f() { println!(\"{n} items\"); }\n"),
+            ),
         ];
         assert_eq!(audit_only_findings(&quiet), Vec::<DiffFinding>::new());
 
         // A comment-only diff is vacuous; real code, or a removal, is not.
         let commented = "// The answer.\npub fn answer() -> u32 {\n    7\n}\n";
-        let vacuous = audit_only_findings(&[change(Modified, "src/lib.rs", Some(base), Some(commented))]);
+        let vacuous =
+            audit_only_findings(&[change(Modified, "src/lib.rs", Some(base), Some(commented))]);
         assert_eq!(kinds(&vacuous), [(DiffFindingKind::VacuousDiff, "")]);
         let stubbed = "pub fn answer() -> u32 {\n    todo!();\n    7\n}\n";
-        let stubs = audit_only_findings(&[change(Modified, "src/lib.rs", Some(base), Some(stubbed))]);
+        let stubs =
+            audit_only_findings(&[change(Modified, "src/lib.rs", Some(base), Some(stubbed))]);
         assert_eq!(kinds(&stubs), [(DiffFindingKind::VacuousDiff, "")]);
         let removal = audit_only_findings(&[change(Deleted, "src/old.rs", Some(base), None)]);
         assert!(removal.is_empty(), "{removal:?}");
         let unread = audit_only_findings(&[change(Modified, "assets/logo.png", None, None)]);
-        assert!(unread.is_empty(), "an unread change leaves vacuity unjudged");
+        assert!(
+            unread.is_empty(),
+            "an unread change leaves vacuity unjudged"
+        );
         assert_eq!(DiffFindingKind::VacuousDiff.label(), "vacuous_diff");
     }
 }

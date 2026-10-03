@@ -257,7 +257,9 @@ pub fn betting_cs(
 ) -> Result<Vec<Option<(f64, f64)>>, AuditError> {
     let xs = scaled(z, z_max)?;
     if grid == 0 {
-        return Err(AuditError::Invalid("the grid needs at least one step".into()));
+        return Err(AuditError::Invalid(
+            "the grid needs at least one step".into(),
+        ));
     }
     let steps = grid as f64;
     let means: Vec<f64> = (0..=grid)

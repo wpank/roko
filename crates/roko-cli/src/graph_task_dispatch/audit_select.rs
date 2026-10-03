@@ -172,9 +172,8 @@ impl AuditSelector {
         } else {
             inclusion_probability(&self.params, None, None)
         };
-        let (base_tree, result_tree) = trees.map_or((None, None), |(base, result)| {
-            (Some(base), Some(result))
-        });
+        let (base_tree, result_tree) =
+            trees.map_or((None, None), |(base, result)| (Some(base), Some(result)));
         let commit = result_tree.as_deref().unwrap_or("-");
         let (run_id, task_id) = (&identity.run_id, &identity.task_id);
         let attempt = &identity.attempt_key;
@@ -274,7 +273,7 @@ mod tests {
         verify_step,
     };
     use crate::graph_task_dispatch::{
-        CellContext, GraphTaskDispatcher, TaskDispatcher, TaskLease, StreamingTaskDispatcher,
+        CellContext, GraphTaskDispatcher, StreamingTaskDispatcher, TaskDispatcher, TaskLease,
         streaming_event_channel_capacity,
     };
 
@@ -316,7 +315,9 @@ mod tests {
             (with("T3", Some("false")), false),
         ];
         for (task, green) in &batch {
-            let result = dispatcher.dispatch(&make_spec(task), Vec::new(), &ctx).await;
+            let result = dispatcher
+                .dispatch(&make_spec(task), Vec::new(), &ctx)
+                .await;
             assert_eq!(result.is_ok(), *green, "{}: {result:?}", task.id);
         }
         let lease = TaskLease {
@@ -353,7 +354,10 @@ mod tests {
         files.sort();
         for file in files {
             let text = std::fs::read_to_string(file).expect("a day file");
-            events.extend(text.lines().map(|line| serde_json::from_str(line).expect("a record")));
+            events.extend(
+                text.lines()
+                    .map(|line| serde_json::from_str(line).expect("a record")),
+            );
         }
         assert_eq!(events.len() as u64, records);
 
@@ -403,10 +407,17 @@ mod tests {
         }
         let mut drawn: Vec<&str> = selections.iter().map(|row| row.task_id.as_str()).collect();
         drawn.sort_unstable();
-        assert_eq!(drawn, ["T1", "T2", "T4"], "one draw per green unit, none for a failure");
+        assert_eq!(
+            drawn,
+            ["T1", "T2", "T4"],
+            "one draw per green unit, none for a failure"
+        );
         assert_eq!(strata["passed"], 2);
         assert_eq!(strata["unverified"], 1);
-        assert_eq!(strata["forced_accept"], 0, "the reserved stratum is present, with no units");
+        assert_eq!(
+            strata["forced_accept"], 0,
+            "the reserved stratum is present, with no units"
+        );
         let key = RunKey::from_hex(&key_hex).expect("the revealed key");
         let mismatches = verify_reveal(&key, RUN, &committed, &selections);
         assert!(mismatches.is_empty(), "{mismatches:?}");

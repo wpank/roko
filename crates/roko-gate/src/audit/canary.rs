@@ -147,7 +147,8 @@ impl<'a> CanaryScanner<'a> {
             let exposed = match suite {
                 Some(meta) if meta.state == SuiteState::Active => {
                     let to = SuiteState::Exposed;
-                    self.store.transition(ledger, &meta.suite_id, to, "canary_hit")?;
+                    self.store
+                        .transition(ledger, &meta.suite_id, to, "canary_hit")?;
                     true
                 }
                 _ => false,
@@ -202,7 +203,9 @@ mod tests {
             let meta = store.draft(&mut ledger, draft(task)).expect("a draft");
             let id = meta.suite_id.clone();
             for to in [SuiteState::Validated, SuiteState::Active] {
-                store.transition(&mut ledger, &id, to, "ok").expect("a move");
+                store
+                    .transition(&mut ledger, &id, to, "ok")
+                    .expect("a move");
             }
             meta
         };
@@ -211,19 +214,26 @@ mod tests {
 
         // A canary in an episode line, written in lower case.
         let episodes = temp.path().join("episodes.jsonl");
-        let line = format!("{{\"output\":\"see {}\"}}", leaked.canary.to_ascii_lowercase());
+        let line = format!(
+            "{{\"output\":\"see {}\"}}",
+            leaked.canary.to_ascii_lowercase()
+        );
         std::fs::write(&episodes, format!("{{\"output\":\"clean\"}}\n{line}\n")).expect("write");
         let hits = scan_files(std::slice::from_ref(&episodes)).expect("scan");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].1.line, 2);
         let mut scanner = CanaryScanner::new(&store);
-        let reports = scanner.sweep(&mut ledger, &[episodes.clone()]).expect("a sweep");
+        let reports = scanner
+            .sweep(&mut ledger, &[episodes.clone()])
+            .expect("a sweep");
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].suite_id, leaked.suite_id);
         assert!(reports[0].exposed);
         let state = store.meta(&leaked.suite_id).expect("meta").state;
         assert_eq!(state, SuiteState::Exposed);
-        let again = scanner.sweep(&mut ledger, &[episodes]).expect("a second sweep");
+        let again = scanner
+            .sweep(&mut ledger, &[episodes])
+            .expect("a second sweep");
         assert!(again.is_empty(), "each (place, suite) is reported once");
 
         // On a removed diff line, a canary is not new text.
@@ -238,7 +248,9 @@ mod tests {
         let stranger = format!("ROKO-CANARY-hs-ffffffffffff-{}", "a".repeat(32));
         let hits = scan_text(&format!("prompt text {stranger} more"));
         assert_eq!(hits.len(), 1);
-        let reports = scanner.report(&mut ledger, "prompt", &hits).expect("a report");
+        let reports = scanner
+            .report(&mut ledger, "prompt", &hits)
+            .expect("a report");
         assert_eq!(reports[0].suite_id, UNKNOWN_SUITE);
         assert!(!reports[0].exposed);
 
@@ -253,6 +265,10 @@ mod tests {
             .collect();
         assert_eq!(leaks.len(), 2, "{leaks:?}");
         assert!(leaks[0].contains(&leaked.suite_id) && leaks[0].contains("episodes.jsonl"));
-        assert!(leaks[1].contains("\"suite_id\":\"unknown\""), "{}", leaks[1]);
+        assert!(
+            leaks[1].contains("\"suite_id\":\"unknown\""),
+            "{}",
+            leaks[1]
+        );
     }
 }

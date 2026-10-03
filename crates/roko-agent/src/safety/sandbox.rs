@@ -392,10 +392,16 @@ mod tests {
             (&read, serde_json::json!({ "path": suite })),
             (&write, serde_json::json!({ "file_path": suite })),
             (&glob, serde_json::json!({ "pattern": pattern })),
-            (&read, serde_json::json!({ "path": "../vault/ws/hidden/hs-1/suite.py" })),
+            (
+                &read,
+                serde_json::json!({ "path": "../vault/ws/hidden/hs-1/suite.py" }),
+            ),
         ];
         if cfg!(unix) {
-            attempts.push((&read, serde_json::json!({ "path": "peek/hidden/hs-1/suite.py" })));
+            attempts.push((
+                &read,
+                serde_json::json!({ "path": "peek/hidden/hs-1/suite.py" }),
+            ));
         }
         for level in [
             SandboxLevel::None,
@@ -409,12 +415,18 @@ mod tests {
                 let error = policy
                     .check_tool(tool, params, &ctx, &PathPolicy::default())
                     .expect_err("the vault is refused");
-                assert!(error.to_string().contains("audit vault"), "{level:?} {params}: {error}");
+                assert!(
+                    error.to_string().contains("audit vault"),
+                    "{level:?} {params}: {error}"
+                );
             }
             let log = serde_json::json!({ "path": ".roko/audit/messages.jsonl" });
             let outcome = policy.check_tool(&read, &log, &ctx, &PathPolicy::default());
             let refused_as_vault = outcome.is_err_and(|error| error.to_string().contains("vault"));
-            assert!(!refused_as_vault, "{level:?}: the workspace log stays readable");
+            assert!(
+                !refused_as_vault,
+                "{level:?}: the workspace log stays readable"
+            );
         }
     }
 

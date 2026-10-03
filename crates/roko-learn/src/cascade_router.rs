@@ -4132,14 +4132,8 @@ mod cascade_router_tests {
         }
         assert_eq!(route(&health).primary.slug, other, "an open circuit");
 
-        let all = router.route_with_health_scored_among(
-            &ctx,
-            &[],
-            &health,
-            &model_providers,
-            None,
-            None,
-        );
+        let all =
+            router.route_with_health_scored_among(&ctx, &[], &health, &model_providers, None, None);
         let full = router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
         assert_eq!(all.primary.slug, full.primary.slug);
     }

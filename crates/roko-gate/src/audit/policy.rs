@@ -479,7 +479,10 @@ mod tests {
             let (pi, expected) = (number(entry, "pi"), entry["selected"].as_bool());
             assert_eq!(Some(is_selected(x, pi)), expected, "{entry}");
         }
-        for entry in fixture["inclusion_probability"].as_array().expect("inclusion") {
+        for entry in fixture["inclusion_probability"]
+            .as_array()
+            .expect("inclusion")
+        {
             let params = InclusionParams {
                 rho: number(entry, "rho"),
                 lam: number(entry, "lam"),

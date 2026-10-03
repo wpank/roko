@@ -21,6 +21,7 @@ pub mod init;
 pub mod job;
 pub mod knowledge;
 pub mod learn;
+pub mod learn_self_model;
 pub mod learn_sizing;
 pub mod mcp;
 pub mod note;

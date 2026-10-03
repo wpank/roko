@@ -30,6 +30,8 @@ pub const VERDICT_SCHEMA: &str = "roko.verdict/1";
 pub const DECISION_SCHEMA: &str = "roko.decision/1";
 /// `schema_version` of an exposure row (S01 §5.4).
 pub const EXPOSURE_SCHEMA: &str = "roko.exposure/1";
+/// `schema_version` of a prediction row (S01 §5.6).
+pub const PREDICTION_SCHEMA: &str = "roko.prediction/1";
 /// `schema_version` of `manifest.json` (S01 §5.1).
 pub const RUN_MANIFEST_SCHEMA: &str = "roko.run_manifest/1";
 
@@ -42,6 +44,9 @@ pub const ATTEMPTS_FILE: &str = "attempts.jsonl";
 pub const DECISIONS_FILE: &str = "decisions.jsonl";
 /// `.roko/runs/<run_id>/exposures.jsonl`: exposure rows.
 pub const EXPOSURES_FILE: &str = "exposures.jsonl";
+/// `.roko/runs/<run_id>/predictions.jsonl`: the self-model's forecasts, each written before the
+/// route decision it informs.
+pub const PREDICTIONS_FILE: &str = "predictions.jsonl";
 
 /// An append-only telemetry file inside a run directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,11 +57,18 @@ pub enum RunFile {
     Decisions,
     /// [`EXPOSURES_FILE`].
     Exposures,
+    /// [`PREDICTIONS_FILE`].
+    Predictions,
 }
 
 impl RunFile {
     /// Every append-only run file.
-    pub const ALL: [Self; 3] = [Self::Attempts, Self::Decisions, Self::Exposures];
+    pub const ALL: [Self; 4] = [
+        Self::Attempts,
+        Self::Decisions,
+        Self::Exposures,
+        Self::Predictions,
+    ];
 
     /// File name inside the run directory.
     #[must_use]
@@ -65,6 +77,7 @@ impl RunFile {
             Self::Attempts => ATTEMPTS_FILE,
             Self::Decisions => DECISIONS_FILE,
             Self::Exposures => EXPOSURES_FILE,
+            Self::Predictions => PREDICTIONS_FILE,
         }
     }
 
@@ -1290,6 +1303,125 @@ pub struct ContentDecisionRecord {
     /// of the attempt carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arm_set: Option<crate::loop_audit::arm_set::ArmSet>,
+    /// What each policy proposed (A-DEC); `None` on rows written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposals: Option<ContentProposals>,
+    /// S03's fields (A-DEC).
+    #[serde(flatten)]
+    pub audit: AuditFields,
+}
+
+/// What each policy proposed for a set decision (S01 §5.3 `proposals`, as
+/// arrays of ids).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContentProposals {
+    /// The ids the learned reader would include, computed on both arms.
+    pub learned: Option<Vec<String>>,
+    /// The ids the default policy π⁰ includes: none for knowledge, the
+    /// seeded ones for playbooks.
+    pub default: Option<Vec<String>>,
+}
+
+/// Whether a decision was an opportunity of its loop (S01 §5.3
+/// `opportunity`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionOpportunity {
+    /// The loop's opportunity predicate held.
+    pub eligible: bool,
+    /// Why, e.g. `no_override_no_hint_ge2_eligible`.
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// A decision's draw on its loop's layer: S01 §4.6's assignment with S03's
+/// A-DEC fields (S01 §5.3 `assignment`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionAssignment {
+    /// The draw: unit, layer, salt id, u, h, g, arm and propensity.
+    #[serde(flatten)]
+    pub draw: Assignment,
+    /// The value hashed: the chain key unless the layer says otherwise.
+    pub unit_key: String,
+    /// The assignment epoch, e.g. the UTC day.
+    pub audit_epoch: String,
+    /// The all-learning-off arm was drawn.
+    pub global_off: bool,
+    /// When the arm was drawn, in unix ms.
+    pub assigned_at: i64,
+}
+
+impl DecisionAssignment {
+    /// `draw` of `key`'s unit, made at `assigned_at`, with its epoch read
+    /// from the salt id (`"{layer}@{epoch}"`).
+    #[must_use]
+    pub fn new(draw: Assignment, key: &AttemptKey, assigned_at: i64) -> Self {
+        let audit_epoch = draw
+            .salt_id
+            .split_once('@')
+            .map_or_else(String::new, |(_, epoch)| epoch.to_string());
+        Self {
+            unit_key: draw.unit.unit_key(key),
+            audit_epoch,
+            global_off: draw.arm == Arm::GlobalOff,
+            assigned_at,
+            draw,
+        }
+    }
+}
+
+/// Proof that a decision reached the executed request (S01 §5.3 `receipt`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionReceipt {
+    /// What it checks: `route` (the executed model is the pick) or `content`
+    /// (the rendered sections are in the request).
+    pub kind: String,
+    /// The check passed.
+    pub ok: bool,
+    /// `b3:` hash of the request it checked.
+    #[serde(default)]
+    pub request_hash: Option<String>,
+    /// `b3:` hashes of the rendered sections it looked for.
+    #[serde(default)]
+    pub exposure_hashes: Vec<String>,
+}
+
+/// S03's fields on a decision row (A-DEC, S01 §5.3): the loops that share
+/// the decision, its layer, whether it was an opportunity, the draw and its
+/// time, the decision's time and the receipt. A row written before them has
+/// none, and the census counts it as pre-instrumentation.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AuditFields {
+    /// The loop whose layer drew the arm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_id: Option<String>,
+    /// Every loop that shares the decision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loop_ids: Vec<String>,
+    /// The decision's layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// Whether it was an opportunity of its loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opportunity: Option<DecisionOpportunity>,
+    /// The draw on the layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<DecisionAssignment>,
+    /// When the decision was made, in unix ms. S03 §4.6's ordering check
+    /// reads `assigned_at < decided_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<i64>,
+    /// Proof the decision reached the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<DecisionReceipt>,
+}
+
+impl AuditFields {
+    /// Whether a row carries them: one without a layer predates A-DEC.
+    #[must_use]
+    pub const fn present(&self) -> bool {
+        self.layer.is_some()
+    }
 }
 
 /// `b3(attempt_key|item_kind|item_id)`: one item's exposure in one attempt
@@ -1595,6 +1727,134 @@ pub struct RunClosed {
     pub runaway_guard_trips: u64,
 }
 
+// ── Predictions ───────────────────────────────────────────────────────
+
+/// The step a prediction is written before: the route decision.
+pub const PREDICTION_PRECEDES_ROUTE: &str = "route";
+
+/// `roko.prediction/1` (S01 §5.6): the self-model's forecast for one attempt, written before
+/// the route decision it informs. The record is S01's and plain serde; S04's self-model fills
+/// it. Outcomes are never copied here: calibration joins the verdict by `attempt_key`.
+///
+/// It is not [`crate::prediction::PredictionRecord`], the calibration tracker's record of one
+/// routed model's prediction together with its outcome and residuals, nor roko-core's Cell
+/// `PredictionRecord`: neither holds a candidate set, a predictor version or a decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttemptPredictionRecord {
+    /// [`Self::prediction_id`] of the attempt and the predictor version.
+    pub prediction_id: String,
+    /// The attempt forecast.
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    /// The step the prediction precedes: [`PREDICTION_PRECEDES_ROUTE`].
+    pub precedes: String,
+    /// The predictor that made it.
+    pub predictor: PredictionPredictor,
+    /// One forecast per candidate arm.
+    pub candidates: Vec<PredictionCandidate>,
+    /// What the predictor would choose, beside what routing chooses without it.
+    pub decision: PredictionDecision,
+    /// The price snapshot the costs are in; `null` when none was loaded.
+    #[serde(default)]
+    pub price_snapshot_id: Option<String>,
+}
+
+impl AttemptPredictionRecord {
+    /// The prediction of `identity`'s attempt by `predictor`, before the route decision.
+    #[must_use]
+    pub fn new(
+        identity: AttemptIdentity,
+        predictor: PredictionPredictor,
+        candidates: Vec<PredictionCandidate>,
+        decision: PredictionDecision,
+    ) -> Self {
+        Self {
+            prediction_id: Self::prediction_id(&identity.attempt_key, &predictor.version),
+            identity,
+            precedes: PREDICTION_PRECEDES_ROUTE.to_string(),
+            predictor,
+            candidates,
+            decision,
+            price_snapshot_id: None,
+        }
+    }
+
+    /// Set the price snapshot id.
+    #[must_use]
+    pub fn with_price_snapshot_id(mut self, id: impl Into<String>) -> Self {
+        self.price_snapshot_id = Some(id.into());
+        self
+    }
+
+    /// `b3(attempt_key | version)`: one prediction per attempt and predictor version.
+    #[must_use]
+    pub fn prediction_id(attempt_key: &str, version: &str) -> String {
+        b3_digest(format!("{attempt_key}|{version}").as_bytes())
+    }
+}
+
+/// The predictor behind a [`AttemptPredictionRecord`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PredictionPredictor {
+    /// Its version: forecasts are never compared across versions (S04 §4.11).
+    pub version: String,
+    /// Its model class, e.g. `m3-l1`.
+    pub class: String,
+    /// The routing mode it ran in: `off`, `shadow` or `active`.
+    pub mode: String,
+    /// Outcomes it had learned when it forecast.
+    pub trained_on_n: u64,
+    /// The version of its feature schema.
+    pub features_schema: u32,
+    /// `b3:` digest of the attempt's feature vector.
+    pub features_hash: String,
+}
+
+/// One candidate arm's forecast. Probabilities are in [0, 1], costs in USD at the price
+/// snapshot, latencies in seconds; an unknown value is `null`, never 0.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PredictionCandidate {
+    /// The arm, in its string form (`<harness>/<provider>/<model>@<effort>#V<depth>`).
+    pub arm: String,
+    /// P(every gate rung passes).
+    pub p_gate: f64,
+    /// P(a pass is a false green).
+    pub p_fg: f64,
+    /// P(verified success); S01's example calls it `p_true`.
+    #[serde(alias = "p_true")]
+    pub p_vs: f64,
+    /// A lower confidence bound on `p_vs`.
+    #[serde(alias = "p_true_lcb")]
+    pub p_vs_lcb: f64,
+    /// The forecast's standard deviation, when the predictor gives one.
+    #[serde(default)]
+    pub sd: Option<f64>,
+    /// Median attempt cost.
+    pub cost_q50: f64,
+    /// 90th-percentile attempt cost.
+    pub cost_q90: f64,
+    /// Median attempt latency.
+    pub lat_q50_s: f64,
+    /// 90th-percentile attempt latency.
+    pub lat_q90_s: f64,
+    /// P(the attempt is retried), when the predictor gives one.
+    #[serde(default)]
+    pub p_retry: Option<f64>,
+}
+
+/// What the predictor would do for the attempt, so that a shadow pick can be scored against the
+/// pick routing made without it (as `router_pick` is for G56).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PredictionDecision {
+    /// The arm it would choose; `null` when it would dispatch nothing.
+    pub would_choose: Option<String>,
+    /// The arm routing chooses without it, when known.
+    #[serde(default)]
+    pub default: Option<String>,
+    /// Its action: `dispatch`, `climb`, `skip`, `retry`, `refine_spec` or `abandon`.
+    pub action: String,
+}
+
 // ── Line envelope ─────────────────────────────────────────────────────
 
 /// One line of a run file: the writer's envelope, with the record's own
@@ -1707,6 +1967,18 @@ impl TelemetryRecord for ExposureRecord {
         let key = &self.identity.attempt_key;
         let item = format!("{}:{}", self.item_kind.as_str(), self.item_id);
         record_id(Self::SCHEMA, key, self.decision_point.as_str(), &item, "")
+    }
+}
+
+/// One prediction per attempt, step and predictor version.
+impl TelemetryRecord for AttemptPredictionRecord {
+    const SCHEMA: &'static str = PREDICTION_SCHEMA;
+    const FILE: RunFile = RunFile::Predictions;
+
+    fn record_id(&self) -> String {
+        let key = &self.identity.attempt_key;
+        let version = &self.predictor.version;
+        record_id(Self::SCHEMA, key, &self.precedes, version, "")
     }
 }
 
@@ -2198,6 +2470,8 @@ mod tests {
             state: Some(state),
             thresholds_digest: None,
             arm_set: None,
+            proposals: None,
+            audit: Default::default(),
         };
         let json = serde_json::to_value(&record).expect("serialize");
         assert_eq!(json["decision_point"], "knowledge");

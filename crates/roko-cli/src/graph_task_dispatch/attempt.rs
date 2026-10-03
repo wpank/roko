@@ -487,10 +487,24 @@ impl AttemptContext {
         &self.identity
     }
 
+    /// When the attempt opened, assembled its prompt and so on.
+    pub(super) const fn timing(&self) -> &AttemptTiming {
+        &self.timing
+    }
+
     /// Queue one item the attempt's prompt retrieved for the run's
     /// `exposures.jsonl` (S01 P0-9).
     pub(super) fn record_exposure(&self, exposure: ExposureRecord) {
         self.run.submit(exposure);
+    }
+
+    /// Queue the self-model's forecast of the attempt for the run's
+    /// `predictions.jsonl` (S01 §5.6), ahead of its route decision (6128).
+    pub(super) fn record_prediction(
+        &self,
+        prediction: roko_learn::telemetry::records::AttemptPredictionRecord,
+    ) {
+        self.run.submit(prediction);
     }
 
     /// Queue the content decision the attempt's prompt made at one decision

@@ -38,6 +38,7 @@ pub mod hindsight;
 pub mod knowledge;
 pub mod plan_completion;
 pub mod routing;
+pub mod self_model;
 pub mod verified_knowledge;
 
 pub use episodes::EpisodeSink;
@@ -48,6 +49,7 @@ pub use plan_completion::{DaimonPersistenceSink, DreamConsolidationSink};
 #[cfg(feature = "cognitive-clock")]
 pub use plan_completion::{DeltaConsolidationSink, ThetaReflectionSink};
 pub use routing::RoutingObservationSink;
+pub use self_model::SelfModelOutcomeSink;
 pub use verified_knowledge::{VerifiedAttempt, VerifiedKnowledgeSink};
 
 use roko_learn::model_router::RoutingContext;

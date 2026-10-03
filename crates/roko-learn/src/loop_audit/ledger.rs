@@ -154,7 +154,10 @@ pub struct HealthRow {
     pub beta: BetaFields,
     /// The layer's SRM e-value.
     pub srm_evalue: f64,
-    /// The placebo loop has not moved.
+    /// The auditor's tripwires are clear: the placebo loop has not moved, and
+    /// no SRM alarm or ordering violation on a clean loop has fired. `false`
+    /// is S03 §4.6's `audit_broken`, which freezes every transition and
+    /// every enforcement until a human clears it.
     pub placebo_ok: bool,
     /// Where the reason comes from: `log`, `declared` or `measured`.
     pub evidence: String,

@@ -193,6 +193,17 @@ pub(crate) enum LearnCmd {
         #[command(subcommand)]
         cmd: commands::learn::TelemetryCmd,
     },
+    /// The M3 self-model: fit it over the logs, or replay routing policies over a
+    /// run-record matrix (S04; read-only, except what `replay --out` writes).
+    SelfModel {
+        #[command(subcommand)]
+        cmd: commands::learn_self_model::SelfModelCmd,
+    },
+    /// Inference economics: the price snapshot's rows (S04 §4.8; read-only).
+    Econ {
+        #[command(subcommand)]
+        cmd: commands::learn_self_model::EconCmd,
+    },
     /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
     #[command(hide = true)]
     Tune {
@@ -343,6 +354,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         }
         LearnCmd::Inspect { subsystem } => inspect_workdir(cli, subsystem),
         LearnCmd::Telemetry { cmd: sub } => telemetry_workdir(cli, sub),
+        LearnCmd::SelfModel { cmd: sub } => {
+            commands::learn_self_model::self_model_workdir(cli, sub)
+        }
+        LearnCmd::Econ { cmd: sub } => commands::learn_self_model::econ_workdir(cli, sub),
         LearnCmd::Tune { workdir, .. } => workdir.clone().unwrap_or_else(|| resolve_workdir(cli)),
     };
     let _lock =
@@ -504,6 +519,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             cmd_learn_inspect(&wd, &subsystem, json).await
         }
         LearnCmd::Telemetry { cmd: sub } => cmd_learn_telemetry(cli, sub, json),
+        LearnCmd::SelfModel { cmd: sub } => {
+            commands::learn_self_model::cmd_self_model(cli, sub, json)
+        }
+        LearnCmd::Econ { cmd: sub } => commands::learn_self_model::cmd_econ(cli, sub, json),
         LearnCmd::Tune {
             subsystem,
             dry_run,
@@ -3607,6 +3626,8 @@ mod tests {
                         arms: [("knowledge".to_string(), draw)].into(),
                         condition_id: NORMAL_CONDITION.to_string(),
                     }),
+                    proposals: None,
+                    audit: Default::default(),
                 };
                 let line = Stamped {
                     schema_version: DECISION_SCHEMA.to_string(),

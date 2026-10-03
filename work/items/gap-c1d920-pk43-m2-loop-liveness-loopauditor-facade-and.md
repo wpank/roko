@@ -79,3 +79,15 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK09 (gap-cc5051), PK10 (gap-f61823), PK32 (gap-b5caf3), PK34 (gap-ac2611), PK35 (gap-943046), PK38 (gap-894977), PK40 (gap-1f4bec), PK42 (gap-2b3c1b).
 - Suggested model: opus.
+
+## Progress
+
+Worker w3 (no cargo; Rust checks deferred to the batch gate), base `b1d498a02`, branch `work/gap-c1d920`:
+
+- 5122 `54a76212f`: `LoopAuditor` facade (registry, latest ledger state, `[learning.audit]`; layer specs, arm draws, executed policy, params with α/K). `[learning.audit]` in roko-core with S03's defaults and config invariant 13.
+- 5123 `10b2bbdb4`: A-DEC fields on decision rows (`AuditFields`, `ContentProposals`, `DecisionAssignment`, `DecisionReceipt`), and the census's measured mode: ε with its decomposition and ι_net per loop from the runs' decision rows.
+- 5124 `7b6ee7e40`: route rows carry A-DEC (loop, layer, opportunity, the arm drawn before `plan()`, decided_at after assigned_at). L-route has no holdout yet, so its draw is h = g = 0 unless the arm set has a `route` layer; its receipt is the verdict's `model_reported` (option a).
+- 5125 `43a9f8cd8`: knowledge and playbook rows carry A-DEC, proposals and a content receipt (the included items' rendered digests, bound to `dispatch_prompt_hash` of the assembled prompts). Built at record time from the planned prompts; `prompt_builder.rs` untouched.
+- 5126 `e0dd34648`: the audit tick at each checkpoint run's close (`graph_execution::loop_audit`, `LoopAuditor::observe_run`): health rows per measured loop, transitions with the dwell carried through the ledger, `LoopHealth`/`LoopTransition` on the run's StateHub. Observe-only; β is not estimated yet (rows say why); an SRM alarm or a ledger-recorded break freezes transitions (`placebo_ok: false`). The frozen-run test's allowlist names `learn/loop-audit.jsonl`.
+- 5127 `3f1ff74c8` (partial): `KnowledgeCanary` (L-know) and `PlaybookCanary` (L-play) through their own writers, read by the cached readers (`prompt_builder::cached_reader_ids`, additive), cleaned up exactly (`KnowledgeStore::remove_entries`, new). L-route has no writer: the cascade router keys its learned state by closed enums and context features, so a router preference cannot be scoped to a synthetic category; its static role table is the only exact-cleanup preference and applies to a whole role at cold start. Needs a canary-scoped key in the router (a decision).
+- 2026-10-03 (coordinator, gate 8c): 5127's L-know and L-play writers are merged; its L-route writer is gap-135821 (the coordinator chose a canary-only key in CascadeRouter over a TaskCategory::Canary variant; Will may overrule).

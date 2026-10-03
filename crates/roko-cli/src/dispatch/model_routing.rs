@@ -52,13 +52,16 @@ use roko_core::config::schema::{ModelProfile, RokoConfig};
 use roko_core::task::{TaskCategory, TaskTier};
 use roko_learn::cascade_router::{CascadeModel, CascadeRouter, ExploredRoute, explore_route};
 use roko_learn::latency::LatencyRegistry;
+use roko_learn::loop_audit::arm_set::ArmSet;
+use roko_learn::loop_audit::assign::{NestedPick, RouteDecision, RouteDraw, route_propensity};
 use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
 use roko_learn::routing_log::{
     CandidateEntry, DecisionState, ROUTE_DECISION_POINT, RouteInfluence, RouteProposals,
     RoutingDecisionLog,
 };
-use roko_learn::telemetry::{AttemptKey, DecisionSource};
+use roko_learn::telemetry::records::{AuditFields, DecisionAssignment, DecisionOpportunity};
+use roko_learn::telemetry::{AssignmentUnit, AttemptKey, DecisionSource, LayerSpec, assign};
 
 use super::DispatchContext;
 use super::outcome::RunnerDispatchError;
@@ -68,6 +71,15 @@ use crate::task_parser::TaskDef;
 /// record an experiment seed (S01 `experiment.seed`). The attempt key the
 /// draws use names the run.
 const EXPLORE_SEED: u64 = 0;
+
+/// The route decision's layer (S03 §4.3).
+const ROUTE_LAYER: &str = "route";
+
+/// The loop whose layer the route decision draws on.
+const ROUTE_LOOP: &str = "L-route";
+
+/// L-route's opportunity reason when nothing pins the route (S01 §5.3).
+const ROUTE_OPPORTUNITY: &str = "no_override_no_hint_ge2_eligible";
 
 /// Returns `true` when the task category requires tool use.
 ///
@@ -117,6 +129,9 @@ pub struct RoutingInputs {
     /// The attempt the route is for: the unit of its exploration draw
     /// (S02.P1-3). Without one the route never explores.
     pub attempt_key: Option<AttemptKey>,
+    /// The arms of the attempt's chain (S02.P1-14). A draw on the route
+    /// layer that holds the chain out runs π⁰.
+    pub arm_set: Option<Arc<ArmSet>>,
 }
 
 impl RoutingInputs {
@@ -144,6 +159,7 @@ impl RoutingInputs {
             role: ctx.role.clone(),
             routing_context: ctx.routing_context.clone(),
             attempt_key: ctx.attempt_key.clone(),
+            arm_set: ctx.arm_set.clone(),
         }
     }
 }
@@ -549,10 +565,68 @@ impl ModelRouter {
         &self,
         inputs: &RoutingInputs,
     ) -> Result<(ModelChoice, RoutingDecisionLog), RunnerDispatchError> {
+        let assigned_at = chrono::Utc::now().timestamp_millis();
         let (choice, learned) = self.choose(inputs);
         let (choice, explored) = self.explore(inputs, choice);
-        let decision = self.decision_row(inputs, &choice, learned, explored.as_ref());
+        let mut decision = self.decision_row(inputs, &choice, learned, explored.as_ref());
+        // A decision made in its draw's millisecond still follows the draw.
+        let decided_at = chrono::Utc::now().timestamp_millis().max(assigned_at + 1);
+        decision.audit = route_audit_fields(inputs, &decision, assigned_at, decided_at);
+        self.compose_propensities(&mut decision, explored.as_ref());
         Ok((choice, decision))
+    }
+
+    /// Recompute `row`'s probabilities over the route layer's all-off and
+    /// holdout draws (S03 §4.3, R.S03-9's table) when the chain's draw holds
+    /// anything out and the route was L-route's opportunity. π⁰'s model
+    /// joins the candidates, so the probabilities still sum to 1.
+    fn compose_propensities(&self, row: &mut RoutingDecisionLog, explored: Option<&ExploredRoute>) {
+        let Some(assignment) = &row.audit.assignment else {
+            return;
+        };
+        let (g, h) = (assignment.draw.g, assignment.draw.h);
+        let eligible_route = row
+            .audit
+            .opportunity
+            .as_ref()
+            .is_some_and(|opportunity| opportunity.eligible);
+        let Some(learned) = row.proposals.learned.clone() else {
+            return;
+        };
+        if (g <= 0.0 && h <= 0.0) || !eligible_route {
+            return;
+        }
+        let eligible: Vec<String> = explored
+            .iter()
+            .flat_map(|route| &route.propensities)
+            .map(|(model, _)| model.clone())
+            .collect();
+        let eps = if eligible.is_empty() {
+            0.0
+        } else {
+            self.explore_epsilon
+        };
+        let route = RouteDecision::Drawn(RouteDraw {
+            default: self.default_slug.clone(),
+            eligible,
+            nested: vec![NestedPick {
+                pick: learned,
+                probability: 1.0,
+            }],
+        });
+        let listed = row
+            .candidates
+            .iter()
+            .any(|candidate| candidate.model == self.default_slug);
+        if !listed {
+            let provider = self.provider_of(&self.default_slug);
+            let default = CandidateEntry::new(self.default_slug.clone(), provider, 0.0, None);
+            row.candidates.push(default);
+        }
+        for candidate in &mut row.candidates {
+            candidate.p = Some(route_propensity(g, h, eps, &route, &candidate.model));
+        }
+        row.propensity = Some(route_propensity(g, h, eps, &route, &row.selected_model));
     }
 
     /// [`Self::decide`] with [`Self::route_logged`]'s logging.
@@ -618,6 +692,19 @@ impl ModelRouter {
         };
         let pick = self.cascade_pick(router, ctx).primary;
         let learned = Some(pick.slug.clone());
+        // A chain held out on the route layer runs π⁰ (S03 §4.3), and the
+        // cascade's pick stays its proposal.
+        let held_out = inputs
+            .arm_set
+            .as_deref()
+            .is_some_and(|arms| arms.takes_default(ROUTE_LAYER));
+        if held_out {
+            let choice = ModelChoice {
+                model: ModelSpec::from_slug(&self.default_slug),
+                source: ModelChoiceSource::Default,
+            };
+            return (choice, learned);
+        }
         // Guards: the pick must have a configured, credential-ready provider
         // (learned state may name `claude-opus` when no Anthropic key is
         // present), its provider must not be in `[routing]
@@ -816,6 +903,7 @@ impl ModelRouter {
             influences,
             state: self.learned_state(),
             arm_set: None,
+            audit: Default::default(),
         }
     }
 
@@ -1001,6 +1089,82 @@ impl ModelRouter {
     fn provider_of(&self, slug: &str) -> String {
         self.model_providers.get(slug).cloned().unwrap_or_default()
     }
+}
+
+/// S03's fields of route decision `row` for `inputs` (A-DEC, S01 §5.3;
+/// backlog 5124): L-route's layer, whether the route was its opportunity,
+/// the chain's draw on the route layer with when it was made, and when the
+/// decision was. The chain's arm set holds the draw once the route layer is
+/// randomised; until then the draw holds nothing out (h = g = 0). The
+/// receipt is the attempt verdict's `executed.model_reported`, which the
+/// census joins, so the row carries none. Pure, for E1 (5130).
+#[must_use]
+pub fn route_audit_fields(
+    inputs: &RoutingInputs,
+    row: &RoutingDecisionLog,
+    assigned_at: i64,
+    decided_at: i64,
+) -> AuditFields {
+    AuditFields {
+        loop_id: Some(ROUTE_LOOP.to_string()),
+        loop_ids: vec![ROUTE_LOOP.to_string()],
+        layer: Some(ROUTE_LAYER.to_string()),
+        opportunity: Some(route_opportunity(inputs, row)),
+        assignment: route_assignment(inputs, assigned_at),
+        decided_at: Some(decided_at),
+        receipt: None,
+    }
+}
+
+/// Whether the route was L-route's opportunity (S03 §4.2): no pin (an
+/// override, a task hint, a ladder rung), a cascade pick, and at least two
+/// eligible candidates.
+fn route_opportunity(inputs: &RoutingInputs, row: &RoutingDecisionLog) -> DecisionOpportunity {
+    let eligible = row
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.eligible)
+        .count();
+    let reason = if inputs.force_backend.is_some() {
+        "pinned_override"
+    } else if inputs.task_model_hint.is_some() {
+        "pinned_task_hint"
+    } else if row.source == Some(DecisionSource::Ladder) {
+        "ladder_rung"
+    } else if row.proposals.learned.is_none() {
+        "no_router"
+    } else if eligible < 2 {
+        "fewer_than_two_eligible"
+    } else {
+        ROUTE_OPPORTUNITY
+    };
+    DecisionOpportunity {
+        eligible: reason == ROUTE_OPPORTUNITY,
+        reason: reason.to_string(),
+    }
+}
+
+/// The chain's draw on the route layer at `assigned_at`: its arm set's,
+/// else one that holds nothing out. `None` for a route outside an attempt.
+fn route_assignment(inputs: &RoutingInputs, assigned_at: i64) -> Option<DecisionAssignment> {
+    let key = inputs.attempt_key.as_ref()?;
+    let drawn = inputs
+        .arm_set
+        .as_deref()
+        .and_then(|arms| arms.get(ROUTE_LAYER))
+        .cloned();
+    let draw = drawn.unwrap_or_else(|| {
+        let spec = LayerSpec {
+            run_seed: EXPLORE_SEED,
+            layer: ROUTE_LAYER.to_string(),
+            epoch: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+            unit: AssignmentUnit::Chain,
+            h: 0.0,
+            g: 0.0,
+        };
+        assign(&spec, key)
+    });
+    Some(DecisionAssignment::new(draw, key, assigned_at))
 }
 
 // ─── Ladder ────────────────────────────────────────────────────────────
@@ -2295,5 +2459,124 @@ mod tests {
         // Without a router there is no learned state to name.
         let (_, row) = ModelRouter::new(None).decide(&routed).unwrap();
         assert_eq!(row.state, None);
+    }
+
+    /// S03 §5 A-DEC (backlog 5124): a route decision carries L-route's layer,
+    /// its opportunity and the chain's draw, made before the decision, and
+    /// both proposals on both arms, with probabilities that sum to 1. A
+    /// guard's fallback is labelled `fallback`, and the census reads the
+    /// executed model that the attempt's verdict reports as the receipt.
+    #[test]
+    fn route_decision_logs_arm_before_plan_and_executed_model() {
+        use roko_learn::loop_audit::census::measure;
+        use roko_learn::telemetry::records::{
+            AttemptIdentity, AttemptOutcome, AttemptVerdictRecord, DECISION_SCHEMA, Stamped,
+            VERDICT_SCHEMA,
+        };
+        use roko_learn::telemetry::report::RunRecords;
+        use roko_learn::telemetry::{Arm, Assignment};
+
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "gpt-5".into(),
+        ]));
+        cascade.record_observation(&routing_context(), "gpt-5", 0.9, true);
+        let pick = cascade.route(&routing_context()).primary.slug;
+        let router = ModelRouter::new(Some(cascade)).with_default_slug("default-model");
+        let key = AttemptKey::new("gr-route", "p", "t", 1);
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+        inputs.attempt_key = Some(key.clone());
+
+        // The learned arm: the route layer holds nothing out yet.
+        let (choice, learned_row) = router.decide(&inputs).unwrap();
+        assert_eq!(routed(&choice), (pick.as_str(), ModelChoiceSource::Router));
+        let audit = &learned_row.audit;
+        assert_eq!(audit.layer.as_deref(), Some("route"));
+        assert_eq!(audit.loop_id.as_deref(), Some("L-route"));
+        let opportunity = audit.opportunity.as_ref().expect("the opportunity");
+        assert!(opportunity.eligible, "{opportunity:?}");
+        let assignment = audit.assignment.as_ref().expect("the chain's draw");
+        assert_eq!(
+            (assignment.draw.arm, assignment.draw.h),
+            (Arm::Learned, 0.0)
+        );
+        assert_eq!(assignment.unit_key, key.chain_key());
+        assert!(assignment.assigned_at < audit.decided_at.expect("decided_at"));
+        let proposals = &learned_row.proposals;
+        assert_eq!(proposals.learned.as_deref(), Some(pick.as_str()));
+        assert_eq!(proposals.default.as_deref(), Some("default-model"));
+
+        // The default arm: a chain held out on the route layer runs π⁰, and
+        // the cascade's pick stays its proposal.
+        let held_out = Assignment {
+            unit: AssignmentUnit::Chain,
+            layer: "route".to_string(),
+            salt_id: "route@2026-10-03".to_string(),
+            u: 0.1,
+            h: 0.2,
+            g: 0.0,
+            arm: Arm::Default,
+            propensity: 0.2,
+        };
+        inputs.arm_set = Some(Arc::new(ArmSet {
+            chain_key: key.chain_key(),
+            arms: [("route".to_string(), held_out)].into(),
+            condition_id: "normal".to_string(),
+        }));
+        let (choice, row) = router.decide(&inputs).unwrap();
+        let default = ("default-model", ModelChoiceSource::Default);
+        assert_eq!(routed(&choice), default);
+        assert_eq!(row.proposals.learned.as_deref(), Some(pick.as_str()));
+        assert_eq!(row.proposals.default.as_deref(), Some("default-model"));
+        let assignment = row.audit.assignment.as_ref().expect("the held-out draw");
+        assert_eq!(assignment.draw.arm, Arm::Default);
+        assert_eq!(assignment.audit_epoch, "2026-10-03");
+        let total: f64 = row.candidates.iter().filter_map(|c| c.p).sum();
+        assert!((total - 1.0).abs() < 1e-9, "p sums to {total}");
+        assert_eq!(row.propensity, Some(0.2));
+        inputs.arm_set = None;
+
+        // A guard's replacement of the pick is labelled `fallback`, and with
+        // one eligible model the route is no opportunity.
+        let only_default = HashSet::from(["default-model".to_string()]);
+        let guarded = router.clone().with_configured_models(only_default);
+        let (_, fallback) = guarded.decide(&inputs).unwrap();
+        assert_eq!(fallback.source, Some(DecisionSource::Fallback));
+        let reason = fallback.fallback_reason.as_deref();
+        assert_eq!(reason, Some("provider_unconfigured"));
+        let opportunity = fallback.audit.opportunity.expect("the opportunity");
+        assert_eq!(opportunity.reason, "fewer_than_two_eligible");
+
+        // The census reads the executed model the verdict reports as the
+        // receipt of the learned route.
+        let mut row = learned_row;
+        row.attempt_key = Some(key.attempt_key());
+        let identity = AttemptIdentity::new(&key);
+        let mut verdict = AttemptVerdictRecord::settle(identity, AttemptOutcome::Passed, true);
+        verdict.executed.model_reported = Some(pick.clone());
+        let run = RunRecords {
+            run_id: "gr-route".to_string(),
+            decisions: vec![Stamped {
+                schema_version: DECISION_SCHEMA.to_string(),
+                record_id: "b3:decision".to_string(),
+                seq: 1,
+                ts: "2026-10-03T09:00:00Z".to_string(),
+                record: row,
+            }],
+            verdicts: vec![Stamped {
+                schema_version: VERDICT_SCHEMA.to_string(),
+                record_id: "b3:verdict".to_string(),
+                seq: 2,
+                ts: "2026-10-03T09:00:01Z".to_string(),
+                record: verdict,
+            }],
+            ..RunRecords::default()
+        };
+        let measured = measure(&[run]);
+        let route = &measured["L-route"];
+        assert_eq!(route.n_learned, 1);
+        assert_eq!((route.eps.receipt, route.eps.honest), (1.0, 1.0));
+        assert_eq!(route.eps.est, 1.0);
     }
 }

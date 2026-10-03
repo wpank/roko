@@ -13,7 +13,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::loop_audit::arm_set::ArmSet;
-use crate::telemetry::records::DecisionSource;
+use crate::telemetry::records::{AuditFields, DecisionSource};
 
 /// `decision_point` of every route decision row (S01 §5.3).
 pub const ROUTE_DECISION_POINT: &str = "route";
@@ -108,6 +108,9 @@ pub struct RoutingDecisionLog {
     /// of the attempt carries; `None` for a row written outside an attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arm_set: Option<ArmSet>,
+    /// S03's fields (A-DEC, S01 §5.3).
+    #[serde(flatten)]
+    pub audit: AuditFields,
 }
 
 fn route_decision_point() -> String {
@@ -538,6 +541,7 @@ mod tests {
             influences: Vec::new(),
             state: None,
             arm_set: None,
+            audit: Default::default(),
         }
     }
 

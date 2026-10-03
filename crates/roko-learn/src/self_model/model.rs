@@ -196,6 +196,19 @@ impl SelfModel {
         self.outcomes += 1;
     }
 
+    /// Learn a late VS label of `unit` (S05's audits, weight 1/π) whose gate label the model has
+    /// already learned: only the false-green head moves, and only for a pass.
+    pub fn observe_vs(&mut self, unit: &Unit, task: &TaskFeatures, w: f64) {
+        let (Some(true), Some(verified)) = (unit.label.y_gate, unit.label.y_vs) else {
+            return;
+        };
+        if unit.failover {
+            return;
+        }
+        let x = self.features(task, &unit.arm);
+        self.gates.observe_vs(&x, verified, w);
+    }
+
     /// The state file under the `.roko` directory `roko_dir`.
     #[must_use]
     pub fn state_path(roko_dir: &Path) -> PathBuf {
@@ -401,6 +414,37 @@ mod tests {
         let mut unlabelled = unit("gpt-oss-120b", "T3", 1, true);
         unlabelled.label.y_gate = None;
         model.observe(&unlabelled, 1.0);
+        assert_eq!(model.outcomes, N_MIN);
+    }
+
+    /// 6129: a late VS label of a pass moves the false-green forecast and nothing else; one of
+    /// a failure, or of a failover substitute, teaches nothing.
+    #[test]
+    fn a_late_vs_label_moves_only_the_false_green_head() {
+        let arms = [ArmKey::roko("cerebras", "gpt-oss-120b")];
+        let mut model = SelfModel::new(&snapshot());
+        for _ in 0..N_MIN {
+            model.observe_with(&unit("gpt-oss-120b", "T1", 1, true), &task(), 1.0);
+        }
+        let before = model.forecast(&task(), &arms)[0].clone();
+        let mut failed = unit("gpt-oss-120b", "T2", 1, false);
+        failed.label.y_vs = Some(false);
+        let mut substitute = unit("gpt-oss-120b", "T3", 1, true);
+        substitute.label.y_vs = Some(false);
+        substitute.failover = true;
+        model.observe_vs(&failed, &task(), 5.0);
+        model.observe_vs(&substitute, &task(), 5.0);
+        assert_eq!(model.forecast(&task(), &arms)[0], before);
+
+        let mut audited = unit("gpt-oss-120b", "T1", 1, true);
+        audited.label.y_vs = Some(false);
+        audited.label.source = LabelSource::Vs;
+        for _ in 0..10 {
+            model.observe_vs(&audited, &task(), 5.0);
+        }
+        let after = model.forecast(&task(), &arms)[0].clone();
+        assert!(after.p_fg > before.p_fg, "{before:?} then {after:?}");
+        assert_eq!(after.p_gate, before.p_gate);
         assert_eq!(model.outcomes, N_MIN);
     }
 

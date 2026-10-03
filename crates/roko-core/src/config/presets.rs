@@ -116,6 +116,7 @@ fn minimal() -> RokoConfig {
                 crate::config::learning::DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL,
             knowledge: Default::default(),
             frozen: false,
+            audit: Default::default(),
         },
         ..RokoConfig::default()
     }
@@ -187,6 +188,7 @@ fn thorough() -> RokoConfig {
                 crate::config::learning::DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL,
             knowledge: Default::default(),
             frozen: false,
+            audit: Default::default(),
         },
         ..RokoConfig::default()
     }

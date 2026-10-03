@@ -962,6 +962,69 @@ mod tests {
         assert_eq!(ran, [failed, failed, "", failed]);
     }
 
+    /// S06 B3 (8127): θ's `extra_rungs` reaches M4's ladder as a floor. An
+    /// attempt on M1's learned arm is checked at the higher of its task
+    /// type's ladder level and θ's floor, so the floor deepens it and never
+    /// lowers the ladder; a held-out attempt runs θ₀, whose floor is V0, at
+    /// the ladder's level.
+    #[tokio::test]
+    async fn extra_rungs_reach_m4_ladder_as_floor() {
+        for held_out in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let vault_home = tempfile::tempdir().expect("vault home");
+            let home = vault_home.path().join("audit");
+            let sink = m1_sink(temp.path()).with_holdout(if held_out { 1.0 } else { 0.0 });
+            let sink = Arc::new(sink);
+            let feedback = GraphFeedbackContext {
+                homeostasis: Some(Arc::clone(&sink)),
+                ..GraphFeedbackContext::default()
+            };
+            let (dispatcher, task) = make_test_dispatcher(
+                &temp,
+                VERIFY_PROVIDER,
+                |config| {
+                    no_auto_fix(config);
+                    config.audit.enabled = true;
+                    config.audit.home = Some(home.clone());
+                },
+                feedback,
+            )
+            .await;
+            // M1 floors the attempts on its learned arm at V2.
+            let floor = HarnessParams {
+                extra_rungs: FloorRequest::V2,
+                ..HarnessParams::baseline(&dispatcher.config)
+            };
+            assert_eq!(sink.handle().swap(floor, "floor"), 1);
+            let vault = AuditConfig {
+                home: Some(home),
+                ..AuditConfig::default()
+            }
+            .vault(temp.path())
+            .expect("the vault");
+            let ctx = CellContext::new().with_run_id(RUN.to_string());
+            // The depth of a fresh attempt while the ladder holds the task's
+            // type at `level` in `window`.
+            let depth = |level, window: &str| {
+                let rung = Rung {
+                    level,
+                    quiet: 0,
+                    window: Some(window.to_string()),
+                };
+                let task_types = BTreeMap::from([(task_type(&task).to_string(), rung)]);
+                Ladder { task_types }
+                    .save(&ladder_path(&vault))
+                    .expect("the ladder is written");
+                let spec = make_spec(&task);
+                let attempt = dispatcher.open_attempt(&spec, &task, &ctx);
+                dispatcher.verify_depth(&spec, &task, attempt.harness_params())
+            };
+            let depths = [depth(V1, "window:1-10"), depth(V3, "window:11-20")];
+            let expected = if held_out { [V1, V3] } else { [V2, V3] };
+            assert_eq!(depths, expected, "held out: {held_out}");
+        }
+    }
+
     /// An M1 sink whose controller is on and holds every chain on its
     /// learned arm, so a θ swapped into its handle reaches the next attempt.
     fn m1_sink(workdir: &Path) -> HomeostasisSink {

@@ -12,11 +12,19 @@ default-run = "roko"
 workspace = true
 
 [features]
-default = ["acp", "chain", "hdc"]
-# Backend-neutral chain tools: propagates to roko-std (17 chain tool
-# handlers), roko-agent (test assertions), and roko-serve (route marker).
+default = ["acp", "hdc"]
+# Backend-neutral chain tools, parked out of the default build (9201):
+# propagates to roko-std (17 chain tool handlers), roko-agent (test
+# assertions), roko-serve (chain-family routes, chain state, chain feed
+# agents) and the agent sidecar (ERC-8004 registration).
 # Real RPC/provider support is an explicit build choice via alloy-backend.
-chain = ["dep:roko-chain", "roko-std/chain", "roko-agent/chain", "roko-serve/chain"]
+chain = [
+    "dep:roko-chain",
+    "roko-std/chain",
+    "roko-agent/chain",
+    "roko-serve/chain",
+    "roko-agent-server/chain",
+]
 # Full HDC fingerprint pipeline: neuro store, prompt composition, substrate
 # persistence, and serve webhook handling.
 hdc = ["roko-compose/hdc", "roko-fs/hdc", "roko-serve/hdc"]
@@ -56,7 +64,7 @@ roko-fs = { path = "../roko-fs" }
 roko-learn = { path = "../roko-learn" }
 roko-compose = { path = "../roko-compose" }
 roko-agent = { path = "../roko-agent" }
-roko-agent-server = { path = "../roko-agent-server" }
+roko-agent-server = { path = "../roko-agent-server", default-features = false }
 roko-gate = { path = "../roko-gate" }
 roko-dreams = { path = "../roko-dreams" }
 roko-daimon = { path = "../roko-daimon" }

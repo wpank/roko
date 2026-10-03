@@ -80,6 +80,8 @@ roko-serve = { path = "../roko-serve" }
 # SQLite is the canonical index persistence backend (backlog #362).
 # rkyv remains library-only; tree-sitter is disabled/experimental.
 roko-index = { path = "../roko-index", features = ["sqlite"] }
+# B2 finds the changed functions with its symbol extractor (backlog 7125).
+roko-lang-rust = { path = "../roko-lang-rust" }
 roko-graph = { path = "../roko-graph" }
 roko-execution = { path = "../roko-execution" }
 roko-chain = { path = "../roko-chain", optional = true }

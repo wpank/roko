@@ -6300,6 +6300,7 @@ dependencies = [
  "roko-gate",
  "roko-graph",
  "roko-index",
+ "roko-lang-rust",
  "roko-learn",
  "roko-mcp-github",
  "roko-neuro",

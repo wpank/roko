@@ -774,7 +774,8 @@ impl GraphTaskDispatcher {
             *started = started.saturating_add(1);
         }
         self.attempts.audit.get_or_init(|| {
-            AuditSelector::for_config(&self.config.audit, &self.workdir).map(Arc::new)
+            AuditSelector::for_config(&self.config.audit, &self.config.gates, &self.workdir)
+                .map(|selector| Arc::new(selector.with_phase_b(self.audit_phase_b())))
         });
         let mut attempt = self.attempts.open(
             self.feedback.runs_dir.as_deref(),
@@ -783,6 +784,10 @@ impl GraphTaskDispatcher {
             task,
             ctx.cell_id.as_deref(),
         );
+        // An audit of the attempt needs its task's verify steps and files.
+        if let Some(audit) = self.attempts.audit() {
+            audit.note_task(&attempt.key.attempt_key(), task);
+        }
         attempt.pricing = self.pricing_snapshot();
         // S02.P1-14: the chain's arms, drawn on its first attempt, and the
         // placebo's decision among them (S02 L12).

@@ -534,8 +534,9 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
     finally:
         _cleanup(args, [workdir, *homes, private / "final", private / "census"])
     cost, flakes = record["costs"]["api_equiv_usd"], record["visible"]["flakes"]
+    turns = sum(a.turns or 0 for a in outcome.attempts)  # an attempt's turns is None when its agent never reported it
     print(f"vb: {key} {record['execution']['status']} ({outcome.reason}) VS={record['vs']['label']} "
-          f"turns={sum(a.turns for a in outcome.attempts)} cost={'unknown' if cost is None else f'${cost:.4f}'}"
+          f"turns={turns} cost={'unknown' if cost is None else f'${cost:.4f}'}"
           + ("" if meter_usd is None else f" meter=${meter_usd:.4f}") + (f" flakes={len(flakes)}" if flakes else ""),
           file=sys.stderr)
     return True

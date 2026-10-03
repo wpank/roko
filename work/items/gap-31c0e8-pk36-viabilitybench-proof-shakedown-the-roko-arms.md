@@ -66,3 +66,16 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK01 (gap-625195), PK02 (gap-e00238), PK07 (gap-f548c1), PK09 (gap-cc5051), PK19 (gap-de0b87), PK20 (gap-5ebb4f), PK21 (gap-1149aa), PK35 (gap-943046).
 - Existing work items this package covers or touches: gap-c33709, gap-d9e9fe. When its tasks are done, close those whose verify then passes.
 - Suggested model: sonnet.
+
+## Progress
+
+- 3314: implemented at fc0f77e5e. Verified empirically against the repository's existing (pre-wave) roko binary via
+  `VB_TEST_ROKO_BIN`: 4 of 8 scenarios already pass there, and the remaining 4 (D1, D3, D7, D10) fail with exactly
+  the symptom each defect describes, not a harness error. The coordinator's gate needs a binary built at or after
+  this package's BASE (f74890b4b) for the real verdict.
+- 3315: blocked. Its own Plan requires a live, paid `vb campaign --manifest experiments/pilot_c.toml --allow-network`
+  run from Will's machine. No key file exists at the default location or `$VB_KEY_FILE` (checked for existence
+  only, never read). Per the coordinator's explicit instruction for this wave, made no live call.
+- 3316: blocked. Its premise is false at BASE: `analysis/pilot_page.py` and `report.py --pilot` do not exist yet.
+  Both are gap-d9e9fe's own deliverable (3316's Notes: "Starts after gap-d9e9fe has created the page"), and
+  gap-d9e9fe is still `open`, not done. This blocks 3316 independently of 3315's live data.

@@ -22,6 +22,7 @@ use roko_core::agent::ProviderKind;
 use roko_core::child_env::{CredentialScrub, KEY_FILE_NAMES};
 use roko_core::config::model_registry::model_meta;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
+use roko_core::pricing_snapshot::{PriceSnapshot, PricedUsage, PricingConfig, TokenCounts};
 use roko_core::{Body, Context, Kind, OperatingFrequency, Provenance, Signal};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -659,7 +660,7 @@ impl ClaudeCliAgent {
             output = output.tag("num_turns", num_turns.to_string());
         }
         let output = output.build();
-        AgentResult::fail(output).with_usage_obs(Self::usage_observation(stream_usage, wall_ms))
+        AgentResult::fail(output).with_usage_obs(self.priced_observation(stream_usage, wall_ms))
     }
 
     /// The run stopped at `--max-turns`: the final stream-json `result` has
@@ -863,6 +864,16 @@ impl ClaudeCliAgent {
                 streamed.observe(&event);
                 continue;
             }
+            if kind == Some("system") {
+                // The `init` event names the CLI's version (backlog 6105).
+                if let Some(version) = ["claude_code_version", "version"]
+                    .iter()
+                    .find_map(|key| event.get(*key).and_then(Value::as_str))
+                {
+                    usage.cli_version = Some(version.to_string());
+                }
+                continue;
+            }
             if kind != Some("result") {
                 continue;
             }
@@ -905,6 +916,15 @@ impl ClaudeCliAgent {
                         &["cache_read_input_tokens", "cache_read_tokens"],
                     ),
                 );
+                // The main model's cache writes by TTL, when the event splits
+                // them (backlog 6105).
+                usage.cache_write_split = result_usage.get("cache_creation").map(|split| {
+                    let ttl = |key: &str| split.get(key).and_then(Value::as_u64).unwrap_or(0);
+                    (
+                        ttl("ephemeral_5m_input_tokens"),
+                        ttl("ephemeral_1h_input_tokens"),
+                    )
+                });
             }
             // `usage` counts only the main model; `modelUsage` counts every
             // model the session used, background turns and subagents
@@ -933,12 +953,29 @@ impl ClaudeCliAgent {
                     &mut usage.reasoning_tokens,
                     total("thinkingTokens"),
                 );
+                // Each model's own tokens, which the price snapshot prices
+                // one by one (backlog 6105).
+                usage.models = per_model
+                    .iter()
+                    .map(|(slug, entry)| ModelTokens::from_entry(slug, entry))
+                    .collect();
             }
         }
         if usage.source == UsageSource::Unknown {
-            return streamed.stream_usage(fallback_model);
+            return StreamUsage {
+                cli_version: usage.cli_version,
+                ..streamed.stream_usage(fallback_model)
+            };
         }
         usage
+    }
+
+    /// The usage observation of `stream_usage`, priced model by model at the
+    /// price snapshot of the agent's working directory (backlog 6105).
+    fn priced_observation(&self, stream_usage: &StreamUsage, wall_ms: u64) -> UsageObservation {
+        let snapshot = PriceSnapshot::shared(&PricingConfig::default(), &self.current_dir);
+        let priced = stream_usage.clone().priced_at(snapshot.as_deref());
+        Self::usage_observation(&priced, wall_ms)
     }
 
     /// Canonical usage for a run, keeping the source of `stream_usage`:
@@ -946,16 +983,27 @@ impl ClaudeCliAgent {
     /// unknown. Its model is the one the CLI's output named, `None` when it
     /// named none (bug-2379dc): the configured slug is only the request.
     fn usage_observation(stream_usage: &StreamUsage, wall_ms: u64) -> UsageObservation {
+        let (snapshot_id, priced) = match &stream_usage.snapshot_price {
+            Some((id, priced)) => (Some(id.clone()), *priced),
+            None => (None, None),
+        };
         UsageObservation {
             input_tokens: stream_usage.input_tokens,
             output_tokens: stream_usage.output_tokens,
             cache_creation_tokens: stream_usage.cache_creation_tokens,
             cache_read_tokens: stream_usage.cache_read_tokens,
             reasoning_tokens: stream_usage.reasoning_tokens,
+            // The CLI's own figure, a client-side estimate: the attempt's
+            // `vendor_usd` (backlog 6105).
             cost_usd: stream_usage.cost_usd,
             source: stream_usage.source.clone(),
             model: stream_usage.model.clone(),
             wall_ms,
+            api_equiv_usd: priced.map(|priced| priced.api_equiv_usd),
+            without_cache_usd: priced.map(|priced| priced.without_cache_usd),
+            price_snapshot_id: snapshot_id,
+            cost_basis: stream_usage.cost_basis(),
+            cli_version: stream_usage.cli_version.clone(),
         }
     }
 
@@ -1699,7 +1747,7 @@ impl ClaudeCliAgent {
 
         AgentResult::ok(output_signal)
             .with_trace(self.stderr_trace(&stderr))
-            .with_usage_obs(Self::usage_observation(&stream_usage, wall_ms))
+            .with_usage_obs(self.priced_observation(&stream_usage, wall_ms))
     }
 }
 
@@ -1752,6 +1800,55 @@ struct StreamUsage {
     /// main-loop messages a killed run streamed.
     num_turns: Option<u64>,
     source: UsageSource,
+    /// Each model's tokens from `modelUsage`, which the price snapshot
+    /// prices one by one (backlog 6105).
+    models: Vec<ModelTokens>,
+    /// The main model's cache writes by TTL (5 minutes, 1 hour), when the
+    /// `result` event's `usage.cache_creation` splits them.
+    cache_write_split: Option<(u64, u64)>,
+    /// The CLI's version, from its `system`/`init` event.
+    cli_version: Option<String>,
+    /// The snapshot `models` were priced at, and what they cost there:
+    /// `None` inside when it does not list one of them.
+    snapshot_price: Option<(String, Option<PricedUsage>)>,
+}
+
+/// How far the CLI's own cost may stray from the snapshot price, as a
+/// fraction of it, before the gap is flagged (S04 §4.8).
+const VENDOR_GAP_TOLERANCE: f64 = 0.05;
+
+/// One model's tokens in a Claude Code session's `modelUsage` (backlog
+/// 6105). Cache writes are not split by TTL there.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct ModelTokens {
+    slug: String,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+    /// Thinking tokens, a part of `output`.
+    thinking: u64,
+    /// How the CLI priced the model: `list`, `managed` or `unknown`.
+    cost_basis: Option<String>,
+}
+
+impl ModelTokens {
+    /// The `modelUsage` entry `entry` of model `slug`.
+    fn from_entry(slug: &str, entry: &Value) -> Self {
+        let count = |key: &str| entry.get(key).and_then(Value::as_u64).unwrap_or(0);
+        Self {
+            slug: slug.to_string(),
+            input: count("inputTokens"),
+            output: count("outputTokens"),
+            cache_read: count("cacheReadInputTokens"),
+            cache_write: count("cacheCreationInputTokens"),
+            thinking: count("thinkingTokens"),
+            cost_basis: entry
+                .get("costBasis")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }
+    }
 }
 
 impl StreamUsage {
@@ -1771,10 +1868,96 @@ impl StreamUsage {
                 self.cost_usd = self.cost_usd.or(other.cost_usd);
                 self.model = self.model.or(other.model);
                 self.num_turns = self.num_turns.or(other.num_turns);
+                if self.models.is_empty() {
+                    self.models = other.models;
+                }
+                self.cache_write_split = self.cache_write_split.or(other.cache_write_split);
+                self.cli_version = self.cli_version.or(other.cli_version);
             }
             _ => {}
         }
         self
+    }
+
+    /// The usage with its `modelUsage` models priced one by one at
+    /// `snapshot` (backlog 6105), each at its own row's rates. A model the
+    /// snapshot does not list leaves the session's price unknown. A session
+    /// that reported no `modelUsage` stays unpriced. A CLI figure more than
+    /// [`VENDOR_GAP_TOLERANCE`] away from the snapshot price is logged.
+    fn priced_at(mut self, snapshot: Option<&PriceSnapshot>) -> Self {
+        let Some(snapshot) = snapshot.filter(|_| !self.models.is_empty()) else {
+            return self;
+        };
+        let zero = PricedUsage {
+            api_equiv_usd: 0.0,
+            without_cache_usd: 0.0,
+        };
+        let priced = self.models.iter().try_fold(zero, |total, model| {
+            let priced = snapshot.price(&model.slug, &self.model_tokens(model))?;
+            Some(PricedUsage {
+                api_equiv_usd: total.api_equiv_usd + priced.api_equiv_usd,
+                without_cache_usd: total.without_cache_usd + priced.without_cache_usd,
+            })
+        });
+        self.snapshot_price = Some((snapshot.id().to_string(), priced));
+        if let Some(gap) = self
+            .vendor_gap()
+            .filter(|gap| gap.abs() > VENDOR_GAP_TOLERANCE)
+        {
+            tracing::warn!(
+                vendor_usd = self.cost_usd.unwrap_or_default(),
+                api_equiv_usd = priced.map_or(0.0, |priced| priced.api_equiv_usd),
+                gap,
+                snapshot = snapshot.id(),
+                "the Claude CLI's own cost is more than 5% away from the price snapshot's"
+            );
+        }
+        self
+    }
+
+    /// `model`'s tokens in the snapshot's classes. Cache writes are at the
+    /// 1-hour TTL of Claude Code sessions, unless the `result` event split
+    /// the main model's writes by TTL. Thinking is part of the output.
+    fn model_tokens(&self, model: &ModelTokens) -> TokenCounts {
+        let main = self.model.as_deref() == Some(model.slug.as_str());
+        let (cache_write_5m, cache_write_1h) = match self.cache_write_split {
+            Some((five, hour)) if main && five + hour == model.cache_write => (five, hour),
+            _ => (0, model.cache_write),
+        };
+        TokenCounts {
+            input: model.input,
+            cache_read: model.cache_read,
+            cache_write_5m,
+            cache_write_1h,
+            output: model.output,
+            reasoning: model.thinking,
+        }
+    }
+
+    /// How far the CLI's own cost is from the snapshot price, as a fraction
+    /// of the snapshot price: `None` when either is unknown.
+    fn vendor_gap(&self) -> Option<f64> {
+        let (_, priced) = self.snapshot_price.as_ref()?;
+        let api_equiv = priced.as_ref()?.api_equiv_usd;
+        let vendor = self.cost_usd?;
+        if api_equiv > 0.0 {
+            Some((vendor - api_equiv) / api_equiv)
+        } else {
+            None
+        }
+    }
+
+    /// The models' `costBasis` values, sorted and joined by `,`: `None`
+    /// when none reported one.
+    fn cost_basis(&self) -> Option<String> {
+        let mut bases: Vec<&str> = self
+            .models
+            .iter()
+            .filter_map(|model| model.cost_basis.as_deref())
+            .collect();
+        bases.sort_unstable();
+        bases.dedup();
+        (!bases.is_empty()).then(|| bases.join(","))
     }
 }
 
@@ -1889,6 +2072,7 @@ impl StreamedMessages {
             model: top_level().rev().find_map(|message| message.model.clone()),
             num_turns: Some(top_level().count() as u64),
             source: UsageSource::Estimated,
+            ..StreamUsage::default()
         }
     }
 }
@@ -2870,6 +3054,119 @@ mod tests {
         assert_eq!(usage.cost_usd, Some(0.2791));
         let observed = ClaudeCliAgent::usage_observation(&usage, 0);
         assert_eq!(observed.reasoning_tokens, Some(1_450));
+    }
+
+    /// The dated price snapshot, by name: a newer built-in copy does not
+    /// change what the pricing tests expect.
+    fn snapshot_2026_09_28() -> PriceSnapshot {
+        PriceSnapshot::from_toml(
+            include_str!("../../../config/prices/2026-09-28.toml"),
+            "config/prices/2026-09-28.toml",
+        )
+        .expect("the 2026-09-28 snapshot")
+    }
+
+    /// The stream-json of a Claude Code session whose main model `main` ran
+    /// with a background claude-haiku-4-5, the CLI reporting `vendor` USD.
+    fn two_model_session(main: &str, vendor: f64) -> String {
+        let init = r#"{"type":"system","subtype":"init","claude_code_version":"2.1.250"}"#;
+        let result = serde_json::json!({
+            "type": "result",
+            "model": main,
+            "total_cost_usd": vendor,
+            "usage": { "input_tokens": 38, "output_tokens": 3_120 },
+            "modelUsage": {
+                main: {
+                    "inputTokens": 38,
+                    "outputTokens": 3_120,
+                    "thinkingTokens": 1_450,
+                    "cacheReadInputTokens": 186_112,
+                    "cacheCreationInputTokens": 21_904,
+                    "costBasis": "list"
+                },
+                "claude-haiku-4-5": {
+                    "inputTokens": 2_513,
+                    "outputTokens": 196,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                    "costBasis": "list"
+                }
+            }
+        });
+        format!("{init}\n{result}")
+    }
+
+    /// backlog 6105: every model of a Claude Code session is priced at its
+    /// own snapshot row, cache writes at the 1-hour rate, and the CLI's own
+    /// figure stays the vendor's, beside its `costBasis` and version.
+    #[test]
+    fn claude_model_usage_is_repriced_per_model() {
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            &two_model_session("claude-sonnet-5", 0.16),
+            "claude-test-model",
+        )
+        .priced_at(Some(&snapshot_2026_09_28()));
+        // claude-sonnet-5: 38 in at $2, 186,112 cache reads at $0.20, 21,904
+        // cache writes at the 1-hour $4 and 3,120 out at $10 per million;
+        // claude-haiku-4-5: 2,513 in at $1 and 196 out at $5. Thinking is
+        // inside the output.
+        let sonnet = 38.0 * 2.0 + 186_112.0 * 0.20 + 21_904.0 * 4.0 + 3_120.0 * 10.0;
+        let haiku = 2_513.0 * 1.0 + 196.0 * 5.0;
+        let observed = ClaudeCliAgent::usage_observation(&usage, 0);
+        let api_equiv = observed.api_equiv_usd.expect("both models are listed");
+        let expected = (sonnet + haiku) / 1e6;
+        assert!((api_equiv - expected).abs() < 1e-9, "{observed:?}");
+        let uncached = (38.0 + 186_112.0) * 2.0 + 21_904.0 * 4.0 + 3_120.0 * 10.0 + haiku;
+        let uncached = uncached / 1e6;
+        let without_cache = observed.without_cache_usd.expect("the uncached price");
+        assert!((without_cache - uncached).abs() < 1e-9, "{observed:?}");
+        assert_eq!(
+            observed.price_snapshot_id.as_deref(),
+            Some("prices-2026-09-28")
+        );
+        assert_eq!(
+            observed.cost_usd,
+            Some(0.16),
+            "the CLI's figure is the vendor's"
+        );
+        assert_eq!(observed.cost_basis.as_deref(), Some("list"));
+        assert_eq!(observed.cli_version.as_deref(), Some("2.1.250"));
+        let gap = usage.vendor_gap().expect("both figures are known");
+        assert!(gap.abs() <= VENDOR_GAP_TOLERANCE, "{gap}");
+    }
+
+    /// backlog 6105: a model of the session the snapshot does not list
+    /// leaves the session's price unknown, against the snapshot it tried.
+    #[test]
+    fn an_unlisted_session_model_leaves_the_price_unknown() {
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            &two_model_session("claude-sonnet-4-6", 0.28),
+            "claude-test-model",
+        )
+        .priced_at(Some(&snapshot_2026_09_28()));
+        let observed = ClaudeCliAgent::usage_observation(&usage, 0);
+        assert_eq!(observed.api_equiv_usd, None);
+        assert_eq!(observed.without_cache_usd, None);
+        assert_eq!(
+            observed.price_snapshot_id.as_deref(),
+            Some("prices-2026-09-28")
+        );
+        assert_eq!(usage.vendor_gap(), None);
+    }
+
+    /// backlog 6105: a CLI figure more than 5% away from the snapshot price
+    /// is flagged.
+    #[test]
+    fn a_vendor_figure_far_from_the_snapshot_is_flagged() {
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            &two_model_session("claude-sonnet-5", 0.20),
+            "claude-test-model",
+        )
+        .priced_at(Some(&snapshot_2026_09_28()));
+        let gap = usage.vendor_gap().expect("both figures are known");
+        // $0.20 against the snapshot's $0.1596074.
+        assert!(gap > VENDOR_GAP_TOLERANCE, "{gap}");
+        assert!((gap - (0.20 / 0.1596074 - 1.0)).abs() < 1e-9, "{gap}");
     }
 
     #[test]

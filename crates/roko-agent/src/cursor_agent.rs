@@ -106,6 +106,7 @@ impl ApiUsage {
             source: UsageSource::ProviderReported,
             model,
             wall_ms,
+            ..UsageObservation::default()
         }
     }
 }
@@ -447,6 +448,7 @@ impl CursorAgent {
             // No response named a served model (bug-2379dc).
             model: None,
             wall_ms,
+            ..UsageObservation::default()
         })
     }
 

@@ -509,39 +509,40 @@ mod tests {
         }
     }
 
-    /// bug-0c0747: a Codex turn's cost estimate prices its model at the
-    /// shared registry's rates, and a model the registry does not know at
-    /// gpt-5.6-sol's, the Codex CLI's default.
+    /// backlog 6106: a Codex turn's cost estimate prices its model at the
+    /// built-in price snapshot's row. A model the snapshot does not list,
+    /// the Codex CLI's default gpt-5.6-sol included, has an unknown cost.
     #[test]
-    fn price_tables_agree_codex_turn_estimate_with_builtin_pricing() {
+    fn price_tables_agree_codex_turn_estimate_with_the_snapshot() {
         use roko_agent::AgentRuntimeEvent;
         use roko_agent::provider::codex_cli::stream::parse_stream_line_with_model;
-        use roko_core::config::model_registry::builtin_pricing;
+        use roko_core::pricing_snapshot::PriceSnapshot;
 
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
         let line = r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100}}"#;
-        for (model, priced_as) in [
-            (Some("gpt-5.6-sol"), "gpt-5.6-sol"),
-            (Some("gpt-5.4-mini"), "gpt-5.4-mini"),
-            (Some("codex-mini"), "codex-mini"),
-            (Some("gpt-9-future"), "gpt-5.6-sol"),
-            (None, "gpt-5.6-sol"),
+        for model in [
+            Some("gpt-5.4-mini"),
+            Some("gpt-5.5"),
+            Some("gpt-5.6-sol"),
+            Some("gpt-9-future"),
+            None,
         ] {
             let cost = parse_stream_line_with_model(line, model)
                 .into_iter()
                 .find_map(|event| match event {
                     AgentRuntimeEvent::TurnCompleted { total_cost_usd, .. } => total_cost_usd,
                     _ => None,
-                })
-                .expect("a turn cost");
-            let pricing = builtin_pricing(priced_as).expect("a registry row");
-            let expected = (600.0 * pricing.input_per_m
-                + 400.0 * pricing.cache_read_per_m
-                + 100.0 * pricing.output_per_m)
-                / 1e6;
-            assert!(
-                (cost - expected).abs() < 1e-12,
-                "{model:?}: {cost} against {expected}"
-            );
+                });
+            let expected = model.and_then(|slug| snapshot.row(slug)).map(|row| {
+                (600.0 * row.input + 400.0 * row.cache_read + 100.0 * row.output) / 1e6
+            });
+            match (cost, expected) {
+                (Some(cost), Some(expected)) => assert!(
+                    (cost - expected).abs() < 1e-12,
+                    "{model:?}: {cost} against {expected}"
+                ),
+                (cost, expected) => assert_eq!(cost, expected, "{model:?}"),
+            }
         }
     }
 

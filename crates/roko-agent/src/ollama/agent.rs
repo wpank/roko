@@ -186,6 +186,7 @@ impl OllamaAgent {
             source: UsageSource::ProviderReported,
             model: Some(self.model.clone()),
             wall_ms,
+            ..UsageObservation::default()
         };
 
         AgentResult::ok(output).with_usage_obs(observation)
@@ -210,6 +211,7 @@ impl OllamaAgent {
             source: UsageSource::Unknown,
             model: Some(self.model.clone()),
             wall_ms,
+            ..UsageObservation::default()
         })
     }
 }

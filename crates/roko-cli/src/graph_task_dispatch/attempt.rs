@@ -448,14 +448,8 @@ impl AttemptContext {
         verdict.usage = dispatch.map(attempt_usage).unwrap_or_default();
         verdict.cost = attempt_cost(dispatch);
         // What the attempt's tokens cost at the run's price snapshot, the
-        // figure cost per verified task reads (backlog 2115).
-        if let Some(snapshot) = self.pricing.as_deref()
-            && let Some(priced) = snapshot_price(snapshot, &verdict.usage, &verdict.executed)
-        {
-            verdict.cost.api_equiv_usd = Some(priced.api_equiv_usd);
-            verdict.cost.without_cache_usd = Some(priced.without_cache_usd);
-            verdict.cost.price_snapshot_id = Some(snapshot.id().to_string());
-        }
+        // figure cost per verified task reads (backlog 2115, 6105).
+        price_at_snapshot(&mut verdict, dispatch, self.pricing.as_deref());
         verdict.helpers = self.helpers;
         let agent_failed = verdict.blame == Blame::Agent;
         verdict.ladder = self.ladder.map(|(mut ladder, last_chance)| {
@@ -923,6 +917,43 @@ fn attempt_cost(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> A
         cost.billed_usd = Some(f64::from(usage.cost_usd));
     }
     cost
+}
+
+/// Fill `verdict`'s API-equivalent figures at the run's price `snapshot` (S01
+/// §4.4, backlog 2115). A CLI agent that priced each model of its session at
+/// that snapshot itself (backlog 6105) knows better than one rate for all of
+/// its tokens: its figures stand, and a model the snapshot does not list
+/// leaves the attempt's cost unknown (S04 §4.8). Otherwise the attempt's
+/// tokens are priced at the served model's row ([`snapshot_price`]).
+fn price_at_snapshot(
+    verdict: &mut AttemptVerdictRecord,
+    dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>,
+    snapshot: Option<&PriceSnapshot>,
+) {
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+    let agent_priced = dispatch
+        .and_then(|dispatch| dispatch.result.usage_obs.as_ref())
+        .filter(|observation| observation.price_snapshot_id.as_deref() == Some(snapshot.id()));
+    let priced = match agent_priced {
+        Some(observation) => match observation.api_equiv_usd {
+            Some(api_equiv_usd) => Some(PricedUsage {
+                api_equiv_usd,
+                without_cache_usd: observation.without_cache_usd.unwrap_or(api_equiv_usd),
+            }),
+            None => {
+                verdict.cost.source = CostSource::Unknown;
+                None
+            }
+        },
+        None => snapshot_price(snapshot, &verdict.usage, &verdict.executed),
+    };
+    if let Some(priced) = priced {
+        verdict.cost.api_equiv_usd = Some(priced.api_equiv_usd);
+        verdict.cost.without_cache_usd = Some(priced.without_cache_usd);
+        verdict.cost.price_snapshot_id = Some(snapshot.id().to_string());
+    }
 }
 
 /// What the attempt's `usage` costs at the rates of the run's price
@@ -1788,6 +1819,79 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             assert_eq!(cost["source"], "cli_usage", "{billing:?}: {cost}");
             assert_eq!(cost["vendor_usd"], 0.01, "{billing:?}: {cost}");
             assert_eq!(cost["billed_usd"], billed, "{billing:?}: {cost}");
+        }
+    }
+
+    /// A fake Claude CLI whose session ran `main` with a background
+    /// claude-haiku-4-5, reporting $0.16 of its own (backlog 6105).
+    fn session_provider(main: &str) -> String {
+        format!(
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{{"type":"system","subtype":"init","claude_code_version":"2.1.250"}}'
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"session-output"}}}}'
+printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_cost_usd":0.16,"usage":{{"input_tokens":38,"output_tokens":3120}},"modelUsage":{{"{main}":{{"inputTokens":38,"outputTokens":3120,"cacheReadInputTokens":186112,"cacheCreationInputTokens":21904,"costBasis":"list"}},"claude-haiku-4-5":{{"inputTokens":2513,"outputTokens":196,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costBasis":"list"}}}}}}'
+"#
+        )
+    }
+
+    /// backlog 6105: a Claude CLI session's models are priced one by one at
+    /// the run's snapshot, so a background model's tokens are not priced at
+    /// the main model's rate. A model the snapshot does not list leaves the
+    /// attempt's cost unknown, while the CLI's own figure stays the vendor's.
+    #[tokio::test]
+    async fn a_cli_session_is_priced_model_by_model() {
+        // claude-sonnet-5 at the named snapshot's rates, cache writes at the
+        // 1-hour rate, and the background claude-haiku-4-5 at its own.
+        let sonnet = 38.0 * 2.0 + 186_112.0 * 0.20 + 21_904.0 * 4.0 + 3_120.0 * 10.0;
+        let haiku = 2_513.0 * 1.0 + 196.0 * 5.0;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for (main, api_equiv) in [
+            ("claude-sonnet-5", Some((sonnet + haiku) / 1e6)),
+            ("claude-sonnet-4-6", None),
+        ] {
+            let temp = tempdir().expect("tempdir");
+            let prices = temp.path().join("config/prices");
+            std::fs::create_dir_all(&prices).expect("prices dir");
+            std::fs::write(
+                prices.join("2026-09-28.toml"),
+                include_str!("../../../../config/prices/2026-09-28.toml"),
+            )
+            .expect("write the snapshot");
+            let runs_dir = temp.path().join(".roko/runs");
+            let feedback = GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            };
+            let configure = |config: &mut RokoConfig| {
+                no_auto_fix(config);
+                config.pricing.snapshot = "prices-2026-09-28".to_string();
+            };
+            let script = session_provider(main);
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, &script, configure, feedback).await;
+            task.verify = vec![verify_step("structural", "true")];
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await
+                .expect("the verified attempt passes");
+            drop(dispatcher);
+            let attempts = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+            let cost = &attempts[1]["cost"];
+            assert_eq!(cost["vendor_usd"], 0.16, "{main}: {cost}");
+            match api_equiv {
+                Some(expected) => {
+                    let priced = cost["api_equiv_usd"].as_f64().expect("api_equiv_usd");
+                    assert!((priced - expected).abs() < 1e-9, "{main}: {cost}");
+                    assert_eq!(cost["price_snapshot_id"], "prices-2026-09-28", "{cost}");
+                    assert_eq!(cost["source"], "cli_usage", "{main}: {cost}");
+                }
+                None => {
+                    assert!(cost["api_equiv_usd"].is_null(), "{main}: {cost}");
+                    assert_eq!(cost["source"], "unknown", "{main}: {cost}");
+                }
+            }
         }
     }
 

@@ -2321,30 +2321,7 @@ pub(crate) fn pricing_snapshot(
     pricing: &PricingConfig,
     workspace_root: &Path,
 ) -> Option<Arc<PriceSnapshot>> {
-    type Loaded = std::collections::HashMap<(PathBuf, String), Option<Arc<PriceSnapshot>>>;
-    static LOADED: std::sync::LazyLock<parking_lot::Mutex<Loaded>> =
-        std::sync::LazyLock::new(parking_lot::Mutex::default);
-    let key = (
-        workspace_root.to_path_buf(),
-        pricing.snapshot_id().unwrap_or_default().to_string(),
-    );
-    let mut loaded = LOADED.lock();
-    loaded
-        .entry(key)
-        .or_insert_with(
-            || match PriceSnapshot::for_workspace(pricing, workspace_root) {
-                Ok(snapshot) => Some(Arc::new(snapshot)),
-                Err(error) => {
-                    tracing::warn!(
-                        workspace = %workspace_root.display(),
-                        %error,
-                        "no price snapshot: calls are priced from roko.toml and built-in rates"
-                    );
-                    None
-                }
-            },
-        )
-        .clone()
+    PriceSnapshot::shared(pricing, workspace_root)
 }
 
 /// Which rates priced a call's usage (backlog 2114).

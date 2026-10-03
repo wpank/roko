@@ -125,6 +125,7 @@ pub mod defaults;
 
 pub mod demurrage;
 pub mod dispatch_plan;
+pub mod disturbance;
 /// Canonical single-unit duration parser (`ms`, `s`, `m`, `h`, `d`).
 pub mod duration;
 /// Backward-compatible re-export module — canonical definitions live in [`signal`].

@@ -65,3 +65,11 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK74 (gap-ce1d11), PK75 (gap-3c3729), PK76 (gap-99c9ae).
 - Suggested model: opus.
+
+## Progress
+
+- 9136: implemented at bf61230c2
+- 9137: implemented at 17812b8b9
+- 9138: implemented at 37b6b0cab
+
+The Rust tasks were checked statically (verify greps, hand formatting, the route inventory check); cargo verification is left to the batch gate. Notes: 9136 serializes copy-backs with a process-wide lock plus the base-manifest check (exclusive_files is still a hint plan run does not act on), and a plan held for approval refuses a scratch_dir acceptance; 9137 makes confirm a built rung kind (the unbuilt-kind test now uses receipt), labels the step confirmed_by_user in the attempt record, and still counts a yes as Passed in the task verdict; 9138 adds a values-free argument summary to the effects report.

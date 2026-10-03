@@ -989,7 +989,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         };
         // A scratch_dir task works in a copy of its data outside git, in
         // place of a worktree (9135).
-        let scratch = match task.workspace_kind(&self.config) {
+        let mut scratch = match task.workspace_kind(&self.config) {
             roko_core::WorkspaceKind::ScratchDir => {
                 Some(self.lease_scratch(&task, ctx, attempt_id.attempt)?)
             }
@@ -1702,6 +1702,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     )
                     .await?;
             }
+        }
+        // A scratch_dir attempt's result is copied back into the workspace,
+        // unless another writer changed its files since the copy (9136).
+        if let Some(scratch) = scratch.as_mut() {
+            self.accept_scratch(spec, &task, &settled, verdict, scratch)?;
         }
 
         let mut output = dispatch.result.output;

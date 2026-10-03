@@ -504,6 +504,11 @@ pub struct VerifyStepVerdict {
     pub skipped: bool,
     /// Why the step was skipped, e.g. `fail_fast`.
     pub skip_reason: Option<String>,
+    /// Whether the person the work is for confirmed the outcome: a passed
+    /// `confirm` rung (9137). It is a person's judgement, kept apart from
+    /// the machine checks, which routing and audits read as such.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub confirmed_by_user: bool,
 }
 
 /// Most scope findings a verdict lists; it counts the rest

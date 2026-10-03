@@ -595,7 +595,7 @@ pub(super) async fn merge_branch(workdir: &std::path::Path, branch: &str) -> boo
 
 /// Record a review decision to `.roko/state/reviews.jsonl`, naming the held
 /// attempt it decides when there is one (gap-0d64d5).
-pub(super) async fn record_review(
+pub(crate) async fn record_review(
     workdir: &std::path::Path,
     plan_id: &str,
     task_id: &str,

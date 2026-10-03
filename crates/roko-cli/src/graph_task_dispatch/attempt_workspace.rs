@@ -3,33 +3,41 @@
 //! first when its plan asks for that (gap-0d64d5), and the attempt and
 //! checkout a task's output names (bug-50caf2).
 
+use roko_core::Verdict;
+use roko_core::config::GateRungConfig;
 use roko_graph::workspace::{
     ExecutionWorkspaceProvider, WorkspaceAcceptRequest, WorkspaceAcceptance, WorkspaceError,
     WorkspaceLease, WorkspaceReleasePolicy,
 };
 
 use super::*;
-use crate::orchestrator::scratch::ScratchLease;
+use crate::orchestrator::scratch::{CopyBackError, ScratchLease};
 
-/// The scratch_dir workspace of an attempt (9135). When the attempt ends,
-/// however it ends, its result manifest is written; the directory is kept,
-/// as a failed attempt's worktree is, and an accepted one waits there until
-/// its changes are copied back into the workspace (9136).
+/// The scratch_dir workspace of an attempt (9135). An accepted attempt's
+/// changes are copied back into the workspace and its copy removed
+/// ([`GraphTaskDispatcher::accept_scratch`], 9136). Otherwise, when the
+/// attempt ends, however it ends, its result manifest is written and the
+/// copy kept, as a failed attempt's worktree is.
 pub(super) struct ScratchAttempt {
-    lease: ScratchLease,
+    dir: PathBuf,
+    /// `None` once the attempt was accepted and its copy removed.
+    lease: Option<ScratchLease>,
 }
 
 impl ScratchAttempt {
     /// The attempt's working directory.
     pub(super) fn dir(&self) -> &Path {
-        self.lease.dir()
+        &self.dir
     }
 }
 
 impl Drop for ScratchAttempt {
     fn drop(&mut self) {
-        let dir = self.lease.dir().display().to_string();
-        match self.lease.finish() {
+        let Some(lease) = &self.lease else {
+            return;
+        };
+        let dir = self.dir.display().to_string();
+        match lease.finish() {
             Ok(changes) => tracing::info!(
                 scratch = %dir,
                 changed = changes.changed.len(),
@@ -47,14 +55,6 @@ impl Drop for ScratchAttempt {
 }
 
 impl GraphTaskDispatcher {
-    /// Checkout generation of the task `task_key` (`"{plan_id}/{task_id}"`):
-    /// its worktree is the workspace attempt `(plan, task, generation)`.
-    /// Retries of a task share that checkout, so a retry resumes the work its
-    /// predecessor left, as after a turn cap or a timeout. When the plan
-    /// branch refuses the task's work as conflicting, or the pre-verify
-    /// screen rejects it for tampering or for scope, the task moves on to a
-    /// fresh checkout of the plan's accepted tip
-    /// ([`Self::restart_from_plan_tip`]).
     /// The scratch_dir workspace of `task`'s attempts in checkout
     /// generation `generation` (9135): a copy of the data its `files` name,
     /// under `.roko/scratch/<run>/<task>/<generation>/`, which its retries
@@ -69,7 +69,10 @@ impl GraphTaskDispatcher {
         let dir = roko_fs::RokoLayout::for_project(&self.workdir)
             .scratch_attempt_dir(run_id, &task.id, generation);
         match ScratchLease::acquire(&self.workdir, dir, &task.files) {
-            Ok(lease) => Ok(ScratchAttempt { lease }),
+            Ok(lease) => Ok(ScratchAttempt {
+                dir: lease.dir().to_path_buf(),
+                lease: Some(lease),
+            }),
             Err(error) => Err(RokoError::Agent {
                 backend: "scratch-workspace".to_string(),
                 message: format!(
@@ -80,6 +83,110 @@ impl GraphTaskDispatcher {
         }
     }
 
+    /// Accept the verified scratch_dir attempt `settled` of `task` (9136):
+    /// copy what it changed back into the workspace, unless the workspace
+    /// changed those files since the copy was made. The files written back
+    /// and their new hashes go to `<copy>.accepted.json` beside the copy,
+    /// which is then removed. A conflict fails the attempt, its feedback
+    /// names the files, the copy is kept, and the task's next attempt works
+    /// in a fresh copy. A verdict that does not let work land keeps the copy
+    /// and copies nothing back, and so does a plan that holds its tasks for
+    /// approval, whose review hold shows a worktree's changes only.
+    pub(super) fn accept_scratch(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        settled: &SettledAttempt,
+        verdict: TaskGateVerdict,
+        scratch: &mut ScratchAttempt,
+    ) -> Result<()> {
+        if !verdict.is_replayable() {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                verdict = verdict.as_str(),
+                scratch = %scratch.dir.display(),
+                "the attempt's verdict does not let its work land; kept its scratch copy"
+            );
+            return Ok(());
+        }
+        if self.holds_for_approval(&spec.plan_id) {
+            return Err(RokoError::Rejected(format!(
+                "attempt {} passed its gates, but its plan holds each task for approval, which a \
+                 scratch_dir task cannot wait for yet; its copy is kept at {}",
+                settled.attempt_key(),
+                scratch.dir.display()
+            )));
+        }
+        let Some(lease) = scratch.lease.as_ref() else {
+            return Ok(());
+        };
+        match lease.copy_back(&self.workdir) {
+            Ok(copied) => {
+                let record = serde_json::json!({
+                    "attempt_key": settled.attempt_key(),
+                    "copied": copied,
+                });
+                let path = scratch_record_path(&scratch.dir, "accepted");
+                if let Err(error) = std::fs::write(&path, record.to_string()) {
+                    tracing::warn!(path = %path.display(), %error, "copy-back record not written");
+                }
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    attempt_key = settled.attempt_key(),
+                    files = copied.len(),
+                    "copied the scratch attempt's changes back into the workspace"
+                );
+                if let Some(lease) = scratch.lease.take()
+                    && let Err(error) = lease.remove()
+                {
+                    tracing::warn!(error = %format!("{error:#}"), "the scratch copy stays");
+                }
+                Ok(())
+            }
+            Err(CopyBackError::Conflict(paths)) => {
+                // The next attempt works in a fresh copy of the workspace's
+                // data, which holds the other writer's changes.
+                let key = format!("{}/{}", spec.plan_id, task.id);
+                *self.worktree_generations.lock().entry(key).or_default() += 1;
+                if let Some(feedback) = scratch_conflict_feedback(&paths) {
+                    self.gate_retry_context.record(
+                        &spec.plan_id,
+                        &task.id,
+                        feedback,
+                        settled.key().attempt.saturating_add(1),
+                    );
+                }
+                Err(RokoError::Verify {
+                    gate: "scratch-copy-back".to_string(),
+                    message: format!(
+                        "attempt {} passed its gates, but the workspace changed {} since its copy \
+                         was made, so its result was not copied back; its copy is kept at {}, \
+                         and the next attempt works in a fresh copy",
+                        settled.attempt_key(),
+                        paths.join(", "),
+                        scratch.dir.display()
+                    ),
+                })
+            }
+            Err(error) => Err(RokoError::Rejected(format!(
+                "attempt {} passed its gates, but its result could not be copied back: {error}; \
+                 its copy is kept at {}",
+                settled.attempt_key(),
+                scratch.dir.display()
+            ))),
+        }
+    }
+
+    /// Checkout generation of the task `task_key` (`"{plan_id}/{task_id}"`):
+    /// its worktree is the workspace attempt `(plan, task, generation)`.
+    /// Retries of a task share that checkout, so a retry resumes the work its
+    /// predecessor left, as after a turn cap or a timeout. When the plan
+    /// branch refuses the task's work as conflicting, or the pre-verify
+    /// screen rejects it for tampering or for scope, the task moves on to a
+    /// fresh checkout of the plan's accepted tip
+    /// ([`Self::restart_from_plan_tip`]).
     pub(super) fn worktree_generation(&self, task_key: &str) -> u32 {
         self.worktree_generations
             .lock()
@@ -229,6 +336,93 @@ impl GraphTaskDispatcher {
         }
     }
 
+    /// A `confirm` rung's verdict on the attempt `attempt_key` at `task`
+    /// (9137, decision 9108): the person the work is for confirms its
+    /// outcome. The task's review hold gets the rung's question and a short
+    /// summary of `artefacts`, where `roko serve`'s review routes and the
+    /// `/mcp` `confirm_pending` tool show it, and the rung waits for a
+    /// decision on the attempt in the review log, which the `confirm_answer`
+    /// tool, the review route and `roko plan review` write. A "yes" passes it
+    /// as [`CONFIRMED_BY_USER`], a person's judgement that the attempt record
+    /// keeps apart from machine checks; any other answer fails it with the
+    /// person's note; no answer within the rung's `timeout_secs`, or a run
+    /// that began to stop, skips it, so the task ends unverified. The hold is
+    /// removed either way.
+    pub(super) async fn confirm_rung(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_key: &str,
+        rung: &GateRungConfig,
+        artefacts: &[(String, String)],
+    ) -> Verdict {
+        let label = super::verification::rung_step_label(&rung.name);
+        let layout = roko_fs::RokoLayout::for_project(&self.workdir);
+        let hold_path = layout.review_hold(&spec.plan_id, &task.id);
+        let key = roko_learn::telemetry::AttemptKey::parse(attempt_key);
+        let hold = serde_json::json!({
+            "schema_version": 1,
+            "kind": "confirm",
+            "plan_id": spec.plan_id,
+            "task_id": task.id,
+            "title": task.title,
+            "run_id": key.as_ref().map(|key| key.run_id.clone()),
+            "attempt_key": attempt_key,
+            "attempt": key.as_ref().map(|key| key.attempt),
+            "rung": rung.name,
+            "question": confirm_question(&self.workdir, rung),
+            "summary": confirm_summary(artefacts),
+            "timeout_secs": rung.timeout_secs,
+            "held_at": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Err(error) = write_review_hold(&hold_path, &hold) {
+            let reason = format!("the confirmation could not be asked: {error}");
+            return Verdict::skip(&label, reason);
+        }
+        tracing::info!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            attempt_key,
+            hold = %hold_path.display(),
+            "the attempt waits for its person to confirm the outcome"
+        );
+        let reviews = layout.reviews_log();
+        let deadline = std::time::Instant::now() + rung.timeout();
+        let decision = loop {
+            if let Some(decision) = review_decision(&reviews, &spec.plan_id, &task.id, attempt_key)
+            {
+                break Some(decision);
+            }
+            let stopping = self.stopped_verify(spec, task, "confirm").is_some();
+            if stopping || std::time::Instant::now() >= deadline {
+                break None;
+            }
+            tokio::time::sleep(REVIEW_POLL_INTERVAL).await;
+        };
+        if let Err(error) = std::fs::remove_file(&hold_path) {
+            tracing::warn!(hold = %hold_path.display(), %error, "the confirm hold stays");
+        }
+        match decision {
+            Some((decision, note)) if decision == "approved" => {
+                let mut verdict = Verdict::pass(&label).with_detail(note);
+                verdict.reason = CONFIRMED_BY_USER.to_string();
+                verdict
+            }
+            Some((decision, note)) => {
+                let note = if note.trim().is_empty() {
+                    "no note".to_string()
+                } else {
+                    note
+                };
+                Verdict::fail(&label, format!("the person {decision} the outcome: {note}"))
+            }
+            None => {
+                let reason = format!("no answer within {} s", rung.timeout_secs);
+                Verdict::skip(&label, reason)
+            }
+        }
+    }
+
     /// Hold the verified attempt `settled` of `task`, which ran in `lease`,
     /// until a person approves or rejects it (gap-0d64d5).
     ///
@@ -369,6 +563,77 @@ const CONFLICT_PATHS_LISTED: usize = 20;
 /// refusal's `reason`, then the paths it names, or else the paths the
 /// attempt changed (`changed`). It stays raw text: lifting out a path that
 /// reads like a failing test would leave the prompt with that line alone.
+/// The reason a passed `confirm` rung gives (9137): the person the work is
+/// for confirmed the outcome, which is their judgement, not a machine check.
+pub(super) const CONFIRMED_BY_USER: &str = "confirmed_by_user";
+
+/// The question a `confirm` rung asks when its `rubric` names none.
+const DEFAULT_CONFIRM_QUESTION: &str = "Is the result what you asked for?";
+
+/// The most of its artefacts a `confirm` hold's summary shows, in bytes.
+const CONFIRM_SUMMARY_BYTES: usize = 2 * 1024;
+
+/// The question `rung`, a `confirm` rung, asks: its `rubric`, the text or
+/// the path of a file in the workspace at `workdir` holding it, else
+/// [`DEFAULT_CONFIRM_QUESTION`].
+fn confirm_question(workdir: &Path, rung: &GateRungConfig) -> String {
+    let Some(rubric) = rung
+        .rubric
+        .as_deref()
+        .map(str::trim)
+        .filter(|rubric| !rubric.is_empty())
+    else {
+        return DEFAULT_CONFIRM_QUESTION.to_string();
+    };
+    std::fs::read_to_string(workdir.join(rubric))
+        .map(|text| text.trim().to_string())
+        .unwrap_or_else(|_| rubric.to_string())
+}
+
+/// A short summary of a `confirm` rung's `artefacts` for the person to
+/// judge: each one's path and text, cut to [`CONFIRM_SUMMARY_BYTES`].
+fn confirm_summary(artefacts: &[(String, String)]) -> String {
+    if artefacts.is_empty() {
+        return "(the rung names no files)".to_string();
+    }
+    let mut summary = String::new();
+    for (path, text) in artefacts {
+        summary.push_str(&format!("{path}:\n{}\n", text.trim()));
+    }
+    if summary.len() > CONFIRM_SUMMARY_BYTES {
+        let cut = summary.floor_char_boundary(CONFIRM_SUMMARY_BYTES);
+        summary.truncate(cut);
+        summary.push_str("\n...[truncated]");
+    }
+    summary
+}
+
+/// The record of kind `kind` (such as `accepted`) beside the scratch copy at
+/// `dir`, where its manifests are.
+fn scratch_record_path(dir: &Path, kind: &str) -> PathBuf {
+    let name = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    dir.with_file_name(format!("{name}.{kind}.json"))
+}
+
+/// The next attempt's feedback after a scratch copy-back refused because the
+/// workspace changed `paths` since the copy was made (9136).
+fn scratch_conflict_feedback(paths: &[String]) -> Option<GateFeedback> {
+    let message = format!(
+        "Your previous attempt's result was not copied back: the workspace changed {} since its \
+         copy was made. This attempt works in a fresh copy that holds those changes; keep them.",
+        paths.join(", ")
+    );
+    GateFeedback::from_raw(&message).map(|feedback| GateFeedback {
+        compile_errors: Vec::new(),
+        test_failures: Vec::new(),
+        clippy_warnings: Vec::new(),
+        ..feedback
+    })
+}
+
 fn conflict_feedback(reason: &str, changed: &[String]) -> Option<GateFeedback> {
     let mut message = format!(
         "Your previous attempt's work conflicts with the plan's accepted work ({reason}). The \

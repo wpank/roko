@@ -42,7 +42,11 @@ const MAX_ARTEFACT_BYTES: u64 = 1 << 20;
 fn is_built(kind: RungKind) -> bool {
     matches!(
         kind,
-        RungKind::Command | RungKind::Citations | RungKind::Judge | RungKind::Schema
+        RungKind::Command
+            | RungKind::Citations
+            | RungKind::Judge
+            | RungKind::Schema
+            | RungKind::Confirm
     )
 }
 
@@ -237,7 +241,8 @@ impl GraphTaskDispatcher {
             let shown = format!("{} {}", rung.kind, rung.artefacts.join(" "));
             let started = Instant::now();
             let artefacts = read_artefacts(workdir, &rung.artefacts);
-            let verdict = if artefacts.is_empty() {
+            // A `confirm` rung asks about the outcome, with or without files.
+            let verdict = if artefacts.is_empty() && rung.kind != RungKind::Confirm {
                 let globs = rung.artefacts.join(", ");
                 Verdict::fail(&label, format!("no artefact matches {globs}"))
             } else {
@@ -267,6 +272,10 @@ impl GraphTaskDispatcher {
                             }
                         }
                     }
+                    RungKind::Confirm => {
+                        self.confirm_rung(spec, task, attempt_key, rung, &artefacts)
+                            .await
+                    }
                     // A rung of a kind not built yet refused the attempt
                     // before its agent ran (`unbuilt_rung`).
                     _ => continue,
@@ -293,12 +302,14 @@ impl GraphTaskDispatcher {
                     Some(&output),
                 );
             }
+            let confirmed = rung.kind == RungKind::Confirm && verdict.passed && !verdict.skipped;
             step_verdicts.push(VerifyStepVerdict {
                 rung: label.clone(),
                 passed: (!verdict.skipped).then_some(verdict.passed),
                 duration_ms: Some(verdict.duration_ms),
                 skipped: verdict.skipped,
                 skip_reason: verdict.skip_reason.clone(),
+                confirmed_by_user: confirmed,
                 ..VerifyStepVerdict::default()
             });
             if !rung.required || rung.is_advisory() {
@@ -551,8 +562,8 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        FIXTURE_PROVIDER_TIMEOUT_MS, VERIFY_PROVIDER, final_turn, make_spec, make_test_dispatcher,
-        make_test_dispatcher_with, no_auto_fix, spawn_openai_mock,
+        FIXTURE_PROVIDER_TIMEOUT_MS, VERIFY_PROVIDER, final_turn, jsonl_rows_where, make_spec,
+        make_test_dispatcher, make_test_dispatcher_with, no_auto_fix, spawn_openai_mock,
     };
 
     /// A required `command` rung `name` that runs `command`.
@@ -638,9 +649,9 @@ mod tests {
             artefacts: vec!["report.md".to_string()],
             ..rung("rubric", "")
         };
-        let confirm = GateRungConfig {
-            kind: RungKind::Confirm,
-            ..rung("sign-off", "")
+        let receipt = GateRungConfig {
+            kind: RungKind::Receipt,
+            ..rung("posted", "")
         };
         let (dispatcher, mut task) = make_test_dispatcher(
             &temp,
@@ -648,7 +659,7 @@ mod tests {
             |config| {
                 no_auto_fix(config);
                 config.gates.custom_rungs = vec![rung("lint", "true")];
-                for (label, only) in [("research", judge), ("legal", confirm.clone())] {
+                for (label, only) in [("research", judge), ("ops", receipt.clone())] {
                     let pack = GatePackConfig { rungs: vec![only] };
                     config.gates.packs.insert(label.to_string(), pack);
                 }
@@ -668,22 +679,22 @@ mod tests {
             Some(TaskGateVerdict::Unverified)
         );
 
-        task.domain = TaskDomain::from_label("legal");
+        task.domain = TaskDomain::from_label("ops");
         let error = dispatcher
             .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
             .await
-            .expect_err("a required confirm rung fails closed");
+            .expect_err("a required receipt rung fails closed");
         assert!(matches!(error, RokoError::Rejected(_)), "{error}");
         let refusal = error.to_string();
         assert!(
-            refusal.contains("rung kind `confirm` is not built yet"),
+            refusal.contains("rung kind `receipt` is not built yet"),
             "{refusal}"
         );
 
-        let step = verify_step(&confirm).expect("a step that fails");
+        let step = verify_step(&receipt).expect("a step that fails");
         assert_eq!(
             step.command,
-            "printf '%s\\n' 'rung kind `confirm` is not built yet' >&2; exit 1"
+            "printf '%s\\n' 'rung kind `receipt` is not built yet' >&2; exit 1"
         );
 
         task.domain = None;
@@ -973,5 +984,115 @@ mod tests {
         task.domain = Some(TaskDomain::Docs);
         let docs = tool_domain(&dispatcher.config, task.domain.clone());
         assert_eq!(docs, Some(TaskDomain::Docs));
+    }
+
+    /// The `assistant` pack: a required `confirm` rung over `report.md` that
+    /// asks whether the summary is what the person asked for, and waits two
+    /// seconds for an answer.
+    fn confirm_pack(config: &mut RokoConfig) {
+        no_auto_fix(config);
+        let sign_off = GateRungConfig {
+            kind: RungKind::Confirm,
+            artefacts: vec!["report.md".to_string()],
+            rubric: Some("Is the summary what you asked for?".to_string()),
+            timeout_secs: 2,
+            ..rung("sign-off", "")
+        };
+        let assistant = GatePackConfig {
+            rungs: vec![sign_off],
+        };
+        config
+            .gates
+            .packs
+            .insert("assistant".to_string(), assistant);
+    }
+
+    /// 9137: a `confirm` rung writes the task's review hold with its question
+    /// and a summary of the report, and holds the attempt until the person
+    /// answers. A yes, written to the review log as the `confirm_answer` tool
+    /// writes it, passes the attempt and labels its step `confirmed_by_user`
+    /// in the attempt record; with no answer the rung's timeout ends the
+    /// attempt unverified.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn confirm_rung_holds_until_the_host_answers() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("report.md"), "Summary: all done.\n").expect("report");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, confirm_pack, feedback).await;
+        task.verify.clear();
+        task.domain = TaskDomain::from_label("assistant");
+        let spec = make_spec(&task);
+        let workdir = temp.path().to_path_buf();
+        let hold = roko_fs::RokoLayout::for_project(&workdir).review_hold(&spec.plan_id, &task.id);
+
+        // The person answers once the hold appears.
+        let answer = tokio::spawn({
+            let (workdir, hold) = (workdir.clone(), hold.clone());
+            let (plan_id, task_id) = (spec.plan_id.clone(), task.id.clone());
+            async move {
+                for _ in 0..200 {
+                    let held = std::fs::read(&hold)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+                    if let Some(held) = held {
+                        crate::graph_task_dispatch::record_review(
+                            &workdir,
+                            &plan_id,
+                            &task_id,
+                            "approved",
+                            "yes, that is it",
+                        )
+                        .expect("the answer");
+                        return held;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                serde_json::Value::Null
+            }
+        });
+        let run = "confirm-run";
+        let ctx = CellContext::new().with_run_id(run.to_string());
+        let outputs = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("a confirmed attempt passes");
+        let held = answer.await.expect("the answer");
+        assert_eq!(held["kind"], "confirm", "{held}");
+        assert_eq!(
+            held["question"], "Is the summary what you asked for?",
+            "{held}"
+        );
+        let summary = held["summary"].as_str().unwrap_or_default();
+        assert!(summary.contains("Summary: all done."), "{held}");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+        assert!(!hold.exists(), "the hold stays");
+
+        let unanswered = dispatcher
+            .dispatch(&spec, Vec::new(), &CellContext::new())
+            .await
+            .expect("an unanswered confirmation does not fail the attempt");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&unanswered),
+            Some(TaskGateVerdict::Unverified)
+        );
+        drop(dispatcher);
+
+        let verdicts = jsonl_rows_where(&runs_dir.join(run).join("attempts.jsonl"), 1, |row| {
+            row["schema_version"] == "roko.verdict/1"
+        })
+        .await;
+        let steps = verdicts[0]["steps"].as_array().cloned().unwrap_or_default();
+        assert!(
+            steps.iter().any(|step| step["confirmed_by_user"] == true),
+            "{steps:?}"
+        );
     }
 }

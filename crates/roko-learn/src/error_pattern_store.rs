@@ -63,6 +63,9 @@ use serde::{Deserialize, Serialize};
 /// write and every reader loads (backlog 4204).
 pub const ERROR_PATTERNS_FILE: &str = "error-patterns.json";
 
+/// The longest fix a verified pass records on a pattern (backlog 4125).
+pub const MAX_RESOLUTION_CHARS: usize = 400;
+
 /// Runner-v2's pattern file in `.roko/learn`, which nothing writes any more.
 /// [`retire_legacy_discovered_patterns`] sets it aside.
 pub const LEGACY_DISCOVERED_PATTERNS_FILE: &str = "discovered-patterns.json";
@@ -126,6 +129,10 @@ pub struct ErrorPattern {
     pub resolved: bool,
     /// What fixed the error (filled in from reflection or manual annotation).
     pub resolution: Option<String>,
+    /// The key of the verified attempt whose pass recorded `resolution`
+    /// ([`ErrorPatternStore::record_resolution`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_by: Option<String>,
     /// Auto-fix hint extracted from rustc output.
     pub suggestion: Option<String>,
 }
@@ -447,12 +454,28 @@ impl ErrorPatternStore {
             task_ids: observation.task_id.into_iter().collect(),
             resolved: false,
             resolution: None,
+            resolved_by: None,
             suggestion: observation.suggestion,
         });
         FailurePatternUpdate {
             inserted: true,
             occurrences: 1,
         }
+    }
+
+    /// Record on the pattern `key` what fixed it: `resolution`, cut to
+    /// [`MAX_RESOLUTION_CHARS`], from the verified attempt `resolved_by`
+    /// (backlog 4125). The pattern stays unresolved, because prompts leave
+    /// resolved patterns out, which would hide the fix exactly when there is
+    /// one to show. Returns whether `key` names a pattern.
+    pub fn record_resolution(&mut self, key: &str, resolution: &str, resolved_by: &str) -> bool {
+        let Some(&index) = self.key_index.get(key.trim()) else {
+            return false;
+        };
+        let pattern = &mut self.patterns[index];
+        pattern.resolution = Some(truncate_chars(resolution.trim(), MAX_RESOLUTION_CHARS));
+        pattern.resolved_by = Some(resolved_by.to_string());
+        true
     }
 
     /// Return the most frequent patterns, sorted by descending occurrence

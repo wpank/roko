@@ -25,9 +25,6 @@ command = "grep -rqw 'fn dry_run_canary_reaches_p4_without_learned_writes' crate
 command = "grep -rqw 'fn injected_cut_empties_knowledge_section' crates/roko-cli/src/ && cargo test -p roko-cli --lib --features fault-injection injected_cut_empties_knowledge_section"
 
 [[verify]]
-command = "test -f crates/roko-cli/tests/loop_audit_faults.rs && grep -qw 'fn structural_faults_detected_and_localized' crates/roko-cli/tests/loop_audit_faults.rs && cargo test -p roko-cli --features fault-injection --test loop_audit_faults structural_faults_detected_and_localized"
-
-[[verify]]
 command = "test -f crates/roko-cli/tests/loop_audit_census_run.rs && grep -qw 'fn fixture_run_logs_arms_before_plan_and_measures_exposure' crates/roko-cli/tests/loop_audit_census_run.rs && cargo test -p roko-cli --test loop_audit_census_run fixture_run_logs_arms_before_plan_and_measures_exposure"
 
 [[verify]]
@@ -96,3 +93,4 @@ Worker w3 (no cargo; Rust checks deferred to the batch gate), base `552112110`, 
 - 5133: implemented at `f30e320ee`. Admin canary route (injected `LoopCanaryRunner`, set by `roko serve` and `roko up`), and feature-gated fault and break routes (403, 422, 409). Decision 5101 §9.10 is applied: the Dockerfile builds `fault-injection`, and dry-run kinds reach only `faults::dry_run` reads.
 - 5134: implemented at `f3606abd3`. `roko learn loops canary <id>` and `fault <id> <kind>` (exit 2 without the feature or `ROKO_FAULTS=1`). The fault form shows the canary's first failing probe; time to detection waits on 5130.
 - gap-135821 (5127's L-route canary): implemented at `318b1a0c3`. A canary-only `CascadeRouter` preference read inside `canary_scope`, `loop_canary::RouteCanary`, and L-route in `DryCanaryRunner`.
+- 2026-10-03 (coordinator, gate 9b): 5130 (E1, the fault replay) and its verify left this item for gap-a13544: the census lacks the stale, degenerate and cut signatures E1 needs. The census-run test (5131) runs as four 50-task plans under the 64-task cap (48bc6ac41).

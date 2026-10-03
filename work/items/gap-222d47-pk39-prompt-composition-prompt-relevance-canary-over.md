@@ -69,3 +69,11 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK33 (gap-aea13a), PK35 (gap-943046), PK38 (gap-894977).
 - Suggested model: opus.
+
+## Progress
+
+- 4220: implemented at dc3249b88 (cargo verification deferred to the batch gate). New tests/prompt_relevance_canary.rs: two scripted runs over R2's calc fixture, in maximize mode, with helper calls on a provider of their own; `unrelated_tasks_get_no_learned_sections` and `a_later_task_sees_its_topics_lessons` (pattern with `Fix:`, lesson, calc playbook).
+- 4217: implemented at da3219956 (cargo verification deferred to the batch gate). The attention-bidder learner, its persistence and the factory hook are deleted; the loop registry retires L-bid (by 4217), since its findings pointed at the deleted symbols, and the registry and census tests list it as retired.
+- 4218: implemented at 5ff47ffde (cargo verification deferred to the batch gate). VCG allocation, the learning bidders and their diagnostics are gone from roko-compose; every strategy resolves to density-greedy; `composer_never_selects_vcg`.
+- 4219: implemented at 185e0763f (cargo verification deferred to the batch gate). `composition_strategy` defaults to density_greedy; `auto` and `vcg` load as density_greedy with a one-time warning; `vcg_warmup_observations` loads and is ignored; roko.toml drops its [prompt] table; `legacy_vcg_prompt_keys_load_as_density_greedy`.
+- gap-29fe0a: implemented at 427f81e4b (cargo verification deferred to the batch gate). `roko run --no-holdout` reaches every run path (one task, --plan, plan directory, --serve/--share); `cli_parses_run_no_holdout`, `no_holdout_reaches_the_run`.

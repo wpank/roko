@@ -49,10 +49,8 @@ use indexmap::IndexMap;
 use roko_core::agent::ModelSpec;
 use roko_core::config::routing::LadderConfig;
 use roko_core::config::schema::{ModelProfile, RokoConfig};
-use roko_core::task::{TaskCategory, TaskSpeedPriority, TaskTier};
-use roko_learn::cascade_router::{
-    CascadeModel, CascadeRouter, ExploredRoute, RoutingBias, explore_route,
-};
+use roko_core::task::{TaskCategory, TaskTier};
+use roko_learn::cascade_router::{CascadeModel, CascadeRouter, ExploredRoute, explore_route};
 use roko_learn::latency::LatencyRegistry;
 use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
@@ -116,14 +114,6 @@ pub struct RoutingInputs {
     /// Full routing context for the CascadeRouter. When `Some`, the router
     /// calls `CascadeRouter::route()` instead of falling back to the default.
     pub routing_context: Option<RoutingContext>,
-    /// Conductor routing bias derived from the live signal stream. When `Some`,
-    /// deprioritized models are filtered out and prefer-cheaper scoring is
-    /// applied so the cascade router avoids models the conductor flagged.
-    pub routing_bias: Option<RoutingBias>,
-    /// When `true`, plan spend has crossed the 80% threshold and the router
-    /// should bias toward cheaper models. Set by the event loop when
-    /// `BudgetAction::RouteToCheaper` fires.
-    pub budget_pressure: bool,
     /// The attempt the route is for: the unit of its exploration draw
     /// (S02.P1-3). Without one the route never explores.
     pub attempt_key: Option<AttemptKey>,
@@ -132,20 +122,12 @@ pub struct RoutingInputs {
 impl RoutingInputs {
     /// Extract router inputs from a task + per-call context.
     ///
-    /// A task's `model_hint` beats its `preferred_model`, and a
-    /// `speed_priority = "latency"` task asks the router for cheaper models
-    /// the way budget pressure does.
+    /// A task's `model_hint` beats its `preferred_model`. Its
+    /// `speed_priority` routes nothing: no routing bias is left (decision
+    /// 3108), and `plan validate` says so (PLAN_047).
     #[must_use]
     pub fn from_task(task: &TaskDef, ctx: &DispatchContext) -> Self {
         let hints = &task.hints;
-        let routing_bias = if hints.speed_priority == Some(TaskSpeedPriority::Latency) {
-            Some(prefer_cheaper(
-                ctx.routing_bias.clone(),
-                "speed_priority = latency",
-            ))
-        } else {
-            ctx.routing_bias.clone()
-        };
         Self {
             task_domain: task.domain.as_ref().map(|d| d.label().to_string()),
             task_tier: task.tier_class(),
@@ -161,30 +143,8 @@ impl RoutingInputs {
             ladder_step: ctx.ladder_step,
             role: ctx.role.clone(),
             routing_context: ctx.routing_context.clone(),
-            routing_bias,
-            budget_pressure: false,
             attempt_key: ctx.attempt_key.clone(),
         }
-    }
-}
-
-/// `bias` asking for cheaper models, with `reason` added to its reason.
-fn prefer_cheaper(bias: Option<RoutingBias>, reason: &str) -> RoutingBias {
-    match bias {
-        Some(bias) => RoutingBias {
-            prefer_cheaper: true,
-            reason: if bias.reason.is_empty() {
-                reason.to_string()
-            } else {
-                format!("{}; {reason}", bias.reason)
-            },
-            ..bias
-        },
-        None => RoutingBias {
-            deprioritize: Vec::new(),
-            prefer_cheaper: true,
-            reason: reason.to_string(),
-        },
     }
 }
 
@@ -316,7 +276,7 @@ impl ModelChoice {
 /// When a [`ProviderHealthRegistry`] is attached via
 /// [`Self::with_provider_health`], the cascade stage uses
 /// [`CascadeRouter::route_with_health_scored`] instead of the plain
-/// `route` / `route_with_bias` path.  This filters out `Open`-circuit
+/// `route` path.  This filters out `Open`-circuit
 /// providers and demotes `HalfOpen` ones so the selection automatically
 /// avoids degraded backends.
 #[derive(Clone)]
@@ -544,16 +504,6 @@ impl ModelRouter {
     /// (when a ladder is attached and a rung of the task's ladder can run),
     /// then the cascade router, then the default.
     ///
-    /// When a conductor [`RoutingBias`] is supplied through `inputs.routing_bias`,
-    /// the bias is applied to the cascade router selection: deprioritized models
-    /// are filtered out and `prefer_cheaper` shifts scoring toward cheaper tiers.
-    /// The bias is only consulted for router-driven selections -- overrides and
-    /// task hints are never affected, preserving operator and author intent.
-    ///
-    /// When `inputs.budget_pressure` is `true` (plan spend > 80%), the router
-    /// merges a `prefer_cheaper` bias into the cascade selection so cheaper
-    /// models are favored automatically.
-    ///
     /// When a [`ProviderHealthRegistry`] is attached via
     /// [`Self::with_provider_health`], the cascade stage calls
     /// [`CascadeRouter::route_with_health_scored`] which filters `Open`-circuit
@@ -603,7 +553,6 @@ impl ModelRouter {
             task_id,
             model = %choice.model.slug,
             source = ?choice.source,
-            budget_pressure = inputs.budget_pressure,
             "model routed"
         );
         if matches!(
@@ -654,7 +603,7 @@ impl ModelRouter {
             };
             return (choice, None);
         };
-        let pick = self.cascade_pick(router, ctx, inputs).primary;
+        let pick = self.cascade_pick(router, ctx).primary;
         let learned = Some(pick.slug.clone());
         // Guards: the pick must have a configured, credential-ready provider
         // (learned state may name `claude-opus` when no Anthropic key is
@@ -799,8 +748,7 @@ impl ModelRouter {
             _ => (None, None),
         };
         // Knowledge weighting and provider health move the cascade pick when
-        // they are attached; the routing bias is not logged (decision 3108
-        // removes it).
+        // they are attached.
         let cascade_picked = learned.is_some();
         let influences = vec![
             RouteInfluence {
@@ -895,7 +843,7 @@ impl ModelRouter {
             .cascade
             .as_ref()
             .zip(inputs.routing_context.as_ref())
-            .map(|(router, ctx)| self.cascade_pick(router, ctx, inputs).primary.slug);
+            .map(|(router, ctx)| self.cascade_pick(router, ctx).primary.slug);
         // A task that failed on its rung climbs from its start (gap-460230).
         let rung = self
             .ladder
@@ -919,14 +867,7 @@ impl ModelRouter {
 
     /// The cascade router's pick for `ctx`, among the models the provider
     /// guards accept when they accept some ([`Self::eligible_models`]).
-    fn cascade_pick(
-        &self,
-        router: &CascadeRouter,
-        ctx: &RoutingContext,
-        inputs: &RoutingInputs,
-    ) -> CascadeModel {
-        // Merge budget pressure into routing bias when applicable.
-        let effective_bias = Self::effective_bias(inputs);
+    fn cascade_pick(&self, router: &CascadeRouter, ctx: &RoutingContext) -> CascadeModel {
         // S02.P1-2: the guards mask the models that cannot run before the
         // cascade's argmax, so it picks the best one that can.
         let eligible = self.eligible_models(router, ctx);
@@ -944,16 +885,7 @@ impl ModelRouter {
                 self.latency_threshold_ms,
             )
         } else if !eligible.is_empty() {
-            // No routing bias reaches a masked pick (decision 3108 removes
-            // the bias).
             router.route_with_cfactor_among(ctx, &eligible, None, None)
-        } else if let Some(bias) = &effective_bias {
-            // Conductor / budget bias path (no health data).
-            if bias.deprioritize.is_empty() && !bias.prefer_cheaper {
-                router.route(ctx)
-            } else {
-                router.route_with_bias(ctx, bias)
-            }
         } else {
             router.route(ctx)
         };
@@ -1056,32 +988,6 @@ impl ModelRouter {
         self.model_providers.get(slug).cloned().unwrap_or_default()
     }
 
-    /// Merge `budget_pressure` into the existing `routing_bias` when the
-    /// plan budget has crossed the 80% threshold.
-    fn effective_bias(inputs: &RoutingInputs) -> Option<RoutingBias> {
-        match (&inputs.routing_bias, inputs.budget_pressure) {
-            // Budget pressure with existing bias — merge prefer_cheaper.
-            (Some(bias), true) => Some(RoutingBias {
-                deprioritize: bias.deprioritize.clone(),
-                prefer_cheaper: true,
-                reason: if bias.reason.is_empty() {
-                    "budget >80%".into()
-                } else {
-                    format!("{}; budget >80%", bias.reason)
-                },
-            }),
-            // Budget pressure without existing bias — new bias.
-            (None, true) => Some(RoutingBias {
-                deprioritize: vec![],
-                prefer_cheaper: true,
-                reason: "budget >80%".into(),
-            }),
-            // Existing bias, no pressure — pass through.
-            (Some(bias), false) => Some(bias.clone()),
-            // No bias, no pressure.
-            (None, false) => None,
-        }
-    }
 }
 
 // ─── Ladder ────────────────────────────────────────────────────────────
@@ -1371,7 +1277,6 @@ mod tests {
             prompt_experiment: None,
             gate_feedback: None,
             routing_context: None,
-            routing_bias: None,
             dependency_outputs: Vec::new(),
             error_patterns_context: String::new(),
             cached_workspace_map: String::new(),
@@ -1546,8 +1451,7 @@ mod tests {
     }
 
     /// gap-0f3980: a task's `preferred_model` is its model hint unless it
-    /// sets `model_hint`, and `speed_priority = "latency"` asks the router
-    /// for cheaper models, merged into any conductor bias.
+    /// sets `model_hint`.
     #[test]
     fn routing_inputs_read_the_task_hints() {
         let mut t = task();
@@ -1566,28 +1470,37 @@ mod tests {
                 .as_deref(),
             Some("claude-haiku-4-5")
         );
+    }
 
-        assert!(RoutingInputs::from_task(&t, &ctx()).routing_bias.is_none());
+    /// backlog 3109 (decision 3108): with the routing bias gone, a plan task
+    /// routes as it did when the health-aware pick dropped the bias: a task
+    /// that asks for `speed_priority = "latency"` lands where any other does.
+    #[test]
+    fn routing_unchanged_without_bias() {
+        use roko_core::task::TaskSpeedPriority;
+
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "claude-haiku-4-5".into(),
+        ]));
+        let health = Arc::new(ProviderHealthRegistry::new());
+        let router = ModelRouter::new(Some(cascade)).with_provider_health(health, HashMap::new());
+        let route = |t: &TaskDef| {
+            let mut inputs = RoutingInputs::from_task(t, &ctx());
+            inputs.routing_context = Some(routing_context());
+            router.route(&inputs).unwrap()
+        };
+        let mut t = task();
+        let plain = route(&t);
         t.hints.speed_priority = Some(TaskSpeedPriority::Latency);
-        let bias = RoutingInputs::from_task(&t, &ctx())
-            .routing_bias
-            .expect("a latency task asks for cheaper models");
-        assert!(bias.prefer_cheaper);
-        assert_eq!(bias.reason, "speed_priority = latency");
-        let mut conductor = ctx();
-        conductor.routing_bias = Some(RoutingBias {
-            deprioritize: vec!["gpt-5".into()],
-            prefer_cheaper: false,
-            reason: "recent failure".into(),
-        });
-        let bias = RoutingInputs::from_task(&t, &conductor)
-            .routing_bias
-            .expect("merged bias");
-        assert_eq!(bias.deprioritize, ["gpt-5"]);
-        assert!(bias.prefer_cheaper);
-        assert_eq!(bias.reason, "recent failure; speed_priority = latency");
-        t.hints.speed_priority = Some(TaskSpeedPriority::Accuracy);
-        assert!(RoutingInputs::from_task(&t, &ctx()).routing_bias.is_none());
+        let latency = route(&t);
+
+        assert_eq!(plain.source, ModelChoiceSource::Router);
+        assert!(
+            ["claude-sonnet-4-6", "claude-haiku-4-5"].contains(&plain.model.slug.as_str()),
+            "{plain:?}"
+        );
+        assert_eq!(routed(&latency), routed(&plain));
     }
 
     /// gap-dbf2a6: a task with `rung = "strong"` and no `model_hint` starts
@@ -1850,191 +1763,6 @@ mod tests {
             ]
         );
         assert!(no_glm.rung_models_above("implementer", 3).is_empty());
-    }
-
-    // ── Conductor routing bias tests (E08-T07) ─────────────────────────
-
-    #[test]
-    fn conductor_routing_bias_deprioritizes_model() {
-        // Two-model router: sonnet and haiku. When sonnet is deprioritized,
-        // the router should pick haiku instead.
-        let cascade = Arc::new(CascadeRouter::new(vec![
-            "claude-sonnet-4-6".into(),
-            "claude-haiku-4-5".into(),
-        ]));
-        let router = ModelRouter::new(Some(cascade));
-        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
-        inputs.routing_context = Some(routing_context());
-        inputs.routing_bias = Some(RoutingBias {
-            deprioritize: vec!["claude-sonnet-4-6".into()],
-            prefer_cheaper: false,
-            reason: "recent failure on claude-sonnet-4-6".into(),
-        });
-        let choice = router.route(&inputs).unwrap();
-        assert_eq!(choice.source, ModelChoiceSource::Router);
-        // With sonnet deprioritized, the router should avoid it.
-        assert_eq!(
-            choice.model.slug, "claude-haiku-4-5",
-            "deprioritized model should be avoided when alternatives exist"
-        );
-    }
-
-    #[test]
-    fn conductor_routing_bias_neutral_does_not_alter_route() {
-        // A neutral bias (no deprioritize, no prefer_cheaper) should behave
-        // identically to having no bias at all.
-        let cascade = Arc::new(CascadeRouter::new(vec![
-            "claude-sonnet-4-6".into(),
-            "claude-haiku-4-5".into(),
-        ]));
-        let router = ModelRouter::new(Some(cascade));
-        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
-        inputs.routing_context = Some(routing_context());
-        // Neutral bias -- should not change routing outcome.
-        inputs.routing_bias = Some(RoutingBias {
-            deprioritize: vec![],
-            prefer_cheaper: false,
-            reason: String::new(),
-        });
-        let with_bias = router.route(&inputs).unwrap();
-
-        // Same inputs without any bias.
-        inputs.routing_bias = None;
-        let without_bias = router.route(&inputs).unwrap();
-
-        assert_eq!(
-            with_bias.model.slug, without_bias.model.slug,
-            "neutral routing bias must not alter model selection"
-        );
-    }
-
-    #[test]
-    fn conductor_routing_bias_fallback_when_all_deprioritized() {
-        // If all models are deprioritized, the router should gracefully
-        // fall back rather than panicking or returning nothing.
-        let cascade = Arc::new(CascadeRouter::new(vec![
-            "claude-sonnet-4-6".into(),
-            "claude-haiku-4-5".into(),
-        ]));
-        let router = ModelRouter::new(Some(cascade));
-        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
-        inputs.routing_context = Some(routing_context());
-        inputs.routing_bias = Some(RoutingBias {
-            deprioritize: vec!["claude-sonnet-4-6".into(), "claude-haiku-4-5".into()],
-            prefer_cheaper: false,
-            reason: "all models failing".into(),
-        });
-        // Should not panic -- route_with_bias falls back to unbiased route
-        // when filtering removes all candidates.
-        let choice = router.route(&inputs).unwrap();
-        assert_eq!(choice.source, ModelChoiceSource::Router);
-        assert!(
-            !choice.model.slug.is_empty(),
-            "router must return a model even when all are deprioritized"
-        );
-    }
-
-    #[test]
-    fn conductor_routing_bias_does_not_override_force_backend() {
-        // Even with conductor bias, force_backend must always win.
-        let cascade = Arc::new(CascadeRouter::new(vec![
-            "claude-sonnet-4-6".into(),
-            "claude-haiku-4-5".into(),
-        ]));
-        let router = ModelRouter::new(Some(cascade));
-        let mut c = ctx();
-        c.force_backend = Some("gpt-5".into());
-        let mut inputs = RoutingInputs::from_task(&task(), &c);
-        inputs.routing_bias = Some(RoutingBias {
-            deprioritize: vec!["gpt-5".into()],
-            prefer_cheaper: true,
-            reason: "should not matter for forced".into(),
-        });
-        let choice = router.route(&inputs).unwrap();
-        assert_eq!(choice.model.slug, "gpt-5");
-        assert_eq!(choice.source, ModelChoiceSource::Override);
-    }
-
-    #[test]
-    fn conductor_routing_bias_does_not_override_task_hint() {
-        // Even with conductor bias, task hints must still win.
-        let cascade = Arc::new(CascadeRouter::new(vec![
-            "claude-sonnet-4-6".into(),
-            "claude-haiku-4-5".into(),
-        ]));
-        let router = ModelRouter::new(Some(cascade));
-        let mut t = task();
-        t.model_hint = Some("claude-sonnet-4-6".into());
-        let mut inputs = RoutingInputs::from_task(&t, &ctx());
-        inputs.routing_bias = Some(RoutingBias {
-            deprioritize: vec!["claude-sonnet-4-6".into()],
-            prefer_cheaper: true,
-            reason: "should not matter for hint".into(),
-        });
-        let choice = router.route(&inputs).unwrap();
-        assert_eq!(choice.model.slug, "claude-sonnet-4-6");
-        assert_eq!(choice.source, ModelChoiceSource::TaskHint);
-    }
-
-    // ── Budget pressure tests ──────────────────────────────────────────
-
-    #[test]
-    fn budget_pressure_injects_prefer_cheaper_bias() {
-        let cascade = Arc::new(CascadeRouter::new(vec![
-            "claude-sonnet-4-6".into(),
-            "claude-haiku-4-5".into(),
-        ]));
-        let router = ModelRouter::new(Some(cascade));
-        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
-        inputs.routing_context = Some(routing_context());
-        inputs.budget_pressure = true;
-        // Should not panic and should produce a valid model.
-        let choice = router.route(&inputs).unwrap();
-        assert_eq!(choice.source, ModelChoiceSource::Router);
-        assert!(
-            !choice.model.slug.is_empty(),
-            "budget pressure must still produce a valid model"
-        );
-    }
-
-    #[test]
-    fn budget_pressure_merges_with_existing_bias() {
-        let cascade = Arc::new(CascadeRouter::new(vec![
-            "claude-sonnet-4-6".into(),
-            "claude-haiku-4-5".into(),
-        ]));
-        let router = ModelRouter::new(Some(cascade));
-        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
-        inputs.routing_context = Some(routing_context());
-        inputs.routing_bias = Some(RoutingBias {
-            deprioritize: vec!["claude-sonnet-4-6".into()],
-            prefer_cheaper: false,
-            reason: "conductor signal".into(),
-        });
-        inputs.budget_pressure = true;
-        let choice = router.route(&inputs).unwrap();
-        assert_eq!(choice.source, ModelChoiceSource::Router);
-        // With sonnet deprioritized AND prefer_cheaper, haiku should win.
-        assert_eq!(
-            choice.model.slug, "claude-haiku-4-5",
-            "budget pressure + deprioritize should strongly prefer the cheaper model"
-        );
-    }
-
-    #[test]
-    fn budget_pressure_does_not_override_force_backend() {
-        let cascade = Arc::new(CascadeRouter::new(vec![
-            "claude-sonnet-4-6".into(),
-            "claude-haiku-4-5".into(),
-        ]));
-        let router = ModelRouter::new(Some(cascade));
-        let mut c = ctx();
-        c.force_backend = Some("gpt-5".into());
-        let mut inputs = RoutingInputs::from_task(&task(), &c);
-        inputs.budget_pressure = true;
-        let choice = router.route(&inputs).unwrap();
-        assert_eq!(choice.model.slug, "gpt-5");
-        assert_eq!(choice.source, ModelChoiceSource::Override);
     }
 
     // ── Provider-health routing tests (E48-T08) ────────────────────────

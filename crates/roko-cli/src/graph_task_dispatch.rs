@@ -112,8 +112,8 @@ use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
 use live_tool_calls::LiveToolCalls;
 use routing_context::{
-    CheapFactoryAgent, arbitrate_cross_cut_routing_bias, build_routing_context, dream_routing_bias,
-    effective_agent_contract, select_cheap_model_key, upstream_outputs,
+    CheapFactoryAgent, build_routing_context, effective_agent_contract, select_cheap_model_key,
+    upstream_outputs,
 };
 use supervision::SupervisedAttempt;
 use tui_forward::forward_live_event_to_tui;
@@ -234,9 +234,6 @@ pub struct GraphTaskDispatcher {
     /// Cancelled once the plan run began to stop ([`Self::begin_stop`]), so
     /// waits can end on it (bug-3a3968).
     stopping: tokio_util::sync::CancellationToken,
-    /// `[meta] skip_enrichment` per plan id, read once from the plan's
-    /// `tasks.toml`.
-    skip_enrichment_plans: parking_lot::Mutex<HashMap<String, bool>>,
     /// Whether each plan's tasks run the workspace's `[[gates.rungs]]`
     /// (`[meta] workspace_rungs`), per plan id, read once from the plan's
     /// `tasks.toml`.
@@ -340,7 +337,6 @@ impl GraphTaskDispatcher {
             task_spend: GraphTaskSpendLedger::default(),
             daily_budget: GraphDailyBudget::default(),
             stopping: tokio_util::sync::CancellationToken::new(),
-            skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             unpacked_domains: parking_lot::Mutex::default(),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
@@ -734,27 +730,6 @@ impl GraphTaskDispatcher {
             .map(|tasks| tasks.meta)
     }
 
-    /// Whether the plan's `[meta] skip_enrichment` is set, read once per plan
-    /// from `<plan_dir>/tasks.toml`. An unreadable file counts as `false`.
-    fn plan_skips_enrichment(&self, spec: &TaskExecutionSpec) -> bool {
-        let mut plans = self.skip_enrichment_plans.lock();
-        if let Some(skip) = plans.get(&spec.plan_id) {
-            return *skip;
-        }
-        let skip = self
-            .read_plan_meta(spec)
-            .is_some_and(|meta| meta.skip_enrichment);
-        if skip {
-            tracing::info!(
-                plan_id = %spec.plan_id,
-                "plan sets skip_enrichment: dispatching tasks as authored \
-                 (no dream/cross-cut routing advice)"
-            );
-        }
-        plans.insert(spec.plan_id.clone(), skip);
-        skip
-    }
-
     /// Per-task spend admission against [`task_budget_ceiling_usd`], mirroring
     /// the plan ceiling: a policy that continues on exhaustion only warns, and
     /// `--no-budget` disables the check.
@@ -975,10 +950,6 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         }
 
-        // A plan with `[meta] skip_enrichment = true` is dispatched as
-        // authored: no dream/cross-cut routing advice.
-        let skip_enrichment = self.plan_skips_enrichment(spec);
-
         // ── Disk headroom (reg-7cf6f9) ───────────────────────────────────
         //
         // Reserve the space the attempt's worktree is expected to grow by,
@@ -1096,39 +1067,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
             );
         }
 
-        // ── W10: Enrichment pipeline ─────────────────────────────────────
+        // ── Routing context ──────────────────────────────────────────────
         let mut routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
         // Clone before the move into DispatchContext so emit_feedback can pass
         // the real dispatch-time context to the routing observation sink.
         // This ensures force_backend override outcomes are recorded with the
         // correct task category, complexity, and role rather than fallback defaults.
         let mut routing_ctx_for_feedback = routing_ctx.clone();
-
-        // Load persisted dream routing advice once; both the cross-cut
-        // arbitration and the P1-18 dream bias read it. Plans that skip
-        // enrichment get neither, and no plan reads it while plan runs do
-        // not dream (backlog 4207).
-        let routing_bias = if skip_enrichment {
-            None
-        } else {
-            let dream_advice =
-                routing_context::plan_dream_routing_advice(&self.config.learning, &self.workdir);
-            // P1-16: Run cross-cut arbitration to detect safety-critical
-            // overrides before applying dream routing advice.
-            let task_category = task.domain.as_ref().map_or("implementation", |d| d.label());
-            let arbitration_bias = arbitrate_cross_cut_routing_bias(
-                &self.feedback,
-                dream_advice.as_ref(),
-                task_category,
-            );
-
-            // P1-18: Convert the dream advice to a RoutingBias so the cascade
-            // router accounts for dream-observed model performance when
-            // picking a provider for this task. Arbitration safety overrides
-            // take priority over dream advice.
-            arbitration_bias
-                .or_else(|| dream_routing_bias(dream_advice.as_ref(), task_category, &routing_ctx))
-        };
 
         // ── Gate retry context lookup ──────────────────────────────────
         //
@@ -1167,7 +1112,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         }
 
         // gap-b62e95: the router and its observations know a retry from a
-        // first attempt. (The dream bias above keeps the first attempt's band.)
+        // first attempt.
         routing_context::mark_attempt(&mut routing_ctx, &task, attempt_number);
         routing_context::mark_attempt(&mut routing_ctx_for_feedback, &task, attempt_number);
 
@@ -1221,7 +1166,6 @@ impl TaskDispatcher for GraphTaskDispatcher {
             prompt_experiment: prompt_experiment.clone(),
             gate_feedback: prior_gate_feedback,
             routing_context: Some(routing_ctx),
-            routing_bias,
             dependency_outputs: upstream_outputs(&input),
             error_patterns_context: self.task_error_patterns(spec, &task).text,
             cached_workspace_map: cached_workspace_map.clone(),
@@ -2637,41 +2581,6 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
             let after = generated_tests_under(temp.path());
             assert!(after.is_empty(), "{setting}: {after:?}");
         }
-    }
-
-    /// `[meta] skip_enrichment` is read once per plan, and a plan that sets it
-    /// still dispatches. What it skips leaves nothing to observe here: the
-    /// fixture has no dream routing advice.
-    #[tokio::test]
-    async fn skip_enrichment_plan_meta_is_read_once_per_plan() {
-        let temp = tempdir().expect("tempdir");
-        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |_| {}).await;
-        let plan_dir = temp.path().join("plans/authored");
-        std::fs::create_dir_all(&plan_dir).expect("plan dir");
-        let tasks_path = plan_dir.join("tasks.toml");
-        std::fs::write(
-            &tasks_path,
-            "[meta]\nplan = \"authored\"\nskip_enrichment = true\n\n\
-             [[task]]\nid = \"T-EXP\"\ntitle = \"Wire the batch fixture\"\n",
-        )
-        .expect("write tasks.toml");
-        let mut spec = make_spec(&task);
-        spec.plan_id = "authored".to_string();
-        spec.plan_dir = plan_dir.display().to_string();
-
-        assert!(dispatcher.plan_skips_enrichment(&spec));
-        dispatcher
-            .dispatch(&spec, Vec::new(), &batch_ctx())
-            .await
-            .expect("a plan that skips enrichment still dispatches");
-        // Read once: removing the plan file afterwards changes nothing.
-        std::fs::remove_file(&tasks_path).expect("remove tasks.toml");
-        assert!(dispatcher.plan_skips_enrichment(&spec));
-
-        let mut unflagged = make_spec(&task);
-        unflagged.plan_id = "unflagged".to_string();
-        unflagged.plan_dir = temp.path().join("plans/missing").display().to_string();
-        assert!(!dispatcher.plan_skips_enrichment(&unflagged));
     }
 
     /// A T0 reflex rule that matches a task is never credited with a gate pass

@@ -114,8 +114,8 @@ pub struct DispatchContext {
     /// router entirely. Feedback writers tag the outcome as `forced = true`
     /// so the router's learned policy is not corrupted by operator overrides.
     pub force_backend: Option<String>,
-    /// Remaining USD budget for the plan; the router uses this to bias
-    /// toward cheaper models when the budget is nearly exhausted.
+    /// Remaining USD budget for the plan. Routing does not read it: no
+    /// routing bias is left (decision 3108).
     pub budget_remaining_usd: f64,
     /// Attempt number for this task (0 = first try, > 0 = retry).
     pub attempt: u32,
@@ -131,11 +131,6 @@ pub struct DispatchContext {
     /// Routing context for the CascadeRouter. Built at the dispatch site
     /// from task + runner state, threaded through to `RoutingInputs`.
     pub routing_context: Option<RoutingContext>,
-    /// Conductor routing bias from the live signal stream. When present,
-    /// the model router deprioritizes flagged models and biases toward
-    /// cheaper tiers, reflecting the conductor's reactive assessment of
-    /// the current run.
-    pub routing_bias: Option<roko_learn::cascade_router::RoutingBias>,
     /// Output files from each completed dependency task.
     /// Each entry is `(task_id, files)`. Injected into the system prompt
     /// so the agent knows what its predecessors already produced.
@@ -347,10 +342,8 @@ impl Dispatcher {
         task: &TaskDef,
         ctx: &DispatchContext,
         task_id: &str,
-        budget_pressure: bool,
     ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
-        let mut inputs = RoutingInputs::from_task(task, ctx);
-        inputs.budget_pressure = budget_pressure;
+        let inputs = RoutingInputs::from_task(task, ctx);
         let (choice, mut decision) = self.router.decide_logged(&inputs, task_id)?;
         decision.task_id = task_id.to_string();
         let prompt_ctx = PromptContext::from_task(task, ctx);
@@ -583,7 +576,6 @@ mod tests {
             prompt_experiment: None,
             gate_feedback: None,
             routing_context: None,
-            routing_bias: None,
             dependency_outputs: Vec::new(),
             error_patterns_context: String::new(),
             cached_workspace_map: String::new(),

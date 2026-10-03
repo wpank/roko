@@ -1,8 +1,11 @@
 //! Model routing inputs of a Graph task dispatch: the cheap helper model, the
-//! agent contract, and the routing context.
+//! agent contract, the routing context, and the audit trust estimates the
+//! cascade router routes by (DP4).
 
 use roko_core::TaskDomain;
+use roko_core::config::homeostasis::HomeostasisMode;
 use roko_core::tool::{OutboundPolicy, ToolRegistry};
+use roko_gate::audit::feedback::{TrustBook, trust_path};
 use roko_std::StaticToolRegistry;
 use roko_std::roles::domain_profile;
 
@@ -189,6 +192,39 @@ impl GraphTaskDispatcher {
             &dispatch_plan.model.slug,
             task.hints.preferred_provider.as_deref(),
         )
+    }
+
+    /// DP4 (S05 §4.6), at plan start: hand the cascade router the vault's
+    /// latest routing trust estimates, with `[audit] theta_max`.
+    ///
+    /// Nothing happens without `[audit] enabled`, a cascade router or a
+    /// usable vault; the harness reads the vault, agents never do. With M1 on
+    /// (`[homeostasis] mode = "on"`), routing trust is M1's actuator, and the
+    /// router only keeps the estimates.
+    pub(super) fn load_audit_trust(&self) {
+        let audit = &self.config.audit;
+        if !audit.enabled {
+            return;
+        }
+        let Some(router) = self.factory.dispatcher().cascade_router_arc() else {
+            return;
+        };
+        let vault = match audit.vault(&self.workdir) {
+            Ok(vault) => vault,
+            Err(error) => {
+                tracing::warn!(%error, "no audit trust for routing: the vault cannot be used");
+                return;
+            }
+        };
+        let book = match TrustBook::load(&trust_path(&vault)) {
+            Ok(book) => book,
+            Err(error) => {
+                tracing::warn!(%error, "no audit trust for routing: its file is unreadable");
+                return;
+            }
+        };
+        let m1_on = matches!(self.config.homeostasis.mode, HomeostasisMode::On);
+        router.set_audit_trust(&book.estimates, audit.theta_max, m1_on);
     }
 }
 

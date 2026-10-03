@@ -794,6 +794,8 @@ impl GraphTaskDispatcher {
             *started = started.saturating_add(1);
         }
         self.attempts.audit.get_or_init(|| {
+            // DP4: the plan routes by the audit trust estimates (7133).
+            self.load_audit_trust();
             AuditSelector::for_config(&self.config.audit, &self.config.gates, &self.workdir)
                 .map(|selector| Arc::new(selector.with_phase_b(self.audit_phase_b())))
         });

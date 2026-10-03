@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 14 anchor gone · 123 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 14 anchor gone · 122 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P2** [gap-fcb44c](items/gap-fcb44c-pk85-showcase-and-deploy-any-write-scoped.md) PK85 Showcase and deploy: Any write-scoped caller can mint a permanent public share link, also on a public bind (+8 more) · size L · verified 2026-10-02
 - **P2** [gap-3516d6](items/gap-3516d6-pk86-showcase-and-deploy-deploy-showcase-preflight.md) PK86 Showcase and deploy: `deploy/showcase/preflight.sh`: checks P1–P14, with a `--local` mode that boots a… (+1 more) · size M · verified 2026-10-02
 
-_9 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_10 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -24,11 +24,11 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 
 ## 3. Roko tells the truth and is safe (P0)
 
+- **P1** [bug-d5d55f](items/bug-d5d55f-an-agent-can-weaken-the-schema-rung.md) An agent can weaken the schema rung's own schema file in the same diff as the artefact it checks [bug] · size M · verified 2026-10-03
+- **P2** [bug-412a5e](items/bug-412a5e-a-graph-attempt-s-model-call-efficiency.md) A Graph attempt's model-call efficiency row is written under its own worktree, not the workspace root [bug] · size M · verified 2026-10-03
 - **P2** [bug-dd20bd](items/bug-dd20bd-a-frozen-roko-run-still-appends-a.md) A frozen roko run still appends a workflow_complete episode, because record_workflow_feedback ignores [learning] frozen [bug] · size S · verified 2026-10-03
-- **P2** [spec-65c828](items/spec-65c828-backlog-phase-1-safe-runs.md) Backlog Phase 1 — safe runs [spec] · verified 2026-10-02
-- **P2** [spec-99d417](items/spec-99d417-backlog-phase-2-honest-measurement.md) Backlog Phase 2 — honest measurement [spec] · verified 2026-10-02
 
-_10 more open · on hold: gap-3698cd · `goal = "truth"`_
+_16 more open · on hold: gap-3698cd · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -36,7 +36,7 @@ _10 more open · on hold: gap-3698cd · `goal = "truth"`_
 - **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
 - **P2** [dec-55532d](items/dec-55532d-confirm-nine-worker-choices-from-waves-3.md) Confirm nine worker choices from waves 3-5 (budget raise transport, failover retries, 24h auth quarantine, frozen allow-list, CLI billing, cold-start knowledge, domain packs, secret scrubbing) [decision] · size S · verified 2026-10-03
 
-_2 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_3 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -44,7 +44,7 @@ _2 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRI
 - **P1** [gap-2ca903](items/gap-2ca903-pk30-viabilitybench-proof-codex-cli-runner-for.md) PK30 ViabilityBench proof: Codex CLI runner for the fd_codex arm (+7 more) · size L · verified 2026-10-02
 - **P1** [gap-31c0e8](items/gap-31c0e8-pk36-viabilitybench-proof-shakedown-the-roko-arms.md) PK36 ViabilityBench proof: Shakedown: the Roko arms against the live-run defects, offline, before any paid Roko run (+2 more) · size M · verified 2026-10-02
 
-_14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -60,15 +60,15 @@ _24 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 un
 - **P1** [gap-d58ae8](items/gap-d58ae8-tp2-36-p0-0-37-mori-shaped.md) Mori-shaped workflow contract unproven end-to-end · size L · verified 2026-10-01
 - **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-10-01
 
-_9 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
 - **P3** [gap-59ebfd](items/gap-59ebfd-pk84-m3-self-model-serve-the-economics.md) PK84 M3 self-model: Serve the economics report and the calibration stream for the showcase · size S · verified 2026-10-02
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
-- **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
+- **P2** [gap-ade918](items/gap-ade918-acp-s-no-usable-provider-error-has.md) ACP's no-usable-provider error has no login hint for an auth quarantine · size S · verified 2026-10-03
 
-_3 more open · `goal = "visibility"`_
+_4 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -76,7 +76,7 @@ _3 more open · `goal = "visibility"`_
 - **P2** [q-6b7cca](items/q-6b7cca-graph-plan-runs-never-emit-plancompleted-wire.md) Graph plan runs never emit PlanCompleted: wire the four plan-completion sinks (the dream sink starts claude) or remove them? [question] · size S · verified 2026-09-29
 - **P2** [gap-c8bfc8](items/gap-c8bfc8-quickreviewer-autofixer-s-zero-context-budget-drops.md) QuickReviewer/AutoFixer's zero context budget drops verify commands and gate feedback, not just cross-plan context · size M · verified 2026-10-03
 
-_3 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_4 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
@@ -84,7 +84,7 @@ _3 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 - **P2** [spec-0b3a32](items/spec-0b3a32-backlog-phase-9-domains-assistant-held-and.md) Backlog Phase 9 — domains, assistant, held and parked work, cleanup, showcase and deploy [spec] · verified 2026-10-02
 - **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
 
-_11 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_15 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

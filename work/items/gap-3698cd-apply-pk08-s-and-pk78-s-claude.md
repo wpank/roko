@@ -63,6 +63,13 @@ touch the Goal line.
 
 - Moved out of PK08's and PK78's package items on 2026-10-03 (coordinator, after gate 6b) so that the packages that
   wait on them (PK30, PK80) can start.
+- 2026-10-03 (wave-6 follow-up, PK35/gap-943046): when this edit finally lands, also add three more missing
+  CLI-table/docs entries found in the same pass: `roko config` has no row for `[experiments]` (the model A/B
+  config section, already in `commands/config_cmd.rs`'s own table elsewhere in CLAUDE.md as "Model A/B
+  experiments" but the `[experiments]` TOML section itself isn't documented in the config-schema docs either);
+  `roko plan run --no-holdout` (confirmed missing, see gap-29fe0a: no such flag exists yet, only `holdout_frac =
+  0`, so this specific row should wait until that flag actually ships); and `roko learn patterns` has no CLI-table
+  row despite existing as a real subcommand (`crates/roko-cli/src/commands/learn.rs`).
 
 PK08 (task 2121):
 

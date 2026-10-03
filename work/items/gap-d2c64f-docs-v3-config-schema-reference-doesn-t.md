@@ -73,3 +73,8 @@ doc file either.
 (`crates/roko-core/src/config/provider.rs:332`, `pub stream_usage: Option<bool>`, part of the per-provider config,
 not `[pricing]`) — a second, separate omission in `01-schema-sections.md`. Document both in the same pass if
 convenient, but they're independent: `[pricing]` is `PricingConfig`; `stream_usage` is a provider-level field.
+
+2026-10-03 (wave-6 follow-up, PK35/gap-943046): a third, separate omission in the same file: `[experiments]`
+(`crates/roko-core/src/config/schema.rs:207`, the config section backing the model-comparison arms per decision
+4115) is a real, existing config section with no mention in `01-schema-sections.md` either. Three independent
+sections now missing from this one file: `[pricing]`, `stream_usage`, `[experiments]`.

@@ -73,3 +73,17 @@ docs/v3/26-HTTP-API.md` matches only `quarantine` and `incidents`, never `contro
 ## Notes
 
 - Docs-only; don't change the CLI or route code to close this item.
+
+2026-10-03 (wave-6 follow-up, PK35/gap-943046): the same shape of gap, a different command: CLAUDE.md's CLI
+reference tables also have no row for `roko learn patterns` (`crates/roko-cli/src/commands/learn.rs:118`,
+`LearnCmd::Patterns` — this one is real and already shipped, just undocumented, unlike the next item). PK35 also
+flagged `roko plan run --no-holdout` as missing from the docs, but that flag does not exist yet in the CLI
+(`grep -rn 'no.holdout' crates/roko-cli/src/main.rs` matches nothing; only an internal `no_holdout: bool` field
+in `commands/plan.rs`/`run_cmd.rs`, hardcoded `false`) — that's tracked separately as `gap-29fe0a` (no
+`--no-holdout` flag despite D7's decision); document it here only once that lands.
+
+2026-10-03 (filer, same PK35/gap-943046 report): the third missing piece is `[experiments]`
+(`crates/roko-core/src/config/experiments.rs::ExperimentsConfig`, wired at `schema.rs:207-209`,
+decision 4115) — real and shipped, like `roko learn patterns`, just absent from the config-schema
+docs table alongside `[pricing]`/`stream_usage` (gap-d2c64f) and the CLAUDE.md CLI table this item
+already tracks.

@@ -2,7 +2,7 @@
 id = "gap-147c4d"
 kind = "gap"
 title = "PK59 M4 deep audits: Audit worktree and the A2 clean re-run, off the critical path (S05 task 8, part 1) (+8 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 59
 size = "L"
 subsystem = ["roko-cli/audit"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "3abb24194"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK59"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/judge_step.rs", "crates/roko-cli/src/lib.rs", "crates/roko-cli/src/runner/gate_adapter.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-gate/src/judge_calibration.rs", "crates/roko-gate/src/llm_judge_gate.rs", "crates/roko-learn/src/gate_gaming.rs"]
 lane = "rust-cold"
@@ -44,6 +45,17 @@ command = "! grep -rqw 'fn spawn_gate' crates/roko-cli/src/ && ! grep -rqw 'fn s
 
 [[verify]]
 command = "grep -qw 'fn a_planted_canary_retires_its_suite_and_a_replacement_audits_the_next_unit' crates/roko-cli/tests/audit_canary_drill.rs && cargo test -p roko-cli --test audit_canary_drill a_planted_canary_retires_its_suite_and_a_replacement_audits_the_next_unit"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T04:56:14Z"
+commit = "3abb24194"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T01:27:35Z"
+forced = false
+evidence = "Gate 6c (work/backlog-batch-6c, merged into main as 3abb24194): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 7,525 passed over roko-cli, roko-core, roko-gate, roko-learn and roko-lang-rust, roko-cli bin 429 passed, the golden-path canaries and the new audit_canary_drill pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn legacy_rule_live + loop_audit_cs_reference pass; every [[verify]] passes. PK59 9/9. Gate fixes: two lints in audit/b2.rs and audit/worker.rs (01888b51c); the canary drill's plan sets allow_unverified and the test asserts the run's unverified outcome, as honest verdicts exit 1 for it (a091cca2a)."
 +++
 
 ## Problem

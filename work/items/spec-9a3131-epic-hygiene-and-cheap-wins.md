@@ -126,3 +126,9 @@ This is the implementation plan.
 - **Related:** gap-b23ebd (about 585 citation errors across `docs/v3`).
 - **Decided 2026-09-29 (Will):** the 18 set-aside items are held rather than parked (dec-e70592).
 - **Still open (not accepted on 2026-09-29):** branch protection on `main`, which this epic's exit check assumes.
+- 2026-10-03 (wave-6 follow-up, PK06/gap-4b890c): `GraphExecutionControlAdapter`
+  (`crates/roko-cli/src/graph_execution/control_adapter.rs`, referenced from `graph_execution/mod.rs`) has no
+  production caller — grep finds it defined and exported but not constructed anywhere outside its own tests. A
+  cheap-wins candidate: either wire it into whatever control path it was meant for, or remove it if it was
+  superseded by the control-file polling (`forward_control_file` in `plan_runner.rs`, from an earlier batch's
+  research on bug-8208a6).

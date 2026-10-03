@@ -14,6 +14,8 @@ workspace = true
 # The expected-free-energy (active-inference) tier selector: nothing calls it,
 # so it is parked out of the default build (9201, 9225).
 active-inference = []
+# S03 §4.9's "break a loop" fault flags (loop_audit::faults); off by default.
+fault-injection = []
 
 [dependencies]
 roko-core = { path = "../roko-core" }
@@ -41,10 +43,6 @@ toml = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = { workspace = true }
 proptest = "1"
-
-[features]
-# S03 §4.9's "break a loop" fault flags (loop_audit::faults); off by default.
-fault-injection = []
 
 [package.metadata.roko]
 layer = 2

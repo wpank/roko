@@ -46,6 +46,7 @@ use roko_gate::audit::policy::{
 };
 use roko_learn::telemetry::records::{AttemptVerdictRecord, GateVerdictTag};
 
+use crate::audit::b1::{B1, FactoryAuthor, SuiteAuthor};
 use crate::audit::worker::{AuditTask, AuditUnit, AuditWorker, PhaseB, WorkerContext, queue_unit};
 use crate::task_parser::TaskDef;
 
@@ -73,6 +74,8 @@ pub(super) struct AuditSelector {
     vault: AuditVault,
     config: AuditConfig,
     gates: GatesConfig,
+    /// The phase-B checks each run's worker runs.
+    phase_b: PhaseB,
     /// Draw every green unit at π = 1 ([`Self::census`]).
     census: AtomicBool,
 }
@@ -128,8 +131,16 @@ impl AuditSelector {
             vault,
             config: config.clone(),
             gates: gates.clone(),
+            phase_b: PhaseB::default(),
             census: AtomicBool::new(false),
         })
+    }
+
+    /// The lottery, whose runs' workers run `phase_b`.
+    #[must_use]
+    pub(super) fn with_phase_b(mut self, phase_b: PhaseB) -> Self {
+        self.phase_b = phase_b;
+        self
     }
 
     /// Draw every green unit at π = 1, as a test's ρ = 1 would; config
@@ -188,7 +199,7 @@ impl AuditSelector {
             secret: self.secret.clone(),
             run_id: run_id.to_string(),
             run_spend: Arc::clone(spend),
-            phase_b: PhaseB::default(),
+            phase_b: self.phase_b.clone(),
         };
         match AuditWorker::start(context) {
             Ok(worker) => Some(worker),
@@ -374,6 +385,37 @@ impl AuditSelector {
     }
 }
 
+impl super::GraphTaskDispatcher {
+    /// The audit workers' phase-B checks: B1, with every configured model a
+    /// candidate author, in `[models]` order.
+    pub(super) fn audit_phase_b(&self) -> PhaseB {
+        let timeout_ms = self
+            .config
+            .timeouts
+            .llm_call_secs
+            .max(1)
+            .saturating_mul(1_000);
+        let authors = self
+            .config
+            .models
+            .iter()
+            .map(|(key, profile)| {
+                let author = FactoryAuthor::new(
+                    Arc::clone(&self.factory),
+                    key.clone(),
+                    profile.slug.clone(),
+                    timeout_ms,
+                );
+                Arc::new(author) as Arc<dyn SuiteAuthor>
+            })
+            .collect();
+        PhaseB {
+            b1: Some(Arc::new(B1::new(authors, self.config.audit.clone()))),
+            ..PhaseB::default()
+        }
+    }
+}
+
 /// What an audit needs of `task`; its kind is its domain, else its role
 /// (`scribe` writes docs, `researcher` research, `strategist` plans).
 fn audit_task(task: &TaskDef) -> AuditTask {
@@ -384,10 +426,15 @@ fn audit_task(task: &TaskDef) -> AuditTask {
         (None, "strategist" | "planner") => "plan",
         (None, role) => role,
     };
+    let hidden = task.spec.hidden.clone().unwrap_or_default();
     AuditTask {
         title: task.title.clone(),
         description: task.description.clone().unwrap_or_default(),
+        goal: task.spec.goal.clone().unwrap_or_default(),
         acceptance: task.acceptance.clone(),
+        hidden_suite: hidden.suite,
+        interface: hidden.interface,
+        properties: hidden.properties,
         files: task.files.clone(),
         verify: task
             .verify

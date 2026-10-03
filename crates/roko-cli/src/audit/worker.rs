@@ -67,13 +67,22 @@ const REVIEW_ONLY_KINDS: [&str; 3] = ["docs", "plan", "research"];
 
 /// What an audit needs of a unit's task, noted when its attempt opens.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AuditTask {
     /// The task's title.
     pub title: String,
     /// Its description.
     pub description: String,
+    /// Its goal (TSS v1).
+    pub goal: String,
     /// Its acceptance criteria.
     pub acceptance: Vec<String>,
+    /// `[task.hidden] suite`: `auto`, `none` or a suite id.
+    pub hidden_suite: Option<String>,
+    /// `[task.hidden] interface`: the public surface a hidden suite calls.
+    pub interface: Vec<String>,
+    /// `[task.hidden] properties`: what a hidden suite checks.
+    pub properties: Vec<String>,
     /// The paths its `files` name.
     pub files: Vec<String>,
     /// Its authored verify steps, `(phase, command)`.

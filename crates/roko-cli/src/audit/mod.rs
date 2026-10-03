@@ -7,12 +7,15 @@
 //!   (7122);
 //! - [`worker`]: each run's audit worker, which takes the run's selected
 //!   units one at a time, runs phase A and phase B on them, and appends
-//!   their `audit.result` (7123).
+//!   their `audit.result` (7123);
+//! - [`b1`]: B1, a hidden suite written by a model of another family,
+//!   validated on the base tree and run on the result (7124).
 //!
 //! Selection (DP1) is `graph_task_dispatch::audit_select`; the lottery, the
 //! ledger, the hidden-suite store and the canary scanner are
 //! `roko_gate::audit`.
 
+pub mod b1;
 pub mod rerun;
 pub mod worker;
 pub mod worktree;

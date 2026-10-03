@@ -673,7 +673,7 @@ impl GraphTaskDispatcher {
         }
         self.attempts.audit.get_or_init(|| {
             AuditSelector::for_config(&self.config.audit, &self.config.gates, &self.workdir)
-                .map(Arc::new)
+                .map(|selector| Arc::new(selector.with_phase_b(self.audit_phase_b())))
         });
         let mut attempt = self.attempts.open(
             self.feedback.runs_dir.as_deref(),

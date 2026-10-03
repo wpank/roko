@@ -200,6 +200,43 @@ impl AuditConfig {
             home.as_deref().map(Path::new),
         )
     }
+
+    /// The family of `model` by [`Self::families`]: the one with a glob
+    /// that matches its name, or the name's last `/` segment, ignoring case.
+    #[must_use]
+    pub fn family_of(&self, model: &str) -> Option<&str> {
+        let model = model.to_ascii_lowercase();
+        let short = model.rsplit('/').next().unwrap_or_default();
+        self.families
+            .iter()
+            .find(|(_, globs)| {
+                globs.iter().any(|glob| {
+                    let glob = glob.to_ascii_lowercase();
+                    glob_matches(&glob, &model) || glob_matches(&glob, short)
+                })
+            })
+            .map(|(family, _)| family.as_str())
+    }
+}
+
+/// Whether `text` matches `glob`, where `*` stands for any run of
+/// characters.
+fn glob_matches(glob: &str, text: &str) -> bool {
+    let mut parts = glob.split('*');
+    let Some(mut rest) = text.strip_prefix(parts.next().unwrap_or_default()) else {
+        return false;
+    };
+    let mut parts: Vec<&str> = parts.collect();
+    let Some(last) = parts.pop() else {
+        return rest.is_empty();
+    };
+    for part in parts {
+        let Some(at) = rest.find(part) else {
+            return false;
+        };
+        rest = &rest[at + part.len()..];
+    }
+    rest.ends_with(last)
 }
 
 #[cfg(test)]
@@ -255,5 +292,16 @@ mod tests {
                 .is_err_and(|error| error.contains("two families"))
         );
         assert!(RokoConfig::from_toml("[audit]\nsurprise = 1\n").is_err());
+    }
+
+    #[test]
+    fn audit_families_name_a_models_family() {
+        let config = AuditConfig::default();
+        assert_eq!(config.family_of("claude-sonnet-4-6"), Some("anthropic"));
+        assert_eq!(config.family_of("openrouter/z-ai/GLM-4.6"), Some("zhipu"));
+        assert_eq!(config.family_of("gpt-oss-120b"), Some("openai"));
+        assert_eq!(config.family_of("stream-model"), None);
+        assert!(glob_matches("a*b*c", "axxbyyc"));
+        assert!(!glob_matches("a*a", "a") && !glob_matches("glm", "glm-4"));
     }
 }

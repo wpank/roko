@@ -346,8 +346,14 @@ impl DryCanaryRunner {
     pub fn trace(&self, loop_id: &str) -> Result<CanaryRow, String> {
         let mut router = None;
         let (mut writer, target): (Box<dyn CanaryWriter>, CanaryTarget) = match loop_id {
-            "L-know" => (Box::new(KnowledgeCanary::new(&self.workdir)), CanaryTarget::Prompt),
-            "L-play" => (Box::new(PlaybookCanary::new(&self.workdir)), CanaryTarget::Prompt),
+            "L-know" => (
+                Box::new(KnowledgeCanary::new(&self.workdir)),
+                CanaryTarget::Prompt,
+            ),
+            "L-play" => (
+                Box::new(PlaybookCanary::new(&self.workdir)),
+                CanaryTarget::Prompt,
+            ),
             "L-route" => {
                 let cascade = Arc::new(workspace_router(&self.workdir)?);
                 let writer = RouteCanary::new(Arc::clone(&cascade));
@@ -419,7 +425,10 @@ impl CanaryWriter for RouteCanary {
     /// is the version.
     fn write(&mut self, nonce: &str) -> Result<u64, String> {
         let category = canary_category(nonce);
-        Ok(version(self.router.set_canary_route(&category, &self.canary_model())))
+        Ok(version(
+            self.router
+                .set_canary_route(&category, &self.canary_model()),
+        ))
     }
 
     /// The canary preferences the router dispatch routes with holds.
@@ -589,7 +598,10 @@ mod tests {
     #[test]
     fn route_canary_reaches_the_router_and_is_removed() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let models = vec!["claude-opus-4-1".to_string(), "claude-haiku-4-5".to_string()];
+        let models = vec![
+            "claude-opus-4-1".to_string(),
+            "claude-haiku-4-5".to_string(),
+        ];
         let router = Arc::new(CascadeRouter::new(models));
         let mut writer = RouteCanary::new(Arc::clone(&router));
         let model = writer.canary_model();
@@ -613,7 +625,10 @@ mod tests {
 
         // Only a route inside the canary's own scope reads the preference.
         assert_eq!(writer.write(NONCE), Ok(1));
-        assert!(router.canary_route().is_none(), "a route outside any canary scope");
+        assert!(
+            router.canary_route().is_none(),
+            "a route outside any canary scope"
+        );
         let other = canary_scope("canary-other", || router.canary_route());
         assert!(other.is_none(), "another canary's scope");
         let own = canary_scope(&category, || router.canary_route());
@@ -636,7 +651,11 @@ mod tests {
             ("P6", false),
         ];
         assert_eq!(probes, expected, "{row:?}");
-        assert_eq!(router.canary_route_count(), 0, "cleanup removed the preference");
+        assert_eq!(
+            router.canary_route_count(),
+            0,
+            "cleanup removed the preference"
+        );
         assert!(canary_scope(&category, || router.canary_route()).is_none());
     }
 }

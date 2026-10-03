@@ -105,7 +105,10 @@ fn break_loop(
     }
     let learn_dir = roko_fs::RokoLayout::for_project(workdir).learn_dir();
     if !faults::enable_from_env(learn_dir.join("cli-faults.jsonl")) {
-        let why = format!("set {}=1 to let this process set fault flags\n", faults::FAULTS_ENV);
+        let why = format!(
+            "set {}=1 to let this process set fault flags\n",
+            faults::FAULTS_ENV
+        );
         return Ok((why, EXIT_NO_FAULTS));
     }
     let spec = FaultSpec {
@@ -232,7 +235,12 @@ mod tests {
         let canary = Loops::try_parse_from(["loops", "canary", "L-know"])
             .expect("parse canary")
             .cmd;
-        assert_eq!(canary, LoopsCmd::Canary { id: "L-know".into() });
+        assert_eq!(
+            canary,
+            LoopsCmd::Canary {
+                id: "L-know".into()
+            }
+        );
         let fault = Loops::try_parse_from(["loops", "fault", "L-know", "cut"])
             .expect("parse fault")
             .cmd;

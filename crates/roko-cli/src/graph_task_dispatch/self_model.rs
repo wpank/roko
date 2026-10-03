@@ -27,11 +27,11 @@ use roko_learn::self_model::model::{MODEL_CLASS, SelfModel, StateLoad};
 use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, RouteAction, expected_cost};
 use roko_learn::self_model::spec_features::{SPEC_RECORDS_FILE, SpecFeatureIndex, SpecVector};
 use roko_learn::self_model::{ArmKey, CandidateForecast, LabelSource, PredictorVersion, Unit};
-use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord};
 use roko_learn::telemetry::records::{
     AttemptPredictionRecord, PredictionCandidate, PredictionDecision, PredictionPredictor,
     b3_digest,
 };
+use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord};
 
 use super::attempt::AttemptContext;
 use super::*;
@@ -647,10 +647,8 @@ pub(crate) fn active_start(
     would_choose: Option<usize>,
     default: usize,
 ) -> Option<usize> {
-    let acts = settings.mode == SelfModelMode::Active
-        && !pinned
-        && gate.eligible
-        && !gate.breaker_tripped;
+    let acts =
+        settings.mode == SelfModelMode::Active && !pinned && gate.eligible && !gate.breaker_tripped;
     let choice = would_choose.filter(|_| acts)?;
     (settings.allow_downward_start || choice >= default).then_some(choice)
 }

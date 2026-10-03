@@ -288,7 +288,12 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         // run-b's plan was renamed in its `[meta]`: its directory still names it.
         let runs = [
-            ("run-a", "plan-1", "plan-1", vec!["T1", "T2", "T3", "T4", "T5"]),
+            (
+                "run-a",
+                "plan-1",
+                "plan-1",
+                vec!["T1", "T2", "T3", "T4", "T5"],
+            ),
             ("run-b", "renamed", "plan-2", vec!["T1"]),
         ];
         let (mut attempts, mut joined) = (0, 0);

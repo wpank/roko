@@ -75,7 +75,10 @@ impl DryRunPlanner for DispatchPlanner<'_> {
 fn canary_context(task: &TaskDef, workdir: &Path) -> DispatchContext {
     DispatchContext {
         plan_id: CANARY_PLAN.to_string(),
-        role: task.role.clone().unwrap_or_else(|| "implementer".to_string()),
+        role: task
+            .role
+            .clone()
+            .unwrap_or_else(|| "implementer".to_string()),
         workdir: workdir.to_path_buf(),
         model_hint: None,
         force_backend: None,
@@ -243,7 +246,10 @@ mod tests {
 
         assert!(faults::clear("L-know"), "the flag was set");
         let restored = plan();
-        assert_eq!(restored.prompt.diagnostics.knowledge_ids, [artifact.clone()]);
+        assert_eq!(
+            restored.prompt.diagnostics.knowledge_ids,
+            [artifact.clone()]
+        );
         assert!(restored.prompt.system_prompt.contains(&artifact));
         faults::disable();
         writer.cleanup(NONCE);

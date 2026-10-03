@@ -136,7 +136,10 @@ impl Audit {
             state: (!retired).then_some(self.auditor.state(id).as_str()),
             reason: self.auditor.reason(id).map(ReasonCode::as_str),
             qualifiers: Vec::new(),
-            h: self.auditor.layer_spec(id, "", 0).map_or(0.0, |layer| layer.h),
+            h: self
+                .auditor
+                .layer_spec(id, "", 0)
+                .map_or(0.0, |layer| layer.h),
             n_opp: health.map(|health| health.n_opp),
             eps: health.map(|health| health.eps.est),
             iota_net: health.map(|health| health.iota.net),
@@ -259,7 +262,9 @@ fn require_admin(auth: Option<&Extension<AuthContext>>) -> Result<(), ApiError> 
     if admin {
         Ok(())
     } else {
-        Err(ApiError::forbidden("the loop audit's canary and fault routes are admin-only"))
+        Err(ApiError::forbidden(
+            "the loop audit's canary and fault routes are admin-only",
+        ))
     }
 }
 
@@ -292,7 +297,10 @@ pub(super) async fn loop_canary(
 pub(super) fn fault_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/learn/loops/{id}/fault", axum::routing::post(loop_fault))
-        .route("/showcase/m2/loops/{id}/break", axum::routing::post(loop_break))
+        .route(
+            "/showcase/m2/loops/{id}/break",
+            axum::routing::post(loop_break),
+        )
 }
 
 /// No fault routes: this build has no fault flags.
@@ -459,7 +467,9 @@ mod tests {
     use roko_core::config::ServeAuthConfig;
     use roko_core::config::schema::RokoConfig;
     use roko_learn::loop_audit::AuditState;
-    use roko_learn::loop_audit::ledger::{BetaFields, EpsilonFields, IotaFields, LOOP_AUDIT_SCHEMA};
+    use roko_learn::loop_audit::ledger::{
+        BetaFields, EpsilonFields, IotaFields, LOOP_AUDIT_SCHEMA,
+    };
     use tower::ServiceExt;
 
     use super::*;
@@ -576,7 +586,10 @@ mod tests {
         let know = rows.iter().find(|row| row["loop_id"] == "L-know");
         let know = know.expect("L-know's row");
         assert_eq!(know["reason"], "dormant:unlogged");
-        assert_eq!((know["n_opp"].as_u64(), know["h"].as_f64()), (Some(40), Some(0.5)));
+        assert_eq!(
+            (know["n_opp"].as_u64(), know["h"].as_f64()),
+            (Some(40), Some(0.5))
+        );
         let (_, showcase) = get(&state, "/api/showcase/m2/loops").await;
         assert_eq!(showcase, loops);
 
@@ -664,13 +677,22 @@ mod tests {
         let fault = |auth, ttl_s| loop_fault(State(Arc::clone(&state)), auth, id(), request(ttl_s));
 
         assert_eq!(refused(fault(None, 60).await), Some(StatusCode::FORBIDDEN));
-        assert_eq!(refused(fault(caller("read"), 60).await), Some(StatusCode::FORBIDDEN));
+        assert_eq!(
+            refused(fault(caller("read"), 60).await),
+            Some(StatusCode::FORBIDDEN)
+        );
         let long = fault(caller("admin"), 3_600).await;
         assert_eq!(refused(long), Some(StatusCode::UNPROCESSABLE_ENTITY));
 
         let set = fault(caller("admin"), 60).await.expect("an admin's flag").0;
-        assert_eq!((set["loop_id"].as_str(), set["kind"].as_str()), (Some("L-know"), Some("cut")));
-        assert_eq!(refused(fault(caller("admin"), 60).await), Some(StatusCode::CONFLICT));
+        assert_eq!(
+            (set["loop_id"].as_str(), set["kind"].as_str()),
+            (Some("L-know"), Some("cut"))
+        );
+        assert_eq!(
+            refused(fault(caller("admin"), 60).await),
+            Some(StatusCode::CONFLICT)
+        );
         assert!(faults::clear("L-know"), "the flag was set");
 
         let freeze = Json(BreakRequest {

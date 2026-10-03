@@ -1308,7 +1308,14 @@ impl ModelRouter {
         let models: Vec<String> = rungs.iter().map(|rung| rung.model.clone()).collect();
         let epoch = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let epsilon = self.explore_epsilon;
-        Some(explore_route(&models, pick, epsilon, EXPLORE_SEED, &epoch, key))
+        Some(explore_route(
+            &models,
+            pick,
+            epsilon,
+            EXPLORE_SEED,
+            &epoch,
+            key,
+        ))
     }
 
     /// [`Self::decide`] for an active self-model's `route`: the choice, and a
@@ -2849,7 +2856,11 @@ mod tests {
             ..active.clone()
         };
         assert_eq!(acts(&active, true, false, false, 3), Some(3));
-        assert_eq!(acts(&active, false, true, false, 3), None, "a tripped breaker");
+        assert_eq!(
+            acts(&active, false, true, false, 3),
+            None,
+            "a tripped breaker"
+        );
         assert_eq!(acts(&active, true, false, true, 3), None, "a pin");
         assert_eq!(acts(&shadow, true, false, false, 3), None, "shadow mode");
         assert_eq!(acts(&active, true, false, false, 0), Some(0), "B1");

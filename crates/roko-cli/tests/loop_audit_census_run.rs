@@ -145,7 +145,13 @@ fn run_fixture() -> (tempfile::TempDir, PathBuf) {
 
     let output = std::process::Command::new(cargo_bin("roko"))
         .current_dir(workdir)
-        .args(["--json", "plan", "run", "plans/loop-census-run", "--workdir"])
+        .args([
+            "--json",
+            "plan",
+            "run",
+            "plans/loop-census-run",
+            "--workdir",
+        ])
         .arg(workdir)
         .env("HOME", workdir)
         .env_remove("ANTHROPIC_API_KEY")

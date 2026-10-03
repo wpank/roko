@@ -69,7 +69,8 @@ impl FeedbackSink for SelfModelOutcomeSink {
                 .ladder
                 .as_ref()
                 .is_some_and(|ladder| ladder.reason == LadderReason::SelfModel);
-            self.runtime.settle(unit, AttemptForecast { routed, ..forecast });
+            self.runtime
+                .settle(unit, AttemptForecast { routed, ..forecast });
         }
         Ok(())
     }

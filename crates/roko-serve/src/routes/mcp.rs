@@ -1092,7 +1092,7 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
         let (status, body) = post_mcp(&guarded, &list, &[("x-api-key", reader)]).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["result"]["tools"].as_array().map(Vec::len), Some(6));
+        assert_eq!(body["result"]["tools"].as_array().map(Vec::len), Some(10));
         let cancel = call(2, "run_cancel", json!({ "run_id": "run-1" }));
         let (status, body) = post_mcp(&guarded, &cancel, &[("x-api-key", reader)]).await;
         assert_eq!(status, StatusCode::OK, "{body}");

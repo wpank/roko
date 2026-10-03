@@ -116,6 +116,10 @@ impl GraphTaskDispatcher {
         // First, so the attempt's changed files are kept whatever the screen
         // decides (`take_changed_files`).
         let diff = self.attempt_diff(spec, task, attempt_key, workdir).await;
+        // DP1 keys a green attempt's audit draw on the tree it left.
+        if let (Some(diff), Some(audit)) = (&diff, self.attempts.audit()) {
+            audit.note_trees(attempt_key, diff.base(), diff.result());
+        }
         let mut rejection = output_red_flag(&self.config, role, dispatch);
         // Findings recorded without blocking, carried into the feedback of a
         // rejection by a later check.

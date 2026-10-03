@@ -90,6 +90,18 @@ pub(super) struct AttemptDiff {
     pub(super) base_is_this_attempts: bool,
 }
 
+impl AttemptDiff {
+    /// The tree the attempt started from.
+    pub(super) fn base(&self) -> &str {
+        &self.base
+    }
+
+    /// The tree the attempt left.
+    pub(super) fn result(&self) -> &str {
+        &self.result
+    }
+}
+
 impl GraphTaskDispatcher {
     /// Record the tree the task of `attempt_key` starts from in `workdir`,
     /// unless an earlier attempt of the task in this run did: the lease's

@@ -23,6 +23,9 @@
 //!    ([`roko_core::child_env::is_config_with_secrets`]), is refused with
 //!    [`ToolError::KeyFileBlocked`], inside the worktree too and whatever
 //!    the policy says. The rest of `.roko` stays readable.
+//!    A path in the audit vault ([`roko_core::audit_home::is_vault_path`],
+//!    `ROKO_AUDIT_HOME` or `~/.roko/audit`) is refused the same way, with
+//!    [`ToolError::PermissionDenied`].
 //! 4. If `policy.prevent_escapes` is set (default), the canonical
 //!    `joined` must `starts_with` the canonical worktree root. Otherwise
 //!    we return [`ToolError::PathOutsideWorktree`] carrying the canonical
@@ -51,6 +54,7 @@
 
 use std::path::{Path, PathBuf};
 
+use roko_core::audit_home::is_vault_path;
 use roko_core::child_env::{is_config_with_secrets, is_key_file};
 use roko_core::tool::ToolError;
 
@@ -155,6 +159,13 @@ pub fn canonicalize_with_policy(
     }
     if is_key_file(&canonical_joined) || is_config_with_secrets(&canonical_joined) {
         return Err(ToolError::KeyFileBlocked(canonical_joined));
+    }
+    // 3b. The audit vault (S05 §4.4): out of reach whatever the policy, by
+    //     the path as given and as resolved.
+    if is_vault_path(&lexical) || is_vault_path(&canonical_joined) {
+        return Err(ToolError::PermissionDenied(format!(
+            "`{arg_path}` is in the audit vault, which is out of agents' reach"
+        )));
     }
 
     // 4. Escape check.

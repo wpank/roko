@@ -53,6 +53,7 @@ use crate::task_parser::TaskDef;
 
 mod attempt;
 mod attempt_workspace;
+mod audit_select;
 pub(crate) mod baseline_verify;
 mod bench_verify;
 mod budget;

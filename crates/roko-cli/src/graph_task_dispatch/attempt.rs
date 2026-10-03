@@ -37,6 +37,7 @@ use roko_learn::telemetry::{
 };
 use sha2::Digest;
 
+use super::audit_select::AuditSelector;
 use super::failover::FailoverChain;
 use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
@@ -47,17 +48,27 @@ struct RunAttempts {
     /// `None` when the dispatcher keeps no run files, or the writer did not
     /// start.
     writer: Option<TelemetryWriter>,
+    /// The run's audit lottery (DP1), with `[audit] enabled`.
+    audit: Option<Arc<AuditSelector>>,
+    run_id: String,
 }
 
 impl RunAttempts {
     /// Open run `run_id` under `runs_dir` (`.roko/runs`): recover its
     /// ordinals from `attempts.jsonl` and start its writer. Without a
     /// `runs_dir` the ordinals live in memory and nothing is written.
-    fn open(runs_dir: Option<&Path>, run_id: &str) -> Self {
-        let Some(run_dir) = runs_dir.map(|dir| dir.join(run_id)) else {
+    fn open(runs_dir: Option<&Path>, run_id: &str, audit: Option<Arc<AuditSelector>>) -> Self {
+        // DP1: the run commits to its audit key before its first draw.
+        if let Some(audit) = &audit {
+            audit.open_run(run_id);
+        }
+        let run_id = run_id.to_string();
+        let Some(run_dir) = runs_dir.map(|dir| dir.join(&run_id)) else {
             return Self {
                 ordinals: AttemptOrdinals::default(),
                 writer: None,
+                audit,
+                run_id,
             };
         };
         let ordinals = AttemptOrdinals::load(&run_dir).unwrap_or_else(|error| {
@@ -79,7 +90,12 @@ impl RunAttempts {
                 None
             }
         };
-        Self { ordinals, writer }
+        Self {
+            ordinals,
+            writer,
+            audit,
+            run_id,
+        }
     }
 
     /// Queue `record` without waiting; the writer counts what it drops.
@@ -94,6 +110,10 @@ impl RunAttempts {
     /// Close the writer, wait for its queued lines, and return its final
     /// counters; `None` when it never started or is already closed.
     fn close(&mut self) -> Option<TelemetryWriterStats> {
+        // DP1: reveal the run's audit key once the run is over.
+        if let Some(audit) = self.audit.take() {
+            audit.close_run(&self.run_id);
+        }
         let stats = self.writer.take()?.close();
         if stats.dropped > 0 || stats.write_errors > 0 {
             tracing::warn!(
@@ -125,6 +145,8 @@ pub(super) struct AttemptBook {
     /// manifest ([`GraphTaskDispatcher::attach_run_invocation`]). Attempt
     /// records carry it as `inv`.
     invocations: parking_lot::Mutex<HashMap<String, u32>>,
+    /// The audit lottery, made when the first attempt opens (`[audit]`).
+    audit: std::sync::OnceLock<Option<Arc<AuditSelector>>>,
 }
 
 impl Default for AttemptBook {
@@ -133,6 +155,7 @@ impl Default for AttemptBook {
             fallback_run_id: format!("graph-{}", uuid::Uuid::new_v4().simple()),
             runs: parking_lot::Mutex::new(HashMap::new()),
             invocations: parking_lot::Mutex::new(HashMap::new()),
+            audit: std::sync::OnceLock::new(),
         }
     }
 }
@@ -167,11 +190,18 @@ impl AttemptBook {
     }
 
     fn run(&self, runs_dir: Option<&Path>, run_id: &str) -> Arc<RunAttempts> {
+        let audit = self.audit().cloned();
         let mut runs = self.runs.lock();
         let run = runs
             .entry(run_id.to_string())
-            .or_insert_with(|| Arc::new(RunAttempts::open(runs_dir, run_id)));
+            .or_insert_with(|| Arc::new(RunAttempts::open(runs_dir, run_id, audit)));
         Arc::clone(run)
+    }
+
+    /// The audit lottery, once the first attempt opened with `[audit]
+    /// enabled`.
+    pub(super) fn audit(&self) -> Option<&Arc<AuditSelector>> {
+        self.audit.get().and_then(Option::as_ref)
     }
 
     /// Record that this process is invocation `inv` of run `run_id`.
@@ -438,6 +468,11 @@ impl AttemptContext {
             .map(sha256_hex);
         verdict.exposures = self.exposures;
         self.run.submit(verdict.clone());
+        // DP1: a green attempt draws its audit ticket; the draw is only logged.
+        if let Some(audit) = &self.run.audit {
+            let output = dispatch.and_then(|dispatch| dispatch.result.output.body.as_text().ok());
+            audit.draw(&verdict, output);
+        }
         SettledAttempt {
             verdict: Arc::new(verdict),
             failure_reason,
@@ -636,6 +671,9 @@ impl GraphTaskDispatcher {
                 .or_default();
             *started = started.saturating_add(1);
         }
+        self.attempts.audit.get_or_init(|| {
+            AuditSelector::for_config(&self.config.audit, &self.workdir).map(Arc::new)
+        });
         let mut attempt = self.attempts.open(
             self.feedback.runs_dir.as_deref(),
             self.attempts.run_id(ctx),

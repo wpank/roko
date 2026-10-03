@@ -16,6 +16,11 @@
 //! only at the deepest depth with r above r_max rejects the pass so that a stronger model
 //! retries the task. An active self-model acts on the chains it started; in shadow mode the
 //! step is only logged. A pass that stands exports r as `risk_fg` for S05's audit tilt.
+//!
+//! A refine-spec or abandon forecast (6133) becomes a dashboard diagnosis and an event-log
+//! entry, and a refine request also a `spec.refine_requested` record in the run's spec ledger
+//! for S07. The self-model never edits a spec or drops a task: the attempt still runs on the
+//! ladder's choice.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -24,6 +29,7 @@ use std::sync::Arc;
 use roko_core::audit_types::VerifyDepth;
 use roko_core::config::schema::RokoConfig;
 use roko_core::config::self_model::{SelfModelConfig, SelfModelMode, SelfModelPolicy};
+use roko_core::dashboard_snapshot::{DiagnosisSeverity, DiagnosisSummary};
 use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_learn::self_model::baselines::K_MAX;
 use roko_learn::self_model::cascade::{
@@ -34,7 +40,7 @@ use roko_learn::self_model::features::TaskFeatures;
 use roko_learn::self_model::gate::{CalibrationGate, CalibrationWindow, GateReport, WindowOutcome};
 use roko_learn::self_model::logit::FALSE_GREEN_PRIOR;
 use roko_learn::self_model::model::{MODEL_CLASS, SelfModel, StateLoad};
-use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, RouteAction, expected_cost};
+use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, P_ABANDON, RouteAction, expected_cost};
 use roko_learn::self_model::spec_features::{SPEC_RECORDS_FILE, SpecFeatureIndex, SpecVector};
 use roko_learn::self_model::{ArmKey, CandidateForecast, LabelSource, PredictorVersion, Unit};
 use roko_learn::telemetry::records::{
@@ -83,6 +89,20 @@ const DEPTH_OPTIONS: [DepthOption; 4] = [
 /// A false green's loss L_fg, in the attempt's expected cost on the model that ran: S04
 /// §4.10's five task costs.
 const FALSE_GREEN_LOSS: f64 = 5.0;
+
+/// The spec feature that holds S07's score of the task's spec over 1 (3240), which both
+/// policies compare with s_min.
+const SPEC_SCORE: &str = "spec_score";
+
+/// The action a policy names when the task's spec should be refined before it runs (6133).
+const REFINE_SPEC: &str = "refine_spec";
+
+/// The action a policy names when no rung is likely to pass the task (6133).
+const ABANDON: &str = "abandon";
+
+/// The event that hands a refine request to S07's plan-load gate, in the run's spec ledger
+/// and its event log (6133).
+const SPEC_REFINE_EVENT: &str = "spec.refine_requested";
 
 /// A plan run's self-model: loaded at plan start when `[self_model] mode` is not off, and shared
 /// by dispatch, which forecasts each routed attempt, and the outcome sink, which teaches it each
@@ -363,7 +383,9 @@ impl SelfModelRuntime {
     ) -> (AttemptPredictionRecord, Option<usize>) {
         let model = self.model.read();
         let forecasts = model.forecast(&features, &candidates.arms);
-        let (would_choose, action) = self.decide(identity, &forecasts, candidates, retries_left);
+        let spec_score = features.spec.get(SPEC_SCORE).copied();
+        let (would_choose, action) =
+            self.decide(identity, &forecasts, candidates, retries_left, spec_score);
         let arms: Vec<String> = forecasts
             .iter()
             .map(|forecast| forecast.arm.to_string())
@@ -489,7 +511,7 @@ impl SelfModelRuntime {
             current,
             climbs,
             retries_left,
-            spec_score: None,
+            spec_score: features.spec.get(SPEC_SCORE).copied(),
             skip_allowed: self.settings.allow_rung_skip,
         };
         Some(after_failure(&forecasts, &context, &|_| None))
@@ -553,13 +575,15 @@ impl SelfModelRuntime {
         (to < candidates.rungs.len()).then_some(StepAction::Climb { to })
     }
 
-    /// The candidate the policy would choose, and its action's name.
+    /// The candidate the policy would choose, and its action's name. `spec_score`, S07's score
+    /// of the task's spec over 1, lets either policy ask for a clearer spec (6133).
     fn decide(
         &self,
         identity: &AttemptIdentity,
         forecasts: &[CandidateForecast],
         candidates: &Candidates,
         retries_left: u32,
+        spec_score: Option<f64>,
     ) -> (Option<usize>, &'static str) {
         if candidates.pinned {
             return (Some(candidates.default), "pinned");
@@ -568,14 +592,15 @@ impl SelfModelRuntime {
             SelfModelPolicy::Static => (Some(candidates.default), "dispatch"),
             SelfModelPolicy::LcbAci => {
                 let recovery = forecasts.iter().map(expected_cost).fold(0.0, f64::max);
-                let choice = self.lcb.lock().choose(forecasts, None, None, recovery);
+                let policy = self.lcb.lock();
+                let choice = policy.choose(forecasts, None, spec_score, recovery);
                 match choice.action {
                     RouteAction::Dispatch { arm, .. } => {
                         let index = forecasts.iter().position(|forecast| forecast.arm == arm);
                         (index, "dispatch")
                     }
-                    RouteAction::RefineSpec => (None, "refine_spec"),
-                    RouteAction::Abandon => (None, "abandon"),
+                    RouteAction::RefineSpec => (None, REFINE_SPEC),
+                    RouteAction::Abandon => (None, ABANDON),
                 }
             }
             SelfModelPolicy::Cascade => {
@@ -601,15 +626,15 @@ impl SelfModelRuntime {
                             current,
                             climbs: candidates.step,
                             retries_left,
-                            spec_score: None,
+                            spec_score,
                             skip_allowed: self.settings.allow_rung_skip,
                         };
                         match after_failure(forecasts, &context, &|_| None) {
                             StepAction::Retry => (Some(current), "retry"),
                             StepAction::Climb { to } => (Some(to), "climb"),
                             StepAction::Skip { to } => (Some(to), "skip"),
-                            StepAction::RefineSpec => (None, "refine_spec"),
-                            StepAction::Abandon => (None, "abandon"),
+                            StepAction::RefineSpec => (None, REFINE_SPEC),
+                            StepAction::Abandon => (None, ABANDON),
                         }
                     }
                 }
@@ -725,10 +750,141 @@ impl GraphTaskDispatcher {
             let vector = runtime.spec_vector(&run_dir, &identity.run_id, &spec.plan_id, &task.id);
             features.spec = vector.unwrap_or_default();
         }
+        let spec_score = features.spec.get(SPEC_SCORE).copied();
         let (prediction, would_choose) =
             runtime.predict(identity, features, &candidates, retries_left);
+        // M3 never edits a spec or drops a task: a person or S07 acts on its request (6133).
+        self.report_self_model_action(spec, task, identity, &prediction, spec_score);
         attempt.record_prediction(prediction);
         runtime.active_rung(identity, &candidates, would_choose)
+    }
+
+    /// Surface a refine-spec or abandon forecast for the attempt `identity` of `task` (6133),
+    /// as the ladder surfaces `ladder_exhausted`: a dashboard diagnosis and an event-log entry,
+    /// and for a refine request also a `spec.refine_requested` record in the run's spec ledger,
+    /// for S07's plan-load gate. Any other action reports nothing.
+    fn report_self_model_action(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        identity: &AttemptIdentity,
+        prediction: &AttemptPredictionRecord,
+        spec_score: Option<f64>,
+    ) {
+        let refine = match prediction.decision.action.as_str() {
+            REFINE_SPEC => true,
+            ABANDON => false,
+            _ => return,
+        };
+        let best = prediction
+            .candidates
+            .iter()
+            .map(|candidate| candidate.p_vs)
+            .fold(0.0, f64::max);
+        let score = spec_score.map_or_else(|| "unknown".to_string(), |score| format!("{score:.2}"));
+        let (plan_id, task_id) = (&spec.plan_id, &task.id);
+        let (kind, event, subject, detail, suggested_action, message) = if refine {
+            self.record_refine_request(identity, spec_score, best);
+            (
+                "self_model_refine",
+                SPEC_REFINE_EVENT,
+                format!("{task_id} needs a clearer spec"),
+                format!(
+                    "The self-model forecasts that no cheap rung reaches the success target on \
+                     task `{task_id}` of plan `{plan_id}` with its spec as written (spec score \
+                     {score}, best P(verified success) {best:.2}), and asks for the spec to be \
+                     refined (refine_spec). The attempt runs on the ladder's choice."
+                ),
+                "Refine the task's spec: its acceptance criteria, verify steps and files to read.",
+                format!("spec score {score}, best P(VS) {best:.2}: refine the spec"),
+            )
+        } else {
+            (
+                "self_model_abandon",
+                "self_model.abandon_flagged",
+                format!("{task_id} is unlikely to pass on any rung"),
+                format!(
+                    "The self-model forecasts at most {best:.2} P(verified success) for task \
+                     `{task_id}` of plan `{plan_id}` on every rung, below p_abandon \
+                     {P_ABANDON} (abandon). The attempt runs on the ladder's choice."
+                ),
+                "Split the task, replan it, or drop it.",
+                format!("best P(VS) {best:.2} below p_abandon {P_ABANDON}: the task is flagged"),
+            )
+        };
+        tracing::warn!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            attempt_key = %identity.attempt_key,
+            action = %prediction.decision.action,
+            spec_score = ?spec_score,
+            best_p_vs = best,
+            "self-model: {subject}; the attempt runs on the ladder's choice"
+        );
+        let Some(tui) = &self.tui_bridge else {
+            return;
+        };
+        tui.diagnosis(DiagnosisSummary {
+            id: format!("{kind}:{plan_id}/{task_id}"),
+            severity: DiagnosisSeverity::Warn,
+            subject,
+            detail,
+            suggested_action: Some(suggested_action.to_string()),
+            ..DiagnosisSummary::default()
+        });
+        let timestamp_ms = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default();
+        tui.publish_event(roko_core::DashboardEvent::EventLogEntry {
+            timestamp_ms,
+            event_type: event.to_string(),
+            plan_id: plan_id.clone(),
+            task_id: task_id.clone(),
+            message,
+        });
+    }
+
+    /// Append the refine request of the attempt `identity` to its run's spec ledger, for S07's
+    /// plan-load gate (6133). A write failure is logged: the record is telemetry.
+    fn record_refine_request(
+        &self,
+        identity: &AttemptIdentity,
+        spec_score: Option<f64>,
+        best: f64,
+    ) {
+        use std::io::Write as _;
+
+        let Some(runs) = &self.feedback.runs_dir else {
+            return;
+        };
+        // A shadow-mode request is the self-model's opinion only, which S07 may ignore.
+        let runtime = self.feedback.self_model.as_deref();
+        let mode = runtime.map_or("off", |runtime| mode_name(runtime.settings().mode));
+        let record = serde_json::json!({
+            "ev": SPEC_REFINE_EVENT,
+            "run_id": identity.run_id,
+            "plan_id": identity.plan_id,
+            "task_id": identity.task_id,
+            "attempt_key": identity.attempt_key,
+            "source": "self_model",
+            "mode": mode,
+            "spec_score": spec_score,
+            "p_vs_max": best,
+            "recorded_at_ms": chrono::Utc::now().timestamp_millis(),
+        });
+        let run_dir = runs.join(&identity.run_id);
+        let written = std::fs::create_dir_all(&run_dir).and_then(|()| {
+            let mut ledger = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(run_dir.join(SPEC_RECORDS_FILE))?;
+            writeln!(ledger, "{record}")
+        });
+        if let Err(error) = written {
+            tracing::warn!(
+                %error,
+                run = %identity.run_id,
+                "self-model: cannot write the refine request to the run's spec ledger"
+            );
+        }
     }
 }
 
@@ -1007,8 +1163,10 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, model, no_auto_fix,
+        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher,
+        make_test_dispatcher_with, model, no_auto_fix,
     };
+    use crate::state_hub::StateHub;
 
     const RUN: &str = "graph-self-model-run";
 
@@ -1432,5 +1590,100 @@ mod tests {
             assert_eq!(dispatcher.ladder_step(&spec, &task), u32::from(active));
             assert_eq!(dispatcher.self_model_climbed(&chain), active, "{mode:?}");
         }
+    }
+
+    /// 6133: a refine-spec forecast writes its action into the prediction row, and publishes a
+    /// `self_model_refine` diagnosis and a `spec.refine_requested` event, in the run's event log
+    /// and its spec ledger; nothing else changes, and the attempt runs on the ladder's choice.
+    #[tokio::test]
+    async fn refine_spec_action_emits_event_and_keeps_the_ladder_default() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let runs = roko.join("runs");
+        let run_dir = runs.join(RUN);
+        // S07 scored the task's spec 30 of 100, below s_min.
+        std::fs::create_dir_all(&run_dir).expect("the run's directory");
+        let quality = serde_json::json!({
+            "ev": "spec.quality",
+            "plan_id": "stream-plan",
+            "task_id": "T-REFINE",
+            "score": 30.0,
+        });
+        std::fs::write(run_dir.join(SPEC_RECORDS_FILE), format!("{quality}\n"))
+            .expect("write the spec record");
+        // Policy (a) on a fresh model: no rung's lower bound on P(VS) meets π*.
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Active,
+            policy: SelfModelPolicy::LcbAci,
+            ..SelfModelConfig::default()
+        };
+        let state = roko.join("learn/self-model/state-v1.json");
+        let fresh = SelfModel::new(&snapshot);
+        let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs),
+            self_model: Some(runtime),
+            ..GraphFeedbackContext::default()
+        };
+        let hub = StateHub::new(64);
+        let bridge = TuiBridge::new(hub.sender());
+        let (dispatcher, mut task) = make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            ladder(SelfModelMode::Active),
+            feedback,
+            |dispatcher| dispatcher.with_tui_bridge(bridge),
+        )
+        .await;
+        task.id = "T-REFINE".to_string();
+        task.model_hint = None;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the attempt completes");
+        drop(dispatcher);
+
+        // The prediction row names the action beside the ladder's own pick, which the attempt
+        // ran.
+        let predictions = jsonl_rows_where(&run_dir.join("predictions.jsonl"), 1, |row| {
+            row["schema_version"] == "roko.prediction/1"
+        })
+        .await;
+        let decision = &predictions[0]["decision"];
+        assert_eq!(decision["action"], REFINE_SPEC, "{decision}");
+        assert!(decision["would_choose"].is_null(), "{decision}");
+        let default = decision["default"].as_str().expect("the ladder's arm");
+        let verdicts = jsonl_rows_where(&run_dir.join("attempts.jsonl"), 1, |row| {
+            row["schema_version"] == "roko.verdict/1"
+        })
+        .await;
+        let model = verdicts[0]["executed"]["model_requested"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(default.contains(&format!("/{model}@")), "{default} vs {model}");
+
+        // A diagnosis and an event-log entry tell a person; the spec ledger tells S07.
+        let snapshot = hub.current_snapshot();
+        let diagnosis = "self_model_refine:stream-plan/T-REFINE";
+        let diagnosed = snapshot.diagnoses.iter().any(|row| row.id == diagnosis);
+        assert!(diagnosed, "{:?}", snapshot.diagnoses);
+        let logged = snapshot
+            .event_log
+            .iter()
+            .any(|entry| entry.event_type == SPEC_REFINE_EVENT && entry.task_id == "T-REFINE");
+        assert!(logged, "{:?}", snapshot.event_log);
+        let ledger = run_dir.join(SPEC_RECORDS_FILE);
+        let ledger = std::fs::read_to_string(&ledger).expect("the spec ledger");
+        let requests: Vec<serde_json::Value> = ledger
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|record| record["ev"] == SPEC_REFINE_EVENT)
+            .collect();
+        assert_eq!(requests.len(), 1, "{ledger}");
+        assert_eq!(requests[0]["task_id"], "T-REFINE");
+        assert_eq!(requests[0]["spec_score"], 0.3);
+        assert_eq!(requests[0]["mode"], "active");
     }
 }

@@ -126,6 +126,16 @@ else decision 9107's default, `stage` in the `ops` domain and `allow` elsewhere.
 Only in-process tool loops are covered: CLI agents such as Claude Code run their
 own tools.
 
+Confirm rungs (9137, decision 9108): a `confirm` rung in a pack asks the person the
+work is for to confirm the outcome. Once the task's other checks pass it writes the
+task's review hold with its question (`rubric`, text or a file; a default question
+otherwise) and a summary of its `artefacts`, and waits up to `timeout_secs` for a
+decision on the attempt in `.roko/state/reviews.jsonl`, which the `/mcp`
+`confirm_answer` tool, the review route and `roko plan review` write. A yes passes
+it, and the attempt record labels the step `confirmed_by_user`, a person's
+judgement kept apart from machine checks; a no fails the attempt with the person's
+note as feedback; no answer leaves the task unverified.
+
 Workspace kinds (9134): a task's attempts work in a git worktree unless the task,
 or the profile of its domain, sets `workspace = "scratch_dir"`: a scratch copy of
 the data the task's `files` name, outside git. `roko plan validate` refuses a

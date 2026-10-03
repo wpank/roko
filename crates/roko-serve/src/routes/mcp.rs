@@ -20,9 +20,14 @@
 //!   description and in `_meta` (`roko/paid`). No tool picks a model: routing
 //!   stays with the ladder.
 //!
-//! `run_status` and `recall` only read. There is no `remember`: personal
-//! memory stays with the host (B9), and serve has no knowledge write route
-//! (AD-10).
+//! - `confirm_pending { run_id }` lists the outcomes a run's tasks wait for
+//!   their person to confirm (a `confirm` rung, 9137), and `confirm_answer {
+//!   run_id, task_id, attempt_key, approve, note }` records the person's
+//!   answer in the review log, as the review route does.
+//!
+//! `run_status`, `recall` and `confirm_pending` only read. There is no
+//! `remember`: personal memory stays with the host (B9), and serve has no
+//! knowledge write route (AD-10).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -308,6 +313,57 @@ fn tools() -> Vec<(Value, &'static str)> {
             ),
             "write",
         ),
+        (
+            read_only_tool(
+                "confirm_pending",
+                "The outcomes a Roko run's tasks wait for their person to confirm: for each, \
+                 the task, the attempt, the question to ask and a short summary of the work. \
+                 Ask the person, then answer with confirm_answer.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "run_id": { "type": "string", "description": "The run's id" }
+                    },
+                    "required": ["run_id"],
+                    "additionalProperties": false
+                }),
+            ),
+            "read",
+        ),
+        (
+            tool(
+                "confirm_answer",
+                "Give the person's own answer to a confirmation a Roko task waits for: approve \
+                 true confirms the outcome, false fails the attempt with the note as its \
+                 feedback. Never answer for the person.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "run_id": { "type": "string", "description": "The run's id" },
+                        "task_id": { "type": "string", "description": "The task's id" },
+                        "attempt_key": {
+                            "type": "string",
+                            "description": "The attempt, as confirm_pending names it"
+                        },
+                        "approve": {
+                            "type": "boolean",
+                            "description": "Whether the person confirms the outcome"
+                        },
+                        "note": { "type": "string", "description": "What the person said" }
+                    },
+                    "required": ["run_id", "task_id", "attempt_key", "approve"],
+                    "additionalProperties": false
+                }),
+                json!({
+                    "readOnlyHint": false,
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": false,
+                }),
+                false,
+            ),
+            "write",
+        ),
     ]
 }
 
@@ -423,12 +479,117 @@ async fn call_tool(
             let run_id = required_str(&arguments, name, "run_id")?;
             cancel_run(state, run_id).await
         }
+        "confirm_pending" => {
+            let run_id = required_str(&arguments, name, "run_id")?;
+            Ok(json!({ "pending": confirm_holds(&state.workdir, run_id) }))
+        }
+        "confirm_answer" => {
+            let run_id = required_str(&arguments, name, "run_id")?;
+            let task_id = required_str(&arguments, name, "task_id")?;
+            let attempt_key = required_str(&arguments, name, "attempt_key")?;
+            let approve = arguments
+                .get("approve")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| JsonRpcError::invalid_params("approve must be true or false"))?;
+            let note = arguments
+                .get("note")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let answer = ConfirmAnswer {
+                run_id,
+                task_id,
+                attempt_key,
+                approve,
+                note,
+            };
+            confirm_answer(state, &answer).await
+        }
         _ => return Err(unknown()),
     };
     Ok(match outcome {
         Ok(value) => tool_result(&value),
         Err(error) => tool_error(&error.message),
     })
+}
+
+/// The confirmations (9137) the tasks of run `run_id` wait for: their review
+/// holds whose `kind` is `confirm`, oldest first, with what a host shows its
+/// user.
+fn confirm_holds(workdir: &std::path::Path, run_id: &str) -> Vec<Value> {
+    let root = roko_fs::RokoLayout::for_project(workdir)
+        .state_dir()
+        .join("review-holds");
+    let mut holds: Vec<Value> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|plan| std::fs::read_dir(plan.path()).ok())
+        .flatten()
+        .flatten()
+        .filter_map(|hold| serde_json::from_slice::<Value>(&std::fs::read(hold.path()).ok()?).ok())
+        .filter(|hold| hold["kind"] == "confirm" && hold["run_id"] == run_id)
+        .map(|hold| {
+            json!({
+                "plan_id": hold["plan_id"],
+                "task_id": hold["task_id"],
+                "title": hold["title"],
+                "attempt_key": hold["attempt_key"],
+                "question": hold["question"],
+                "summary": hold["summary"],
+                "held_at": hold["held_at"],
+            })
+        })
+        .collect();
+    holds.sort_by(|a, b| a["held_at"].as_str().cmp(&b["held_at"].as_str()));
+    holds
+}
+
+/// A `confirm_answer` call's arguments.
+struct ConfirmAnswer<'a> {
+    run_id: &'a str,
+    task_id: &'a str,
+    attempt_key: &'a str,
+    approve: bool,
+    note: &'a str,
+}
+
+/// Record `answer` to the confirmation its task waits for (9137) in the
+/// review log the held attempt reads, as the review route records a
+/// decision. A task that waits for no such confirmation is an error.
+async fn confirm_answer(
+    state: &Arc<AppState>,
+    answer: &ConfirmAnswer<'_>,
+) -> Result<Value, ApiError> {
+    let held = confirm_holds(&state.workdir, answer.run_id)
+        .into_iter()
+        .find(|hold| hold["task_id"] == answer.task_id && hold["attempt_key"] == answer.attempt_key)
+        .ok_or_else(|| {
+            ApiError::not_found(format!(
+                "task {} of run {} waits for no confirmation of attempt {}",
+                answer.task_id, answer.run_id, answer.attempt_key
+            ))
+        })?;
+    let plan_id = held["plan_id"].as_str().unwrap_or_default();
+    let decision = if answer.approve {
+        "approved"
+    } else {
+        "rejected"
+    };
+    super::plans::record_review(
+        &state.workdir,
+        plan_id,
+        answer.task_id,
+        decision,
+        answer.note,
+        Some(answer.attempt_key),
+    )
+    .await;
+    Ok(json!({
+        "run_id": answer.run_id,
+        "task_id": answer.task_id,
+        "attempt_key": answer.attempt_key,
+        "decision": decision,
+    }))
 }
 
 /// The `run_id` and `wait_secs` of a `run_status` call; a longer wait is cut
@@ -810,7 +971,9 @@ mod tests {
                 "run_prompt",
                 "plan_run",
                 "plan_generate",
-                "run_cancel"
+                "run_cancel",
+                "confirm_pending",
+                "confirm_answer"
             ]
         );
         for tool in &tools[..2] {

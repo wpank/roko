@@ -3,6 +3,8 @@
 //! first when its plan asks for that (gap-0d64d5), and the attempt and
 //! checkout a task's output names (bug-50caf2).
 
+use roko_core::Verdict;
+use roko_core::config::GateRungConfig;
 use roko_graph::workspace::{
     ExecutionWorkspaceProvider, WorkspaceAcceptRequest, WorkspaceAcceptance, WorkspaceError,
     WorkspaceLease, WorkspaceReleasePolicy,
@@ -334,6 +336,93 @@ impl GraphTaskDispatcher {
         }
     }
 
+    /// A `confirm` rung's verdict on the attempt `attempt_key` at `task`
+    /// (9137, decision 9108): the person the work is for confirms its
+    /// outcome. The task's review hold gets the rung's question and a short
+    /// summary of `artefacts`, where `roko serve`'s review routes and the
+    /// `/mcp` `confirm_pending` tool show it, and the rung waits for a
+    /// decision on the attempt in the review log, which the `confirm_answer`
+    /// tool, the review route and `roko plan review` write. A "yes" passes it
+    /// as [`CONFIRMED_BY_USER`], a person's judgement that the attempt record
+    /// keeps apart from machine checks; any other answer fails it with the
+    /// person's note; no answer within the rung's `timeout_secs`, or a run
+    /// that began to stop, skips it, so the task ends unverified. The hold is
+    /// removed either way.
+    pub(super) async fn confirm_rung(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_key: &str,
+        rung: &GateRungConfig,
+        artefacts: &[(String, String)],
+    ) -> Verdict {
+        let label = super::verification::rung_step_label(&rung.name);
+        let layout = roko_fs::RokoLayout::for_project(&self.workdir);
+        let hold_path = layout.review_hold(&spec.plan_id, &task.id);
+        let key = roko_learn::telemetry::AttemptKey::parse(attempt_key);
+        let hold = serde_json::json!({
+            "schema_version": 1,
+            "kind": "confirm",
+            "plan_id": spec.plan_id,
+            "task_id": task.id,
+            "title": task.title,
+            "run_id": key.as_ref().map(|key| key.run_id.clone()),
+            "attempt_key": attempt_key,
+            "attempt": key.as_ref().map(|key| key.attempt),
+            "rung": rung.name,
+            "question": confirm_question(&self.workdir, rung),
+            "summary": confirm_summary(artefacts),
+            "timeout_secs": rung.timeout_secs,
+            "held_at": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Err(error) = write_review_hold(&hold_path, &hold) {
+            let reason = format!("the confirmation could not be asked: {error}");
+            return Verdict::skip(&label, reason);
+        }
+        tracing::info!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            attempt_key,
+            hold = %hold_path.display(),
+            "the attempt waits for its person to confirm the outcome"
+        );
+        let reviews = layout.reviews_log();
+        let deadline = std::time::Instant::now() + rung.timeout();
+        let decision = loop {
+            if let Some(decision) = review_decision(&reviews, &spec.plan_id, &task.id, attempt_key)
+            {
+                break Some(decision);
+            }
+            let stopping = self.stopped_verify(spec, task, "confirm").is_some();
+            if stopping || std::time::Instant::now() >= deadline {
+                break None;
+            }
+            tokio::time::sleep(REVIEW_POLL_INTERVAL).await;
+        };
+        if let Err(error) = std::fs::remove_file(&hold_path) {
+            tracing::warn!(hold = %hold_path.display(), %error, "the confirm hold stays");
+        }
+        match decision {
+            Some((decision, note)) if decision == "approved" => {
+                let mut verdict = Verdict::pass(&label).with_detail(note);
+                verdict.reason = CONFIRMED_BY_USER.to_string();
+                verdict
+            }
+            Some((decision, note)) => {
+                let note = if note.trim().is_empty() {
+                    "no note".to_string()
+                } else {
+                    note
+                };
+                Verdict::fail(&label, format!("the person {decision} the outcome: {note}"))
+            }
+            None => {
+                let reason = format!("no answer within {} s", rung.timeout_secs);
+                Verdict::skip(&label, reason)
+            }
+        }
+    }
+
     /// Hold the verified attempt `settled` of `task`, which ran in `lease`,
     /// until a person approves or rejects it (gap-0d64d5).
     ///
@@ -474,6 +563,51 @@ const CONFLICT_PATHS_LISTED: usize = 20;
 /// refusal's `reason`, then the paths it names, or else the paths the
 /// attempt changed (`changed`). It stays raw text: lifting out a path that
 /// reads like a failing test would leave the prompt with that line alone.
+/// The reason a passed `confirm` rung gives (9137): the person the work is
+/// for confirmed the outcome, which is their judgement, not a machine check.
+pub(super) const CONFIRMED_BY_USER: &str = "confirmed_by_user";
+
+/// The question a `confirm` rung asks when its `rubric` names none.
+const DEFAULT_CONFIRM_QUESTION: &str = "Is the result what you asked for?";
+
+/// The most of its artefacts a `confirm` hold's summary shows, in bytes.
+const CONFIRM_SUMMARY_BYTES: usize = 2 * 1024;
+
+/// The question `rung`, a `confirm` rung, asks: its `rubric`, the text or
+/// the path of a file in the workspace at `workdir` holding it, else
+/// [`DEFAULT_CONFIRM_QUESTION`].
+fn confirm_question(workdir: &Path, rung: &GateRungConfig) -> String {
+    let Some(rubric) = rung
+        .rubric
+        .as_deref()
+        .map(str::trim)
+        .filter(|rubric| !rubric.is_empty())
+    else {
+        return DEFAULT_CONFIRM_QUESTION.to_string();
+    };
+    std::fs::read_to_string(workdir.join(rubric))
+        .map(|text| text.trim().to_string())
+        .unwrap_or_else(|_| rubric.to_string())
+}
+
+/// A short summary of a `confirm` rung's `artefacts` for the person to
+/// judge: each one's path and text, cut to [`CONFIRM_SUMMARY_BYTES`].
+fn confirm_summary(artefacts: &[(String, String)]) -> String {
+    if artefacts.is_empty() {
+        return "(the rung names no files)".to_string();
+    }
+    let mut summary = String::new();
+    for (path, text) in artefacts {
+        summary.push_str(&format!("{path}:\n{}\n", text.trim()));
+    }
+    if summary.len() > CONFIRM_SUMMARY_BYTES {
+        let cut = summary.floor_char_boundary(CONFIRM_SUMMARY_BYTES);
+        summary.truncate(cut);
+        summary.push_str("\n...[truncated]");
+    }
+    summary
+}
+
 /// The record of kind `kind` (such as `accepted`) beside the scratch copy at
 /// `dir`, where its manifests are.
 fn scratch_record_path(dir: &Path, kind: &str) -> PathBuf {

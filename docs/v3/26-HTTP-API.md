@@ -1081,6 +1081,8 @@ routing stays with the ladder.
 | `plan_run` | `plan_id` (string, required); `resume` (boolean, default false); `max_usd` (number above 0, required) | A run of the plan, or its place in the queue (`state: "queued"`, `position`), as `POST /api/plans/{id}/execute` starts it |
 | `plan_generate` | `prompt` (string, required) | The planner's operation as `run_id` and the new plan's `plan_id`, as `POST /api/plans/generate` starts it |
 | `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped, or a live or queued plan run cancelled, as `POST /api/plans/{id}/cancel` cancels it |
+| `confirm_pending` | `run_id` (string, required) | `{ pending: [...] }`: the outcomes the run's tasks wait for their person to confirm (a `confirm` rung, 9137), each with `plan_id`, `task_id`, `title`, `attempt_key`, `question`, `summary` and `held_at`. Read-only |
+| `confirm_answer` | `run_id`, `task_id`, `attempt_key` (strings, required); `approve` (boolean, required); `note` (string) | The person's answer recorded in the review log, as `POST /api/plans/{id}/tasks/{task_id}/review` records a decision: a yes passes the rung as `confirmed_by_user`, a no fails the attempt with the note as its feedback. `write` scope; a task that waits for no such confirmation is an error |
 
 A run a chat host starts must name its spending cap: `run_prompt` and
 `plan_run` refuse, with a JSON-RPC error and before anything starts, a call

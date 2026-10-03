@@ -1055,7 +1055,7 @@ impl GraphTaskDispatcher {
     /// run is stopping its commands, so a step that fails then says nothing
     /// about the attempt's work, and a step that would start then is not
     /// worth starting (bug-82cbef).
-    fn stopped_verify(
+    pub(super) fn stopped_verify(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
@@ -1131,6 +1131,7 @@ fn ran_step_verdict(
         timed_out: roko_gate::verdict_timed_out(verdict),
         skipped: false,
         skip_reason: None,
+        confirmed_by_user: false,
     }
 }
 

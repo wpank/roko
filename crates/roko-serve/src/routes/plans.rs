@@ -34,8 +34,10 @@ use self::merge::*;
 use self::reads::*;
 use self::run_control::*;
 
-// The MCP run tools (9115) start, generate and cancel what these routes do.
+// The MCP run tools (9115) start, generate and cancel what these routes do,
+// and `confirm_answer` (9137) records a decision as the review route does.
 pub(super) use self::authoring::start_plan_generation;
+pub(super) use self::merge::record_review;
 pub(super) use self::run_control::{cancel_plan_run, start_plan_run_with};
 
 pub fn routes() -> Router<Arc<AppState>> {

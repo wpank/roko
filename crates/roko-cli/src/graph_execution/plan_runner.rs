@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow};
 use futures::StreamExt as _;
+use roko_core::config::homeostasis::HomeostasisMode;
 use roko_fs::RokoLayout;
 
 use super::plan_set::{BlockReason, PlanConflicts, PlanOutcome, PlanSetOrder, PlanSetScheduler};
@@ -1403,6 +1404,8 @@ async fn run_graph_plan_body(
     if let Some(sink) = &homeostasis {
         sink.publish_to(dispatcher_tui_bridge.clone());
     }
+    // The agent slot pool logs its live resizes there too (8134).
+    let slot_events = dispatcher_tui_bridge.clone();
     let graph_tui_bridge = crate::runner::graph_tui_bridge::GraphTuiBridge::new(
         crate::runner::tui_bridge::TuiBridge::new(state_hub_sender),
     );
@@ -1585,12 +1588,19 @@ async fn run_graph_plan_body(
         },
     );
     // `[conductor] max_agents` caps concurrently executing tasks across
-    // every plan of the run.
-    let task_dispatcher: Arc<dyn TaskDispatcher> =
-        Arc::new(super::agent_slots::AgentSlotDispatcher::new(
-            graph_task_dispatcher.clone(),
-            roko_config.conductor.max_agents,
-        ));
+    // every plan of the run. With M1 on, θ's B5 knob sizes the pool within
+    // that cap (8134); in shadow mode the pool stays at the cap.
+    let mut agent_slots = super::agent_slots::AgentSlotDispatcher::new(
+        graph_task_dispatcher.clone(),
+        roko_config.conductor.max_agents,
+    );
+    let live_limit = homeostasis
+        .as_ref()
+        .filter(|sink| sink.mode() == HomeostasisMode::On);
+    if let Some(sink) = live_limit {
+        agent_slots = agent_slots.with_live_limit(sink.handle().clone(), slot_events);
+    }
+    let task_dispatcher: Arc<dyn TaskDispatcher> = Arc::new(agent_slots);
 
     // ── TUI execution command channel (P2-TUI-3) ─────────────────────
     //

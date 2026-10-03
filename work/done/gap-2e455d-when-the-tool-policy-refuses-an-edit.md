@@ -2,7 +2,7 @@
 id = "gap-2e455d"
 kind = "gap"
 title = "When the tool policy refuses an edit, the next attempt's no-changes feedback doesn't say so"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "21edf3817"
 source = "bug-ef82eb investigation (2026-10-03)"
 discovered_from = "bug-ef82eb"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-agent/src/safety/contract.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["bug-ef82eb", "gap-31c0e8"], 
 
 [[verify]]
 command = "grep -rqw 'fn no_changes_feedback_names_a_refused_edit' crates/roko-cli/src/ && cargo test -p roko-cli no_changes_feedback_names_a_refused_edit"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T16:20:02Z"
+commit = "21edf3817"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T07:50:04Z"
+forced = false
+evidence = "Gate 8b (work/backlog-batch-8b, merged into main as 21edf3817): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 10,702 tests over roko-agent, -cli, -compose, -core, -learn and -serve (and 4,847 roko-cli/-learn after PK39's fix), roko-cli bin 432 passed, the golden-path canaries pass incl. prompt_relevance_canary (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-agent and roko-compose integration tests pass, ViabilityBench suite 678 passed, PK36's shakedown 8/8 against the batch binary; every [[verify]] passes. A no-changes rejection names each tool call the policy refused (tool, path, rule, remedy) in its message and in the retry's diagnosis; RequireToolBeforeEdit unchanged; D6's stub reads first."
 +++
 
 ## Problem

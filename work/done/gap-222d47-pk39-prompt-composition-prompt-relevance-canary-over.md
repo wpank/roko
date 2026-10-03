@@ -2,7 +2,7 @@
 id = "gap-222d47"
 kind = "gap"
 title = "PK39 Prompt composition: Prompt-relevance canary: over two scripted runs, each prompt holds only its own task's… (+3 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -10,8 +10,9 @@ rank = 39
 size = "L"
 subsystem = ["roko-cli/tests"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "21edf3817"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK39"
 anchors = ["crates/roko-cli/src/dispatch/factory.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-compose/src/auction.rs", "crates/roko-compose/src/cost_attribution.rs", "crates/roko-compose/src/lib.rs", "crates/roko-compose/src/prompt.rs", "crates/roko-compose/src/strategy.rs", "crates/roko-core/src/config/schema.rs", "roko.toml"]
 lane = "rust-cold"
@@ -29,6 +30,17 @@ command = "! grep -q 'pub fn vcg_allocate' crates/roko-compose/src/auction.rs &&
 
 [[verify]]
 command = "! grep -q 'vcg_warmup_observations' roko.toml && grep -rqw 'fn legacy_vcg_prompt_keys_load_as_density_greedy' crates/roko-core/src/ && cargo test -p roko-core legacy_vcg_prompt_keys_load_as_density_greedy"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T16:20:03Z"
+commit = "21edf3817"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T07:38:37Z"
+forced = false
+evidence = "Gate 8b (work/backlog-batch-8b, merged into main as 21edf3817): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 10,702 tests over roko-agent, -cli, -compose, -core, -learn and -serve (and 4,847 roko-cli/-learn after PK39's fix), roko-cli bin 432 passed, the golden-path canaries pass incl. prompt_relevance_canary (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-agent and roko-compose integration tests pass, ViabilityBench suite 678 passed, PK36's shakedown 8/8 against the batch binary; every [[verify]] passes. PK39 4/4. The canary found a real bug, fixed in 3be03e342: failing_command didn't parse Graph's verify step line, so every pattern was stored under 'verify' and same-command selection never matched. Gate fix 10ad96558 (a test pattern)."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-29fe0a"
 kind = "gap"
 title = "No --no-holdout run flag exists; D7's decided escape hatch is only the sticky holdout_frac config field"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/main"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "21edf3817"
 source = "wave-5 follow-up reports 2026-10-02 (PK19 gap-de0b87)"
 discovered_from = "gap-de0b87 (D7, tmp/cybernetic-harness/DECISIONS.md)"
 anchors = ["crates/roko-core/src/config/spec_quality.rs::SpecQualityConfig"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn no_holdout_flag_draws_no_holdout_attempts' crates/roko-cli/ && cargo test -p roko-cli no_holdout_flag_draws_no_holdout_attempts"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T16:20:04Z"
+commit = "21edf3817"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T07:38:38Z"
+forced = false
+evidence = "Gate 8b (work/backlog-batch-8b, merged into main as 21edf3817): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 10,702 tests over roko-agent, -cli, -compose, -core, -learn and -serve (and 4,847 roko-cli/-learn after PK39's fix), roko-cli bin 432 passed, the golden-path canaries pass incl. prompt_relevance_canary (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-agent and roko-compose integration tests pass, ViabilityBench suite 678 passed, PK36's shakedown 8/8 against the batch binary; every [[verify]] passes. roko run --no-holdout reaches every run path (427f81e4b); with the plan-run half from PK38, both commands zero the holdout draws."
 +++
 
 ## Problem

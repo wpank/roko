@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 118 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 117 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -24,11 +24,11 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- **P1** [bug-0b7695](items/bug-0b7695-after-a-failover-to-another-model-the.md) After a failover to another model, the attempt record still names the planned model, so bench Roko arms end infra_error (shakedown D3, D7) [bug] · size M · verified 2026-10-03
 - **P2** [bug-412a5e](items/bug-412a5e-a-graph-attempt-s-model-call-efficiency.md) A Graph attempt's model-call efficiency row is written under its own worktree, not the workspace root [bug] · size M · verified 2026-10-03
 - **P2** [bug-dd20bd](items/bug-dd20bd-a-frozen-roko-run-still-appends-a.md) A frozen roko run still appends a workflow_complete episode, because record_workflow_feedback ignores [learning] frozen [bug] · size S · verified 2026-10-03
+- **P2** [bug-045773](items/bug-045773-a-reattached-worktree-s-base-commit-is.md) A reattached worktree's base_commit is hardcoded to None instead of read back from the original attach [bug] · size M · verified 2026-10-03
 
-_18 more open · on hold: gap-3698cd · `goal = "truth"`_
+_16 more open · on hold: gap-3698cd · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -36,15 +36,15 @@ _18 more open · on hold: gap-3698cd · `goal = "truth"`_
 - **P2** [dec-55532d](items/dec-55532d-confirm-nine-worker-choices-from-waves-3.md) Confirm nine worker choices from waves 3-5 (budget raise transport, failover retries, 24h auth quarantine, frozen allow-list, CLI billing, cold-start knowledge, domain packs, secret scrubbing) [decision] · size S · verified 2026-10-03
 - **P2** [bug-261c02](items/bug-261c02-five-tracked-plans-fail-roko-plan-validate.md) Five tracked plans fail roko plan validate, predating PK14 [bug] · size M · verified 2026-10-03
 
-_2 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_1 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- **P1** [gap-2ca903](items/gap-2ca903-pk30-viabilitybench-proof-codex-cli-runner-for.md) PK30 ViabilityBench proof: Codex CLI runner for the fd_codex arm (+7 more) · size L · verified 2026-10-02
-- **P1** [gap-31c0e8](items/gap-31c0e8-pk36-viabilitybench-proof-shakedown-the-roko-arms.md) PK36 ViabilityBench proof: Shakedown: the Roko arms against the live-run defects, offline, before any paid Roko run (+2 more) · size M · verified 2026-10-02
 - **P1** [gap-a42df2](items/gap-a42df2-pk45-viabilitybench-proof-requires-live-refuse-a.md) PK45 ViabilityBench proof: requires_live: refuse a live manifest whose loops are not LIVE at its harness_sha (+1 more) · size S · verified 2026-10-02
+- **P2** [gap-63fd4c](items/gap-63fd4c-pk50-viabilitybench-proof-replays-r-h4-and.md) PK50 ViabilityBench proof: Replays R-H4 and R-M3 on S04's prequential replay · size S · verified 2026-10-02
+- **P1** [gap-ed1a08](items/gap-ed1a08-pk67-viabilitybench-proof-replay-r-h6-s06.md) PK67 ViabilityBench proof: Replay R-H6: S06's controllers A0-A5 plus A3-gated and A3-mis (+2 more) · size L · verified 2026-10-02
 
-_16 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -72,11 +72,11 @@ _4 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
-- **P2** [gap-222d47](items/gap-222d47-pk39-prompt-composition-prompt-relevance-canary-over.md) PK39 Prompt composition: Prompt-relevance canary: over two scripted runs, each prompt holds only its own task's… (+3 more) · size L · verified 2026-10-02
 - **P2** [bug-a3f005](items/bug-a3f005-acp-serves-one-drawn-prompt-experiment-variant.md) ACP serves one drawn prompt-experiment variant but settles its receipt against a differently-drawn one [bug] · size M · verified 2026-10-03
 - **P2** [q-6b7cca](items/q-6b7cca-graph-plan-runs-never-emit-plancompleted-wire.md) Graph plan runs never emit PlanCompleted: wire the four plan-completion sinks (the dream sink starts claude) or remove them? [question] · size S · verified 2026-09-29
+- **P2** [gap-6c8965](items/gap-6c8965-l-sec-s-loops-toml-note-is.md) L-sec's loops.toml note is stale, the census's L-know check reads a dead file, [sections] is undocumented, and 4131's fixture has no knowledge store · size M · verified 2026-10-03
 
-_6 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_5 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 

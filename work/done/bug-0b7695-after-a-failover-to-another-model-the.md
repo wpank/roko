@@ -2,7 +2,7 @@
 id = "bug-0b7695"
 kind = "bug"
 title = "After a failover to another model, the attempt record still names the planned model, so bench Roko arms end infra_error (shakedown D3, D7)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "21edf3817"
 source = "PK36 shakedown via gap-821c93 (2026-10-03)"
 discovered_from = "gap-821c93"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/failover.rs", "benchmarks/viabilitybench/driver/test_shakedown.py"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["gap-31c0e8", "gap-821c93"], 
 
 [[verify]]
 command = "grep -rqw 'fn failover_attempt_records_the_model_that_answered' crates/roko-cli/src/ && cargo test -p roko-cli failover_attempt_records_the_model_that_answered"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T16:20:02Z"
+commit = "21edf3817"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T07:38:41Z"
+forced = false
+evidence = "Gate 8b (work/backlog-batch-8b, merged into main as 21edf3817): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 10,702 tests over roko-agent, -cli, -compose, -core, -learn and -serve (and 4,847 roko-cli/-learn after PK39's fix), roko-cli bin 432 passed, the golden-path canaries pass incl. prompt_relevance_canary (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn, roko-agent and roko-compose integration tests pass, ViabilityBench suite 678 passed, PK36's shakedown 8/8 against the batch binary; every [[verify]] passes. The premise was false: after a failover the record already names the model that answered. Fixed the real mislabel (the episode's initial_model, which made routing_accuracy count failovers as hits), the 401 classifier miss (AUTH_FAILURE_MARKER), and the bench driver's causes of D3/D7 (routed arms no longer pinned with --model; plan-start probe traffic metered with attempt 1 at its own model's price)."
 +++
 
 ## Problem

@@ -79,11 +79,14 @@ pub const REWARD_VARIANCE: f64 = 0.25;
 pub const Z95_ONE_SIDED: f64 = 1.644_854;
 /// Relaxation waits for E2 below this share of its bound.
 pub const RELAX_COST_SHARE: f64 = 0.7;
-/// An auxiliary signal is up when this share of the window shows it: three
-/// of twenty resolutions, so a breach confirmed three resolutions into a
-/// provider fault already reads as an outage.
+/// An auxiliary signal is up when this share of the window shows it.
 pub const AUX_SHARE: f64 = 0.15;
-/// Retries are up when the window averages more attempts than this.
+/// An auxiliary signal is also up when one of the last this many
+/// resolutions shows it. The detectors can confirm a breach on the first
+/// resolution after its onset, when the window still dilutes the signal.
+pub const AUX_RECENT: usize = 5;
+/// Retries are up when the window, or its last [`AUX_RECENT`] resolutions,
+/// average more attempts than this.
 pub const AUX_ATTEMPTS: f64 = 1.5;
 /// The config fingerprint the SafetyBox compares when the caller gives
 /// none: the controller never edits the config, so before equals after.
@@ -1208,16 +1211,22 @@ impl Controller {
         }
     }
 
-    /// The breach signature, with the window's auxiliary signals.
+    /// The breach signature, with the auxiliary signals: each is up when
+    /// [`AUX_SHARE`] of the window shows it or one of the last
+    /// [`AUX_RECENT`] resolutions does, so a breach confirmed one resolution
+    /// into a provider fault already reads as an outage.
     fn signature(&self, breached: &[Ev]) -> Signature {
         let window = self.window.resolutions();
-        let attempts: u32 = window.iter().map(|r| r.attempts).sum();
-        let mean_attempts = f64::from(attempts) / window.len().max(1) as f64;
-        let budget = |r: &TaskResolution| r.final_verdict == AttemptOutcome::BudgetExhausted;
+        let recent = &window[window.len().saturating_sub(AUX_RECENT)..];
+        let up = |hit: &dyn Fn(&TaskResolution) -> bool| {
+            share(window, hit) >= AUX_SHARE || recent.iter().any(hit)
+        };
+        let retries_up =
+            mean_attempts(window) > AUX_ATTEMPTS || mean_attempts(recent) > AUX_ATTEMPTS;
         Signature {
-            provider_errors: share(window, |r| r.provider_errors > 0) >= AUX_SHARE,
-            budget_exhausted: share(window, budget) >= AUX_SHARE,
-            retries_up: mean_attempts > AUX_ATTEMPTS,
+            provider_errors: up(&|r| r.provider_errors > 0),
+            budget_exhausted: up(&|r| r.final_verdict == AttemptOutcome::BudgetExhausted),
+            retries_up,
             ..Signature::of(breached)
         }
     }
@@ -1568,6 +1577,12 @@ const fn slot(ev: Ev) -> usize {
 fn share(window: &[TaskResolution], hit: impl Fn(&TaskResolution) -> bool) -> f64 {
     let hits = window.iter().filter(|r| hit(r)).count();
     hits as f64 / window.len().max(1) as f64
+}
+
+/// The mean attempts per resolution of `resolutions`; 0 when there are none.
+fn mean_attempts(resolutions: &[TaskResolution]) -> f64 {
+    let attempts: u32 = resolutions.iter().map(|r| r.attempts).sum();
+    f64::from(attempts) / resolutions.len().max(1) as f64
 }
 
 /// One standard normal draw (Box–Muller).

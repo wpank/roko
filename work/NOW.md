@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 117 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 115 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -48,11 +48,11 @@ _14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-39
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- **P2** [gap-c1d920](items/gap-c1d920-pk43-m2-loop-liveness-loopauditor-facade-and.md) PK43 M2 loop-liveness: LoopAuditor facade and the [learning.audit] config section (+5 more) · size L · verified 2026-10-02
 - **P2** [gap-85d176](items/gap-85d176-pk44-m2-loop-liveness-dryrunplanner-over-dispatcher.md) PK44 M2 loop-liveness: DryRunPlanner over Dispatcher::plan (probes P4 and P5) (+6 more) · size L · verified 2026-10-02
-- **P2** [gap-7ec3ef](items/gap-7ec3ef-pk49-m3-self-model-compute-the-m3.md) PK49 M3 self-model: Compute the M3 economics report from policy replays (+7 more) · size L · verified 2026-10-02
+- **P3** [gap-a21195](items/gap-a21195-pk51-specs-a-cheap-model-can-execute.md) PK51 Specs a cheap model can execute: Export the spec features to the M3 self-model · size S · verified 2026-10-02
+- **P2** [gap-0c429f](items/gap-0c429f-pk52-m3-self-model-let-an-active.md) PK52 M3 self-model: Let an active self-model climb early after a failure, within the ladder's limits · size M · verified 2026-10-02
 
-_24 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_24 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

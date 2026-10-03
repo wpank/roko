@@ -2,7 +2,7 @@
 id = "gap-c1d920"
 kind = "gap"
 title = "PK43 M2 loop-liveness: LoopAuditor facade and the [learning.audit] config section (+5 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 43
 size = "L"
 subsystem = ["roko-learn/loop_audit"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "cf37d7628"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK43"
 anchors = ["crates/roko-cli/src/dispatch/model_routing.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-cli/src/graph_execution/mod.rs", "crates/roko-cli/src/lib.rs", "crates/roko-core/src/config/learning.rs", "crates/roko-learn/src/routing_log.rs", "crates/roko-learn/src/telemetry/records.rs"]
 lane = "rust-hot"
@@ -35,6 +36,17 @@ command = "grep -rqw 'fn audit_tick_appends_health_rows_and_publishes_events' cr
 
 [[verify]]
 command = "grep -rqw 'fn canary_writers_reach_real_readers' crates/roko-cli/src/ && cargo test -p roko-cli --lib canary_writers_reach_real_readers"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T17:06:46Z"
+commit = "cf37d7628"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T07:38:36Z"
+forced = false
+evidence = "Gate 8c (work/backlog-batch-8c, merged into main as cf37d7628): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings (two lints fixed, ea964cad1 and eac374ef0), nextest --lib 7,104 tests over roko-cli, -core, -learn and -neuro (one shadow-mode test compared the arm's model key with the provider slug, fixed in 658adbbed), roko-cli bin 436 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass, the bench analysis suite 87 passed; every [[verify]] passes. PK43 6/6 with 5127 partial: the LoopAuditor facade and [learning.audit] (invariant 13), A-DEC fields on route, knowledge and playbook rows, census measured mode, the audit tick at run close with health and transition rows, L-know and L-play canary writers; L-route's writer is gap-135821."
 +++
 
 ## Problem

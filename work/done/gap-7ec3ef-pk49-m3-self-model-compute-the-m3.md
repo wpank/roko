@@ -2,7 +2,7 @@
 id = "gap-7ec3ef"
 kind = "gap"
 title = "PK49 M3 self-model: Compute the M3 economics report from policy replays (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 49
 size = "L"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "cf37d7628"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK49"
 anchors = ["crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/dispatch/model_routing.rs", "crates/roko-cli/src/runtime_feedback/mod.rs", "crates/roko-core/src/config/mod.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-learn/src/telemetry/records.rs", "crates/roko-learn/src/telemetry/writer.rs"]
 lane = "rust-hot"
@@ -35,6 +36,17 @@ command = "grep -rqw 'fn self_model_shadow_writes_predictions_and_keeps_routing'
 
 [[verify]]
 command = "grep -rqw 'fn settled_verdict_updates_self_model_state' crates/roko-cli/src/ && cargo test -p roko-cli settled_verdict_updates_self_model_state"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T17:06:48Z"
+commit = "cf37d7628"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T07:38:36Z"
+forced = false
+evidence = "Gate 8c (work/backlog-batch-8c, merged into main as cf37d7628): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings (two lints fixed, ea964cad1 and eac374ef0), nextest --lib 7,104 tests over roko-cli, -core, -learn and -neuro (one shadow-mode test compared the arm's model key with the provider slug, fixed in 658adbbed), roko-cli bin 436 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass, the bench analysis suite 87 passed; every [[verify]] passes. PK49 6/8: econ.py, roko learn self-model fit/replay and econ prices, the roko.prediction/1 record, [self_model] (invariant 14), the shadow hook, the outcome sink; 6125 is the held gap-8a26fc and 6130 is gap-d2d750."
 +++
 
 ## Problem

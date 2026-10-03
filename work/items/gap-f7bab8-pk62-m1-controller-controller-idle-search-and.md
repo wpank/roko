@@ -93,3 +93,21 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK34 (gap-ac2611), PK47 (gap-62e1b9), PK61 (gap-8b67de).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-f7bab8`; cargo verification deferred to the batch gate.
+
+- 8112: implemented at 741300094
+- 8113: implemented at 57138c685
+- 8114: implemented at 9821b0351
+- 8115: implemented at 4eeae3122
+- 8116: implemented at dcb437e09
+- 8117: implemented at a5c340cfd
+- 8118: implemented at ea70ee4d6
+- 8119: implemented at 986fff88f
+- 8120: implemented at 75494e7f3 (synthetic regimes moved to S06 C1's steps and `AUX_SHARE` to 0.15 in the same commit)
+- 8121: implemented at 508ef3b22 (adds `Controller::set_detector_tuning` for the pre-arm)
+- Lint follow-up: 47aedae8f splits first doc paragraphs over 200 characters (8115, 8117, 8118, 8119).
+- model_swap vs convention_flip (S06 C2): with the catalog-sign prior both get B1 floor up first, which is in model_swap's row only. The controller's doc records it; 8120 checks convention_flip's first guided move against the union of the two rows; 8121's test shows calibrated M3 priors picking a convention_flip counter (B2 retries) first. budget_cut's signature (E2 high, budget ends) forms only after E1 confirms, so 8120 checks its row over the episode.
+- S06 A1 for `--seed 7`: an emulation of rand_chacha gives the first decision draw u = 0.158 < `random_step_prob` 0.2, so the first change is an Ashby step; the next decision (u = 0.99) is the directed B1 floor raise the verify greps for. Detection by resolution 30 for seed 7 is unverified.

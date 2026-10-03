@@ -95,3 +95,14 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
   policy-level beta, oracle or Pareto set"; check it names the file `econ.py` and emits these exact metric names
   (per `figlib.py:52-54`'s name/clause contract) so the already-written figure/table scripts resolve without a
   follow-up fix. `regret_cum` is probably task 3340's (replay.py), not this one — see the note on gap-5ddf9b.
+
+## Progress
+
+- 6123: implemented at e2f293996 (verify run with the bench venv: 3 passed; the whole analysis suite 77 passed, 1 skipped)
+- 6124: implemented at 53e1f170c (cargo verification deferred to the batch gate)
+- 6125: blocked: no pilot records exist (Pilot A gap-c33709 and Pilot B gap-327242 are open, and `reports/` holds only `simulation/`); the smoke-test report cannot be made without them
+- 6126: implemented at 28a19a301 (a new S01 `AttemptPredictionRecord`: neither existing `PredictionRecord` fits, since one carries outcomes and the other is a Cell's guess)
+- 6127: implemented at 8ace7692f (config invariant 14; 13 is PK43's `[learning.audit]`)
+- 6128: implemented at 59156dc0a
+- 6129: implemented at 0f1da8903
+- 6130: blocked: it composes the self-model's rung into S03's single route table (holdout, explore, propensity), which PK43 (gap-c1d920) is wiring into `ModelRouter::decide` in `model_routing.rs` now; the task forbids editing that file in parallel with S03.T11, and a second L-M3 draw would duplicate the table. It can go once PK43 is merged.

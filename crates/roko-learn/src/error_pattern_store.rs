@@ -478,6 +478,31 @@ impl ErrorPatternStore {
         true
     }
 
+    /// The patterns with a recorded fix, seen at least twice, that are about
+    /// a crate `paths` name (backlog 4126), most frequent first and at most
+    /// `limit`. A pattern is about the crates its verify command, digest and
+    /// fix name: `crates/<name>` paths, and the package of a cargo `-p` or
+    /// `--package` flag.
+    pub fn resolved_for(&self, paths: &[String], limit: usize) -> Vec<&ErrorPattern> {
+        let wanted: BTreeSet<String> = paths.iter().flat_map(|path| crates_named(path)).collect();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        let mut found: Vec<&ErrorPattern> = self
+            .patterns
+            .iter()
+            .filter(|pattern| pattern.resolution.is_some() && pattern.occurrences >= 2)
+            .filter(|pattern| !pattern.crates().is_disjoint(&wanted))
+            .collect();
+        found.sort_by(|a, b| {
+            b.occurrences
+                .cmp(&a.occurrences)
+                .then_with(|| b.last_seen_at.cmp(&a.last_seen_at))
+        });
+        found.truncate(limit);
+        found
+    }
+
     /// Return the most frequent patterns, sorted by descending occurrence
     /// count.
     pub fn top_patterns(&self, limit: usize) -> Vec<&ErrorPattern> {
@@ -678,6 +703,20 @@ impl ErrorPatternStore {
 }
 
 impl ErrorPattern {
+    /// The crates the pattern is about: those its verify command, digest
+    /// and fix name ([`crates_named`]).
+    fn crates(&self) -> BTreeSet<String> {
+        [
+            self.gate.as_deref(),
+            Some(self.digest.as_str()),
+            self.resolution.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .flat_map(crates_named)
+        .collect()
+    }
+
     fn relevance_score(&self, query: FailurePatternQuery<'_>) -> usize {
         let mut score = 0usize;
         if let Some(task_id) = query.task_id
@@ -835,6 +874,38 @@ fn collapse_whitespace(text: &str) -> String {
 
 fn truncate_chars(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
+}
+
+/// Where a workspace keeps its crates.
+const CRATES_DIR: &str = "crates/";
+
+/// The crates `text` names: each `crates/<name>` path, and the package of
+/// each cargo `-p <name>`, `--package <name>` or `--package=<name>` flag.
+fn crates_named(text: &str) -> BTreeSet<String> {
+    let mut crates = BTreeSet::new();
+    let mut words = text.split_whitespace().peekable();
+    while let Some(word) = words.next() {
+        for (start, _) in word.match_indices(CRATES_DIR) {
+            crates.insert(crate_name(&word[start + CRATES_DIR.len()..]));
+        }
+        let package = match word {
+            "-p" | "--package" => words.peek().copied(),
+            _ => word.strip_prefix("--package="),
+        };
+        if let Some(package) = package {
+            crates.insert(crate_name(package));
+        }
+    }
+    crates.remove("");
+    crates
+}
+
+/// The crate name `text` starts with: its leading ASCII letters, digits,
+/// dashes and underscores.
+fn crate_name(text: &str) -> String {
+    text.chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .collect()
 }
 
 // NOTE: The `unique_tmp_path` helper that lived here has been replaced by

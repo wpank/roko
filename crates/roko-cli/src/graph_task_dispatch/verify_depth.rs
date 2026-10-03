@@ -324,9 +324,8 @@ impl GraphTaskDispatcher {
                 Checked::Passed if check == Check::A1 => run.phase_a.g = Some(false),
                 Checked::Passed if check == Check::A2 => run.phase_a.y = Some(false),
                 Checked::Failed(message) => {
-                    let failure = format!(
-                        "{rung} (verify depth {depth:?} of task type `{kind}`): {message}"
-                    );
+                    let failure =
+                        format!("{rung} (verify depth {depth:?} of task type `{kind}`): {message}");
                     deepened.failure = Some(failure);
                 }
                 _ => {}
@@ -397,7 +396,9 @@ impl GraphTaskDispatcher {
     /// cargo verify step runs.
     async fn clippy_check(&self, run: &DeepRun<'_>) -> Result<Checked> {
         let Some(command) = clippy_command(run.workdir, &run.changed) else {
-            return Ok(Checked::Skipped("no Rust change in a Cargo workspace".to_string()));
+            return Ok(Checked::Skipped(
+                "no Rust change in a Cargo workspace".to_string(),
+            ));
         };
         let left = run.left();
         if left.is_zero() {
@@ -441,10 +442,7 @@ impl GraphTaskDispatcher {
             .with_label(format!("{}/{}", spec.plan_id, task.id))
             .with_env_passthrough(self.config.gates.env_passthrough.iter().cloned());
         let signal = Signal::builder(Kind::Task)
-            .body(
-                Body::from_json(&payload)
-                    .unwrap_or_else(|_| Body::text("gate-payload-fallback")),
-            )
+            .body(Body::from_json(&payload).unwrap_or_else(|_| Body::text("gate-payload-fallback")))
             .build();
         let verdict = verify_step_locked(
             &gate,
@@ -465,7 +463,10 @@ impl GraphTaskDispatcher {
             return Ok(Checked::Passed);
         }
         let output = verdict.detail.as_deref().map(tail).unwrap_or_default();
-        Ok(Checked::Failed(format!("`{}`: {}\n{output}", step.command, verdict.reason)))
+        Ok(Checked::Failed(format!(
+            "`{}`: {}\n{output}",
+            step.command, verdict.reason
+        )))
     }
 
     /// V2's re-run or a phase-B check of `run` in `worktree`, which lies in
@@ -662,7 +663,9 @@ fn a1_checked(changes: &[AttemptChange]) -> Checked {
         return Checked::Passed;
     }
     let found = finding_list(&findings);
-    Checked::Failed(format!("the change games its checks:\n{found}\n{A1_FAILED}"))
+    Checked::Failed(format!(
+        "the change games its checks:\n{found}\n{A1_FAILED}"
+    ))
 }
 
 /// V1's clippy command for an attempt in `workdir` that changed `changed`:
@@ -825,9 +828,8 @@ mod tests {
     #[test]
     fn clippy_covers_the_crates_an_attempt_changed() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let changed = |paths: &[&str]| -> Vec<String> {
-            paths.iter().map(ToString::to_string).collect()
-        };
+        let changed =
+            |paths: &[&str]| -> Vec<String> { paths.iter().map(ToString::to_string).collect() };
         let crates = changed(&["crates/b/src/lib.rs", "crates/a/Cargo.toml", "a.md"]);
         assert_eq!(clippy_command(temp.path(), &crates), None);
         std::fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").expect("a manifest");

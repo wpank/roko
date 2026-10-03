@@ -9,14 +9,16 @@
 //! the run itself records (knowledge, episodes, hindsight relabels) reaches
 //! the next run. Within a run, retry feedback and the shared error-pattern
 //! store carry what earlier attempts learned. [`PromptCache::digest`] names
-//! the snapshot, for the decision records that read it (backlog 4214).
+//! the snapshot, for the decision records that read it (backlog 4214). The
+//! section bandit's draws read its snapshot too, and the run saves what its
+//! labelled attempts taught the bandit when it ends.
 
 use std::path::Path;
 use std::time::Instant;
 
 use roko_learn::episode_logger::Episode;
 use roko_learn::playbook::Playbook;
-use roko_learn::section_effect::SectionEffectivenessRegistry;
+use roko_learn::section_effect::{SectionBandit, SectionEffectivenessRegistry};
 use roko_neuro::KnowledgeEntry;
 use tracing::debug;
 
@@ -36,6 +38,8 @@ pub struct PromptCache {
     pub playbooks: Vec<Playbook>,
     /// Section effectiveness registry loaded from disk.
     pub effectiveness: SectionEffectivenessRegistry,
+    /// The section bandit (S02 L9) the run's prompts draw from.
+    pub section_bandit: SectionBandit,
 }
 
 /// What a prompt-cache snapshot holds (S01 P0-10, backlog 4214): for each
@@ -89,6 +93,7 @@ impl PromptCache {
         let episodes = load_episodes(workdir);
         let playbooks = load_playbooks(workdir);
         let effectiveness = load_effectiveness(workdir);
+        let section_bandit = load_section_bandit(workdir);
 
         debug!(
             neuro = neuro_entries.len(),
@@ -103,6 +108,7 @@ impl PromptCache {
             episodes,
             playbooks,
             effectiveness,
+            section_bandit,
         }
     }
 
@@ -171,6 +177,20 @@ fn load_effectiveness(workdir: &Path) -> SectionEffectivenessRegistry {
     let path = workdir.join(roko_learn::section_effect::DEFAULT_SECTION_EFFECTS_PATH);
     // load_or_new handles missing files gracefully (returns empty registry).
     SectionEffectivenessRegistry::load_or_new(&path)
+}
+
+/// The section bandit saved under `workdir`; a missing file is the uniform
+/// prior, and so is an unreadable one, which is logged.
+fn load_section_bandit(workdir: &Path) -> SectionBandit {
+    let path = workdir.join(roko_learn::section_effect::SECTION_BANDIT_PATH);
+    SectionBandit::load(&path).unwrap_or_else(|error| {
+        tracing::warn!(
+            path = %path.display(),
+            %error,
+            "section bandit unreadable; prompts draw from the uniform prior"
+        );
+        SectionBandit::default()
+    })
 }
 
 #[cfg(test)]

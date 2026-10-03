@@ -891,7 +891,7 @@ mod tests {
     use super::*;
     use crate::graph_task_dispatch::tests::{
         VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher,
-        make_test_dispatcher_with, no_auto_fix, verify_step,
+        make_test_dispatcher_with, no_auto_fix, no_auto_fix_maximize, verify_step,
     };
 
     /// Save a prompt experiment on the implementer's role section at
@@ -955,14 +955,16 @@ mod tests {
     }
 
     /// A dispatcher on [`FLAKY_PROVIDER`] whose attempts run under a
-    /// `--model` pin of the task's own model. The router learns from a
+    /// `--model` pin of the task's own model, in maximize mode, so their
+    /// prompts carry the playbooks they retrieve. The router learns from a
     /// pinned attempt through its dampened override path, and from a task
     /// hint not at all (decision 4111).
     async fn pinned_dispatcher(
         temp: &tempfile::TempDir,
         feedback: GraphFeedbackContext,
     ) -> (Arc<GraphTaskDispatcher>, TaskDef) {
-        make_test_dispatcher_with(temp, FLAKY_PROVIDER, no_auto_fix, feedback, |dispatcher| {
+        let configure = no_auto_fix_maximize;
+        make_test_dispatcher_with(temp, FLAKY_PROVIDER, configure, feedback, |dispatcher| {
             dispatcher.with_cli_model_override(Some("stream-model".to_string()))
         })
         .await
@@ -1823,7 +1825,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             ..GraphFeedbackContext::default()
         };
         let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, LESSON_PROVIDER, no_auto_fix, feedback).await;
+            make_test_dispatcher(&temp, LESSON_PROVIDER, no_auto_fix_maximize, feedback).await;
         task.title = "Render the greeting banner".into();
         task.verify = vec![verify_step("structural", "true")];
         dispatcher

@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use roko_compose::role_prompts::is_droppable_section;
 use roko_compose::{
     AttentionBidder, CompositionManifest, CompositionStrategy, ContextChunk, ContextSource,
     LearningBidder, MultiPatchForager, PromptComposer, PromptSection as CanonicalPromptSection,
@@ -48,9 +49,10 @@ use roko_compose::{
 };
 use roko_core::config::schema::ConfigCompositionStrategy;
 use roko_core::{AgentRole, Group, GroupId, GroupPheromone, TaskContextWeight};
-use roko_learn::loop_audit::arm_set::ArmSet;
+use roko_learn::loop_audit::arm_set::{ArmSet, MAXIMIZE_CONDITION};
+use roko_learn::section_effect::{SectionBandit, SectionDecision, assignment_seed};
 use roko_learn::telemetry::records::b3_digest;
-use roko_learn::telemetry::{ExcludedReason, ExposureItemKind};
+use roko_learn::telemetry::{Assignment, ExcludedReason, ExposureItemKind};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
@@ -975,6 +977,12 @@ pub struct PromptDiagnostics {
     /// lists above name what was retrieved; these say what was included.
     #[serde(default)]
     pub items: Vec<PromptItemDiagnostic>,
+    /// The section bandit's draw for each droppable section (S02 L9): its
+    /// p_ex, and whether the prompt left it out. Empty when the bandit drew
+    /// nothing: outside Graph dispatch, in maximize mode, or when the chain's
+    /// `sections` arm runs the default policy.
+    #[serde(default)]
+    pub section_decisions: Vec<SectionDecision>,
 }
 
 /// One item a prompt retrieved, and whether it reached the prompt (S01
@@ -1007,7 +1015,9 @@ pub struct PromptItemDiagnostic {
     pub included: bool,
     /// Why it did not, when it did not: `token_budget` when its section was
     /// dropped or its hard cap cut the item off, `role_filter` when the
-    /// role's budget gives its section no room.
+    /// role's budget gives its section no room, `withheld_arm` when the
+    /// attempt's arm withholds its source, and `bandit_excluded` when the
+    /// section bandit left its section out.
     pub excluded_reason: Option<ExcludedReason>,
 }
 
@@ -1231,18 +1241,73 @@ const SOURCE_SECTION: &str = "domain_context";
 /// runner context.
 const RUNNER_CONTEXT_SECTION: &str = "context_layer";
 
+/// The arm-set layer of the section bandit (L-sec).
+const SECTIONS_LAYER: &str = "sections";
+
+/// The `sections` assignment of the chain `arms` names, when its prompts run
+/// the section bandit (S02 L9): on its learned arm, outside maximize mode.
+/// `None` outside Graph dispatch, in maximize mode, and when the arm runs the
+/// default policy, every section in, as on the all-off arm.
+fn section_draw(arms: Option<&ArmSet>) -> Option<&Assignment> {
+    let arms = arms.filter(|arms| arms.condition_id != MAXIMIZE_CONDITION)?;
+    if arms.takes_default(SECTIONS_LAYER) {
+        return None;
+    }
+    arms.get(SECTIONS_LAYER)
+}
+
+/// The section bandit's draw for each droppable section of `sections`, on
+/// the chain whose `sections` assignment is `assignment` (S02 L9). The
+/// built-in pinned sections and `pinned` (`[sections] pinned`) are never
+/// offered to it.
+fn draw_sections(
+    bandit: &SectionBandit,
+    assignment: &Assignment,
+    sections: &[CanonicalPromptSection],
+    pinned: &[String],
+) -> Vec<SectionDecision> {
+    sections
+        .iter()
+        .filter(|section| is_droppable_section(section, pinned))
+        .map(|section| bandit.decide(&section.name, section_seed(assignment, &section.name)))
+        .collect()
+}
+
+/// The seed of `section`'s draw on the chain whose `sections` assignment is
+/// `assignment`: the assignment's seed ([`assignment_seed`]) keyed by the
+/// section's name, so each section draws apart and each draw replays from
+/// its decision row.
+fn section_seed(assignment: &Assignment, section: &str) -> u64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&assignment_seed(assignment).to_le_bytes());
+    hasher.update(section.as_bytes());
+    let mut head = [0_u8; 8];
+    head.copy_from_slice(&hasher.finalize().as_bytes()[..8]);
+    u64::from_le_bytes(head)
+}
+
 /// A composed prompt and its composition receipt, which together say
 /// whether a retrieved item reached the prompt.
 struct ComposedPrompt<'a> {
     manifest: Option<&'a CompositionManifest>,
     prompt: &'a str,
+    /// The sections the section bandit left out before composition.
+    bandit_excluded: &'a [CanonicalPromptSection],
 }
 
 impl ComposedPrompt<'_> {
     /// Why text rendered into the section `carrier` is not in the prompt, or
     /// `None` when it is: the section reached the prompt and its hard cap
-    /// kept the text. Without a composition receipt the text alone decides.
+    /// kept the text. A section the bandit left out never reached the
+    /// composer. Without a composition receipt the text alone decides.
     fn excluded_reason(&self, carrier: &str, rendered: &str) -> Option<ExcludedReason> {
+        if self
+            .bandit_excluded
+            .iter()
+            .any(|section| section.name == carrier)
+        {
+            return Some(ExcludedReason::BanditExcluded);
+        }
         let in_prompt = self.prompt.contains(rendered.trim_end());
         let Some(manifest) = self.manifest else {
             return (!in_prompt).then_some(ExcludedReason::TokenBudget);
@@ -1275,7 +1340,7 @@ impl ComposedPrompt<'_> {
 
     /// Every entry `sources` rendered, the `error_patterns` block, and one
     /// item per candidate section, whose candidate content `section_digests`
-    /// holds.
+    /// holds: the bandit's left-out sections, then the composer's.
     fn items(
         &self,
         sources: &[PromptSection],
@@ -1297,6 +1362,22 @@ impl ComposedPrompt<'_> {
                 rendered: error_patterns.to_string(),
             };
             items.push(self.item(&block, RUNNER_CONTEXT_SECTION));
+        }
+        for left_out in self.bandit_excluded {
+            items.push(PromptItemDiagnostic {
+                kind: ExposureItemKind::Section,
+                id: left_out.name.clone(),
+                section: left_out.name.clone(),
+                rank: None,
+                score: None,
+                tokens: token_count(left_out.estimated_tokens()),
+                rendered_sha256: section_digests
+                    .get(&left_out.name)
+                    .cloned()
+                    .unwrap_or_default(),
+                included: false,
+                excluded_reason: Some(ExcludedReason::BanditExcluded),
+            });
         }
         let Some(manifest) = self.manifest else {
             return items;
@@ -1665,6 +1746,13 @@ pub struct PromptAssembler {
     /// When present, the canonical compose path adjusts section priorities
     /// based on historical effectiveness data.
     section_effectiveness: Option<roko_learn::section_effect::SectionEffectivenessRegistry>,
+    /// The section bandit (S02 L9) the run's prompts draw from: the prompt
+    /// cache's snapshot, so every draw of a run reads the state it started
+    /// with. `None` reads it per prompt ([`Self::resolve_section_bandit`]).
+    section_bandit: Option<Arc<SectionBandit>>,
+    /// `[sections] pinned`: sections the bandit never leaves out, on top of
+    /// the built-in pinned ones.
+    pinned_sections: Vec<String>,
 }
 
 impl PromptAssembler {
@@ -1682,6 +1770,8 @@ impl PromptAssembler {
             composition_strategy: CompositionStrategy::Auto,
             vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: None,
+            section_bandit: None,
+            pinned_sections: Vec::new(),
         }
     }
 
@@ -1692,6 +1782,7 @@ impl PromptAssembler {
     #[must_use]
     pub fn with_cache(cache: Arc<PromptCache>) -> Self {
         let effectiveness = cache.effectiveness.clone();
+        let section_bandit = Arc::new(cache.section_bandit.clone());
         Self {
             token_budget: DEFAULT_TOKEN_BUDGET,
             sources: vec![
@@ -1707,6 +1798,8 @@ impl PromptAssembler {
             composition_strategy: CompositionStrategy::Auto,
             vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: Some(effectiveness),
+            section_bandit: Some(section_bandit),
+            pinned_sections: Vec::new(),
         }
     }
 
@@ -1720,6 +1813,8 @@ impl PromptAssembler {
             composition_strategy: CompositionStrategy::Auto,
             vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: None,
+            section_bandit: None,
+            pinned_sections: Vec::new(),
         }
     }
 
@@ -1837,6 +1932,14 @@ impl PromptAssembler {
         self
     }
 
+    /// Pin `sections` on top of the built-in pinned ones (`[sections]
+    /// pinned`): the section bandit never leaves them out.
+    #[must_use]
+    pub fn with_pinned_sections(mut self, sections: Vec<String>) -> Self {
+        self.pinned_sections = sections;
+        self
+    }
+
     /// Resolve the section-effectiveness registry for the compose builder.
     ///
     /// If the assembler was constructed with a cache (via [`with_cache`]), the
@@ -1857,6 +1960,29 @@ impl PromptAssembler {
         }
         let path = workdir.join(roko_learn::section_effect::DEFAULT_SECTION_EFFECTS_PATH);
         Some(roko_learn::section_effect::SectionEffectivenessRegistry::load_or_new(&path))
+    }
+
+    /// The section bandit a prompt draws from: the cache's snapshot, else the
+    /// bandit saved under `workdir`. A minimal assembler (no sources) reads no
+    /// file and starts from the uniform prior, as does an unreadable file,
+    /// which is logged.
+    fn resolve_section_bandit(&self, workdir: &Path) -> Arc<SectionBandit> {
+        if let Some(bandit) = &self.section_bandit {
+            return Arc::clone(bandit);
+        }
+        if self.sources.is_empty() {
+            return Arc::default();
+        }
+        let path = workdir.join(roko_learn::section_effect::SECTION_BANDIT_PATH);
+        let bandit = SectionBandit::load(&path).unwrap_or_else(|error| {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "section bandit unreadable; prompts draw from the uniform prior"
+            );
+            SectionBandit::default()
+        });
+        Arc::new(bandit)
     }
 
     /// Assemble the prompt for `task` in the given context.
@@ -2022,6 +2148,36 @@ impl PromptAssembler {
             .iter()
             .map(|section| (section.name.clone(), sha256_hex(&section.content)))
             .collect();
+        // S02 L9: on the learned arm of the attempt's chain, the section
+        // bandit leaves droppable sections out at logged odds, before the
+        // composer sees them. Pinned sections are never offered to it.
+        let section_decisions = match section_draw(ctx.arm_set.as_deref()) {
+            Some(assignment) => draw_sections(
+                &self.resolve_section_bandit(&ctx.workdir),
+                assignment,
+                &canonical_sections,
+                &self.pinned_sections,
+            ),
+            None => Vec::new(),
+        };
+        let left_out: HashSet<&str> = section_decisions
+            .iter()
+            .filter(|decision| decision.excluded)
+            .map(|decision| decision.section.as_str())
+            .collect();
+        let (bandit_excluded, canonical_sections): (Vec<_>, Vec<_>) = canonical_sections
+            .into_iter()
+            .partition(|section| left_out.contains(section.name.as_str()));
+        // The sources render into one section: when the bandit leaves it out,
+        // none of their items reached the prompt, and learners credit none.
+        if bandit_excluded
+            .iter()
+            .any(|section| section.name == SOURCE_SECTION)
+        {
+            playbook_ids.clear();
+            knowledge_ids.clear();
+            episode_ids.clear();
+        }
         let prompt_build = match spec.compose_build_from_sections_with_budget_and_composer(
             canonical_sections,
             self.token_budget as usize,
@@ -2106,6 +2262,7 @@ impl PromptAssembler {
         let composed = ComposedPrompt {
             manifest: composition_manifest.as_ref(),
             prompt: &system_prompt,
+            bandit_excluded: &bandit_excluded,
         };
         let mut items = composed.items(
             &source_sections,
@@ -2130,6 +2287,7 @@ impl PromptAssembler {
             composition_manifest,
             experiment_assignments: experiment_assignment_diagnostics,
             items,
+            section_decisions,
         };
 
         // ── User prompt (unchanged) ────────────────────────────────────────
@@ -4018,10 +4176,15 @@ mod tests {
                 .expect("assemble")
         };
 
-        // A chain that withholds knowledge and keeps playbooks.
-        let withheld = (0..)
+        // A chain that withholds knowledge and keeps playbooks, and whose
+        // prompts keep every section.
+        let withheld = (0..1_000)
             .map(|index| arms_of(&ArmMode::Normal, index))
-            .find(|arms| arms.takes_default("knowledge") && !arms.takes_default("playbooks"))
+            .find(|arms| {
+                arms.takes_default("knowledge")
+                    && !arms.takes_default("playbooks")
+                    && arms.takes_default("sections")
+            })
             .expect("a chain that withholds knowledge alone");
         let knowledge = withheld.get("knowledge").expect("the knowledge arm");
         assert_eq!(knowledge.arm, Arm::Default);
@@ -4044,6 +4207,117 @@ mod tests {
         assert!(prompt.system_prompt.contains("# Neuro knowledge"));
         assert!(prompt_item(&prompt, Knowledge, "k-explain").included);
         assert_eq!(prompt.diagnostics.knowledge_ids, ["k-explain"]);
+    }
+
+    /// S02 L9 (backlog 4123): over 10,000 chains on the section bandit's
+    /// learned arm, no pinned section, built in or `[sections] pinned`, is
+    /// ever offered to the bandit, so none is ever left out, and a droppable
+    /// section at p_ex = 0.2 is left out about a fifth of the time. A prompt
+    /// whose draw leaves `conventions` out lacks its text and logs it as
+    /// `bandit_excluded`, with the draw's propensity, while the pinned
+    /// sections stay; maximize mode and the default arm leave nothing out.
+    #[test]
+    fn pinned_sections_never_excluded() {
+        use roko_compose::SectionPriority;
+        use roko_learn::loop_audit::Registry;
+        use roko_learn::loop_audit::arm_set::{ArmDraws, ArmMode};
+        use roko_learn::section_effect::SECTION_EXCLUSION_CAP_EARLY;
+        use roko_learn::telemetry::ExposureItemKind::Section;
+        use roko_learn::telemetry::{Arm, AttemptKey};
+
+        const CHAINS: u32 = 10_000;
+        let loops = Registry::embedded().expect("the embedded loop registry");
+        let draws = ArmDraws::new(0, "2026-10-03");
+        let arms_of = |mode: &ArmMode, index: u32| {
+            let key = AttemptKey::new("pinned", "p", format!("t{index}"), 1);
+            ArmSet::assign(&key, &loops, mode, &draws)
+        };
+        let learned = ArmMode::Forced(BTreeMap::from([("sections".to_string(), Arm::Learned)]));
+
+        // Every built-in pinned section and three droppable ones, in their
+        // bands; `[sections] pinned` names one of the three.
+        let bands = [
+            ("role_identity", SectionPriority::Critical),
+            ("task_context", SectionPriority::Critical),
+            ("context_layer", SectionPriority::Critical),
+            ("gate_feedback", SectionPriority::High),
+            ("tool_instructions", SectionPriority::Normal),
+            ("anti_patterns", SectionPriority::Normal),
+            ("conventions", SectionPriority::High),
+            ("domain_context", SectionPriority::High),
+            ("tool_hints", SectionPriority::Low),
+        ];
+        let sections: Vec<CanonicalPromptSection> = bands
+            .into_iter()
+            .map(|(name, band)| CanonicalPromptSection::new(name, name).with_priority(band))
+            .collect();
+        let pinned = ["domain_context".to_string()];
+        let (bandit, cap) = (SectionBandit::default(), SECTION_EXCLUSION_CAP_EARLY);
+        let mut left_out = 0_u32;
+        for index in 0..CHAINS {
+            let arms = arms_of(&learned, index);
+            let assignment = section_draw(Some(&arms)).expect("the learned arm draws");
+            let decisions = draw_sections(&bandit, assignment, &sections, &pinned);
+            let drawn: Vec<&str> = decisions
+                .iter()
+                .map(|decision| decision.section.as_str())
+                .collect();
+            assert_eq!(drawn, ["conventions", "tool_hints"], "pinned never draw");
+            for decision in &decisions {
+                assert!(decision.p_exclude <= cap, "{decision:?}");
+            }
+            left_out += u32::from(decisions[0].excluded);
+        }
+        let share = f64::from(left_out) / f64::from(CHAINS);
+        assert!((0.18..0.22).contains(&share), "left out {share}");
+
+        // A prompt whose draw leaves `conventions` out.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut dispatch = ctx();
+        dispatch.workdir = temp.path().to_path_buf();
+        let assembler = PromptAssembler::minimal();
+        let mut prompt_ctx = PromptContext::from_task(&task(), &dispatch);
+        let mut assemble = |arms: ArmSet| {
+            prompt_ctx.arm_set = Some(Arc::new(arms));
+            assembler.assemble(&task(), &prompt_ctx).expect("assemble")
+        };
+        let prompt = (0..200)
+            .map(|index| assemble(arms_of(&learned, index)))
+            .find(|prompt| {
+                prompt
+                    .diagnostics
+                    .section_decisions
+                    .iter()
+                    .any(|decision| decision.section == "conventions" && decision.excluded)
+            })
+            .expect("a chain that leaves conventions out");
+        let system = &prompt.system_prompt;
+        assert!(!system.contains("Keep changes minimal"), "{system}");
+        let item = prompt_item(&prompt, Section, "conventions");
+        let reason = Some(ExcludedReason::BanditExcluded);
+        assert_eq!((item.included, item.excluded_reason), (false, reason));
+        for name in ["role_identity", "task_context", "context_layer"] {
+            assert!(prompt_item(&prompt, Section, name).included, "{name}");
+        }
+        let decision = prompt
+            .diagnostics
+            .section_decisions
+            .iter()
+            .find(|decision| decision.section == "conventions")
+            .expect("the conventions draw");
+        assert!(decision.p_exclude <= cap, "{decision:?}");
+        assert!((decision.propensity - decision.p_exclude).abs() < 1e-12);
+
+        // Maximize mode, and the bandit's default arm, leave nothing out.
+        let default_arm = (0..1_000)
+            .map(|index| arms_of(&ArmMode::Normal, index))
+            .find(|arms| arms.takes_default("sections"))
+            .expect("a chain on the default arm");
+        for arms in [arms_of(&ArmMode::Maximize, 0), default_arm] {
+            let prompt = assemble(arms);
+            assert!(prompt.diagnostics.section_decisions.is_empty());
+            assert!(prompt.system_prompt.contains("Keep changes minimal"));
+        }
     }
 
     #[test]

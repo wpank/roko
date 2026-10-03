@@ -207,6 +207,10 @@ pub struct RokoConfig {
     /// arms (`[experiments]`, decision 4115).
     #[serde(default)]
     pub experiments: super::experiments::ExperimentsConfig,
+    /// Prompt sections the section bandit never leaves out, on top of the
+    /// built-in pinned ones (`[sections] pinned`, S02 L9).
+    #[serde(default)]
+    pub sections: super::sections::SectionsConfig,
 }
 
 /// Composition strategy for allocating prompt token budget across candidate sections.
@@ -500,6 +504,7 @@ impl Default for RokoConfig {
             repos: Vec::new(),
             retrieval: RetrievalConfig::default(),
             experiments: super::experiments::ExperimentsConfig::default(),
+            sections: super::sections::SectionsConfig::default(),
         }
     }
 }

@@ -5232,7 +5232,8 @@ max_retries = 0
     /// The `[gates]` and later lines of the workspace of
     /// [`run_seeded_learning_plan`]: one verify run per attempt (no auto-fix
     /// re-run), T0 reflexes on, gate thresholds saved after every verify run,
-    /// and no model ladder, so every task runs on its hinted model.
+    /// no model ladder, so every task runs on its hinted model, and maximize
+    /// mode, so no arm withholds the seeded knowledge from a prompt.
     #[cfg(unix)]
     const LEARNED_STATE_CONFIG: &str = r#"cargo_fix_enabled = false
 
@@ -5242,6 +5243,9 @@ gate_threshold_flush_interval = 1
 
 [routing.ladder]
 enabled = false
+
+[experiments]
+maximize = true
 "#;
 
     /// The plan of [`run_seeded_learning_plan`]. T1 passes its verify step,

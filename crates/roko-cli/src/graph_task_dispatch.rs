@@ -2231,6 +2231,15 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         config.gates.cargo_fix_enabled = false;
     }
 
+    /// [`no_auto_fix`] in maximize mode (`[experiments] maximize`): no loop
+    /// withholds its content and no section is left out, so each prompt
+    /// carries the learned content it retrieved, whatever arms the day's
+    /// draw gives its chain.
+    pub(super) fn no_auto_fix_maximize(config: &mut RokoConfig) {
+        no_auto_fix(config);
+        config.experiments.maximize = true;
+    }
+
     /// Like [`make_streaming_dispatcher`], with a config tweak and feedback.
     pub(super) async fn make_test_dispatcher(
         temp: &tempfile::TempDir,

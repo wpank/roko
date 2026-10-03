@@ -25,9 +25,15 @@
 //!   run_id, task_id, attempt_key, approve, note }` records the person's
 //!   answer in the review log, as the review route does.
 //!
-//! `run_status`, `recall` and `confirm_pending` only read. There is no
-//! `remember`: personal memory stays with the host (B9), and serve has no
-//! knowledge write route (AD-10).
+//! - `effects_pending { run_id }` lists the tool calls runs hold for
+//!   approval (9131), with a summary of their arguments that leaves out the
+//!   values, and `effect_decide { effect_id, approve, note }` approves one,
+//!   which applies it once and checks its receipt, or rejects it (9138), as
+//!   `/api/effects` does.
+//!
+//! `run_status`, `recall`, `confirm_pending` and `effects_pending` only
+//! read. There is no `remember`: personal memory stays with the host (B9),
+//! and serve has no knowledge write route (AD-10).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,7 +49,7 @@ use serde_json::{Value, json};
 
 use super::middleware::{AuthContext, is_scope_sufficient};
 use crate::error::ApiError;
-use crate::runtime::{PromptPlanOptions, RunOrigin};
+use crate::runtime::{EffectDecisionInput, PromptPlanOptions, RunOrigin};
 use crate::state::{AppState, OperationStatus, RunState};
 use roko_core::TaskDomain;
 
@@ -364,6 +370,56 @@ fn tools() -> Vec<(Value, &'static str)> {
             ),
             "write",
         ),
+        (
+            read_only_tool(
+                "effects_pending",
+                "The tool calls Roko runs hold for their person's approval instead of running \
+                 them (sends, posts, payments): each with its tool, its MCP server and a \
+                 summary of its arguments without their values, and the decisions made. \
+                 Ask the person, then answer with effect_decide.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "run_id": { "type": "string", "description": "Only this run's effects" }
+                    },
+                    "additionalProperties": false
+                }),
+            ),
+            "read",
+        ),
+        (
+            tool(
+                "effect_decide",
+                "Give the person's own decision on a held tool call: approve true runs it once \
+                 and checks that its target shows the effect, false drops it. Answers the \
+                 decision's record with the call's result and the receipt verdicts. Never \
+                 decide for the person.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "effect_id": {
+                            "type": "string",
+                            "description": "The effect, as effects_pending names it"
+                        },
+                        "approve": {
+                            "type": "boolean",
+                            "description": "Whether the person approves the call"
+                        },
+                        "note": { "type": "string", "description": "What the person said" }
+                    },
+                    "required": ["effect_id", "approve"],
+                    "additionalProperties": false
+                }),
+                json!({
+                    "readOnlyHint": false,
+                    "destructiveHint": true,
+                    "idempotentHint": false,
+                    "openWorldHint": true,
+                }),
+                false,
+            ),
+            "write",
+        ),
     ]
 }
 
@@ -503,6 +559,28 @@ async fn call_tool(
                 note,
             };
             confirm_answer(state, &answer).await
+        }
+        "effects_pending" => {
+            let run_id = arguments.get("run_id").and_then(Value::as_str);
+            super::effects::list_effects(state, run_id).await
+        }
+        "effect_decide" => {
+            let effect_id = required_str(&arguments, name, "effect_id")?;
+            let approve = arguments
+                .get("approve")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| JsonRpcError::invalid_params("approve must be true or false"))?;
+            let decision = EffectDecisionInput {
+                approve,
+                note: arguments
+                    .get("note")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                decided_by: auth
+                    .and_then(|context| context.user_id.clone())
+                    .unwrap_or_else(|| "local-mcp".to_string()),
+            };
+            super::effects::decide_effect(state, effect_id, decision).await
         }
         _ => return Err(unknown()),
     };
@@ -973,7 +1051,9 @@ mod tests {
                 "plan_generate",
                 "run_cancel",
                 "confirm_pending",
-                "confirm_answer"
+                "confirm_answer",
+                "effects_pending",
+                "effect_decide"
             ]
         );
         for tool in &tools[..2] {
@@ -1312,5 +1392,107 @@ mod tests {
         let (_, body) = post_mcp(&open, &call(3, "run_prompt", prompt), &[]).await;
         assert_eq!(body["result"]["isError"], false, "{body}");
         runtime.gate.add_permits(1);
+    }
+
+    /// A runtime that holds one staged effect, `effect-1`, until it is
+    /// decided, and counts how often it applied it.
+    #[derive(Default)]
+    struct StagedEffects {
+        applied: std::sync::Mutex<usize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime::CliRuntime for StagedEffects {
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<crate::runtime::RunResult> {
+            anyhow::bail!("not used")
+        }
+
+        fn session_status(&self, workdir: std::path::PathBuf) -> crate::runtime::SessionStatusInfo {
+            crate::runtime::SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> crate::runtime::DashboardInfo {
+            crate::runtime::DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+
+        async fn list_effects(
+            &self,
+            _workdir: &std::path::Path,
+            _run_id: Option<&str>,
+        ) -> anyhow::Result<Value> {
+            let waiting = if *self.applied.lock().expect("applied") == 0 {
+                json!([{
+                    "effect_id": "effect-1",
+                    "tool": "mail.send",
+                    "server": "mail",
+                    "arguments": { "to": "string (15 chars)" },
+                }])
+            } else {
+                json!([])
+            };
+            Ok(json!({ "waiting": waiting, "decided": [] }))
+        }
+
+        async fn decide_effect(
+            &self,
+            _workdir: &std::path::Path,
+            effect_id: &str,
+            decision: EffectDecisionInput,
+        ) -> Result<Value, crate::runtime::EffectDecisionError> {
+            let mut applied = self.applied.lock().expect("applied");
+            if *applied > 0 {
+                return Err(crate::runtime::EffectDecisionError::AlreadyDecided(
+                    effect_id.to_string(),
+                    "applied".to_string(),
+                ));
+            }
+            *applied += usize::from(decision.approve);
+            Ok(json!({
+                "effect_id": effect_id,
+                "outcome": "applied",
+                "decided_by": decision.decided_by,
+                "receipts": [{ "rung": "delivered", "passed": true }],
+            }))
+        }
+    }
+
+    /// 9138: a staged effect appears in `effects_pending` with its tool and
+    /// a summary of its arguments, and `effect_decide` approves it once,
+    /// answering the record with its receipt; a second decision is the
+    /// tool's error, and the runtime applied the effect once.
+    #[tokio::test]
+    async fn mcp_effects_pending_lists_staged_effects() {
+        let runtime = Arc::new(StagedEffects::default());
+        let shared: Arc<dyn crate::runtime::CliRuntime> = runtime.clone();
+        let (_dir, _state, router) = state_and_router(shared, open_config());
+
+        let (status, body) = post_mcp(&router, &call(1, "effects_pending", json!({})), &[]).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let waiting = &body["result"]["structuredContent"]["waiting"];
+        assert_eq!(waiting[0]["effect_id"], "effect-1", "{body}");
+        assert_eq!(waiting[0]["tool"], "mail.send", "{body}");
+
+        let decide = json!({ "effect_id": "effect-1", "approve": true, "note": "go ahead" });
+        let (_, body) = post_mcp(&router, &call(2, "effect_decide", decide.clone()), &[]).await;
+        let record = &body["result"]["structuredContent"];
+        assert_eq!(record["outcome"], "applied", "{body}");
+        assert_eq!(record["receipts"][0]["passed"], true, "{body}");
+        assert_eq!(record["decided_by"], "local-mcp", "{body}");
+        let (_, body) = post_mcp(&router, &call(3, "effect_decide", decide), &[]).await;
+        assert_eq!(body["result"]["isError"], true, "{body}");
+        assert_eq!(*runtime.applied.lock().expect("applied"), 1);
     }
 }

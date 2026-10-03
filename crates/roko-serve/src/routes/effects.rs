@@ -11,8 +11,9 @@
 //!   decided effect answers 409 and an unknown one 404.
 //!
 //! The runtime does the work (`CliRuntime::decide_effect`, roko-cli's
-//! `effects_apply`). A chat host's approval flow calls these through `/mcp`
-//! (9138).
+//! `effects_apply`). A chat host's approval flow reaches the same functions,
+//! [`list_effects`] and [`decide_effect`], through the `/mcp` tools
+//! `effects_pending` and `effect_decide` (9138).
 
 use std::sync::Arc;
 
@@ -49,12 +50,22 @@ async fn list_effects_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<EffectsQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let effects = state
-        .runtime
-        .list_effects(&state.workdir, query.run_id.as_deref())
+    list_effects(&state, query.run_id.as_deref())
         .await
-        .map_err(|error| ApiError::internal(format!("list staged effects: {error}")))?;
-    Ok(Json(effects))
+        .map(Json)
+}
+
+/// The staged effects of the served workspace, `run_id`'s only when it is
+/// set: those that wait, without their arguments, and the decisions made.
+pub(super) async fn list_effects(
+    state: &Arc<AppState>,
+    run_id: Option<&str>,
+) -> Result<Value, ApiError> {
+    state
+        .runtime
+        .list_effects(&state.workdir, run_id)
+        .await
+        .map_err(|error| ApiError::internal(format!("list staged effects: {error}")))
 }
 
 /// Body of `POST /api/effects/{id}/decision`.
@@ -81,10 +92,22 @@ async fn decide_effect_handler(
         note: request.note,
         decided_by,
     };
+    decide_effect(&state, &effect_id, decision).await.map(Json)
+}
+
+/// Decide the staged effect `effect_id` as `decision` says, one decision at
+/// a time: an approval applies it once and checks its receipt. Answers the
+/// decision's record; a decided effect is a conflict, an unknown one is not
+/// found.
+pub(super) async fn decide_effect(
+    state: &Arc<AppState>,
+    effect_id: &str,
+    decision: EffectDecisionInput,
+) -> Result<Value, ApiError> {
     let _one_at_a_time = DECISIONS.lock().await;
-    let record = state
+    state
         .runtime
-        .decide_effect(&state.workdir, &effect_id, decision)
+        .decide_effect(&state.workdir, effect_id, decision)
         .await
         .map_err(|error| match error {
             EffectDecisionError::NotFound(_) => ApiError::not_found(error.to_string()),
@@ -97,8 +120,7 @@ async fn decide_effect_handler(
             EffectDecisionError::Failed(reason) => {
                 ApiError::internal(format!("decide effect {effect_id}: {reason}"))
             }
-        })?;
-    Ok(Json(record))
+        })
 }
 
 #[cfg(test)]

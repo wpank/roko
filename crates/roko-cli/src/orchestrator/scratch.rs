@@ -450,9 +450,6 @@ mod tests {
             "{refused}"
         );
         let a = std::fs::read_to_string(workdir.join("data/a.csv")).expect("a.csv");
-        assert_eq!(
-            a, "id\n1\n2\n4\n",
-            "the refused copy-back touched the file"
-        );
+        assert_eq!(a, "id\n1\n2\n4\n", "the refused copy-back touched the file");
     }
 }

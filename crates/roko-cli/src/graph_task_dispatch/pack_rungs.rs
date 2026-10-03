@@ -1001,7 +1001,10 @@ mod tests {
         let assistant = GatePackConfig {
             rungs: vec![sign_off],
         };
-        config.gates.packs.insert("assistant".to_string(), assistant);
+        config
+            .gates
+            .packs
+            .insert("assistant".to_string(), assistant);
     }
 
     /// 9137: a `confirm` rung writes the task's review hold with its question

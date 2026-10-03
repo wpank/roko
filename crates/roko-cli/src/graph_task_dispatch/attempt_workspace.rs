@@ -9,27 +9,33 @@ use roko_graph::workspace::{
 };
 
 use super::*;
-use crate::orchestrator::scratch::ScratchLease;
+use crate::orchestrator::scratch::{CopyBackError, ScratchLease};
 
-/// The scratch_dir workspace of an attempt (9135). When the attempt ends,
-/// however it ends, its result manifest is written; the directory is kept,
-/// as a failed attempt's worktree is, and an accepted one waits there until
-/// its changes are copied back into the workspace (9136).
+/// The scratch_dir workspace of an attempt (9135). An accepted attempt's
+/// changes are copied back into the workspace and its copy removed
+/// ([`GraphTaskDispatcher::accept_scratch`], 9136). Otherwise, when the
+/// attempt ends, however it ends, its result manifest is written and the
+/// copy kept, as a failed attempt's worktree is.
 pub(super) struct ScratchAttempt {
-    lease: ScratchLease,
+    dir: PathBuf,
+    /// `None` once the attempt was accepted and its copy removed.
+    lease: Option<ScratchLease>,
 }
 
 impl ScratchAttempt {
     /// The attempt's working directory.
     pub(super) fn dir(&self) -> &Path {
-        self.lease.dir()
+        &self.dir
     }
 }
 
 impl Drop for ScratchAttempt {
     fn drop(&mut self) {
-        let dir = self.lease.dir().display().to_string();
-        match self.lease.finish() {
+        let Some(lease) = &self.lease else {
+            return;
+        };
+        let dir = self.dir.display().to_string();
+        match lease.finish() {
             Ok(changes) => tracing::info!(
                 scratch = %dir,
                 changed = changes.changed.len(),
@@ -47,14 +53,6 @@ impl Drop for ScratchAttempt {
 }
 
 impl GraphTaskDispatcher {
-    /// Checkout generation of the task `task_key` (`"{plan_id}/{task_id}"`):
-    /// its worktree is the workspace attempt `(plan, task, generation)`.
-    /// Retries of a task share that checkout, so a retry resumes the work its
-    /// predecessor left, as after a turn cap or a timeout. When the plan
-    /// branch refuses the task's work as conflicting, or the pre-verify
-    /// screen rejects it for tampering or for scope, the task moves on to a
-    /// fresh checkout of the plan's accepted tip
-    /// ([`Self::restart_from_plan_tip`]).
     /// The scratch_dir workspace of `task`'s attempts in checkout
     /// generation `generation` (9135): a copy of the data its `files` name,
     /// under `.roko/scratch/<run>/<task>/<generation>/`, which its retries
@@ -69,7 +67,10 @@ impl GraphTaskDispatcher {
         let dir = roko_fs::RokoLayout::for_project(&self.workdir)
             .scratch_attempt_dir(run_id, &task.id, generation);
         match ScratchLease::acquire(&self.workdir, dir, &task.files) {
-            Ok(lease) => Ok(ScratchAttempt { lease }),
+            Ok(lease) => Ok(ScratchAttempt {
+                dir: lease.dir().to_path_buf(),
+                lease: Some(lease),
+            }),
             Err(error) => Err(RokoError::Agent {
                 backend: "scratch-workspace".to_string(),
                 message: format!(
@@ -80,6 +81,110 @@ impl GraphTaskDispatcher {
         }
     }
 
+    /// Accept the verified scratch_dir attempt `settled` of `task` (9136):
+    /// copy what it changed back into the workspace, unless the workspace
+    /// changed those files since the copy was made. The files written back
+    /// and their new hashes go to `<copy>.accepted.json` beside the copy,
+    /// which is then removed. A conflict fails the attempt, its feedback
+    /// names the files, the copy is kept, and the task's next attempt works
+    /// in a fresh copy. A verdict that does not let work land keeps the copy
+    /// and copies nothing back, and so does a plan that holds its tasks for
+    /// approval, whose review hold shows a worktree's changes only.
+    pub(super) fn accept_scratch(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        settled: &SettledAttempt,
+        verdict: TaskGateVerdict,
+        scratch: &mut ScratchAttempt,
+    ) -> Result<()> {
+        if !verdict.is_replayable() {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                verdict = verdict.as_str(),
+                scratch = %scratch.dir.display(),
+                "the attempt's verdict does not let its work land; kept its scratch copy"
+            );
+            return Ok(());
+        }
+        if self.holds_for_approval(&spec.plan_id) {
+            return Err(RokoError::Rejected(format!(
+                "attempt {} passed its gates, but its plan holds each task for approval, which a \
+                 scratch_dir task cannot wait for yet; its copy is kept at {}",
+                settled.attempt_key(),
+                scratch.dir.display()
+            )));
+        }
+        let Some(lease) = scratch.lease.as_ref() else {
+            return Ok(());
+        };
+        match lease.copy_back(&self.workdir) {
+            Ok(copied) => {
+                let record = serde_json::json!({
+                    "attempt_key": settled.attempt_key(),
+                    "copied": copied,
+                });
+                let path = scratch_record_path(&scratch.dir, "accepted");
+                if let Err(error) = std::fs::write(&path, record.to_string()) {
+                    tracing::warn!(path = %path.display(), %error, "copy-back record not written");
+                }
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    attempt_key = settled.attempt_key(),
+                    files = copied.len(),
+                    "copied the scratch attempt's changes back into the workspace"
+                );
+                if let Some(lease) = scratch.lease.take()
+                    && let Err(error) = lease.remove()
+                {
+                    tracing::warn!(error = %format!("{error:#}"), "the scratch copy stays");
+                }
+                Ok(())
+            }
+            Err(CopyBackError::Conflict(paths)) => {
+                // The next attempt works in a fresh copy of the workspace's
+                // data, which holds the other writer's changes.
+                let key = format!("{}/{}", spec.plan_id, task.id);
+                *self.worktree_generations.lock().entry(key).or_default() += 1;
+                if let Some(feedback) = scratch_conflict_feedback(&paths) {
+                    self.gate_retry_context.record(
+                        &spec.plan_id,
+                        &task.id,
+                        feedback,
+                        settled.key().attempt.saturating_add(1),
+                    );
+                }
+                Err(RokoError::Verify {
+                    gate: "scratch-copy-back".to_string(),
+                    message: format!(
+                        "attempt {} passed its gates, but the workspace changed {} since its copy \
+                         was made, so its result was not copied back; its copy is kept at {}, \
+                         and the next attempt works in a fresh copy",
+                        settled.attempt_key(),
+                        paths.join(", "),
+                        scratch.dir.display()
+                    ),
+                })
+            }
+            Err(error) => Err(RokoError::Rejected(format!(
+                "attempt {} passed its gates, but its result could not be copied back: {error}; \
+                 its copy is kept at {}",
+                settled.attempt_key(),
+                scratch.dir.display()
+            ))),
+        }
+    }
+
+    /// Checkout generation of the task `task_key` (`"{plan_id}/{task_id}"`):
+    /// its worktree is the workspace attempt `(plan, task, generation)`.
+    /// Retries of a task share that checkout, so a retry resumes the work its
+    /// predecessor left, as after a turn cap or a timeout. When the plan
+    /// branch refuses the task's work as conflicting, or the pre-verify
+    /// screen rejects it for tampering or for scope, the task moves on to a
+    /// fresh checkout of the plan's accepted tip
+    /// ([`Self::restart_from_plan_tip`]).
     pub(super) fn worktree_generation(&self, task_key: &str) -> u32 {
         self.worktree_generations
             .lock()
@@ -369,6 +474,32 @@ const CONFLICT_PATHS_LISTED: usize = 20;
 /// refusal's `reason`, then the paths it names, or else the paths the
 /// attempt changed (`changed`). It stays raw text: lifting out a path that
 /// reads like a failing test would leave the prompt with that line alone.
+/// The record of kind `kind` (such as `accepted`) beside the scratch copy at
+/// `dir`, where its manifests are.
+fn scratch_record_path(dir: &Path, kind: &str) -> PathBuf {
+    let name = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    dir.with_file_name(format!("{name}.{kind}.json"))
+}
+
+/// The next attempt's feedback after a scratch copy-back refused because the
+/// workspace changed `paths` since the copy was made (9136).
+fn scratch_conflict_feedback(paths: &[String]) -> Option<GateFeedback> {
+    let message = format!(
+        "Your previous attempt's result was not copied back: the workspace changed {} since its \
+         copy was made. This attempt works in a fresh copy that holds those changes; keep them.",
+        paths.join(", ")
+    );
+    GateFeedback::from_raw(&message).map(|feedback| GateFeedback {
+        compile_errors: Vec::new(),
+        test_failures: Vec::new(),
+        clippy_warnings: Vec::new(),
+        ..feedback
+    })
+}
+
 fn conflict_feedback(reason: &str, changed: &[String]) -> Option<GateFeedback> {
     let mut message = format!(
         "Your previous attempt's work conflicts with the plan's accepted work ({reason}). The \

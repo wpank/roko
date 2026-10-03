@@ -135,8 +135,13 @@ the data the task's `files` name, outside git. `roko plan validate` refuses a
 globs its `files` name, cloned copy-on-write where the file system can (never
 hard-linked), with a SHA-256 manifest of the base beside it and, once the attempt
 ends, one of the result. Its agent and verify steps run there, and retries resume
-there. The directory is kept after the attempt: copying an accepted attempt's
-changes back into the workspace is 9136. Only the batch dispatch path builds these
+there. An accepted attempt's changed, added and deleted files are copied back into
+the workspace (9136), each replaced atomically, but only while the workspace still
+holds the base the copy was made from; the files written back and their hashes go
+to `<copy>.accepted.json`, and the copy is removed. A file another writer changed
+since is a conflict: nothing is copied, the attempt fails with feedback naming the
+files, the copy is kept, and the next attempt works in a fresh copy. Copy-backs in
+one process run one at a time. Only the batch dispatch path builds these
 workspaces; the streaming path refuses a `scratch_dir` task.
 
 `roko effects list | show <id> | approve <id> | reject <id>` decides a held effect

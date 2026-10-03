@@ -57,3 +57,7 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK35 (gap-943046), PK40 (gap-1f4bec).
 - Suggested model: opus.
+
+## Progress
+
+- 4130: implemented at a842297c1. Implemented on `work/gap-c2b1a3` at `a842297c1`; cargo verification deferred to the batch gate. `report::srm_check` and `roko learn telemetry check --srm [--runs a,b]` (S03.T4's SRM e-value at α = 0.001; maximize and forced chains left out; redraws, propensities their h and g do not give, and zero-probability arms fail). Static verify (`grep -rqw 'fn srm_check_flags_a_skewed_layer' crates/roko-learn/src/`) passes. Per-section bandit draws (4123's `sections` row) are not checked yet: their row format lands with PK38.

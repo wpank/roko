@@ -1991,6 +1991,17 @@ async fn cmd_plan_dir_status(
                     "branch": delivery.branch,
                     "merge_commit": delivery.merge_commit,
                     "merge_command": merge_command,
+                    // The whole-plan checks the delivery ran (backlog 3111).
+                    "checks": delivery
+                        .checks
+                        .iter()
+                        .map(|check| serde_json::json!({
+                            "command": check.command,
+                            "source": check.source,
+                            "exit_code": check.exit_code,
+                        }))
+                        .collect::<Vec<_>>(),
+                    "check_log": delivery.check_log,
                 })),
                 "tasks": task_entries,
             }))?
@@ -2010,6 +2021,9 @@ async fn cmd_plan_dir_status(
             );
             if let Some(command) = &merge_command {
                 println!("take it with:    {command}");
+            }
+            if let Some(log) = &delivery.check_log {
+                println!("plan check log:  {log}");
             }
         }
         println!();

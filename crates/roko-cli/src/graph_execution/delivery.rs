@@ -56,6 +56,36 @@ pub struct DeliveryRegressionOutcome {
     pub summary: String,
     /// Optional path to regression evidence (log file, etc.).
     pub evidence_ref: Option<String>,
+    /// The checks that ran, in order, up to the first that failed; the
+    /// receipt keeps them under [`DELIVERY_CHECKS_EXTENSION`].
+    pub checks: Vec<DeliveryCheck>,
+}
+
+/// Receipt extension holding the [`DeliveryCheck`]s of a delivery's
+/// whole-plan check (backlog 3111).
+pub const DELIVERY_CHECKS_EXTENSION: &str = "roko.delivery.checks@1";
+
+/// The most output lines a [`DeliveryCheck`] keeps; its evidence log keeps
+/// all of them.
+const CHECK_TAIL_LINES: usize = 40;
+
+/// One command of a delivery's whole-plan check, as its receipt records it
+/// (backlog 3111).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeliveryCheck {
+    /// The command as it ran: a step's shell text, else its program and
+    /// arguments.
+    pub command: String,
+    /// Where it came from: `authored` (the plan's `[meta] verify`),
+    /// `cargo-default` (the default whole-plan check of a Cargo workspace),
+    /// or `default` (the backend's own).
+    pub source: String,
+    /// Its exit code; `None` when a signal ended it.
+    pub exit_code: Option<i32>,
+    /// How long it ran, in milliseconds.
+    pub duration_ms: u64,
+    /// The last [`CHECK_TAIL_LINES`] lines it wrote, stdout then stderr.
+    pub output_tail: String,
 }
 
 /// Outcome of a publication-phase operation.
@@ -124,6 +154,9 @@ pub struct GitDeliveryBackend {
     /// checkout, and shared with the gates, so the next delivery starts
     /// warm.
     regression_target_dir: PathBuf,
+    /// Where the regression commands came from, for their
+    /// [`DeliveryCheck::source`].
+    regression_source: String,
     /// What the regression commands inherit beyond the gate allowlist
     /// (`[gates] env_passthrough`).
     env_passthrough: Vec<String>,
@@ -149,9 +182,18 @@ impl GitDeliveryBackend {
                     .into(),
             ],
             regression_target_dir,
+            regression_source: "default".to_string(),
             env_passthrough: Vec::new(),
             parent_env: None,
         }
+    }
+
+    /// Say where the regression commands came from, `authored` or
+    /// `cargo-default`, for the receipt's [`DeliveryCheck`]s.
+    #[must_use]
+    pub fn with_regression_source(mut self, source: impl Into<String>) -> Self {
+        self.regression_source = source.into();
+        self
     }
 
     /// Replace the post-merge regression with one command (by default
@@ -297,10 +339,11 @@ impl GitDeliveryBackend {
 
     /// Run the regression commands, in order, in the repository's
     /// regression checkout ([`regression_checkout_path`]) reset to `commit`,
-    /// never in `workdir`. Stops at the first command that fails and returns
-    /// it, as a command line, with its output; `None` when every command
-    /// passed. The commands run the merged code the agents wrote, so they
-    /// start from the environment verify steps get, without provider keys.
+    /// never in `workdir`. Returns a [`DeliveryCheck`] for each command that
+    /// ran, stopping after the first that fails, and the full text of their
+    /// output for the evidence log. The commands run the merged code the
+    /// agents wrote, so they start from the environment verify steps get,
+    /// without provider keys.
     ///
     /// The checkout stays for the next delivery (bug-8cf581): Cargo keys
     /// workspace crates by path, so at a stable path the next build reuses
@@ -310,7 +353,7 @@ impl GitDeliveryBackend {
     async fn regression_output(
         &self,
         commit: &str,
-    ) -> Result<Option<(String, std::process::Output)>, String> {
+    ) -> Result<(Vec<DeliveryCheck>, String), String> {
         let checkout = regression_checkout_path(&self.workdir);
         let _held = lock_regression_checkout(&checkout).await?;
         self.reset_regression_checkout(&checkout, commit).await?;
@@ -319,36 +362,39 @@ impl GitDeliveryBackend {
             .parent_env
             .clone()
             .unwrap_or_else(roko_core::child_env::process_env);
-        let mut failed = Ok(None);
+        let mut checks = Vec::new();
+        let mut log = String::new();
         for command in &self.regression {
             let Some((program, args)) = command.split_first() else {
-                failed = Err("the regression command is empty".to_string());
-                break;
+                return Err("the regression command is empty".to_string());
             };
             let mut regression = tokio::process::Command::new(program);
             let env = parent_env.iter().cloned();
             roko_gate::inherit_gate_env_from(&mut regression, env, &self.env_passthrough);
             // Only the build output is shared: the sources are the checkout's.
+            let started = std::time::Instant::now();
             let output = regression
                 .args(args)
                 .current_dir(&checkout)
                 .env("CARGO_TARGET_DIR", &self.regression_target_dir)
                 .kill_on_drop(true)
                 .output()
-                .await;
-            match output {
-                Ok(output) if output.status.success() => {}
-                Ok(output) => {
-                    failed = Ok(Some((command.join(" "), output)));
-                    break;
-                }
-                Err(e) => {
-                    failed = Err(format!("failed to spawn regression gate: {e}"));
-                    break;
-                }
+                .await
+                .map_err(|e| format!("failed to spawn regression gate: {e}"))?;
+            let check = DeliveryCheck {
+                command: check_command(command),
+                source: self.regression_source.clone(),
+                exit_code: output.status.code(),
+                duration_ms: started.elapsed().as_millis() as u64,
+                output_tail: check_tail(&output),
+            };
+            log.push_str(&check_log(&check, &output));
+            checks.push(check);
+            if !output.status.success() {
+                break;
             }
         }
-        failed
+        Ok((checks, log))
     }
 
     /// Point the regression checkout at `commit`, with none of an earlier
@@ -450,20 +496,44 @@ async fn resolve_commit(workdir: &Path, rev: &str) -> Result<String, String> {
     .map(|oid| oid.trim().to_string())
 }
 
-/// The last lines a failed command wrote: its stderr, else its stdout.
-fn output_tail(output: &std::process::Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
+/// How a [`DeliveryCheck`] names `command`: a `sh -c` step by its script,
+/// anything else by its program and arguments.
+fn check_command(command: &[String]) -> String {
+    match command {
+        [shell, flag, script] if shell == "sh" && flag == "-c" => script.clone(),
+        _ => command.join(" "),
+    }
+}
+
+/// The last [`CHECK_TAIL_LINES`] lines `output` holds, stdout then stderr.
+fn check_tail(output: &std::process::Output) -> String {
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let text = if stderr.trim().is_empty() {
-        stdout
-    } else {
-        stderr
-    };
-    let lines: Vec<&str> = text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    lines[lines.len().saturating_sub(5)..].join(" | ")
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<&str> = stdout.lines().chain(stderr.lines()).collect();
+    lines[lines.len().saturating_sub(CHECK_TAIL_LINES)..].join("\n")
+}
+
+/// `check`'s entry in a delivery's evidence log: the command, everything it
+/// wrote, and how it ended.
+fn check_log(check: &DeliveryCheck, output: &std::process::Output) -> String {
+    let exit = check
+        .exit_code
+        .map_or_else(|| "a signal".to_string(), |code| format!("exit {code}"));
+    format!(
+        "$ {}\n{}{}[{exit} after {} ms]\n\n",
+        check.command,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+        check.duration_ms
+    )
+}
+
+/// Write a delivery's check log to `path`, creating its directory.
+fn write_check_log(path: &Path, log: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, log)
 }
 
 /// The target dir a build of `workdir` shares with gates and earlier
@@ -605,27 +675,50 @@ impl DeliveryBackend for GitDeliveryBackend {
                 passed: true,
                 summary: format!("no post-merge regression check is configured for {plan_id}"),
                 evidence_ref: None,
+                checks: Vec::new(),
             };
         }
-        match self.regression_output(merge_commit).await {
-            Ok(None) => DeliveryRegressionOutcome {
-                passed: true,
-                summary: format!("post-merge regression passed for {plan_id}"),
-                evidence_ref: None,
-            },
-            Ok(Some((command, output))) => DeliveryRegressionOutcome {
-                passed: false,
-                summary: format!(
-                    "post-merge regression failed for {plan_id}: `{command}`: {}",
-                    output_tail(&output)
-                ),
-                evidence_ref: None,
-            },
-            Err(summary) => DeliveryRegressionOutcome {
-                passed: false,
-                summary,
-                evidence_ref: None,
-            },
+        let (checks, log) = match self.regression_output(merge_commit).await {
+            Ok(ran) => ran,
+            Err(summary) => {
+                return DeliveryRegressionOutcome {
+                    passed: false,
+                    summary,
+                    evidence_ref: None,
+                    checks: Vec::new(),
+                };
+            }
+        };
+        // The full output goes to a log beside the plan's checkpoint; the
+        // receipt keeps each check's tail (backlog 3111).
+        let log_path = crate::graph_checkpoint::delivery_check_log(&self.workdir, plan_id);
+        let evidence_ref = match write_check_log(&log_path, &log) {
+            Ok(()) => Some(log_path.display().to_string()),
+            Err(error) => {
+                warn!(%plan_id, %error, "could not write the delivery's check log");
+                None
+            }
+        };
+        let summary = match checks.iter().find(|check| check.exit_code != Some(0)) {
+            None => format!("post-merge regression passed for {plan_id}"),
+            Some(failed) => {
+                let lines: Vec<&str> = failed
+                    .output_tail
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .collect();
+                let tail = lines[lines.len().saturating_sub(5)..].join(" | ");
+                format!(
+                    "post-merge regression failed for {plan_id}: `{}`: {tail}",
+                    failed.command
+                )
+            }
+        };
+        DeliveryRegressionOutcome {
+            passed: checks.iter().all(|check| check.exit_code == Some(0)),
+            summary,
+            evidence_ref,
+            checks,
         }
     }
 
@@ -799,6 +892,15 @@ impl CliCompletionDeliveryService {
                     self.store
                         .merge_slot()
                         .release(&receipt.request.delivery_id);
+                    // Which checks ran, from where, and how each ended
+                    // (backlog 3111).
+                    if !outcome.checks.is_empty()
+                        && let Ok(checks) = serde_json::to_value(&outcome.checks)
+                    {
+                        receipt
+                            .extensions
+                            .insert(DELIVERY_CHECKS_EXTENSION.to_string(), checks);
+                    }
 
                     if !outcome.passed {
                         receipt.error = Some(outcome.summary.clone());
@@ -1079,12 +1181,14 @@ mod tests {
                     passed: true,
                     summary: "regression passed".to_string(),
                     evidence_ref: Some("/tmp/regression.log".to_string()),
+                    checks: Vec::new(),
                 }
             } else {
                 DeliveryRegressionOutcome {
                     passed: false,
                     summary: "cargo check failed: error[E0308]".to_string(),
                     evidence_ref: Some("/tmp/regression-fail.log".to_string()),
+                    checks: Vec::new(),
                 }
             }
         }
@@ -1673,6 +1777,82 @@ mod tests {
         assert!(
             !env.contains("sk-regression-canary"),
             "a provider key reached the regression:\n{env}"
+        );
+    }
+
+    /// backlog 3111: a delivery records each whole-plan check it ran on its
+    /// receipt, with where it came from and how it ended, and writes their
+    /// full output to a log beside the plan's checkpoint; a failing check
+    /// records its exit code and the end of its output.
+    #[tokio::test]
+    async fn delivery_receipt_records_the_checks_that_ran() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let steps = vec![
+            "echo first check".to_string(),
+            "echo second check".to_string(),
+        ];
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_steps(steps)
+            .with_regression_source("authored");
+        let service = CliCompletionDeliveryService::new(Arc::new(backend));
+        let request = CompletionDeliveryRequest {
+            publish: false,
+            ..git_request("d-git-checks", path)
+        };
+
+        let receipt = service.deliver(request).await.unwrap();
+
+        assert_eq!(
+            receipt.state,
+            CompletionDeliveryState::Delivered,
+            "{:?}",
+            receipt.error
+        );
+        let checks: Vec<DeliveryCheck> =
+            serde_json::from_value(receipt.extensions[DELIVERY_CHECKS_EXTENSION].clone())
+                .expect("the receipt's checks");
+        let ran: Vec<(&str, &str, Option<i32>)> = checks
+            .iter()
+            .map(|check| (&*check.command, &*check.source, check.exit_code))
+            .collect();
+        assert_eq!(
+            ran,
+            [
+                ("echo first check", "authored", Some(0)),
+                ("echo second check", "authored", Some(0)),
+            ]
+        );
+        assert_eq!(checks[1].output_tail, "second check");
+        let log = receipt
+            .regression_evidence_ref
+            .clone()
+            .expect("an evidence log");
+        let expected = crate::graph_checkpoint::delivery_check_log(path, "plan-a");
+        assert_eq!(PathBuf::from(&log), expected);
+        let text = std::fs::read_to_string(&log).expect("read the evidence log");
+        assert!(text.contains("$ echo first check\nfirst check\n"), "{text}");
+        assert!(text.contains("second check"), "{text}");
+
+        // A failing check records its exit code and the end of its output.
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_steps(vec!["echo broke >&2; exit 3".to_string()]);
+        let commit = git(path, &["rev-parse", "roko/plan-a"]);
+        let outcome = backend
+            .run_regression(&git_request("d-git-checks-fail", path), &commit)
+            .await;
+        assert!(!outcome.passed, "{}", outcome.summary);
+        let [failed] = outcome.checks.as_slice() else {
+            panic!("one check ran: {:?}", outcome.checks);
+        };
+        assert_eq!(failed.exit_code, Some(3));
+        assert_eq!(failed.output_tail, "broke");
+        assert_eq!(failed.source, "default");
+        assert!(
+            outcome.summary.ends_with("`echo broke >&2; exit 3`: broke"),
+            "{}",
+            outcome.summary
         );
     }
 

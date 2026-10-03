@@ -3763,9 +3763,11 @@ async fn deliver_plan_to_batch(
         return Ok(PlanOutcome::Succeeded);
     };
     // The regression check is the plan's whole-plan check (gap-60233f), with
-    // the environment verify steps get.
+    // the environment verify steps get. Its receipt says where the steps came
+    // from (backlog 3111).
     let backend = super::delivery::GitDeliveryBackend::new(batch.repo().to_path_buf())
         .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect())
+        .with_regression_source(plan_check_source(plan))
         .with_env_passthrough(env_passthrough.to_vec());
     let service = super::delivery::CliCompletionDeliveryService::with_store(
         batch.store().clone(),
@@ -3865,6 +3867,7 @@ async fn check_plan_in_place(
     checkpoint.record_plan_verify(serde_json::json!({
         "passed": result.is_ok(),
         "steps": commands,
+        "source": plan_check_source(plan),
         "failure": result.as_ref().err(),
     }))?;
     match result {
@@ -3882,6 +3885,17 @@ async fn check_plan_in_place(
             graph_tui_bridge.error(&format!("plan '{}': [meta] verify {failure}", plan.id));
             Ok(PlanOutcome::Failed)
         }
+    }
+}
+
+/// Where `plan`'s whole-plan check came from: `authored` (its `[meta]
+/// verify`) or `cargo-default` (the default check of a Cargo workspace,
+/// [`super::plan_verify::default_plan_verify`]).
+fn plan_check_source(plan: &crate::runner::plan_loader::Plan) -> &'static str {
+    if plan.tasks.meta.verify.is_empty() {
+        "cargo-default"
+    } else {
+        "authored"
     }
 }
 

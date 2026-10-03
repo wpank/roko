@@ -1,5 +1,6 @@
-//! Verify dispatch — runs gate rungs as background tokio tasks and sends
-//! results through a channel.
+//! Verify dispatch: the inline gate rung executor, `run_gate_once` (no
+//! production caller; see its docs), and the helpers Graph dispatch shares
+//! with it: auto-fix, compile ownership and verify-step gates.
 //!
 //! Sub-modules extracted for clarity:
 //! - [`cargo_command`](super::cargo_command) — Cargo command parsing/fingerprinting
@@ -8,12 +9,10 @@
 //! - [`gate_adapter`](super::gate_adapter) — `RunnerProductionGateAdapter` and artifact store
 
 use std::collections::HashMap;
-use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Instant;
 
-use futures::FutureExt;
 use roko_core::config::{GateMode, GatesConfig};
 use roko_core::{
     Body, Kind, LensScope, ObservableEvent, Provenance, Signal, SignalBuilder, TelemetryEventSink,
@@ -31,8 +30,7 @@ use roko_gate::test_gate::TestGate;
 use roko_gate::verdict_publisher::VerdictPublisher;
 use roko_gate::{GatePayload, PlanComplexity, ShellGate};
 use tokio::process::Command;
-use tokio::sync::{Semaphore, mpsc, oneshot};
-use tokio::task::JoinHandle;
+use tokio::sync::{Semaphore, mpsc};
 use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
 
@@ -46,7 +44,7 @@ use super::{impact_analysis, impact_analysis::ImpactReport};
 
 // Re-export items from extracted modules for backward compatibility.
 pub(crate) use super::gate_adapter::FsGeneratedArtifactStore;
-pub use super::gate_adapter::{RunnerProductionGateAdapter, default_gate_adapter};
+pub use super::gate_adapter::RunnerProductionGateAdapter;
 
 // Import extracted helpers used within this module.
 use super::cargo_command::{
@@ -55,14 +53,11 @@ use super::cargo_command::{
     focused_verify_steps, safe_cargo_name, scope_authored_verify_steps, targeted_cargo_check,
     with_targeted_compile_rung,
 };
-use super::gate_input::{accepted_input_snapshot, fetch_git_diff, gate_input_snapshot};
+use super::gate_input::{fetch_git_diff, gate_input_snapshot};
 use super::gate_report::{
     classify_failure_kind, filter_preexisting_failures, gate_failure_input, raw_gate_name,
     render_output,
 };
-
-// Re-export for callers that access these through `gate_dispatch::`.
-pub(crate) use super::gate_input::owned_input_fingerprint_id;
 
 /// Sentinel rung value for plan-level verification (not a per-task rung).
 pub const RUNG_PLAN_VERIFY: u32 = 1000;
@@ -406,127 +401,6 @@ macro_rules! proof_failure {
     ($gate:expr, $reason:expr, $digest:expr $(,)?) => {
         Verdict::fail($gate, $reason).with_error_digest($digest)
     };
-}
-
-/// Spawn a gate rung as a background task. Sends `GateCompletion` when done.
-///
-/// When `gate_adapter` is provided, the worker body delegates through the
-/// shared [`RunnerProductionGateAdapter`] instead of calling `run_gate_once`
-/// directly. This is production redirect #2 from #275.
-pub fn spawn_gate(
-    effect: GateEffectRef,
-    plan_id: String,
-    task_id: String,
-    rung: u32,
-    workdir: PathBuf,
-    gates_config: GatesConfig,
-    complexity: PlanComplexity,
-    verify_steps: Vec<VerifyStep>,
-    baseline_failed_gates: Option<Vec<GateVerdictSummary>>,
-    timeout_secs: u64,
-    gate_tx: mpsc::Sender<GateCompletion>,
-    gate_sem: Arc<Semaphore>,
-    target_crates: Vec<String>,
-    verdict_publisher: Option<VerdictPublisher>,
-    task_context: Option<GateTaskContext>,
-    telemetry_sink: Option<Arc<dyn TelemetryEventSink>>,
-    main_target_dir: Option<PathBuf>,
-    expected_input_fingerprint: Option<String>,
-    gate_adapter: Option<Arc<RunnerProductionGateAdapter>>,
-    line_sink: Option<mpsc::UnboundedSender<String>>,
-) -> (JoinHandle<()>, oneshot::Sender<()>) {
-    let (start_tx, start_rx) = oneshot::channel();
-    let handle = tokio::spawn(async move {
-        if start_rx.await.is_err() {
-            return;
-        }
-        let failure_effect = effect.clone();
-        let failure_plan = plan_id.clone();
-        let failure_task = task_id.clone();
-        let worker = AssertUnwindSafe(async move {
-            let t_wait = Instant::now();
-            let _permit = gate_sem
-                .acquire_owned()
-                .await
-                .map_err(|_| "gate semaphore closed before acquisition".to_string())?;
-            let wait_ms = t_wait.elapsed().as_millis() as u64;
-            if wait_ms > 10 {
-                info!(plan_id = %plan_id, task_id = %task_id, rung, wait_ms,
-                    "gate semaphore acquired");
-            }
-            if let Some(expected) = expected_input_fingerprint.as_deref() {
-                let observed = owned_input_fingerprint_id(workdir.clone()).await?;
-                if observed != expected {
-                    return Err(
-                        "timeout salvage input changed before ordinary gate start; refusing attribution"
-                            .to_string(),
-                    );
-                }
-            }
-            // #275 redirect: when a shared gate adapter is available, delegate
-            // through it instead of calling `run_gate_once` inline.
-            let completion = if let Some(adapter) = gate_adapter {
-                adapter
-                    .run(
-                        effect,
-                        plan_id,
-                        task_id,
-                        rung,
-                        workdir,
-                        gates_config,
-                        complexity,
-                        verify_steps,
-                        baseline_failed_gates,
-                        timeout_secs,
-                        target_crates,
-                        task_context,
-                    )
-                    .await
-            } else {
-                run_gate_once(
-                    effect,
-                    plan_id,
-                    task_id,
-                    rung,
-                    workdir,
-                    gates_config,
-                    complexity,
-                    verify_steps,
-                    baseline_failed_gates,
-                    timeout_secs,
-                    target_crates,
-                    verdict_publisher,
-                    task_context,
-                    telemetry_sink,
-                    main_target_dir,
-                    line_sink,
-                )
-                .await
-            };
-            Ok::<_, String>(completion)
-        })
-        .catch_unwind()
-        .await;
-        let completion = match worker {
-            Ok(Ok(completion)) => completion,
-            Ok(Err(message)) => {
-                failed_gate_completion(failure_effect, failure_plan, failure_task, rung, message)
-            }
-            Err(_) => failed_gate_completion(
-                failure_effect,
-                failure_plan,
-                failure_task,
-                rung,
-                "gate producer panicked".to_string(),
-            ),
-        };
-
-        if let Err(e) = gate_tx.send(completion).await {
-            error!(err = %e, "failed to send gate completion — channel closed");
-            return;
-        }
-    });
-    (handle, start_tx)
 }
 
 pub(super) fn failed_gate_completion(
@@ -1036,6 +910,15 @@ pub async fn attempt_auto_fix(
 }
 
 /// Run a gate rung to completion and return its summary.
+///
+/// No production path calls this since 7129 deleted `spawn_gate`: tasks gate
+/// through the Graph dispatcher, and the rich-topology path through
+/// [`RunnerProductionGateAdapter`] over `ProductionGateService`. It stays
+/// because its tests pin what that service does not do yet: publishing
+/// verdicts, gate telemetry, streamed output lines, impact analysis,
+/// filtering pre-existing failures, the focused baseline verify and the
+/// targeted compile rung. Port those to the service, with their tests, and
+/// delete it.
 pub async fn run_gate_once(
     effect: GateEffectRef,
     plan_id: String,
@@ -1779,167 +1662,6 @@ pub async fn run_gate_once(
         duration_ms,
         selected_rungs,
     }
-}
-
-/// Spawn plan-level verify steps as a background task. Their commands get
-/// `env_passthrough` (`[gates] env_passthrough`) on top of the gate
-/// allowlist.
-pub fn spawn_plan_verify(
-    effect: GateEffectRef,
-    plan_id: String,
-    workdir: PathBuf,
-    expected_oid: String,
-    verify_steps: Vec<(String, Vec<VerifyStep>)>,
-    timeout_secs: u64,
-    gate_tx: mpsc::Sender<GateCompletion>,
-    gate_sem: Arc<Semaphore>,
-    main_target_dir: Option<PathBuf>,
-    line_sink: Option<mpsc::UnboundedSender<String>>,
-    env_passthrough: Vec<String>,
-) -> (JoinHandle<()>, oneshot::Sender<()>) {
-    let (start_tx, start_rx) = oneshot::channel();
-    let handle = tokio::spawn(async move {
-        if start_rx.await.is_err() {
-            return;
-        }
-        let failure_effect = effect.clone();
-        let failure_plan = plan_id.clone();
-        let worker = AssertUnwindSafe(async move {
-            let t_wait = Instant::now();
-            let _permit = gate_sem
-                .acquire_owned()
-                .await
-                .map_err(|_| "plan verify semaphore closed before acquisition".to_string())?;
-            let wait_ms = t_wait.elapsed().as_millis() as u64;
-            if wait_ms > 10 {
-                info!(
-                    plan_id = %plan_id,
-                    wait_ms,
-                    "plan verify semaphore acquired"
-                );
-            }
-            let start = Instant::now();
-            let ctx = roko_core::Context::now();
-            let limit = Duration::from_secs(timeout_secs.max(1));
-            let plan_id_for_run = plan_id.clone();
-            let workdir_for_run = workdir.clone();
-
-            let line_sink_for_run = line_sink;
-            let run = async move {
-                let before =
-                    match accepted_input_snapshot(workdir_for_run.clone(), &expected_oid).await {
-                        Ok(snapshot) => snapshot,
-                        Err(error) => return vec![Verdict::fail("accepted-plan:input", error)],
-                    };
-                let mut all = Vec::new();
-                for (task_id, steps) in verify_steps {
-                    let signal = gate_signal(
-                        &plan_id_for_run,
-                        &task_id,
-                        RUNG_PLAN_VERIFY,
-                        &workdir_for_run,
-                        &[], // plan-level verify runs workspace-wide
-                        main_target_dir.as_deref(),
-                        &env_passthrough,
-                    );
-                    all.extend(
-                        run_verify_steps(
-                            &signal,
-                            &ctx,
-                            &plan_id_for_run,
-                            &task_id,
-                            steps,
-                            1,
-                            line_sink_for_run.clone(),
-                        )
-                        .await,
-                    );
-                }
-                if accepted_input_snapshot(workdir_for_run, &expected_oid).await != Ok(before) {
-                    all.push(Verdict::fail(
-                        "accepted-plan:immutable-input",
-                        "accepted plan input changed during verification",
-                    ));
-                }
-                all
-            };
-
-            let verdicts = match timeout(limit, run).await {
-                Ok(verdicts) => verdicts,
-                Err(_) => vec![
-                    Verdict::fail(
-                        "plan-verify-timeout",
-                        format!("plan verify timed out after {timeout_secs}s"),
-                    )
-                    .with_error_digest(format!("timeout: plan verify exceeded {timeout_secs}s")),
-                ],
-            };
-            let duration_ms = start.elapsed().as_millis() as u64;
-            let real_verdicts: Vec<&Verdict> = verdicts.iter().filter(|v| !v.skipped).collect();
-            let passed = real_verdicts.iter().all(|v| v.passed);
-            let output = render_output(&verdicts);
-            let failure_kind = (!passed).then(|| classify_failure_kind(&verdicts, &output));
-            let summaries = verdicts
-                .iter()
-                .map(|v| GateVerdictSummary {
-                    gate_name: v.gate.clone(),
-                    passed: v.passed,
-                    skipped: v.skipped,
-                    summary: v.reason.clone(),
-                    error_digest: v.error_digest.clone(),
-                    failure_kind: (!v.passed && !v.skipped)
-                        .then(|| classify_failure_kind(std::slice::from_ref(v), &v.reason)),
-                    rung_index: None, // plan-verify steps are not canonical rungs
-                })
-                .collect();
-
-            info!(
-                plan_id = %plan_id,
-                passed,
-                duration_ms,
-                "plan verify completed"
-            );
-
-            Ok::<_, String>(GateCompletion {
-                kind: GateCompletionKind::PlanVerify,
-                attempt: Some(effect.attempt.clone()),
-                effect: Some(effect),
-                plan_id,
-                task_id: "plan-verify".to_string(),
-                rung: RUNG_PLAN_VERIFY,
-                passed,
-                failure_kind,
-                verdicts: summaries,
-                output,
-                duration_ms,
-                selected_rungs: Vec::new(), // sentinel: no canonical rungs for plan-verify
-            })
-        })
-        .catch_unwind()
-        .await;
-        let completion = match worker {
-            Ok(Ok(completion)) => completion,
-            Ok(Err(message)) => failed_gate_completion(
-                failure_effect,
-                failure_plan,
-                "plan-verify".to_string(),
-                RUNG_PLAN_VERIFY,
-                message,
-            ),
-            Err(_) => failed_gate_completion(
-                failure_effect,
-                failure_plan,
-                "plan-verify".to_string(),
-                RUNG_PLAN_VERIFY,
-                "plan verify producer panicked".to_string(),
-            ),
-        };
-
-        if let Err(e) = gate_tx.send(completion).await {
-            error!(err = %e, "failed to send plan verify completion — channel closed");
-        }
-    });
-    (handle, start_tx)
 }
 
 /// Build enriched [`RungExecutionInputs`] from available task context.
@@ -2760,192 +2482,6 @@ path = "src/shared.rs"
         }));
 
         Ok(())
-    }
-
-    fn barrier_gate() -> (
-        JoinHandle<()>,
-        oneshot::Sender<()>,
-        mpsc::Receiver<GateCompletion>,
-    ) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workdir = dir.keep();
-        let (tx, rx) = mpsc::channel(1);
-        let effect = GateEffectRef {
-            attempt: TaskAttemptRef::new("plan", "task", 1),
-            kind: GateCompletionKind::Gate,
-            rung: 1,
-            generation: 99,
-        };
-        let (handle, start) = spawn_gate(
-            effect,
-            "plan".to_string(),
-            "task".to_string(),
-            1,
-            workdir,
-            GatesConfig::default(),
-            PlanComplexity::Trivial,
-            Vec::new(),
-            None,
-            1,
-            tx,
-            Arc::new(Semaphore::new(1)),
-            Vec::new(),
-            None,
-            None,
-            None,
-            None, // main_target_dir
-            None, // expected_input_fingerprint
-            None, // gate_adapter
-            None, // line_sink
-        );
-        (handle, start, rx)
-    }
-
-    #[tokio::test]
-    async fn gate_producer_waits_for_owner_start_barrier() {
-        let (handle, start, mut rx) = barrier_gate();
-        tokio::task::yield_now().await;
-        assert!(matches!(
-            rx.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
-        drop(start);
-        handle.await.expect("barrier cancellation should be clean");
-    }
-
-    #[tokio::test]
-    async fn gate_start_reports_failure_after_producer_abort() {
-        let (handle, start, _rx) = barrier_gate();
-        handle.abort();
-        let _ = handle.await;
-        assert!(start.send(()).is_err());
-    }
-
-    #[tokio::test]
-    async fn plan_verify_is_barriered_and_preserves_exact_effect() {
-        let shared_root = git_repo();
-        std::fs::write(shared_root.path().join("unrelated.txt"), b"dirty root\n").unwrap();
-        let dir = git_repo();
-        let expected_oid = String::from_utf8_lossy(
-            &std::process::Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .trim()
-        .to_string();
-        let effect = GateEffectRef {
-            attempt: TaskAttemptRef::new("plan-a", "plan-verify", 1),
-            kind: GateCompletionKind::PlanVerify,
-            rung: RUNG_PLAN_VERIFY,
-            generation: 501,
-        };
-        let (tx, mut rx) = mpsc::channel(1);
-        let (handle, start) = spawn_plan_verify(
-            effect.clone(),
-            "plan-a".to_string(),
-            dir.path().to_path_buf(),
-            expected_oid,
-            Vec::new(),
-            1,
-            tx,
-            Arc::new(Semaphore::new(1)),
-            None,       // main_target_dir
-            None,       // line_sink
-            Vec::new(), // env_passthrough
-        );
-        tokio::task::yield_now().await;
-        assert!(matches!(
-            rx.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
-        start.send(()).unwrap();
-        let completion = rx.recv().await.unwrap();
-        handle.await.unwrap();
-        assert!(completion.passed);
-        assert_eq!(completion.effect, Some(effect));
-        assert!(shared_root.path().join("unrelated.txt").exists());
-    }
-
-    #[tokio::test]
-    async fn closed_plan_verify_semaphore_emits_exact_resource_failure() {
-        let dir = tempfile::tempdir().unwrap();
-        let effect = GateEffectRef {
-            attempt: TaskAttemptRef::new("plan-b", "plan-verify", 1),
-            kind: GateCompletionKind::PlanVerify,
-            rung: RUNG_PLAN_VERIFY,
-            generation: 502,
-        };
-        let semaphore = Arc::new(Semaphore::new(0));
-        semaphore.close();
-        let (tx, mut rx) = mpsc::channel(1);
-        let (handle, start) = spawn_plan_verify(
-            effect.clone(),
-            "plan-b".to_string(),
-            dir.path().to_path_buf(),
-            "unused".to_string(),
-            Vec::new(),
-            1,
-            tx,
-            semaphore,
-            None,       // main_target_dir
-            None,       // line_sink
-            Vec::new(), // env_passthrough
-        );
-        start.send(()).unwrap();
-        let completion = rx.recv().await.unwrap();
-        handle.await.unwrap();
-        assert!(!completion.passed);
-        assert_eq!(completion.failure_kind, Some(RunnerFailureKind::Resource));
-        assert_eq!(completion.effect, Some(effect));
-    }
-
-    #[tokio::test]
-    async fn closed_semaphore_emits_exact_failed_preflight_completion() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (tx, mut rx) = mpsc::channel(1);
-        let semaphore = Arc::new(Semaphore::new(1));
-        semaphore.close();
-        let effect = GateEffectRef {
-            attempt: TaskAttemptRef::new("plan", "task", 2),
-            kind: GateCompletionKind::Preflight,
-            rung: 3,
-            generation: 101,
-        };
-        let (handle, start) = spawn_gate(
-            effect.clone(),
-            "plan".to_string(),
-            "task".to_string(),
-            3,
-            dir.path().to_path_buf(),
-            GatesConfig::default(),
-            PlanComplexity::Trivial,
-            Vec::new(),
-            None,
-            1,
-            tx,
-            semaphore,
-            Vec::new(),
-            None,
-            None,
-            None,
-            None, // main_target_dir
-            None, // expected_input_fingerprint
-            None, // gate_adapter
-            None, // line_sink
-        );
-
-        start.send(()).expect("owner starts producer");
-        let completion = rx.recv().await.expect("structured failure completion");
-        handle.await.expect("supervisor exits cleanly");
-        assert!(!completion.passed);
-        assert_eq!(completion.kind, GateCompletionKind::Preflight);
-        assert_eq!(completion.attempt.as_ref(), Some(&effect.attempt));
-        assert_eq!(completion.effect.as_ref(), Some(&effect));
-        assert_eq!(completion.failure_kind, Some(RunnerFailureKind::Resource));
-        assert!(completion.output.contains("semaphore closed"));
     }
 
     #[test]
@@ -4058,13 +3594,6 @@ cargo_fix_enabled = false
             .await;
         assert!(!completion.passed);
         assert!(completion.failure_kind.is_some());
-    }
-
-    #[test]
-    fn default_gate_adapter_creates_valid_adapter() {
-        let adapter = default_gate_adapter();
-        let debug = format!("{adapter:?}");
-        assert!(debug.contains("RunnerProductionGateAdapter"));
     }
 
     // ── P2-GAT-1: rung input completion tests ────────────────────────────────

@@ -122,9 +122,9 @@ pub trait ProductionGateRunner: Send + Sync + 'static {
 
 /// Production implementation of `ProductionGateRunner`.
 ///
-/// Copies the sequencing from `runner/gate_dispatch.rs::run_gate_once` and
-/// `spawn_gate` into neutral helpers. Delegates rung construction to the
-/// existing `GatePipelineBuilder`. The canonical rungs run with its
+/// Copies the sequencing of roko-cli's `run_gate_once` into neutral helpers,
+/// and delegates rung construction to the existing `GatePipelineBuilder`.
+/// The canonical rungs run with its
 /// [`RungExecutionConfig`] ([`Self::with_rung_config`]): without a judge or
 /// search oracle there, the LLM-judge and fact-check rungs skip.
 #[derive(Default)]

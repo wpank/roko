@@ -32,14 +32,11 @@ use super::types::{GateCompletion, GateEffectRef, GateVerdictSummary, RunnerFail
 /// and the shared production gate service (which owns rung selection,
 /// execution, and verdict normalization).
 ///
-/// ## Call-site manifest
+/// ## Call sites
 ///
-/// Four production boundaries redirect through this adapter:
-///
-/// 1. `run_gate_once` -- delegates to `Self::run` instead of inline rung execution.
-/// 2. `spawn_gate` worker body -- the spawned task calls `Self::run`.
-/// 3. Preflight spawn branch -- injects the same shared service.
-/// 4. Normal/plan-verify spawn branch -- injects the same shared service.
+/// The rich-topology path of `plan run` gates through it (`verify_rung`);
+/// [`Self::run`] converts one Runner-v2 rung request. The Runner-v2 spawn
+/// helpers that called it are gone (7129).
 pub struct RunnerProductionGateAdapter {
     /// The injected shared gate service.
     service: Arc<dyn roko_gate::production_service::ProductionGateRunner>,
@@ -236,9 +233,7 @@ impl RunnerProductionGateAdapter {
     /// Run the production gate pipeline through the shared service and return
     /// a `GateCompletion` compatible with the Runner-v2 event loop.
     ///
-    /// This is the primary entry point that replaces the inline execution in
-    /// `run_gate_once`. The existing `run_gate_once` delegates to this method
-    /// when a `RunnerProductionGateAdapter` is available.
+    /// It stands in for the inline execution of `run_gate_once`.
     pub async fn run(
         &self,
         effect: GateEffectRef,
@@ -283,16 +278,6 @@ impl RunnerProductionGateAdapter {
             }
         }
     }
-}
-
-/// Create a default `RunnerProductionGateAdapter` with the production service.
-///
-/// Used by the event loop when no custom service is injected.
-pub fn default_gate_adapter() -> RunnerProductionGateAdapter {
-    RunnerProductionGateAdapter::new(Arc::new(
-        roko_gate::production_service::ProductionGateService::new(),
-    )
-        as Arc<dyn roko_gate::production_service::ProductionGateRunner>)
 }
 
 // ── Generated-test artifact store ───────────────────────────────────────

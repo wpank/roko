@@ -56,7 +56,7 @@ use std::{
 use tokio::sync::broadcast;
 use tracing::trace;
 
-use crate::heartbeat::{CognitiveSignal, HeartbeatTick, WakeupCondition};
+use crate::heartbeat_types::{CognitiveSignal, HeartbeatTick, WakeupCondition};
 use crate::lifecycle::LifecycleTransition;
 
 /// A sequenced, timestamped envelope wrapping a user event.

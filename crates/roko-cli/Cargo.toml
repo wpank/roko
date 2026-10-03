@@ -33,6 +33,9 @@ acp = ["dep:roko-acp"]
 groups = ["roko-serve/groups"]
 # The relay client in roko serve, parked out of the default build (9220).
 relay = ["roko-serve/relay"]
+# The cognitive clock and its theta/delta plan-completion sinks, parked out of
+# the default build (9222).
+cognitive-clock = ["roko-runtime/cognitive-clock"]
 alloy-backend = [
     "chain",
     "roko-chain/alloy-backend",

@@ -44,9 +44,9 @@ pub use episodes::EpisodeSink;
 pub use error_patterns::ErrorPatternSink;
 pub use hindsight::HindsightSink;
 pub use knowledge::{KnowledgeIngestionSink, KnowledgeIngestor, NeuroKnowledgeIngestor};
-pub use plan_completion::{
-    DaimonPersistenceSink, DeltaConsolidationSink, DreamConsolidationSink, ThetaReflectionSink,
-};
+pub use plan_completion::{DaimonPersistenceSink, DreamConsolidationSink};
+#[cfg(feature = "cognitive-clock")]
+pub use plan_completion::{DeltaConsolidationSink, ThetaReflectionSink};
 pub use routing::RoutingObservationSink;
 pub use verified_knowledge::{VerifiedAttempt, VerifiedKnowledgeSink};
 

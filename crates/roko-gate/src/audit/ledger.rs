@@ -670,6 +670,42 @@ mod tests {
         assert!(error.reason.contains("record_hash"), "{error}");
     }
 
+    /// A record keeps its chain whatever floats it holds. The chain is
+    /// checked again from the parsed line, so every float must parse back to
+    /// the f64 that was written. serde_json's default parser can land a ulp
+    /// away on 17 significant digits, as on 2/21, a trust downgrade's mean
+    /// (gap-940e44): the workspace turns on its `float_roundtrip` for this.
+    #[test]
+    fn full_precision_floats_keep_the_chain() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().join("ledger");
+        let mut ledger = AuditLedger::open_dir(&dir).expect("a ledger");
+        let floats: Vec<f64> = (1..=500_u32)
+            .flat_map(|n| {
+                let n = f64::from(n);
+                [n / 21.0, 1.0 / n, n.sqrt(), n.ln_1p() / 7.0]
+            })
+            .collect();
+        let event = AuditEvent::PolicyChange {
+            knob: "trust:model/roko".into(),
+            from: serde_json::json!(2.0 / 21.0),
+            to: serde_json::json!(floats),
+            reason: "full precision".into(),
+        };
+        ledger.append(event).expect("append");
+        assert_eq!(verify_chain(&dir), Ok(1));
+        let read = records(&dir).expect("the records");
+        let AuditEvent::PolicyChange { to, .. } = &read[0].event else {
+            panic!("a policy change");
+        };
+        let parsed: Vec<f64> = serde_json::from_value(to.clone()).expect("the floats");
+        let exact = parsed
+            .iter()
+            .zip(&floats)
+            .all(|(read, written)| read.to_bits() == written.to_bits());
+        assert!(exact && parsed.len() == floats.len());
+    }
+
     #[test]
     fn the_workspace_mirror_never_holds_an_unrevealed_key() {
         let temp = tempfile::tempdir().expect("tempdir");

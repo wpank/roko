@@ -52,7 +52,7 @@ _15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-39
 - **P3** [gap-4cbd80](items/gap-4cbd80-pk65-m2-loop-liveness-census-measures-l.md) PK65 M2 loop-liveness: Census measures L-M1, L-M3 and L-M4 from their receipts · size S · verified 2026-10-02
 - **P3** [gap-414e56](items/gap-414e56-pk66-m3-self-model-after-a-low.md) PK66 M3 self-model: After a low-confidence pass, request deeper verification from S05's ladder before… (+1 more) · size M · verified 2026-10-02
 
-_22 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_29 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

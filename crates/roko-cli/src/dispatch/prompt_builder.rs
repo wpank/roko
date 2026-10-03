@@ -48,6 +48,7 @@ use roko_compose::{
 };
 use roko_core::config::schema::ConfigCompositionStrategy;
 use roko_core::{AgentRole, Group, GroupId, GroupPheromone, TaskContextWeight};
+use roko_learn::loop_audit::arm_set::ArmSet;
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::{ExcludedReason, ExposureItemKind};
 use serde::{Deserialize, Serialize};
@@ -177,6 +178,8 @@ pub struct PromptContext {
     pub concurrent_plans: Vec<(String, Vec<String>)>,
     /// The plan's `brief.md`, which `roko plan prepare` writes (gap-d6fd85).
     pub plan_brief: String,
+    /// The arms of the attempt's chain ([`DispatchContext::arm_set`]).
+    pub arm_set: Option<Arc<ArmSet>>,
 }
 
 impl PromptContext {
@@ -291,7 +294,23 @@ impl PromptContext {
             error_patterns_context: ctx.error_patterns_context.clone(),
             concurrent_plans: ctx.concurrent_plans.clone(),
             plan_brief,
+            arm_set: ctx.arm_set.clone(),
         }
+    }
+
+    /// Whether the attempt's arm set withholds the loop that fills the source
+    /// section `section` (S02 L7, decision 4115): `knowledge` for L-know and
+    /// `playbooks` for L-play, on their default arm or the all-off arm.
+    /// Maximize mode, and dispatch without an arm set, withhold nothing.
+    fn withholds(&self, section: &str) -> bool {
+        let layer = match section {
+            "knowledge" => "knowledge",
+            "playbooks" => "playbooks",
+            _ => return false,
+        };
+        self.arm_set
+            .as_deref()
+            .is_some_and(|arms| arms.takes_default(layer))
     }
 }
 
@@ -1251,17 +1270,7 @@ impl ComposedPrompt<'_> {
     /// the prompt.
     fn item(&self, item: &PromptItem, carrier: &str) -> PromptItemDiagnostic {
         let excluded_reason = self.excluded_reason(carrier, &item.rendered);
-        PromptItemDiagnostic {
-            kind: item.kind,
-            id: item.id.clone(),
-            section: carrier.to_string(),
-            rank: Some(item.rank),
-            score: item.score,
-            tokens: token_count(roko_compose::estimate_tokens(&item.rendered)),
-            rendered_sha256: sha256_hex(&item.rendered),
-            included: excluded_reason.is_none(),
-            excluded_reason,
-        }
+        item_diagnostic(item, carrier, excluded_reason)
     }
 
     /// Every entry `sources` rendered, the `error_patterns` block, and one
@@ -1320,6 +1329,26 @@ impl ComposedPrompt<'_> {
             ));
         }
         items
+    }
+}
+
+/// The diagnostic of `item`, rendered into the section `carrier`: kept out of
+/// the prompt for `excluded_reason`, or in it when that is `None`.
+fn item_diagnostic(
+    item: &PromptItem,
+    carrier: &str,
+    excluded_reason: Option<ExcludedReason>,
+) -> PromptItemDiagnostic {
+    PromptItemDiagnostic {
+        kind: item.kind,
+        id: item.id.clone(),
+        section: carrier.to_string(),
+        rank: Some(item.rank),
+        score: item.score,
+        tokens: token_count(roko_compose::estimate_tokens(&item.rendered)),
+        rendered_sha256: sha256_hex(&item.rendered),
+        included: excluded_reason.is_none(),
+        excluded_reason,
     }
 }
 
@@ -1851,6 +1880,13 @@ impl PromptAssembler {
         for source in &self.sources {
             source_sections.extend(source.collect(task, ctx));
         }
+        // S02 L7: a loop the attempt's arm set withholds still retrieves, so
+        // its items are known, but its section stays out of the prompt and
+        // its ids out of what learners credit.
+        let (withheld_sections, source_sections): (Vec<PromptSection>, Vec<PromptSection>) =
+            source_sections
+                .into_iter()
+                .partition(|section| ctx.withholds(&section.name));
 
         // Gather playbook / knowledge ids and text for the canonical path.
         let mut playbook_ids: Vec<String> = Vec::new();
@@ -2071,10 +2107,17 @@ impl PromptAssembler {
             manifest: composition_manifest.as_ref(),
             prompt: &system_prompt,
         };
-        let items = composed.items(
+        let mut items = composed.items(
             &source_sections,
             &ctx.error_patterns_context,
             &section_digests,
+        );
+        let withheld = Some(ExcludedReason::WithheldArm);
+        items.extend(
+            withheld_sections
+                .iter()
+                .flat_map(|section| &section.items)
+                .map(|item| item_diagnostic(item, SOURCE_SECTION, withheld)),
         );
         let diagnostics = PromptDiagnostics {
             included_sections,
@@ -3031,6 +3074,7 @@ mod tests {
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),
             attempt_key: None,
+            arm_set: None,
         }
     }
 
@@ -3930,6 +3974,78 @@ mod tests {
         assert!(prompt_item(&tight, Section, "task_context").included);
     }
 
+    /// S02 L7 (decision 4115): when the attempt's arm set withholds L-know,
+    /// the knowledge source still retrieves, but the prompt has no
+    /// `# Neuro knowledge` section, the diagnostics list the entry as
+    /// withheld, and learners credit none of it; L-play's learned arm keeps
+    /// the playbook. The knowledge arm the decision rows carry is the default
+    /// one, at its propensity (1 − g)·h. Maximize mode withholds nothing.
+    #[test]
+    fn withhold_arm_omits_sections_and_logs_propensity() {
+        use roko_learn::loop_audit::Registry;
+        use roko_learn::loop_audit::arm_set::{ArmDraws, ArmMode};
+        use roko_learn::telemetry::ExposureItemKind::{Knowledge, Playbook};
+        use roko_learn::telemetry::{Arm, AttemptKey};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_knowledge(
+            temp.path(),
+            &[(
+                "k-explain",
+                "Explain the dispatcher wiring before you wire it",
+            )],
+        );
+        let playbooks = temp.path().join(".roko/learn/playbooks");
+        std::fs::create_dir_all(&playbooks).expect("playbook dir");
+        let playbook =
+            roko_learn::playbook::Playbook::new("pb-wiring", "Wire the dispatcher wiring");
+        let json = serde_json::to_string(&playbook).expect("playbook json");
+        std::fs::write(playbooks.join("pb-wiring.json"), json).expect("write playbook");
+        let cache = Arc::new(PromptCache::load(temp.path()));
+        let loops = Registry::embedded().expect("the embedded loop registry");
+        let draws = ArmDraws::new(0, "2026-10-03");
+        let arms_of = |mode: &ArmMode, index: usize| {
+            let key = AttemptKey::new("withhold", "p", format!("t{index}"), 1);
+            ArmSet::assign(&key, &loops, mode, &draws)
+        };
+        let assemble = |arms: ArmSet| {
+            let mut dispatch = ctx();
+            dispatch.workdir = temp.path().to_path_buf();
+            dispatch.arm_set = Some(Arc::new(arms));
+            let prompt_ctx = PromptContext::from_task(&task(), &dispatch);
+            PromptAssembler::with_cache(Arc::clone(&cache))
+                .assemble(&task(), &prompt_ctx)
+                .expect("assemble")
+        };
+
+        // A chain that withholds knowledge and keeps playbooks.
+        let withheld = (0..)
+            .map(|index| arms_of(&ArmMode::Normal, index))
+            .find(|arms| arms.takes_default("knowledge") && !arms.takes_default("playbooks"))
+            .expect("a chain that withholds knowledge alone");
+        let knowledge = withheld.get("knowledge").expect("the knowledge arm");
+        assert_eq!(knowledge.arm, Arm::Default);
+        assert!((knowledge.h - 0.2).abs() < 1e-12, "{knowledge:?}");
+        let p = (1.0 - knowledge.g) * knowledge.h;
+        assert!((knowledge.propensity - p).abs() < 1e-12, "{knowledge:?}");
+
+        let prompt = assemble(withheld);
+        let system = &prompt.system_prompt;
+        assert!(!system.contains("# Neuro knowledge"), "{system}");
+        let item = prompt_item(&prompt, Knowledge, "k-explain");
+        let reason = Some(ExcludedReason::WithheldArm);
+        assert_eq!((item.included, item.excluded_reason), (false, reason));
+        assert!(prompt.diagnostics.knowledge_ids.is_empty(), "no credit");
+        assert!(prompt_item(&prompt, Playbook, "pb-wiring").included);
+        assert_eq!(prompt.diagnostics.playbook_ids, ["pb-wiring"]);
+
+        // Maximize mode withholds nothing.
+        let prompt = assemble(arms_of(&ArmMode::Maximize, 0));
+        assert!(prompt.system_prompt.contains("# Neuro knowledge"));
+        assert!(prompt_item(&prompt, Knowledge, "k-explain").included);
+        assert_eq!(prompt.diagnostics.knowledge_ids, ["k-explain"]);
+    }
+
     #[test]
     fn retry_attempt_renders_gate_feedback() {
         let assembler = PromptAssembler::minimal();
@@ -4400,6 +4516,7 @@ covers = ["AC1"]
             error_patterns_context: String::new(),
             concurrent_plans: Vec::new(),
             plan_brief: String::new(),
+            arm_set: None,
         };
         let ctx_str = build_runner_context(&t, &pctx).expect("runner context");
         assert!(ctx_str.contains("# Files in scope"));

@@ -476,6 +476,12 @@ impl AttemptContext {
         self.run.submit(decision);
     }
 
+    /// The arms of the attempt's chain, which its prompt assembly reads to
+    /// withhold a loop's content (S02 L7).
+    pub(super) fn arm_set(&self) -> Option<Arc<ArmSet>> {
+        self.arm_set.clone()
+    }
+
     /// The identity every record of the attempt flattens.
     pub(super) fn identity(&self) -> &AttemptIdentity {
         &self.identity

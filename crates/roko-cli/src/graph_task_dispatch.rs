@@ -1184,6 +1184,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
             attempt_key: Some(attempt.key.clone()),
+            arm_set: attempt.arm_set(),
         };
         let prompt_assembly_started = std::time::Instant::now();
         let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {

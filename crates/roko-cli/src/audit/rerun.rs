@@ -155,18 +155,13 @@ pub async fn rerun(
     let mut stopped = checks
         .is_empty()
         .then(|| "the task has no checks to re-run".to_string());
-    let through_service = service.filter(|_| worktree.join("Cargo.toml").exists());
     while stopped.is_none() && results.len() < RUNS {
         let left = budget.saturating_sub(started.elapsed());
         if left.is_zero() {
             stopped = Some(format!("the audit's {}s budget ran out", budget.as_secs()));
             break;
         }
-        let passed = match through_service {
-            Some(context) => service_run(worktree, checks, left, context).await,
-            None => shell_run(worktree, checks, left, target).await,
-        };
-        match passed {
+        match run_checks(worktree, checks, left, target, service).await {
             Some(passed) => results.push(passed),
             None => stopped = Some("a run outlived the audit's budget".to_string()),
         }
@@ -182,6 +177,21 @@ pub async fn rerun(
         passes: results,
         secs: started.elapsed().as_secs_f64(),
         stopped,
+    }
+}
+
+/// One run of `checks` in `worktree` within `budget`, as [`rerun`] runs
+/// them: `Some(passed)`, or `None` when the budget ran out first.
+pub async fn run_checks(
+    worktree: &Path,
+    checks: &[Check],
+    budget: Duration,
+    target: Option<&Path>,
+    service: Option<&ServiceContext>,
+) -> Option<bool> {
+    match service.filter(|_| worktree.join("Cargo.toml").exists()) {
+        Some(context) => service_run(worktree, checks, budget, context).await,
+        None => shell_run(worktree, checks, budget, target).await,
     }
 }
 

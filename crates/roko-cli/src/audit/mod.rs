@@ -9,26 +9,29 @@
 //!   units one at a time, runs phase A and phase B on them, and appends
 //!   their `audit.result` (7123);
 //! - [`b1`]: B1, a hidden suite written by a model of another family,
-//!   validated on the base tree and run on the result (7124).
+//!   validated on the base tree and run on the result (7124);
+//! - [`b2`]: B2, extreme mutants of the changed Rust functions (7125).
 //!
 //! Selection (DP1) is `graph_task_dispatch::audit_select`; the lottery, the
 //! ledger, the hidden-suite store and the canary scanner are
 //! `roko_gate::audit`.
 
 pub mod b1;
+pub mod b2;
 pub mod rerun;
 pub mod worker;
 pub mod worktree;
 
 use std::path::Path;
 
-/// Git in `repo` with a fixed identity and no signing, so a commit made from
-/// a tree does not depend on the operator's config, and no prompt.
+/// Git in `repo` with a fixed identity, no signing and no colour, so a
+/// commit made from a tree and a diff's text do not depend on the
+/// operator's config, and no prompt.
 pub(crate) fn git(repo: &Path, args: &[&str]) -> anyhow::Result<String> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["-c", "commit.gpgsign=false"])
+        .args(["-c", "commit.gpgsign=false", "-c", "color.ui=never"])
         .args(args)
         .env("GIT_AUTHOR_NAME", "roko-audit")
         .env("GIT_AUTHOR_EMAIL", "audit@roko.invalid")

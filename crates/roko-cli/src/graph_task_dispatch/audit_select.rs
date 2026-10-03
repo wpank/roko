@@ -47,6 +47,7 @@ use roko_gate::audit::policy::{
 use roko_learn::telemetry::records::{AttemptVerdictRecord, GateVerdictTag};
 
 use crate::audit::b1::{B1, FactoryAuthor, SuiteAuthor};
+use crate::audit::b2::B2;
 use crate::audit::worker::{AuditTask, AuditUnit, AuditWorker, PhaseB, WorkerContext, queue_unit};
 use crate::task_parser::TaskDef;
 
@@ -387,7 +388,7 @@ impl AuditSelector {
 
 impl super::GraphTaskDispatcher {
     /// The audit workers' phase-B checks: B1, with every configured model a
-    /// candidate author, in `[models]` order.
+    /// candidate author, in `[models]` order, and B2.
     pub(super) fn audit_phase_b(&self) -> PhaseB {
         let timeout_ms = self
             .config
@@ -411,6 +412,7 @@ impl super::GraphTaskDispatcher {
             .collect();
         PhaseB {
             b1: Some(Arc::new(B1::new(authors, self.config.audit.clone()))),
+            b2: Some(Arc::new(B2)),
             ..PhaseB::default()
         }
     }

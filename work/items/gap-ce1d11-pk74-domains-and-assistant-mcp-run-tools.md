@@ -28,9 +28,6 @@ command = "grep -rqw 'fn mcp_run_without_budget_cap_is_refused' crates/roko-serv
 command = "grep -rqw 'fn chat_origin_prompt_is_fenced_as_untrusted_data' crates/roko-cli/ && cargo test -p roko-cli chat_origin_prompt_is_fenced_as_untrusted_data"
 
 [[verify]]
-command = "grep -rqw 'fn run_completion_is_posted_to_the_host_once' crates/roko-serve/ && cargo test -p roko-serve run_completion_is_posted_to_the_host_once"
-
-[[verify]]
 command = "grep -rqw 'fn rung_kind_defaults_to_command' crates/roko-core/ && cargo test -p roko-core rung_kind_defaults_to_command"
 
 [[verify]]
@@ -95,3 +92,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - 9121: implemented at 8e278e092
 
 The Rust tasks were checked statically (verify greps, hand formatting); cargo verification is left to the batch gate.
+
+- 2026-10-03 (coordinator, gate 5b): task 9118's verify (the signed completion webhook) left this item for its own follow-up: decision 9106 makes it wait until Will confirms that OpenClaw is an MCP client and that Hermes can post to live sessions.

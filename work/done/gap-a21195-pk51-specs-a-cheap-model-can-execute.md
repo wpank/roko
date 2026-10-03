@@ -2,7 +2,7 @@
 id = "gap-a21195"
 kind = "gap"
 title = "PK51 Specs a cheap model can execute: Export the spec features to the M3 self-model"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 51
 size = "S"
 subsystem = ["roko-learn/self_model"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "73a96794e"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK51"
 anchors = ["crates/roko-learn/src"]
 lane = "rust-cold"
@@ -20,6 +21,17 @@ links = { depends_on = ["gap-de0b87", "gap-7ec3ef"], blocks = [], related = [], 
 
 [[verify]]
 command = "grep -rqw 'fn spec_features_join_every_attempt' crates/roko-learn/src/ && cargo test -p roko-learn --lib spec_features_join_every_attempt"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T19:23:33Z"
+commit = "73a96794e"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T17:08:30Z"
+forced = false
+evidence = "Gate 9b (work/backlog-batch-9b, merged into main as 73a96794e): cargo check --workspace --tests, roko-cli and roko-serve with fault-injection, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 5,854 tests over roko-cli, -learn and -serve, roko-cli bin 436 passed, the golden-path canaries and the loop-audit census run pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass, 159 fault-injection lib tests pass; every [[verify]] passes. PK51 (3240): spec_features.rs joins spec.jsonl records to attempts and every forecast carries the task's spec vector; the gate split its test fixture's json! (5bdd90e2d)."
 +++
 
 ## Problem

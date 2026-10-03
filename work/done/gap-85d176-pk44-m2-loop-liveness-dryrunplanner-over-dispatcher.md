@@ -2,7 +2,7 @@
 id = "gap-85d176"
 kind = "gap"
 title = "PK44 M2 loop-liveness: DryRunPlanner over Dispatcher::plan (probes P4 and P5) (+6 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 44
 size = "L"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "73a96794e"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK44"
 anchors = ["crates/roko-cli/Cargo.toml", "crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/commands/server.rs", "crates/roko-cli/src/dispatch/mod.rs", "crates/roko-cli/src/dispatch/model_routing.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-serve/Cargo.toml", "crates/roko-serve/src/routes/learning/mod.rs", "crates/roko-serve/src/state.rs"]
 lane = "rust-hot"
@@ -35,6 +36,17 @@ command = "grep -rqw 'fn loop_fault_route_rejects_non_admin_and_long_ttl' crates
 
 [[verify]]
 command = "grep -rqw 'fn learn_loops_canary_and_fault_subcommands' crates/roko-cli/src/commands/ && cargo test -p roko-cli --lib learn_loops_canary_and_fault_subcommands"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T19:23:34Z"
+commit = "73a96794e"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T17:08:26Z"
+forced = false
+evidence = "Gate 9b (work/backlog-batch-9b, merged into main as 73a96794e): cargo check --workspace --tests, roko-cli and roko-serve with fault-injection, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 5,854 tests over roko-cli, -learn and -serve, roko-cli bin 436 passed, the golden-path canaries and the loop-audit census run pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass, 159 fault-injection lib tests pass; every [[verify]] passes. PK44 6/7: the dry-run planner, fault read sites behind fault-injection, the census run over 200 chains (as four 50-task plans, 48bc6ac41), the learn-loops routes (documented in OpenAPI at the gate, 1fa67a39b), admin canary and fault routes, roko learn loops canary|fault; 5130 is gap-a13544."
 +++
 
 ## Problem

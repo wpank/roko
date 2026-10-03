@@ -2,7 +2,7 @@
 id = "gap-0c429f"
 kind = "gap"
 title = "PK52 M3 self-model: Let an active self-model climb early after a failure, within the ladder's limits"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 52
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "73a96794e"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK52"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/ladder.rs"]
 lane = "rust-cold"
@@ -20,6 +21,17 @@ links = { depends_on = ["gap-7ec3ef"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn self_model_climbs_early_within_k_max' crates/roko-cli/src/ && cargo test -p roko-cli self_model_climbs_early_within_k_max"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T19:23:33Z"
+commit = "73a96794e"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T17:08:29Z"
+forced = false
+evidence = "Gate 9b (work/backlog-batch-9b, merged into main as 73a96794e): cargo check --workspace --tests, roko-cli and roko-serve with fault-injection, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 5,854 tests over roko-cli, -learn and -serve, roko-cli bin 436 passed, the golden-path canaries and the loop-audit census run pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass, 159 fault-injection lib tests pass; every [[verify]] passes. PK52 (6131): a self-model-started chain climbs after one failure when its re-forecast says so, within K_max; the test's training was fixed in 9637c908b (27 interleaved outcomes, under N_MIN, so L0 forecasts drive it); the code was right."
 +++
 
 ## Problem

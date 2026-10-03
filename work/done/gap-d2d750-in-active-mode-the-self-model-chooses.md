@@ -2,7 +2,7 @@
 id = "gap-d2d750"
 kind = "gap"
 title = "In active mode the self-model chooses the start rung through S03's route table and logs its propensity, task 6130"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/dispatch"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "73a96794e"
 source = "tmp/backlog/2026-10-02-complete-and-wire 6130 (deferred in wave 8, PK49, until PK43)"
 discovered_from = "gap-7ec3ef"
 anchors = ["crates/roko-cli/src/dispatch/model_routing.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = ["gap-c1d920"], blocks = [], related = ["gap-7ec3ef", "ga
 
 [[verify]]
 command = "grep -rqw 'fn active_self_model_picks_start_rung_and_logs_propensity' crates/roko-cli/src/ && cargo test -p roko-cli active_self_model_picks_start_rung_and_logs_propensity"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T19:23:32Z"
+commit = "73a96794e"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T17:08:28Z"
+forced = false
+evidence = "Gate 9b (work/backlog-batch-9b, merged into main as 73a96794e): cargo check --workspace --tests, roko-cli and roko-serve with fault-injection, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 5,854 tests over roko-cli, -learn and -serve, roko-cli bin 436 passed, the golden-path canaries and the loop-audit census run pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass, 159 fault-injection lib tests pass; every [[verify]] passes. 6130: in active mode the self-model picks the start rung through S03's route table (held-out chains run the ladder's rung at h, epsilon explores, L-M3 rows log every rung's propensity)."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-135821"
 kind = "gap"
 title = "L-route canary writer: a canary-only preference in CascadeRouter, task 5127's remainder"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/loop-audit"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "73a96794e"
 source = "tmp/backlog/2026-10-02-complete-and-wire 5127 (partial in wave 8, PK43)"
 discovered_from = "gap-c1d920"
 anchors = ["crates/roko-learn/src/cascade_router.rs", "crates/roko-learn/src/loop_audit"]
@@ -19,6 +20,17 @@ links = { depends_on = ["gap-c1d920"], blocks = [], related = ["gap-c1d920"], su
 
 [[verify]]
 command = "grep -rqw 'fn route_canary_reaches_the_router_and_is_removed' crates/ && cargo test -p roko-cli route_canary_reaches_the_router_and_is_removed"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T19:23:36Z"
+commit = "73a96794e"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T17:08:27Z"
+forced = false
+evidence = "Gate 9b (work/backlog-batch-9b, merged into main as 73a96794e): cargo check --workspace --tests, roko-cli and roko-serve with fault-injection, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 5,854 tests over roko-cli, -learn and -serve, roko-cli bin 436 passed, the golden-path canaries and the loop-audit census run pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass, 159 fault-injection lib tests pass; every [[verify]] passes. The L-route canary through a canary-only CascadeRouter preference read inside canary_scope and removed exactly (318b1a0c3)."
 +++
 
 ## Problem

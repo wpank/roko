@@ -297,7 +297,15 @@ impl GraphTaskDispatcher {
                 cache_read_tokens: u64::from(dispatch.result.usage.cache_read_tokens),
                 knowledge_ids: diagnostics.knowledge_ids.clone(),
                 playbook_ids: diagnostics.playbook_ids.clone(),
-                initial_model: model_slug.clone(),
+                // The model routing planned, before any failover: beside the
+                // one that answered (`outcome.model`), a failover reads as a
+                // routing miss, not as accurate routing (bug-0b7695).
+                initial_model: settled
+                    .verdict
+                    .executed
+                    .model_requested
+                    .clone()
+                    .unwrap_or_else(|| model_slug.clone()),
                 turns: u64::from(agent_num_turns),
                 failure_reason,
                 settled: Some(Arc::clone(&settled.verdict)),

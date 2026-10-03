@@ -809,8 +809,10 @@ pub struct AppState {
     #[cfg(feature = "alloy-backend")]
     pub chain_wallet: Option<Arc<AlloyChainWallet>>,
     /// Restart-safe local registry lifecycle plus optional read-only chain indexer.
+    #[cfg(feature = "chain")]
     pub(crate) registries: crate::routes::registries::RegistryRuntime,
     /// Restart-safe authorized arena lifecycle and external settlement service.
+    #[cfg(feature = "chain")]
     pub(crate) arenas: crate::routes::arenas::ArenaRuntime,
     /// Restart-safe bounded meta-agent lineage and activation service.
     pub(crate) meta_agents: crate::routes::meta::MetaAgentRuntime,
@@ -1230,11 +1232,13 @@ impl AppState {
             }
             None
         };
+        #[cfg(feature = "chain")]
         let registries = crate::routes::registries::RegistryRuntime::open(
             &workdir,
             &roko_config,
             chain_client.clone(),
         );
+        #[cfg(feature = "chain")]
         let arenas = crate::routes::arenas::ArenaRuntime::open(&workdir);
         let meta_agents = crate::routes::meta::MetaAgentRuntime::open(&workdir);
         let http_client = reqwest::Client::builder()
@@ -1456,7 +1460,9 @@ impl AppState {
             alloy_chain_client,
             #[cfg(feature = "alloy-backend")]
             chain_wallet,
+            #[cfg(feature = "chain")]
             registries,
+            #[cfg(feature = "chain")]
             arenas,
             meta_agents,
             agent_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),

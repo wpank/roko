@@ -1,7 +1,7 @@
 {
-  "total_registrations": 457,
-  "canonical_registrations": 406,
-  "alias_count": 51,
+  "total_registrations": 454,
+  "canonical_registrations": 398,
+  "alias_count": 56,
   "conflict_count": 0,
   "unparsed_count": 0,
   "registrations": [
@@ -287,7 +287,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/arenas.rs",
-      "line": 225,
+      "line": 215,
       "router_fn": "routes",
       "path": "/arenas",
       "method": "GET",
@@ -295,7 +295,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/arenas.rs",
-      "line": 225,
+      "line": 215,
       "router_fn": "routes",
       "path": "/arenas",
       "method": "POST",
@@ -303,7 +303,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/arenas.rs",
-      "line": 226,
+      "line": 216,
       "router_fn": "routes",
       "path": "/arenas/{id}",
       "method": "GET",
@@ -311,7 +311,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/arenas.rs",
-      "line": 226,
+      "line": 216,
       "router_fn": "routes",
       "path": "/arenas/{id}",
       "method": "PATCH",
@@ -319,7 +319,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/arenas.rs",
-      "line": 227,
+      "line": 217,
       "router_fn": "routes",
       "path": "/arenas/{id}/leaderboard",
       "method": "GET",
@@ -327,7 +327,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/arenas.rs",
-      "line": 228,
+      "line": 218,
       "router_fn": "routes",
       "path": "/arenas/{id}/attempts",
       "method": "GET",
@@ -335,7 +335,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/arenas.rs",
-      "line": 228,
+      "line": 218,
       "router_fn": "routes",
       "path": "/arenas/{id}/attempts",
       "method": "POST",
@@ -343,7 +343,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/arenas.rs",
-      "line": 232,
+      "line": 222,
       "router_fn": "routes",
       "path": "/arenas/{id}/attempts/{attempt_id}",
       "method": "GET",
@@ -351,7 +351,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/arenas.rs",
-      "line": 233,
+      "line": 223,
       "router_fn": "routes",
       "path": "/arenas/{id}/attempts/{attempt_id}/submit",
       "method": "POST",
@@ -359,7 +359,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/arenas.rs",
-      "line": 237,
+      "line": 227,
       "router_fn": "routes",
       "path": "/arenas/{id}/attempts/{attempt_id}/settle",
       "method": "POST",
@@ -695,7 +695,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 14,
+      "line": 24,
       "router_fn": "routes",
       "path": "/chain/agents",
       "method": "GET",
@@ -703,7 +703,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 15,
+      "line": 25,
       "router_fn": "routes",
       "path": "/chain/bounties",
       "method": "GET",
@@ -711,7 +711,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 16,
+      "line": 26,
       "router_fn": "routes",
       "path": "/chain/status",
       "method": "GET",
@@ -719,7 +719,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 17,
+      "line": 27,
       "router_fn": "routes",
       "path": "/chain/blocks",
       "method": "GET",
@@ -727,7 +727,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 18,
+      "line": 28,
       "router_fn": "routes",
       "path": "/chain/transactions",
       "method": "GET",
@@ -735,7 +735,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 19,
+      "line": 29,
       "router_fn": "routes",
       "path": "/chain/events",
       "method": "GET",
@@ -743,11 +743,67 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 20,
+      "line": 30,
       "router_fn": "routes",
       "path": "/chain/watcher",
       "method": "GET",
       "handler": "disabled"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 43,
+      "router_fn": "chain_family_routes",
+      "path": "/arenas",
+      "method": "ANY",
+      "handler": "chain_family_parked"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 44,
+      "router_fn": "chain_family_routes",
+      "path": "/arenas/{*path}",
+      "method": "ANY",
+      "handler": "chain_family_parked"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 45,
+      "router_fn": "chain_family_routes",
+      "path": "/defi/{*path}",
+      "method": "ANY",
+      "handler": "chain_family_parked"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 46,
+      "router_fn": "chain_family_routes",
+      "path": "/marketplace/{*path}",
+      "method": "ANY",
+      "handler": "chain_family_parked"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 47,
+      "router_fn": "chain_family_routes",
+      "path": "/registries/{*path}",
+      "method": "ANY",
+      "handler": "chain_family_parked"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 48,
+      "router_fn": "chain_family_routes",
+      "path": "/rpc",
+      "method": "ANY",
+      "handler": "chain_family_parked"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 49,
+      "router_fn": "chain_family_routes",
+      "path": "/rpc/{*path}",
+      "method": "ANY",
+      "handler": "chain_family_parked"
     },
     {
       "source_file": "crates/roko-serve/src/routes/config.rs",
@@ -1831,7 +1887,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mcp.rs",
-      "line": 36,
+      "line": 46,
       "router_fn": "routes",
       "path": "/mcp",
       "method": "POST",
@@ -1839,7 +1895,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/meta.rs",
-      "line": 184,
+      "line": 203,
       "router_fn": "routes",
       "path": "/meta/agents",
       "method": "GET",
@@ -1847,7 +1903,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/meta.rs",
-      "line": 184,
+      "line": 203,
       "router_fn": "routes",
       "path": "/meta/agents",
       "method": "POST",
@@ -1855,7 +1911,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/meta.rs",
-      "line": 185,
+      "line": 204,
       "router_fn": "routes",
       "path": "/meta/agents/{id}",
       "method": "GET",
@@ -1863,7 +1919,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/meta.rs",
-      "line": 186,
+      "line": 205,
       "router_fn": "routes",
       "path": "/meta/agents/{id}/validate",
       "method": "POST",
@@ -1871,7 +1927,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/meta.rs",
-      "line": 187,
+      "line": 206,
       "router_fn": "routes",
       "path": "/meta/agents/{id}/morph",
       "method": "POST",
@@ -1879,7 +1935,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/meta.rs",
-      "line": 188,
+      "line": 207,
       "router_fn": "routes",
       "path": "/meta/agents/{id}/morph/rollback",
       "method": "POST",
@@ -1887,7 +1943,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/meta.rs",
-      "line": 189,
+      "line": 208,
       "router_fn": "routes",
       "path": "/meta/agents/{id}/deactivate",
       "method": "POST",
@@ -1895,7 +1951,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 394,
+      "line": 396,
       "router_fn": "build_router",
       "path": "/workflow/events",
       "method": "GET",
@@ -1903,7 +1959,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 502,
+      "line": 504,
       "router_fn": "build_router",
       "path": "/health",
       "method": "GET",
@@ -1911,7 +1967,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 504,
+      "line": 506,
       "router_fn": "build_router",
       "path": "/ready",
       "method": "GET",
@@ -1919,7 +1975,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 506,
+      "line": 508,
       "router_fn": "build_router",
       "path": "/metrics",
       "method": "GET",
@@ -1959,7 +2015,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 39,
+      "line": 43,
       "router_fn": "routes",
       "path": "/plans",
       "method": "GET",
@@ -1967,7 +2023,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 39,
+      "line": 43,
       "router_fn": "routes",
       "path": "/plans",
       "method": "POST",
@@ -1975,7 +2031,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 40,
+      "line": 44,
       "router_fn": "routes",
       "path": "/plans/{id}",
       "method": "GET",
@@ -1983,7 +2039,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 41,
+      "line": 45,
       "router_fn": "routes",
       "path": "/plans/{id}/tasks",
       "method": "GET",
@@ -1991,7 +2047,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 42,
+      "line": 46,
       "router_fn": "routes",
       "path": "/plans/{id}/execute",
       "method": "POST",
@@ -1999,7 +2055,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 43,
+      "line": 47,
       "router_fn": "routes",
       "path": "/plans/{id}/status",
       "method": "GET",
@@ -2007,7 +2063,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 44,
+      "line": 48,
       "router_fn": "routes",
       "path": "/plans/{id}/pause",
       "method": "POST",
@@ -2015,7 +2071,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 45,
+      "line": 49,
       "router_fn": "routes",
       "path": "/plans/{id}/resume",
       "method": "POST",
@@ -2023,7 +2079,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 46,
+      "line": 50,
       "router_fn": "routes",
       "path": "/plans/{id}/cancel",
       "method": "POST",
@@ -2031,7 +2087,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 47,
+      "line": 51,
       "router_fn": "routes",
       "path": "/plans/{id}/gates",
       "method": "GET",
@@ -2039,7 +2095,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 48,
+      "line": 52,
       "router_fn": "routes",
       "path": "/plans/{id}/costs",
       "method": "GET",
@@ -2047,7 +2103,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 49,
+      "line": 53,
       "router_fn": "routes",
       "path": "/plans/{id}/reviews",
       "method": "GET",
@@ -2055,7 +2111,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 50,
+      "line": 54,
       "router_fn": "routes",
       "path": "/plans/{id}/tasks/{task_id}/review",
       "method": "POST",
@@ -2063,7 +2119,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 51,
+      "line": 55,
       "router_fn": "routes",
       "path": "/plans/{id}/tasks/{task_id}/diff",
       "method": "GET",
@@ -2071,7 +2127,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 52,
+      "line": 56,
       "router_fn": "routes",
       "path": "/plans/{id}/chat",
       "method": "POST",
@@ -2079,7 +2135,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 53,
+      "line": 57,
       "router_fn": "routes",
       "path": "/plans/{id}/estimate",
       "method": "POST",
@@ -2087,7 +2143,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 54,
+      "line": 58,
       "router_fn": "routes",
       "path": "/plans/{id}/source",
       "method": "GET",
@@ -2095,7 +2151,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 54,
+      "line": 58,
       "router_fn": "routes",
       "path": "/plans/{id}/source",
       "method": "PUT",
@@ -2103,7 +2159,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 58,
+      "line": 62,
       "router_fn": "routes",
       "path": "/plans/{id}/validate",
       "method": "POST",
@@ -2111,7 +2167,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 59,
+      "line": 63,
       "router_fn": "routes",
       "path": "/plans/{id}/revise",
       "method": "POST",
@@ -2119,7 +2175,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 60,
+      "line": 64,
       "router_fn": "routes",
       "path": "/plans/generate",
       "method": "POST",
@@ -2127,7 +2183,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/plans.rs",
-      "line": 61,
+      "line": 65,
       "router_fn": "routes",
       "path": "/plans/execute",
       "method": "POST",
@@ -2148,78 +2204,6 @@
       "path": "/platforms/{id}",
       "method": "GET",
       "handler": "get_platform"
-    },
-    {
-      "source_file": "crates/roko-serve/src/routes/prds.rs",
-      "line": 31,
-      "router_fn": "routes",
-      "path": "/prds",
-      "method": "GET",
-      "handler": "list_prds"
-    },
-    {
-      "source_file": "crates/roko-serve/src/routes/prds.rs",
-      "line": 32,
-      "router_fn": "routes",
-      "path": "/prds/ideas",
-      "method": "POST",
-      "handler": "post_idea"
-    },
-    {
-      "source_file": "crates/roko-serve/src/routes/prds.rs",
-      "line": 33,
-      "router_fn": "routes",
-      "path": "/prds/status",
-      "method": "GET",
-      "handler": "prds_coverage"
-    },
-    {
-      "source_file": "crates/roko-serve/src/routes/prds.rs",
-      "line": 34,
-      "router_fn": "routes",
-      "path": "/prd/consolidate",
-      "method": "POST",
-      "handler": "consolidate_prds"
-    },
-    {
-      "source_file": "crates/roko-serve/src/routes/prds.rs",
-      "line": 35,
-      "router_fn": "routes",
-      "path": "/prds/consolidate",
-      "method": "POST",
-      "handler": "consolidate_prds"
-    },
-    {
-      "source_file": "crates/roko-serve/src/routes/prds.rs",
-      "line": 36,
-      "router_fn": "routes",
-      "path": "/prds/{slug}",
-      "method": "GET",
-      "handler": "get_prd"
-    },
-    {
-      "source_file": "crates/roko-serve/src/routes/prds.rs",
-      "line": 37,
-      "router_fn": "routes",
-      "path": "/prds/{slug}/draft",
-      "method": "POST",
-      "handler": "draft_prd"
-    },
-    {
-      "source_file": "crates/roko-serve/src/routes/prds.rs",
-      "line": 38,
-      "router_fn": "routes",
-      "path": "/prds/{slug}/promote",
-      "method": "POST",
-      "handler": "promote_prd"
-    },
-    {
-      "source_file": "crates/roko-serve/src/routes/prds.rs",
-      "line": 39,
-      "router_fn": "routes",
-      "path": "/prds/{slug}/plan",
-      "method": "POST",
-      "handler": "plan_from_prd"
     },
     {
       "source_file": "crates/roko-serve/src/routes/projections.rs",
@@ -2633,21 +2617,13 @@
       "source_file": "crates/roko-serve/src/routes/research.rs",
       "line": 25,
       "router_fn": "routes",
-      "path": "/research/enhance-prd/{slug}",
-      "method": "POST",
-      "handler": "enhance_prd"
-    },
-    {
-      "source_file": "crates/roko-serve/src/routes/research.rs",
-      "line": 26,
-      "router_fn": "routes",
       "path": "/research/enhance-plan/{plan}",
       "method": "POST",
       "handler": "enhance_plan"
     },
     {
       "source_file": "crates/roko-serve/src/routes/research.rs",
-      "line": 27,
+      "line": 26,
       "router_fn": "routes",
       "path": "/research/enhance-tasks/{plan}",
       "method": "POST",
@@ -2655,7 +2631,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/research.rs",
-      "line": 28,
+      "line": 27,
       "router_fn": "routes",
       "path": "/research/analyze",
       "method": "POST",
@@ -2703,7 +2679,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/run.rs",
-      "line": 24,
+      "line": 25,
       "router_fn": "routes",
       "path": "/run",
       "method": "POST",
@@ -2711,7 +2687,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/run.rs",
-      "line": 25,
+      "line": 26,
       "router_fn": "routes",
       "path": "/run/{id}/status",
       "method": "GET",
@@ -2719,7 +2695,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/run.rs",
-      "line": 26,
+      "line": 27,
       "router_fn": "routes",
       "path": "/surface-events",
       "method": "POST",
@@ -2727,7 +2703,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 54,
+      "line": 56,
       "router_fn": "routes",
       "path": "/dashboard/runs",
       "method": "GET",
@@ -2735,7 +2711,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 55,
+      "line": 57,
       "router_fn": "routes",
       "path": "/runs/{run_id}",
       "method": "GET",
@@ -2743,7 +2719,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 56,
+      "line": 58,
       "router_fn": "routes",
       "path": "/runs/{run_id}/summary",
       "method": "GET",
@@ -2751,7 +2727,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 57,
+      "line": 59,
       "router_fn": "routes",
       "path": "/runs/{run_id}/events",
       "method": "GET",
@@ -2759,7 +2735,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 58,
+      "line": 60,
       "router_fn": "routes",
       "path": "/runs/{run_id}/events/stream",
       "method": "GET",
@@ -2767,7 +2743,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 59,
+      "line": 61,
       "router_fn": "routes",
       "path": "/runs/{run_id}/tasks",
       "method": "GET",
@@ -2775,7 +2751,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 60,
+      "line": 62,
       "router_fn": "routes",
       "path": "/runs/{run_id}/tasks/{task_id}/attempts",
       "method": "GET",
@@ -2783,7 +2759,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 64,
+      "line": 66,
       "router_fn": "routes",
       "path": "/runs/{run_id}/gates",
       "method": "GET",
@@ -2791,7 +2767,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 65,
+      "line": 67,
       "router_fn": "routes",
       "path": "/runs/{run_id}/logs",
       "method": "GET",
@@ -2799,7 +2775,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 66,
+      "line": 68,
       "router_fn": "routes",
       "path": "/runs/{run_id}/metrics",
       "method": "GET",
@@ -2807,7 +2783,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 67,
+      "line": 69,
       "router_fn": "routes",
       "path": "/runs/{run_id}/artifacts",
       "method": "GET",
@@ -2815,7 +2791,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 68,
+      "line": 70,
       "router_fn": "routes",
       "path": "/runs/{run_id}/screenshots",
       "method": "GET",
@@ -2823,7 +2799,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/runs.rs",
-      "line": 69,
+      "line": 71,
       "router_fn": "routes",
       "path": "/runs/{run_id}/bundle",
       "method": "GET",
@@ -3686,45 +3662,87 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 15,
+      "line": 25,
       "path": "/chain/bounties",
       "method": "GET",
       "handler": "disabled"
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 16,
+      "line": 26,
       "path": "/chain/status",
       "method": "GET",
       "handler": "disabled"
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 17,
+      "line": 27,
       "path": "/chain/blocks",
       "method": "GET",
       "handler": "disabled"
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 18,
+      "line": 28,
       "path": "/chain/transactions",
       "method": "GET",
       "handler": "disabled"
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 19,
+      "line": 29,
       "path": "/chain/events",
       "method": "GET",
       "handler": "disabled"
     },
     {
       "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
-      "line": 20,
+      "line": 30,
       "path": "/chain/watcher",
       "method": "GET",
       "handler": "disabled"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 44,
+      "path": "/arenas/{*path}",
+      "method": "ANY",
+      "handler": "chain_family_parked"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 45,
+      "path": "/defi/{*path}",
+      "method": "ANY",
+      "handler": "chain_family_parked"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 46,
+      "path": "/marketplace/{*path}",
+      "method": "ANY",
+      "handler": "chain_family_parked"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 47,
+      "path": "/registries/{*path}",
+      "method": "ANY",
+      "handler": "chain_family_parked"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 48,
+      "path": "/rpc",
+      "method": "ANY",
+      "handler": "chain_family_parked"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/chain_disabled.rs",
+      "line": 49,
+      "path": "/rpc/{*path}",
+      "method": "ANY",
+      "handler": "chain_family_parked"
     },
     {
       "source_file": "crates/roko-serve/src/routes/defi.rs",
@@ -3889,24 +3907,17 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/meta.rs",
-      "line": 184,
+      "line": 203,
       "path": "/meta/agents",
       "method": "GET",
       "handler": "list_agents"
     },
     {
       "source_file": "crates/roko-serve/src/routes/meta.rs",
-      "line": 185,
+      "line": 204,
       "path": "/meta/agents/{id}",
       "method": "GET",
       "handler": "get_agent"
-    },
-    {
-      "source_file": "crates/roko-serve/src/routes/prds.rs",
-      "line": 35,
-      "path": "/prds/consolidate",
-      "method": "POST",
-      "handler": "consolidate_prds"
     },
     {
       "source_file": "crates/roko-serve/src/routes/providers.rs",

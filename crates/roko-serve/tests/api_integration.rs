@@ -958,6 +958,7 @@ async fn bridge_drops_unmapped_events_without_panic() {
 // Arenas
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "chain")]
 #[tokio::test]
 async fn list_arenas_returns_ok() {
     let (_dir, app) = test_app();
@@ -970,6 +971,7 @@ async fn list_arenas_returns_ok() {
     );
 }
 
+#[cfg(feature = "chain")]
 #[tokio::test]
 async fn create_arena_rejects_empty_body() {
     let (_dir, app) = test_app();
@@ -985,6 +987,7 @@ async fn create_arena_rejects_empty_body() {
 // Registries
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "chain")]
 #[tokio::test]
 async fn registry_stats_returns_ok() {
     let (_dir, app) = test_app();
@@ -994,6 +997,7 @@ async fn registry_stats_returns_ok() {
     assert!(body.is_object(), "registry stats should return an object");
 }
 
+#[cfg(feature = "chain")]
 #[tokio::test]
 async fn registry_events_returns_ok() {
     let (_dir, app) = test_app();

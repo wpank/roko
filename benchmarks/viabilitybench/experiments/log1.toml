@@ -1,0 +1,303 @@
+# LOG1 (S09 §4.3, E5; work item gap-2ca903, task 3347): the log-once campaign's runbook. Its billed blocks are
+# streams/log1.toml's cells (3330's compiler), one block per cell: A 960, B 660, C 336, D 120 and E 80 runs, 2,156 in
+# all on budget line BL1, planned $151.80 ($152.30 with block F's contamination probe, which runs no `vb run`). The
+# subscription blocks add 612 must runs and 210 optional ones (--include s-fd-claude-lite, s-fd-codex), $0 billed.
+# experiments/test_log1.py checks every count against streams/log1.toml and S09. Validate and estimate with
+#     benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/driver/vb.py campaign \
+#         --manifest benchmarks/viabilitybench/experiments/log1.toml --dry-run [--include s-fd-claude-lite]
+# The dry run refuses LOG1 until the pre-registration lock is committed (S09 SC1, task 3345; `requires_lock`).
+#
+# Budget. Planned spend is S09 §3's: $0.075 per Roko run and $0.06 per direct run. Each billed block's max_cost_usd,
+# the most it may bill, is its plan scaled by BL1's cap over the plan (160 / 151.80), so the blocks' worst cases sum
+# to at most BL1's $160: the campaign refuses a block that could take the line past it.
+#
+# Order. S09 §4.1: arms interleaved in randomized daily blocks (`daily_interleave`): each block's k-th seed runs on
+# day k, in a keyed shuffle of the day's units, so provider drift spreads over every arm.
+#
+# Secrets. S09 §4.1: one `vb run` at a time per secret file. LOG1 runs sequentially under one secret file, and the
+# campaign log pins each instance to it for the whole campaign. To run in parallel, split the blocks between runners
+# by whole blocks (never one stream's instances across two files), give each runner its own secret file
+# (`secret.py init`) and key file, and set `secret_fingerprint` on each of its blocks to its file's fingerprint; the
+# campaign then refuses a block under any other secret.
+#
+# Subscription schedule. Every subscription block is `off_hours`: the subscription is shared with the development
+# agents, so its units run outside working hours, at most the weekly number of runs G1 measured the subscription to
+# sustain (S09 §4.7 G1). If throughput is short, S09's scale-down ladder drops the could block, then the should block.
+#
+# Validity (S09 §4.3): every Roko cell runs with learning frozen (gap-644040's `[learning] frozen`, recorded in each
+# run's manifest), routing fixed per cell (one pinned model per arm file), S05 post hoc only and S06 off; G2
+# (analysis/gates.py) checks it from each run's wiring census.
+schema_version = "vb.experiment/1"
+id = "LOG1"
+title = "LOG1: blocks A-E (2,156 billed runs) and the subscription cells (612 + 210 optional) of S09 §4.3"
+requires_lock = true           # S09 SC1: LOG1 never starts without the pre-registration lock (3345)
+requires_live = []
+order = { kind = "daily_interleave", seed = 3 }   # S09 §4.1: arms interleaved in randomized daily blocks
+
+# Block A: H4, S04 Phase A, H6 Stage A, H5-A0 rows; seeds 1-2 are also H3's precise reps 1-2.
+
+[[block]]
+id = "a-oss"
+stream = "p1_core"
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 18.00    # 240 runs x $0.075
+max_cost_usd = 18.97
+
+[[block]]
+id = "a-glm"
+stream = "p1_core"
+arm = "roko_fixed_glm"
+model = "glm-4.7"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 18.00    # 240 runs x $0.075
+max_cost_usd = 18.97
+
+[[block]]
+id = "a-kimi"
+stream = "p1_core"
+arm = "roko_fixed_kimi"
+model = "kimi-k2.6"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 18.00    # 240 runs x $0.075
+max_cost_usd = 18.97
+
+[[block]]
+id = "a-mini"
+stream = "p1_core"
+arm = "roko_fixed_mini"
+model = "gpt-5.4-mini"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 18.00    # 240 runs x $0.075
+max_cost_usd = 18.97
+
+# Block B: H1 and H2's cheap-direct cell.
+
+[[block]]
+id = "b-oss"
+stream = "p1_core"
+arm = "cheap_direct"
+model = "gpt-oss-120b"
+seeds = "1-3"
+line = "BL1"
+planned_usd = 21.60    # 360 runs x $0.060
+max_cost_usd = 22.76
+
+[[block]]
+id = "b-best"
+stream = "p1_core"
+arm = "cheap_direct_glm"
+# PROVISIONAL: 3349 picks the best cheap model by S09's rule (lowest $/VS, cross-fitted; D34) before block
+# B runs, and points this block at its cheap_direct arm file; the lock freezes the choice.
+model = "glm-4.7"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 14.40    # 240 runs x $0.060
+max_cost_usd = 15.17
+
+[[block]]
+id = "b-pass5"
+stream = "p1_pass5"
+arm = "cheap_direct"
+model = "gpt-oss-120b"
+seeds = "4-5"
+line = "BL1"
+planned_usd = 3.60     # 60 runs x $0.060
+max_cost_usd = 3.79
+note = "gpt-oss-120b's pass^5 extension: p1_pass5's reps 1-3 are b-oss's seeds 1-3 on p1_core"
+
+# Block C: H3 (S07 §4.5), S07's gate off.
+
+[[block]]
+id = "c-vague-oss"
+stream = "log1_p1_h3_vague"
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "1-3"
+line = "BL1"
+planned_usd = 10.80    # 144 runs x $0.075
+max_cost_usd = 11.38
+
+[[block]]
+id = "c-precise-oss"
+stream = "p1_h3"
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "3"
+line = "BL1"
+planned_usd = 3.60     # 48 runs x $0.075
+max_cost_usd = 3.79
+note = "precise rep 3; reps 1-2 are a-oss's seeds 1-2 on the same instances (S09 §4.3)"
+
+[[block]]
+id = "c-refined-oss"
+stream = "log1_p1_h3_refined"
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 7.20     # 96 runs x $0.075
+max_cost_usd = 7.58
+note = "runs once S07's refiner writes the refined variant (G1)"
+
+[[block]]
+id = "c-vague-glm"
+stream = "log1_p1_h3_vague"
+arm = "roko_fixed_glm"
+model = "glm-4.7"
+seeds = "1"
+line = "BL1"
+planned_usd = 3.60     # 48 runs x $0.075
+max_cost_usd = 3.79
+
+# Block D: convention_flip v2 rows (H6; S04 shift test).
+
+[[block]]
+id = "d-oss"
+stream = "pilot"
+disturbance = "experiments/log1/latent_v2.toml"
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 3.00     # 40 runs x $0.075
+max_cost_usd = 3.16
+
+[[block]]
+id = "d-glm"
+stream = "pilot"
+disturbance = "experiments/log1/latent_v2.toml"
+arm = "roko_fixed_glm"
+model = "glm-4.7"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 3.00     # 40 runs x $0.075
+max_cost_usd = 3.16
+
+[[block]]
+id = "d-kimi"
+stream = "pilot"
+disturbance = "experiments/log1/latent_v2.toml"
+arm = "roko_fixed_kimi"
+model = "kimi-k2.6"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 3.00     # 40 runs x $0.075
+max_cost_usd = 3.16
+
+# Block E: F8 honeypots (H5 detector recall).
+
+[[block]]
+id = "e-oss"
+stream = "log1_f8_honeypots"
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 1.50     # 20 runs x $0.075
+max_cost_usd = 1.58
+
+[[block]]
+id = "e-glm"
+stream = "log1_f8_honeypots"
+arm = "roko_fixed_glm"
+model = "glm-4.7"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 1.50     # 20 runs x $0.075
+max_cost_usd = 1.58
+
+[[block]]
+id = "e-kimi"
+stream = "log1_f8_honeypots"
+arm = "roko_fixed_kimi"
+model = "kimi-k2.6"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 1.50     # 20 runs x $0.075
+max_cost_usd = 1.58
+
+[[block]]
+id = "e-mini"
+stream = "log1_f8_honeypots"
+arm = "roko_fixed_mini"
+model = "gpt-5.4-mini"
+seeds = "1-2"
+line = "BL1"
+planned_usd = 1.50     # 20 runs x $0.075
+max_cost_usd = 1.58
+
+# Subscription, must: fd_claude core (H1, H2).
+
+[[block]]
+id = "s-fd-claude"
+stream = "p1_core"
+arm = "fd_claude"
+model = "claude-opus-5-5"
+seeds = "1-3"
+line = "BL1"
+max_cost_usd = 720.00  # API-equivalent, $2.00 a run; $0 is billed
+off_hours = true
+
+[[block]]
+id = "s-fd-claude-pass5"
+stream = "p1_pass5"
+arm = "fd_claude"
+model = "claude-opus-5-5"
+seeds = "4-5"
+line = "BL1"
+max_cost_usd = 120.00  # API-equivalent, $2.00 a run; $0 is billed
+off_hours = true
+
+# fr_claude's H3 probe: 48 x 2 reps x {vague, precise} (D1).
+
+[[block]]
+id = "s-fr-claude-vague"
+stream = "log1_p1_h3_vague"
+arm = "fr_claude"
+model = "claude-opus-5-5"
+seeds = "1-2"
+line = "BL1"
+max_cost_usd = 192.00  # API-equivalent, $2.00 a run; $0 is billed
+off_hours = true
+
+[[block]]
+id = "s-fr-claude-precise"
+stream = "p1_h3"
+arm = "fr_claude"
+model = "claude-opus-5-5"
+seeds = "1-2"
+line = "BL1"
+max_cost_usd = 192.00  # API-equivalent, $2.00 a run; $0 is billed
+off_hours = true
+
+# Subscription, should: fd_claude_lite 30 x 3 (q-ab27d3 settles its model at the lock).
+
+[[block]]
+id = "s-fd-claude-lite"
+stream = "p1_pass5"
+arm = "fd_claude_lite"
+model = "claude-sonnet-5"
+seeds = "1-3"
+line = "BL1"
+max_cost_usd = 90.00   # API-equivalent, $1.00 a run; $0 is billed
+off_hours = true
+optional = true
+
+# Subscription, could: fd_codex 120 x 1 (driver/run_codex.py).
+
+[[block]]
+id = "s-fd-codex"
+stream = "p1_core"
+arm = "fd_codex"
+model = "gpt-5.5"
+seeds = "1"
+line = "BL1"
+max_cost_usd = 300.00  # API-equivalent, $2.50 a run; $0 is billed
+off_hours = true
+optional = true

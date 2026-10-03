@@ -142,3 +142,89 @@ def test_g0_checks_fail_closed_and_go_needs_every_check(tmp_path):
     assert checks["ledger_reconcile"].verdict == "fail" and checks["ledger_reconcile"].value == {"cerebras": 0.08}
     assert gates.verdict(list(checks.values())) == "NO-GO"
     assert gates.verdict([gates.Check("a", "A", "pass", 1, "x")]) == "GO"
+
+
+LOG1 = "LOG1"
+
+
+def log1_runs(tmp_path: Path) -> tuple[Path, list[dict]]:
+    """A LOG1-shaped results root on BL1: cheap_direct and roko_fixed on 10 tasks x 2 seeds, fd_claude on 10 x 1
+    with 2 of its 10 runs stopped by a cap, which breaks its 10% censoring bound: the one failing check. Every
+    roko_fixed run has its S01 copy with the freeze record and an empty knowledge choice."""
+    instances = [f"F{family}-l{level}-0001" for family in (1, 4) for level in range(1, 6)]
+    cheap = [run_record(i, seed, run_id="cheap") for i in instances for seed in (1, 2)]
+    roko = [run_record(i, seed, run_id="roko", arm="roko_fixed", cost=0.05) for i in instances for seed in (1, 2)]
+    claude = [run_record(i, run_id="claude", arm="fd_claude", cost=0.3, billed=False, vendor=0.28,
+                         model="claude-opus-5-5", status="aborted_cap" if n < 2 else "completed")
+              for n, i in enumerate(instances)]
+    for record in roko:
+        record["provenance"]["s01_run_dir"] = f"s01/{record['task']['instance_id']}.s{record['seed']}"
+    every = cheap + roko + claude
+    for record in every:
+        record["experiment_id"] = LOG1
+    results = tmp_path / "results"
+    for records in (cheap, roko, claude):
+        path = write_run(results / LOG1, records, line="BL1")
+        for record in records:
+            copied = record["provenance"].get("s01_run_dir")
+            if not copied:
+                continue
+            run_dir = path / copied / "runs" / "gr-1"
+            run_dir.mkdir(parents=True)
+            (run_dir / "manifest.json").write_text(json.dumps({"experiment": {"ablation_flags": ["learning_frozen"]}}))
+            (run_dir / "decisions.jsonl").write_text(json.dumps({"decision_point": "knowledge", "chosen": []}) + "\n")
+    return results, every
+
+
+def test_g2_page_reports_every_check_with_its_value(tmp_path):
+    results, every = log1_runs(tmp_path)
+    limits = gates.THRESHOLDS["G2"]["vs_reaudit"]
+    sample = gates.reaudit_sample(every, limits["share"], limits["seed"])
+    assert len(sample) == 3 and sample == gates.reaudit_sample(list(reversed(every)), limits["share"], limits["seed"])
+    labels = {(r["run_id"], r["task"]["instance_id"], r["seed"]): r["vs"]["label"] for r in every}
+    reaudit = tmp_path / "reaudit.json"
+    reaudit.write_text(json.dumps({"schema_version": "vb.reaudit/1", "items": [
+        {"run_id": r, "instance_id": i, "seed": s, "label": labels[(r, i, s)]} for r, i, s in sample]}))
+    budget = budget_file(tmp_path / "budget.toml", {"BL1": 160})
+    out = tmp_path / "g2"
+    assert gates.main(["G2", "--experiment", LOG1, "--results", str(results), "--reaudit", str(reaudit),
+                       "--budget", str(budget), "--out", str(out)]) == 1  # NO-GO
+
+    doc = json.loads((out / "g2.json").read_text())
+    assert doc["gate"] == "G2" and doc["verdict"] == "NO-GO" and doc["thresholds"] == gates.THRESHOLDS["G2"]
+    checks = {check["id"]: check for check in doc["checks"]}
+    assert list(checks) == ["completion", "infra_errors", "cap_censoring.cheap_direct", "cap_censoring.fd_claude",
+                            "cap_censoring.roko_fixed", "vs_reaudit", "ledger_cap", "frozen_loops"]
+    assert [name for name, check in checks.items() if check["verdict"] != "pass"] == ["cap_censoring.fd_claude"]
+    assert checks["cap_censoring.fd_claude"]["verdict"] == "fail"
+    assert checks["cap_censoring.fd_claude"]["value"] == {"censored": "2/10", "share": 0.2}
+    assert checks["completion"]["value"] == {"recorded": "50/50", "share": 1.0}
+    assert checks["infra_errors"]["value"] == {"infra_error": "0/50", "share": 0.0}
+    assert checks["vs_reaudit"]["value"] == {"sample": 3, "agree": "3/3"}
+    assert checks["ledger_cap"]["value"] == {"spent_usd": 1.4, "cap_usd": 160}  # $0.40 direct + $1.00 Roko billed
+    assert checks["frozen_loops"]["value"] == {"learning_frozen": "20/20", "routing_fixed": "20/20",
+                                               "nothing_injected": "20/20", "without_s01_records": 0}
+    for check in checks.values():
+        assert check["threshold"] and check["value"] is not None and check["run_ids"]
+    page = (out / "g2.md").read_text()
+    assert page.startswith("# G2 go/no-go: NO-GO")
+    for check in checks.values():
+        assert f"| {check['title']} |" in page and f"**{check['verdict']}**" in page
+
+
+def test_g2_checks_fail_closed(tmp_path):
+    """No re-audit labels and no S01 copy are not passes; a broken freeze record or a disagreeing label fails."""
+    assert {check.verdict for check in gates.g2(gates.Evidence(runs=[]))} == {"not evaluated"}
+    results, every = log1_runs(tmp_path)
+    runs = report.load_runs(results / LOG1)
+    checks = {check.id: check for check in gates.g2(gates.Evidence(runs=runs))}
+    assert checks["vs_reaudit"].verdict == "not evaluated" and "re-census" in checks["vs_reaudit"].detail
+    assert checks["ledger_cap"].verdict == "not evaluated"  # no budget file given
+    roko = next(run for run in runs if run.path.name == "roko")
+    manifest = next((roko.path / "s01").glob("*/runs/gr-1/manifest.json"))
+    manifest.write_text(json.dumps({"experiment": {"ablation_flags": []}}))  # one run not frozen
+    sample = gates.reaudit_sample(every, 0.05, gates.THRESHOLDS["G2"]["vs_reaudit"]["seed"])
+    wrong = {"items": [{"run_id": r, "instance_id": i, "seed": s, "label": 0} for r, i, s in sample]}
+    checks = {check.id: check for check in gates.g2(gates.Evidence(runs=runs, reaudit=wrong))}
+    assert checks["frozen_loops"].verdict == "fail" and checks["frozen_loops"].value["learning_frozen"] == "19/20"
+    assert checks["vs_reaudit"].verdict == "fail" and "disagree" in checks["vs_reaudit"].detail

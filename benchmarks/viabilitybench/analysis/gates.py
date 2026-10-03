@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""The gate pages: G0, the pilot's go/no-go (S09 §4.7 and E1a/E1b; 3309). G2's checks join this module (3348).
+"""The gate pages: G0, the pilot's go/no-go (S09 §4.7 and E1a/E1b; 3309), and G2, LOG1's acceptance (3348).
 
     gates.py G0 --experiment PILOT-A --experiment PILOT-B [--results DIR] [--runs DIR ...] [--verifier-ci FILE]
                 [--reconcile FILE ...] [--sc2 FILE] [--runaway DIR] [--out DIR]
+    gates.py G2 --experiment LOG1 [--results DIR] [--runs DIR ...] [--reaudit FILE] [--budget FILE] [--out DIR]
 
 G0 decides whether the campaign may spend (LOG1's $152, 3346). Each of its checks is one function of the evidence,
 which returns the check's value, its threshold, the run ids behind it, and a verdict: `pass`, `fail`, or `not
@@ -30,15 +31,29 @@ profiles (with at least `min_requests` requests per profile); every roko_fixed r
 mismatch outside `infra_error`; and the direct-loop choice. VS rates are `metrics.vs_rate` over the runs the report
 keeps (`infra_error` and `leak_suspected` left out).
 
+**G2** (S09 §4.7; 3348) accepts LOG1 only when its outcomes are complete, clean and exchangeable, and so
+replayable. Its checks (`THRESHOLDS["G2"]`): at least 95% of the planned runs recorded (the run manifests' `runs`);
+`infra_error` at most 5% of the records; cap censoring (`aborted_cap` and `timeout`) at most 10% for each arm; a
+seeded 5% re-audit of the VS labels agreeing 100% (`reaudit_sample` names the runs; `--reaudit FILE`,
+`vb.reaudit/1`, holds the fresh census labels of those runs, one `items` entry per run with its `run_id`,
+`instance_id`, `seed` and `label`); BL1's billed spend within its cap in `--budget` (default
+`experiments/budget.toml`); and the frozen-loop census: every Roko run (`roko_fixed`, `fr_claude`) has the freeze
+record (gap-644040: `ablation_flags` holds `learning_frozen` in the S01 run manifest its runner copied to `s01/`),
+fixed routing (every attempt served by its cell's model) and nothing injected from knowledge or playbooks (no S01
+decision row there chose an item). The freeze also holds S05 to post hoc audits and S06 off: frozen learning leaves
+learned state read-only with dreams and timers off, and neither writes a per-run record of its own.
+
 **The page.** `go-no-go.md` and `g0.json` (`vb.gate/1`) go to `--out`, by default beside the evidence: the parent of
-the first `--runs` directory, else the results root. They are files, so `report.py --check` still accepts a bundle
-that holds them. The exit status is 0 for GO, 1 otherwise, and 2 for a usage error.
+the first `--runs` directory, else the results root; G2's are `g2.md` and `g2.json`. They are files, so
+`report.py --check` still accepts a bundle that holds them. The exit status is 0 for GO, 1 otherwise, and 2 for a
+usage error.
 
 API:
     THRESHOLDS; thresholds_sha256(gate) -> str
     Evidence; load_evidence(args) -> Evidence
     Check(id, title, verdict, value, threshold, run_ids, detail)
-    g0(evidence) -> list[Check]; verdict(checks) -> str
+    g0(evidence) -> list[Check]; g2(evidence) -> list[Check]; verdict(checks) -> str
+    reaudit_sample(records, share, seed) -> list[tuple[str, str, int]]     # G2's re-audit: (run_id, instance, seed)
     page(gate, checks, evidence) -> (g0_json: dict, markdown: str)
     main(argv) -> int
 """
@@ -51,6 +66,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import tomllib
 from dataclasses import asdict, dataclass, field
@@ -61,6 +77,10 @@ import report
 
 GATE_SCHEMA = "vb.gate/1"
 SC2_SCHEMA = "vb.sc2/1"
+REAUDIT_SCHEMA = "vb.reaudit/1"
+VB_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_BUDGET = VB_ROOT / "experiments" / "budget.toml"
+DATED_SLUG = re.compile(r"(.+?)-\d{4}-?\d{2}-?\d{2}")  # a model's dated snapshot, as driver/ledger.py reads it
 PASS, FAIL, NOT_EVALUATED = "pass", "fail", "not evaluated"
 RUNAWAY_REASONS = ("model_calls", "identical_calls", "usd")  # the runaway detector's stops (driver/caps.py)
 THRESHOLDS: dict[str, dict[str, dict]] = {
@@ -78,6 +98,15 @@ THRESHOLDS: dict[str, dict[str, dict]] = {
         "fault_rates": {"max_abs_diff": 0.02, "min_requests": 20},
         "roko_ingest": {"arm": "roko_fixed"},
         "direct_loop_choice": {"choices": ["mini-loop", "mini-swe-agent"]},
+    },
+    "G2": {
+        "completion": {"min_share": 0.95},
+        "infra_errors": {"max_share": 0.05},
+        "cap_censoring": {"statuses": ["aborted_cap", "timeout"], "max_share": 0.10},
+        "vs_reaudit": {"share": 0.05, "seed": "g2-reaudit-1", "min_agree_share": 1.0},
+        "ledger_cap": {"line": "BL1"},
+        "frozen_loops": {"arms": ["roko_fixed", "fr_claude"], "flag": "learning_frozen",
+                         "empty_points": ["knowledge", "playbooks"]},
     },
 }
 
@@ -100,6 +129,8 @@ class Evidence:
     reconciles: dict[str, dict] = field(default_factory=dict)  # provider -> `vb ledger reconcile --json`
     sc2: dict | None = None
     runaway: list[report.Run] | None = None
+    reaudit: dict | None = None  # G2: `vb.reaudit/1`, the fresh census labels of the re-audit sample
+    budget: dict | None = None  # G2: `vb.budget/1`, whose line caps the ledger is held to
     sources: dict[str, object] = field(default_factory=dict)  # what was read, for the page
     problems: list[str] = field(default_factory=list)  # evidence that could not be read
 
@@ -130,6 +161,28 @@ def g0(evidence: Evidence) -> list[Check]:
     checks += [_u_prime_and_r(evidence, limits["u_prime_and_r"]), _fault_rates(evidence, limits["fault_rates"]),
                _roko_ingest(evidence, limits["roko_ingest"]), _direct_loop(evidence, limits["direct_loop_choice"])]
     return checks
+
+
+def g2(evidence: Evidence) -> list[Check]:
+    """Every G2 check, in the order of S09 §4.7's row: completion, infra errors, cap censoring per arm, the VS
+    re-audit, BL1's spend and the frozen-loop census."""
+    limits = THRESHOLDS["G2"]
+    checks = [_completion(evidence, limits["completion"]), _infra_errors(evidence, limits["infra_errors"])]
+    checks += _cap_censoring(evidence, limits["cap_censoring"])
+    checks += [_vs_reaudit(evidence, limits["vs_reaudit"]), _ledger_cap(evidence, limits["ledger_cap"]),
+               _frozen_loops(evidence, limits["frozen_loops"])]
+    return checks
+
+
+def reaudit_sample(records: list[dict], share: float, seed: str) -> list[tuple[str, str, int]]:
+    """G2's re-audit sample: `share` of the records' (run_id, instance_id, seed), at least one, picked by a keyed
+    sha256 of `seed` and the key, so the same records and seed always give the same sample, in key order."""
+    keys = sorted({(record["run_id"], record["task"]["instance_id"], record["seed"]) for record in records})
+    if not keys:
+        return []
+    count = max(1, math.ceil(share * len(keys)))
+    ranked = sorted(keys, key=lambda key: hashlib.sha256(f"{seed}/{key[0]}/{key[1]}/{key[2]}".encode()).hexdigest())
+    return sorted(ranked[:count])
 
 
 def verdict(checks: list[Check]) -> str:
@@ -167,7 +220,7 @@ def load_evidence(args: argparse.Namespace) -> Evidence:
     results = Path(args.results or os.environ.get("VB_RESULTS") or report.DEFAULT_RESULTS).expanduser()
     directories = [results / name for name in args.experiment or []] + [Path(path) for path in args.runs or []]
     if not directories:
-        raise report.ReportError("name the pilot's runs: --experiment ID or --runs DIR")
+        raise report.ReportError("name the runs: --experiment ID or --runs DIR")
     evidence = Evidence(runs=[])
     for directory in directories:
         evidence.runs += report.load_runs(directory)
@@ -201,6 +254,16 @@ def load_evidence(args: argparse.Namespace) -> Evidence:
         except report.ReportError as err:
             evidence.problems.append(f"{path}: {err}")
         evidence.sources["runaway"] = str(path)
+    if getattr(args, "reaudit", None):
+        evidence.reaudit = _json_file(Path(args.reaudit), evidence, REAUDIT_SCHEMA)
+        evidence.sources["reaudit"] = str(args.reaudit)
+    budget = Path(getattr(args, "budget", None) or DEFAULT_BUDGET)
+    try:
+        with budget.open("rb") as handle:
+            evidence.budget = tomllib.load(handle)
+        evidence.sources["budget"] = str(budget)
+    except (OSError, ValueError) as err:
+        evidence.problems.append(f"{budget}: {err}")
     return evidence
 
 
@@ -215,24 +278,27 @@ def main(argv: list[str] | None = None) -> int:
                         help="vb ledger reconcile --json output, one per provider (repeatable)")
     parser.add_argument("--sc2", type=Path, help="the hand-filled spot check (vb.sc2/1)")
     parser.add_argument("--runaway", type=Path, help="a synthetic runaway's run or experiment directory")
-    parser.add_argument("--out", type=Path, help="where go-no-go.md and g0.json go (default: beside the evidence)")
+    parser.add_argument("--reaudit", type=Path, help="G2: the re-audit sample's fresh census labels (vb.reaudit/1)")
+    parser.add_argument("--budget", type=Path, help=f"G2: the budget lines (default: {DEFAULT_BUDGET})")
+    parser.add_argument("--out", type=Path, help="where the page and its JSON go (default: beside the evidence)")
     args = parser.parse_args(argv)
     try:
         evidence = load_evidence(args)
     except (report.ReportError, OSError) as err:
         print(f"gates: {err}", file=sys.stderr)
         return 2
-    checks = g0(evidence)
+    checks = g0(evidence) if args.gate == "G0" else g2(evidence)
     doc, markdown = page(args.gate, checks, evidence, experiments=sorted(
         {record["experiment_id"] for record in evidence.records}))
     out = args.out or (Path(args.runs[0]).parent if args.runs else
                        Path(args.results or os.environ.get("VB_RESULTS") or report.DEFAULT_RESULTS).expanduser())
     out.mkdir(parents=True, exist_ok=True)
     name = args.gate.lower()
+    markdown_path = out / ("go-no-go.md" if args.gate == "G0" else f"{name}.md")
     (out / f"{name}.json").write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    (out / "go-no-go.md").write_text(markdown, encoding="utf-8")
+    markdown_path.write_text(markdown, encoding="utf-8")
     print(markdown)
-    print(f"gates: {args.gate} {doc['verdict']}; {out / 'go-no-go.md'}", file=sys.stderr)
+    print(f"gates: {args.gate} {doc['verdict']}; {markdown_path}", file=sys.stderr)
     return 0 if doc["verdict"] == "GO" else 1
 
 
@@ -491,7 +557,164 @@ def _direct_loop(evidence: Evidence, limit: dict) -> Check:
                  detail=str(table.get("reason", "")))
 
 
+# ---------------------------------------------------------------- G2's checks
+
+
+def _completion(evidence: Evidence, limit: dict) -> Check:
+    title, threshold = "Cells complete", f"at least {limit['min_share']:.0%} of the planned runs recorded"
+    planned = sum(int((run.manifest or {}).get("runs") or 0) for run in evidence.runs)
+    records = evidence.records
+    if not planned:
+        return Check("completion", title, NOT_EVALUATED, None, threshold, detail="no run manifest plans a run")
+    share = len(records) / planned
+    value = {"recorded": f"{len(records)}/{planned}", "share": round(share, 4)}
+    return Check("completion", title, PASS if share >= limit["min_share"] else FAIL, value, threshold,
+                 _run_ids(records), detail=f"over {len(evidence.runs)} run(s)")
+
+
+def _infra_errors(evidence: Evidence, limit: dict) -> Check:
+    title, threshold = "Infra errors", f"at most {limit['max_share']:.0%} of the records"
+    records = evidence.records
+    if not records:
+        return Check("infra_errors", title, NOT_EVALUATED, None, threshold, detail="no run records")
+    errors = [record for record in records if record["execution"]["status"] == "infra_error"]
+    share = len(errors) / len(records)
+    value = {"infra_error": f"{len(errors)}/{len(records)}", "share": round(share, 4)}
+    reasons = sorted({str(record["execution"].get("reason", ""))[:60] for record in errors})
+    return Check("infra_errors", title, PASS if share <= limit["max_share"] else FAIL, value, threshold,
+                 _run_ids(errors or records), detail="; ".join(reasons[:5]) if reasons else "none")
+
+
+def _cap_censoring(evidence: Evidence, limit: dict) -> list[Check]:
+    """One check per arm: the share of its records a cap stopped."""
+    threshold = f"at most {limit['max_share']:.0%} of the arm's records ({', '.join(limit['statuses'])})"
+    arms = sorted({record["arm"] for record in evidence.records})
+    if not arms:
+        return [Check("cap_censoring", "Cap censoring", NOT_EVALUATED, None, threshold, detail="no run records")]
+    checks = []
+    for arm in arms:
+        mine = [record for record in evidence.records if record["arm"] == arm]
+        capped = [record for record in mine if record["execution"]["status"] in limit["statuses"]]
+        share = len(capped) / len(mine)
+        value = {"censored": f"{len(capped)}/{len(mine)}", "share": round(share, 4)}
+        checks.append(Check(f"cap_censoring.{arm}", f"Cap censoring, {arm}",
+                            PASS if share <= limit["max_share"] else FAIL, value, threshold, _run_ids(mine),
+                            detail=", ".join(sorted({str(record["execution"].get("reason")) for record in capped}))))
+    return checks
+
+
+def _vs_reaudit(evidence: Evidence, limit: dict) -> Check:
+    title = "VS re-audit"
+    threshold = f"a seeded {limit['share']:.0%} sample re-censused, {limit['min_agree_share']:.0%} agreeing"
+    sample = reaudit_sample(evidence.records, limit["share"], limit["seed"])
+    if not sample:
+        return Check("vs_reaudit", title, NOT_EVALUATED, None, threshold, detail="no run records")
+    wanted = ", ".join(f"{run_id}/{instance}.s{seed}" for run_id, instance, seed in sample[:20])
+    doc = evidence.reaudit
+    items = doc.get("items") if isinstance(doc, dict) else None
+    if not isinstance(items, list):
+        return Check("vs_reaudit", title, NOT_EVALUATED, {"sample": len(sample)}, threshold,
+                     sorted({key[0] for key in sample}),
+                     detail=f"no re-audit labels (--reaudit, vb.reaudit/1); re-census {wanted}")
+    fresh = {(item.get("run_id"), item.get("instance_id"), item.get("seed")): item.get("label") for item in items
+             if isinstance(item, dict)}
+    labels = {(record["run_id"], record["task"]["instance_id"], record["seed"]): metrics.vs_minus(record)
+              for record in evidence.records}
+    missing = [key for key in sample if fresh.get(key) not in (0, 1)]
+    agree = sum(fresh.get(key) == labels[key] for key in sample if key not in missing)
+    value = {"sample": len(sample), "agree": f"{agree}/{len(sample) - len(missing)}"}
+    run_ids = sorted({key[0] for key in sample})
+    if missing:
+        return Check("vs_reaudit", title, NOT_EVALUATED, value, threshold, run_ids,
+                     detail="no fresh label for " + ", ".join(f"{r}/{i}.s{s}" for r, i, s in missing[:10]))
+    ok = agree >= limit["min_agree_share"] * len(sample)
+    disagree = [f"{r}/{i}.s{s}" for (r, i, s) in sample if fresh[(r, i, s)] != labels[(r, i, s)]]
+    return Check("vs_reaudit", title, PASS if ok else FAIL, value, threshold, run_ids,
+                 detail=("disagree: " + ", ".join(disagree[:10])) if disagree else f"seed {limit['seed']}")
+
+
+def _ledger_cap(evidence: Evidence, limit: dict) -> Check:
+    line = limit["line"]
+    title, threshold = f"Ledger within {line}'s cap", f"billed spend on {line} at most its cap in the budget file"
+    rows = [row for row in evidence.ledger if row.get("line") == line]
+    lines = (evidence.budget or {}).get("line", [])
+    cap = next((entry.get("cap_usd") for entry in lines if isinstance(entry, dict) and entry.get("id") == line), None)
+    if cap is None:
+        return Check("ledger_cap", title, NOT_EVALUATED, None, threshold, detail=f"no {line} line in the budget file")
+    if not rows:
+        return Check("ledger_cap", title, NOT_EVALUATED, {"cap_usd": cap}, threshold,
+                     detail=f"no ledger row on {line} in these runs")
+    spent = math.fsum(row.get("billed_usd") or 0.0 for row in rows)
+    value = {"spent_usd": round(spent, 6), "cap_usd": cap}
+    return Check("ledger_cap", title, PASS if spent <= cap else FAIL, value, threshold,
+                 sorted({row["run_id"] for row in rows}), detail=f"{len(rows)} ledger rows")
+
+
+def _frozen_loops(evidence: Evidence, limit: dict) -> Check:
+    title = "Adaptive loops frozen (Roko runs)"
+    threshold = ("every Roko run: the freeze record (" + limit["flag"] + "), fixed routing, nothing injected from "
+                 + " or ".join(limit["empty_points"]))
+    seen, missing, broken = 0, [], {"learning_frozen": [], "routing_fixed": [], "nothing_injected": []}
+    run_ids = set()
+    for run in evidence.runs:
+        for _, record in run.records:
+            if record["arm"] not in limit["arms"]:
+                continue
+            key = f"{record['run_id']}/{record['task']['instance_id']}.s{record['seed']}"
+            run_ids.add(record["run_id"])
+            copied = record["provenance"].get("s01_run_dir")
+            runs_dir = run.path / copied / "runs" if copied else None
+            manifests = sorted(runs_dir.glob("*/manifest.json")) if runs_dir and runs_dir.is_dir() else []
+            if not manifests:
+                missing.append(key)
+                continue
+            seen += 1
+            if not all(limit["flag"] in _ablation_flags(path) for path in manifests):
+                broken["learning_frozen"].append(key)
+            if not all(_same_model(attempt.get("model_requested"), attempt.get("model_reported"))
+                       for attempt in record["execution"]["attempts"]):
+                broken["routing_fixed"].append(key)
+            if any(row.get("decision_point") in limit["empty_points"] and row.get("chosen")
+                   for path in sorted(runs_dir.glob("*/decisions.jsonl")) for row in _jsonl(path)):
+                broken["nothing_injected"].append(key)
+    total = seen + len(missing)
+    if not total:
+        return Check("frozen_loops", title, NOT_EVALUATED, None, threshold, detail="no Roko run")
+    value = {name: f"{seen - len(keys)}/{seen}" for name, keys in broken.items()}
+    value["without_s01_records"] = len(missing)
+    failed = {name: keys for name, keys in broken.items() if keys}
+    if failed:
+        detail = "; ".join(f"{name}: {', '.join(keys[:5])}" for name, keys in failed.items())
+        return Check("frozen_loops", title, FAIL, value, threshold, sorted(run_ids), detail=detail)
+    if missing:
+        return Check("frozen_loops", title, NOT_EVALUATED, value, threshold, sorted(run_ids),
+                     detail=f"no S01 run manifest copied for {', '.join(missing[:5])}")
+    return Check("frozen_loops", title, PASS, value, threshold, sorted(run_ids), detail=f"{seen} Roko runs")
+
+
 # ---------------------------------------------------------------- helpers
+
+
+def _ablation_flags(path: Path) -> list:
+    """The `experiment.ablation_flags` of an S01 run manifest; [] when it cannot be read."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    experiment = doc.get("experiment") if isinstance(doc, dict) else None
+    flags = experiment.get("ablation_flags") if isinstance(experiment, dict) else None
+    return flags if isinstance(flags, list) else []
+
+
+def _same_model(requested: str | None, reported: str | None) -> bool:
+    """Whether `reported` is `requested`, a dated snapshot aside; a model nobody reported is no switch."""
+    if reported is None or requested is None:
+        return True
+    def undated(model: str) -> str:
+        dated = DATED_SLUG.fullmatch(model)
+        return dated[1] if dated else model
+
+    return undated(requested) == undated(reported)
 
 
 def _model(record: dict) -> str | None:

@@ -1,0 +1,32 @@
+# Arm fd_claude_lite (3347; S08 §4.9, S09 §4.2): Claude Code alone on claude-sonnet-5, the frontier-lite comparator,
+# LOG1's "should" subscription block (30 tasks x 3 seeds). D2 pins claude-sonnet-5; q-ab27d3 asks whether to move it
+# to Claude Sonnet 5.5, priced the same, which the pre-registration lock settles (option 1, as decided, until then).
+# Everything else is arms/fd_claude.toml's: the same runner, isolation, caps and costs (driver/run_cli.py), on the
+# same subscription (D42, dec-b78874).
+schema_version = "vb.arm/1"
+
+[arm]
+id = "fd_claude_lite"
+harness = "claude-code"               # S09's harness vocabulary
+runner = "run_cli"
+models_allow = ["claude-sonnet-5"]    # D2 (q-ab27d3 is open); the arm never has a fallback model
+line = "BL1"                          # S09 §4.6: LOG1's line
+billed = false                        # the subscription: $0 billed
+label = "frontier·direct (lite)"
+
+[caps]                                # S08 §4.10, subscription arms: native behaviour with safety limits
+turns_per_task = 50                   # passed as --max-turns
+wallclock_s = 1200                    # the runner kills the session at 20 minutes
+usd_per_task = 5.00                   # passed as --max-budget-usd; the runner also kills past $5 of live spend
+
+[cli]
+program = "claude"                    # resolved on the driver's PATH
+effort = "high"                       # explicit: Claude Code's default effort differs from the API's (high)
+credentials = "keychain"              # keychain | credentials_file: how the fresh config directory signs in
+cache_write_ttl = "1h"                # S09 §4.1: subscription turns write the 1-hour cache
+# egress_allow keeps its default, api.anthropic.com:443. The live probe (gap-154f93, 2026-10-02, Claude Code 2.1.282)
+# signed in and answered through that host alone; its log intake (http-intake.logs.us5.datadoghq.com:443) was refused
+# and not needed.
+
+[providers.anthropic]                 # what `vb run` admits as a network provider; claude signs in by itself
+base_url = "https://api.anthropic.com"

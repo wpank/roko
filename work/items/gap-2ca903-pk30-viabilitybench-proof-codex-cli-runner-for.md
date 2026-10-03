@@ -94,3 +94,25 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Suggested model: opus.
 
 - 2026-10-02 (coordinator): the paper-rewrite hold is lifted. PREREG.md (3345) does not exist yet; put it where the rewritten paper or the benchmark keeps it (the old empirical draft is in `tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/`).
+
+## Progress
+
+- 3342: implemented at bef1af602 (driver/run_codex.py, arms/fd_codex.toml; verify passes in the bench venv). A live
+  probe of the egress list (chatgpt.com, auth.openai.com) and a D42-style check of the subscription terms remain.
+- 3343: implemented at bcbdad958. Implemented on `work/gap-2ca903` at `bcbdad958`; cargo verification deferred to
+  the batch gate. Also touches roko-serve's runtime.rs and bench.rs, routes/shared_runs.rs, and roko-cli's
+  serve_runtime.rs and bench_demo.rs (RunResultUsage.model, BenchTaskResult.cost_unknown and archive).
+- 3344: implemented at ff12777f7. Implemented on `work/gap-2ca903` at `ff12777f7`; cargo verification deferred to
+  the batch gate.
+- 3347: implemented at f47256867 (verify passes). The dry run lists 2,768 runs (2,156 billed, BL1 worst case
+  $159.94 of $160) and is refused only by the missing lock (3345). roko_fixed and cheap_direct get one file per
+  cheap model instead of a widened allowlist (run_roko builds a ladder from several models_allow entries). b-best's
+  model is provisional until 3349.
+- 3348: implemented at b7ba600c3 (verify passes).
+- 3354: implemented at d8c8083fb (verify passes).
+- 3356: implemented at b08c80822 (verify passes). Tilted cells need M3's risk (R-M3), AI cells a recorded selector.
+- 3345: blocked: stopped before the lock on the coordinator's instruction (shakedown bugs bug-0b7695 and bug-ef82eb
+  open; Will confirms). A preview `lock.build` at b08c80822 against S09 v1.6 (nothing written) gives prereg_id
+  s09-v1.6-68765f70, prices-2026-09-28, alpha_fw 0.05, primaries H1-H7, exploratory X1-X4, PL and closure_4, and 81
+  hashed files (analysis 50, audit 13, streams 15, the snapshot, the simulation report, requirements-analysis.lock).
+  It does not hash experiments/ (log1.toml, budget.toml) or arms/.

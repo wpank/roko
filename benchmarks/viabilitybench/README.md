@@ -48,6 +48,7 @@ benchmarks/viabilitybench/
   driver/vb.py                                              # vb run | estimate | materialize | campaign | ledger | …
   driver/campaign.py                                        # vb campaign: an experiment's blocks, validated and run
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
+  driver/run_codex.py                                       # the Codex CLI arm's runner (fd_codex)
   driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
   driver/egress.py                                          # the Claude Code arm's egress allowlist proxy
   driver/{disturb, vb_verify}.py                            # H6's disturbances, and the visible-verify wrapper
@@ -80,7 +81,9 @@ families F2, F3 and F5–F8, `external/swebench/`, and the other streams and arm
   `roko plan run` on one pinned model, checked on every attempt. `planemit.py`'s ladder mode emits the cheap-model
   ladder instead (decision 3302), for the routed Roko arms;
 - the Claude Code arm (`run_cli.py`, harness `claude-code`) serves `fd_claude`: `claude -p` with an isolated config,
-  on the subscription.
+  on the subscription;
+- the Codex CLI arm (`run_codex.py`, harness `codex-cli`) serves `fd_codex`: `codex exec --json` with a fresh Codex
+  home, on the ChatGPT subscription, reusing `run_cli.py`'s session, kill and egress machinery.
 
 Each runner's module docstring has its isolation, caps and costs. The bullets below describe the direct loop, and
 most hold for every arm.

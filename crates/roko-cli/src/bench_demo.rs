@@ -808,6 +808,7 @@ mod tests {
                 text: "done".to_string(),
                 input_tokens: 120,
                 output_tokens: 40,
+                model: "routed".to_string(),
             }),
         );
         assert!(!answered.simulated);

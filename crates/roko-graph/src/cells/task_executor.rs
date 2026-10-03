@@ -61,9 +61,10 @@ pub struct TaskExecutionSpec {
     pub retry_budget: Option<LiveRetryBudget>,
 }
 
-/// A live retry budget for plan tasks (M1's B2, S06): the executor reads it
-/// before each retry decision, so a budget that changes during the run
-/// reaches the task's next retry. Without one, a task keeps the
+/// A live retry budget for plan tasks (M1's B2, S06).
+///
+/// The executor reads it before each retry decision, so a budget that changes
+/// during the run reaches the task's next retry. Without one, a task keeps the
 /// [`TaskExecutionSpec::max_retries`] its plan was converted with.
 pub trait RetryBudgetSource: Send + Sync {
     /// The retry budget of `spec`'s task in the run `ctx` names, now; `None`

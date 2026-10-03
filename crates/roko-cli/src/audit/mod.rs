@@ -10,7 +10,9 @@
 //!   their `audit.result` (7123);
 //! - [`b1`]: B1, a hidden suite written by a model of another family,
 //!   validated on the base tree and run on the result (7124);
-//! - [`b2`]: B2, extreme mutants of the changed Rust functions (7125).
+//! - [`b2`]: B2, extreme mutants of the changed Rust functions (7125);
+//! - [`b3`]: B3, a review by a model of another family, which only
+//!   corroborates (7127).
 //!
 //! Selection (DP1) is `graph_task_dispatch::audit_select`; the lottery, the
 //! ledger, the hidden-suite store and the canary scanner are
@@ -18,6 +20,7 @@
 
 pub mod b1;
 pub mod b2;
+pub mod b3;
 pub mod rerun;
 pub mod worker;
 pub mod worktree;

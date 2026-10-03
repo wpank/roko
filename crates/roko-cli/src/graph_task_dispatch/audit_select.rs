@@ -48,6 +48,7 @@ use roko_learn::telemetry::records::{AttemptVerdictRecord, GateVerdictTag};
 
 use crate::audit::b1::{B1, FactoryAuthor, SuiteAuthor};
 use crate::audit::b2::B2;
+use crate::audit::b3::{B3, Reviewer};
 use crate::audit::worker::{AuditTask, AuditUnit, AuditWorker, PhaseB, WorkerContext, queue_unit};
 use crate::task_parser::TaskDef;
 
@@ -387,8 +388,8 @@ impl AuditSelector {
 }
 
 impl super::GraphTaskDispatcher {
-    /// The audit workers' phase-B checks: B1, with every configured model a
-    /// candidate author, in `[models]` order, and B2.
+    /// The audit workers' phase-B checks: B1 and B3, with every configured
+    /// model a candidate author or reviewer, in `[models]` order, and B2.
     pub(super) fn audit_phase_b(&self) -> PhaseB {
         let timeout_ms = self
             .config
@@ -410,10 +411,24 @@ impl super::GraphTaskDispatcher {
                 Arc::new(author) as Arc<dyn SuiteAuthor>
             })
             .collect();
+        let reviewers = self
+            .config
+            .models
+            .iter()
+            .map(|(key, profile)| Reviewer {
+                model: profile.slug.clone(),
+                agent: Arc::new(super::routing_context::CheapFactoryAgent {
+                    factory: Arc::clone(&self.factory),
+                    model_key: key.clone(),
+                    workdir: self.workdir.clone(),
+                    timeout_ms,
+                }),
+            })
+            .collect();
         PhaseB {
             b1: Some(Arc::new(B1::new(authors, self.config.audit.clone()))),
             b2: Some(Arc::new(B2)),
-            ..PhaseB::default()
+            b3: Some(Arc::new(B3::new(reviewers, self.config.audit.clone()))),
         }
     }
 }

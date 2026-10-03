@@ -797,7 +797,7 @@ fn phase_b_drawn(secret: &[u8], unit: &AuditUnit, result: &str, pi_b: f64) -> bo
 /// The audit's labels (S05 §4.3): Y from A2 and B1, G from A1, W from B2.
 /// B3's Y and G count only on a docs, plan or research task, where it is
 /// the only check; elsewhere they set nothing a mechanical check did not.
-fn combine(
+pub(super) fn combine(
     phase_a: AuditLabels,
     b1: AuditLabels,
     b2: AuditLabels,

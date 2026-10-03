@@ -98,3 +98,7 @@ constrains where that file may live or protects it from the attempt's own diff.
   rung is wired today for any real use.
 - `diff_gate.rs` (`DiffGate`/`analyze_diff`) is a *different* mechanism (vacuous-impl/forbidden-token detection on
   diff content) and does not protect file paths at all; do not confuse the two when fixing this.
+
+## Progress
+
+- bug-d5d55f: implemented on work/bug-d5d55f at 39ef31ea5; cargo verification deferred to the batch gate. `RungFileEdited` (tamper) covers every configured schema rung's schema and judge rung's file rubric (`GatesConfig::rung_files`), wired into Graph dispatch's pre-verify screen and the audit worker's A1; a task whose `files` name the rung file itself (not its directory) may write it. Tests: `schema_file_edited_in_the_same_diff_is_tamper` (roko-gate) and `loosening_a_schema_rung_s_schema_is_tampering` (dispatch).

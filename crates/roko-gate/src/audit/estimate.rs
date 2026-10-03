@@ -240,7 +240,9 @@ pub fn hedged_capital(xs: &[f64], m: f64, alpha: f64) -> Result<Vec<f64>, AuditE
     Ok(out)
 }
 
-/// The confidence sequence for θ after each unit: the running intersection
+/// The confidence sequence for θ after each unit.
+///
+/// It is the running intersection
 /// of {θ : K_t^±(ε_floor·θ/z_max) < 1/α} over a grid of step 1/`grid`. Each
 /// entry is the hull of the grid points still inside, widened by a step on
 /// each side and clipped to [0, 1]; `None` once no point is left.
@@ -330,7 +332,7 @@ impl Capital {
     }
 
     fn bet(&self) -> f64 {
-        (self.log_term / (self.squares * (self.t as f64 + 1.0).ln())).sqrt()
+        (self.log_term / (self.squares * (self.t as f64).ln_1p())).sqrt()
     }
 
     fn observe(&mut self, x: f64) {

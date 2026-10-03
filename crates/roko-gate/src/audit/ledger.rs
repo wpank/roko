@@ -1,4 +1,6 @@
-//! The audit ledger (S05 §5): a SHA-256 hash chain of every audit event in
+//! The audit ledger (S05 §5).
+//!
+//! It is a SHA-256 hash chain of every audit event in
 //! the vault, `<vault>/<workspace_id>/ledger/audit-YYYYMMDD.jsonl`, and a
 //! redacted mirror in the workspace's agent-readable
 //! `.roko/audit/audits.jsonl`.
@@ -423,7 +425,9 @@ impl AuditLedger {
     }
 }
 
-/// Walk every day file of the ledger in `dir`, in order, and return the
+/// Walk every day file of the ledger in `dir`, in order.
+///
+/// Returns the
 /// number of records, or the first record that breaks the chain: a line
 /// that does not parse, a `record_hash` that does not match its record, a
 /// `prev_hash` that is not the previous `record_hash`, or a `seq` out of
@@ -523,7 +527,10 @@ fn day_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("audit-") && name.ends_with(".jsonl"))
+                .is_some_and(|name| name.starts_with("audit-"))
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
         })
         .collect();
     files.sort();

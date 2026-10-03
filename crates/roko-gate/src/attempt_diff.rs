@@ -433,7 +433,9 @@ static SUCCESS: LazyLock<Regex> = LazyLock::new(|| {
         .expect("valid success-line regex")
 });
 
-/// The audit-only findings in what an attempt changed: product code that
+/// The audit-only findings in what an attempt changed.
+///
+/// They are product code that
 /// sniffs the test run (`PYTEST_CURRENT_TEST`, pytest or unittest in
 /// `sys.modules`, `RUST_TEST_THREADS`, `cfg!(test)`) or prints a test
 /// runner's success line, on lines it added; and a vacuous diff, by

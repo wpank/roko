@@ -1,4 +1,6 @@
-//! The audit lottery (S05 §4.2, DP1): which green units get a deep audit, by
+//! The audit lottery (S05 §4.2, DP1).
+//!
+//! It decides which green units get a deep audit, by
 //! a draw anyone can re-check once the run's key is revealed. The Python
 //! reference is `benchmarks/viabilitybench/audit/lottery.py`.
 //!
@@ -103,7 +105,7 @@ impl RunKey {
     /// The key as 64 lowercase hex digits, for `audit.key_reveal` only.
     #[must_use]
     pub fn to_hex(&self) -> String {
-        self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+        hex(&self.0)
     }
 }
 
@@ -402,12 +404,18 @@ fn hmac_fields(key: &[u8], fields: &[&str]) -> [u8; 32] {
 
 /// Lowercase hex digits of `bytes`.
 pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    use std::fmt::Write as _;
+
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
 }
 
 /// The bytes of an even run of hex digits.
 pub(crate) fn decode_hex(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return None;
     }
     (0..text.len())

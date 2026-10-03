@@ -1201,9 +1201,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
+            self_model_rung: None,
         };
-        // M3 (6128): the self-model forecasts the attempt before it is routed.
-        self.forecast_attempt(spec, &task, &dispatch_ctx, &attempt);
+        // M3: the self-model forecasts the attempt before it is routed (6128),
+        // and in active mode proposes its start rung (6130).
+        dispatch_ctx.self_model_rung = self.forecast_attempt(spec, &task, &dispatch_ctx, &attempt);
         let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
             Ok(dispatch_plan) => dispatch_plan,
             Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),

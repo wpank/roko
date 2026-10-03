@@ -76,7 +76,7 @@ impl GraphTaskDispatcher {
         };
         let role = task.role.as_deref().unwrap_or("implementer");
         let (record, last_chance) = match plan.source {
-            ModelChoiceSource::Ladder { rung } => {
+            ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => {
                 // A `rung` hint that names one of the task's rungs replaced
                 // its start rung (gap-dbf2a6).
                 let hinted = task
@@ -86,6 +86,9 @@ impl GraphTaskDispatcher {
                     .is_some_and(|hint| ladder.has_rung(role, hint));
                 let reason = if step > 0 {
                     LadderReason::Escalated
+                } else if matches!(plan.source, ModelChoiceSource::SelfModel { .. }) {
+                    // An active self-model chose the start rung (6130).
+                    LadderReason::SelfModel
                 } else if hinted {
                     LadderReason::Hint
                 } else {

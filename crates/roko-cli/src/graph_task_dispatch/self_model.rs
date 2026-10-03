@@ -6,6 +6,10 @@
 //!
 //! A pinned attempt (`--model`, a task's `model_hint`) is forecast for its pinned model and
 //! marked as not routable. Without a ladder rung that can run, nothing is forecast.
+//!
+//! In active mode (6130), while the calibration gate holds, the rung the self-model would
+//! choose becomes the chain's start rung: dispatch hands it to the router, which draws it
+//! through S03's route table and logs its propensity.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -57,6 +61,10 @@ pub struct SelfModelRuntime {
     window: parking_lot::Mutex<CalibrationWindow>,
     /// The attempts the run settled, for late VS labels (6129).
     settled: parking_lot::Mutex<SettledUnits>,
+    /// The start rung an active self-model chose for each chain, by chain key,
+    /// which the chain's retries keep (6130); `None` for a chain it left to the
+    /// ladder.
+    chain_starts: parking_lot::Mutex<HashMap<String, Option<usize>>>,
 }
 
 /// The units a run settled, by attempt key, oldest first; past [`SETTLED_KEPT`] the oldest go.
@@ -166,6 +174,7 @@ impl SelfModelRuntime {
             lcb: parking_lot::Mutex::new(lcb),
             window: parking_lot::Mutex::new(window),
             settled: parking_lot::Mutex::new(SettledUnits::default()),
+            chain_starts: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -261,14 +270,15 @@ impl SelfModelRuntime {
     }
 
     /// Forecast `candidates` for the attempt `identity`, decide as the configured policy would,
-    /// keep the forecast for the attempt's verdict, and return the prediction row.
+    /// keep the forecast for the attempt's verdict, and return the prediction row with the
+    /// candidate the self-model would choose.
     fn predict(
         &self,
         identity: &AttemptIdentity,
         features: TaskFeatures,
         candidates: &Candidates,
         retries_left: u32,
-    ) -> AttemptPredictionRecord {
+    ) -> (AttemptPredictionRecord, Option<usize>) {
         let model = self.model.read();
         let forecasts = model.forecast(&features, &candidates.arms);
         let (would_choose, action) = self.decide(identity, &forecasts, candidates, retries_left);
@@ -308,7 +318,40 @@ impl SelfModelRuntime {
             routed: false,
         };
         self.remember(identity.attempt_key.clone(), forecast);
-        record
+        (record, would_choose)
+    }
+
+    /// The start rung, an index on the role's ladder, that an active self-model routes the
+    /// attempt `identity` to (6130): on a chain's first attempt the candidate it would choose,
+    /// when [`active_start`] lets it act, and on a retry the chain's start again, which the
+    /// ladder climbs from. `None` otherwise: the ladder routes as it does by itself.
+    fn active_rung(
+        &self,
+        identity: &AttemptIdentity,
+        candidates: &Candidates,
+        would_choose: Option<usize>,
+    ) -> Option<usize> {
+        if self.settings.mode != SelfModelMode::Active {
+            return None;
+        }
+        if identity.attempt > 1 {
+            return self
+                .chain_starts
+                .lock()
+                .get(&identity.chain_key)
+                .copied()
+                .flatten();
+        }
+        let gate = self.gate();
+        let (pinned, default) = (candidates.pinned, candidates.default);
+        let start = active_start(&self.settings, &gate, pinned, would_choose, default)
+            .and_then(|position| candidates.rungs.get(position).copied());
+        let chain = identity.chain_key.clone();
+        self.chain_starts.lock().insert(chain.clone(), start);
+        if let Some(rung) = start {
+            self.last_rung.lock().insert(chain, rung);
+        }
+        start
     }
 
     /// The candidate the policy would choose, and its action's name.
@@ -446,10 +489,8 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         dispatch_ctx: &DispatchContext,
         attempt: &AttemptContext,
-    ) {
-        let Some(runtime) = self.feedback.self_model.as_deref() else {
-            return;
-        };
+    ) -> Option<usize> {
+        let runtime = self.feedback.self_model.as_deref()?;
         let inputs = RoutingInputs::from_task(task, dispatch_ctx);
         let ladder = self.factory.dispatcher().routing_ladder();
         let Some(candidates) = Candidates::of(&inputs, ladder, &self.config) else {
@@ -458,15 +499,36 @@ impl GraphTaskDispatcher {
                 task_id = %task.id,
                 "self-model: no ladder rung can run and no model is pinned; nothing to forecast"
             );
-            return;
+            return None;
         };
         let task_key = format!("{}/{}", spec.plan_id, task.id);
         let used = self.attempt_in_run(&task_key);
         let retries_left = spec.max_retries.saturating_sub(used);
         let features = task_features(task, &inputs);
-        let prediction = runtime.predict(attempt.identity(), features, &candidates, retries_left);
+        let identity = attempt.identity();
+        let (prediction, would_choose) =
+            runtime.predict(identity, features, &candidates, retries_left);
         attempt.record_prediction(prediction);
+        runtime.active_rung(identity, &candidates, would_choose)
     }
+}
+
+/// Whether an active self-model routes an attempt, and to which candidate (6130): only in active
+/// mode, for an attempt no pin fixes, while the calibration gate is eligible and its breaker has
+/// not tripped. A start below the ladder's own needs decision 6101's B1.
+pub(crate) fn active_start(
+    settings: &SelfModelConfig,
+    gate: &GateReport,
+    pinned: bool,
+    would_choose: Option<usize>,
+    default: usize,
+) -> Option<usize> {
+    let acts = settings.mode == SelfModelMode::Active
+        && !pinned
+        && gate.eligible
+        && !gate.breaker_tripped;
+    let choice = would_choose.filter(|_| acts)?;
+    (settings.allow_downward_start || choice >= default).then_some(choice)
 }
 
 /// What the self-model knows of `task` before its attempt runs. Plan tasks have no benchmark

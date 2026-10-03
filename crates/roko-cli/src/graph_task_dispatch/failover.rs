@@ -131,13 +131,14 @@ impl LadderRoute {
     /// Where `plan` put `task` on the ladder; `None` for an attempt the
     /// ladder did not route (a pin, a task hint, the router or a default).
     pub(super) fn of(task: &TaskDef, plan: &crate::dispatch::RunnerDispatchPlan) -> Option<Self> {
-        match plan.source {
-            ModelChoiceSource::Ladder { rung } => Some(Self {
-                role: task.role.as_deref().unwrap_or("implementer").to_string(),
-                rung,
-            }),
-            _ => None,
-        }
+        let rung = match plan.source {
+            ModelChoiceSource::Ladder { rung } | ModelChoiceSource::SelfModel { rung } => rung,
+            _ => return None,
+        };
+        Some(Self {
+            role: task.role.as_deref().unwrap_or("implementer").to_string(),
+            rung,
+        })
     }
 }
 

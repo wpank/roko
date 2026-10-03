@@ -236,6 +236,7 @@ const fn router_credit(source: ModelChoiceSource) -> Option<RouterCredit> {
         ModelChoiceSource::Override => Some(RouterCredit::Override),
         ModelChoiceSource::TaskHint
         | ModelChoiceSource::Ladder { .. }
+        | ModelChoiceSource::SelfModel { .. }
         | ModelChoiceSource::Fallback { .. }
         | ModelChoiceSource::Default => None,
     }

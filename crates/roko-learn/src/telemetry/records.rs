@@ -879,6 +879,8 @@ pub enum LadderReason {
     /// rung's provider could not take it: the same model elsewhere, or a rung
     /// above (backlog 1120).
     Failover,
+    /// An active self-model chose the task's start rung (S04, 6130).
+    SelfModel,
 }
 
 /// Where an attempt stood on the model ladder (gap-460230).

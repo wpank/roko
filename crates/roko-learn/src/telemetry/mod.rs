@@ -45,9 +45,9 @@ pub use records::{
     AttemptOpenRecord, AttemptOutcome, AttemptTiming, AttemptUsage, AttemptVerdictRecord, Blame,
     ContentCandidate, ContentDecisionPoint, ContentDecisionRecord, CostSource, DecisionSource,
     ExcludedReason, ExecutedModel, ExposureCounts, ExposureItemKind, ExposureRecord,
-    FailoverRefusal, GateVerdictTag, HelperCallsUsage, LadderReason, RunFile,
-    RunProvenanceManifest, ScopeFinding, Stamped, TelemetryRecord, ToolPolicyRecord,
-    VerifyStepVerdict,
+    FailoverRefusal, GateVerdictTag, HarnessPolicyDecisionRecord, HarnessStamp, HelperCallsUsage,
+    LadderReason, RunFile, RunProvenanceManifest, ScopeFinding, Stamped, TelemetryRecord,
+    ToolPolicyRecord, VerifyStepVerdict,
 };
 pub use writer::{
     AttemptOrdinals, TelemetryEvent, TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,

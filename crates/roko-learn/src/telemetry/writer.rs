@@ -24,10 +24,11 @@ use tokio::sync::mpsc;
 
 use super::records::{
     ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptPredictionRecord,
-    AttemptVerdictRecord, ContentDecisionRecord, ExposureRecord, PlaceboDecisionRecord, RunFile,
-    Stamped, TelemetryRecord, chain_key,
+    AttemptVerdictRecord, ContentDecisionRecord, ExposureRecord, HarnessPolicyDecisionRecord,
+    PlaceboDecisionRecord, RunFile, Stamped, TelemetryRecord, chain_key,
 };
 use crate::error::LearnError;
+use crate::homeostasis::ledger::{CONTROLLER_FILE, ControllerRecord};
 use crate::routing_log::RoutingDecisionLog;
 
 /// Default capacity of a writer's channel (`channel_capacity`, S01 §5.9).
@@ -50,10 +51,22 @@ pub enum TelemetryEvent {
     ContentDecision(Box<ContentDecisionRecord>),
     /// A `roko.decision/1` placebo decision.
     PlaceboDecision(Box<PlaceboDecisionRecord>),
+    /// A `roko.decision/1` harness-policy decision (A-DEC-H).
+    HarnessDecision(Box<HarnessPolicyDecisionRecord>),
     /// A `roko.exposure/1` line.
     Exposure(Box<ExposureRecord>),
     /// A `roko.prediction/1` line.
     Prediction(Box<AttemptPredictionRecord>),
+    /// A `roko.controller/1` row (A-CTL). It goes to the workspace's
+    /// cross-run `learn/controller.jsonl` (S01 §5.10), with the envelope the
+    /// row carries and no `seq`, since no run's writer owns that file.
+    Controller(Box<ControllerRecord>),
+}
+
+impl From<ControllerRecord> for TelemetryEvent {
+    fn from(record: ControllerRecord) -> Self {
+        Self::Controller(Box::new(record))
+    }
 }
 
 impl From<AttemptOpenRecord> for TelemetryEvent {
@@ -77,6 +90,12 @@ impl From<RoutingDecisionLog> for TelemetryEvent {
 impl From<ContentDecisionRecord> for TelemetryEvent {
     fn from(record: ContentDecisionRecord) -> Self {
         Self::ContentDecision(Box::new(record))
+    }
+}
+
+impl From<HarnessPolicyDecisionRecord> for TelemetryEvent {
+    fn from(record: HarnessPolicyDecisionRecord) -> Self {
+        Self::HarnessDecision(Box::new(record))
     }
 }
 
@@ -285,8 +304,10 @@ impl Worker {
                 TelemetryEvent::Decision(record) => self.write(&*record),
                 TelemetryEvent::ContentDecision(record) => self.write(&*record),
                 TelemetryEvent::PlaceboDecision(record) => self.write(&*record),
+                TelemetryEvent::HarnessDecision(record) => self.write(&*record),
                 TelemetryEvent::Exposure(record) => self.write(&*record),
                 TelemetryEvent::Prediction(record) => self.write(&*record),
+                TelemetryEvent::Controller(record) => self.write_cross_run(&record),
             }
         }
     }
@@ -317,6 +338,38 @@ impl Worker {
             }
         }
     }
+}
+
+impl Worker {
+    /// Append a controller row to the cross-run ledger beside the run
+    /// directory, skipping a row whose id this writer already wrote.
+    fn write_cross_run(&mut self, record: &ControllerRecord) {
+        if !self.written_ids.insert(record.record_id.clone()) {
+            self.counters.duplicates.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let path = controller_ledger(&self.run_dir);
+        match append_line(&path, record) {
+            Ok(()) => {
+                self.counters.written.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(error) => {
+                self.written_ids.remove(&record.record_id);
+                self.counters.write_errors.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(path = %path.display(), %error, "controller row append failed");
+            }
+        }
+    }
+}
+
+/// The cross-run controller ledger of the workspace whose run directory is
+/// `run_dir` (`<.roko>/runs/<run_id>`): `<.roko>/learn/controller.jsonl`.
+/// A directory without those parents keeps the ledger beside it.
+fn controller_ledger(run_dir: &Path) -> PathBuf {
+    run_dir.parent().and_then(Path::parent).map_or_else(
+        || run_dir.join("controller.jsonl"),
+        |roko| roko.join(CONTROLLER_FILE),
+    )
 }
 
 /// Serialize `line` and append it to `path`.
@@ -542,6 +595,42 @@ mod tests {
         let stats = writer.close();
         assert_eq!((stats.written, stats.dropped), (2, 3));
         assert_eq!(run_file_lines(&dir, RunFile::Attempts).len(), 2);
+    }
+
+    #[test]
+    fn controller_rows_go_to_the_cross_run_ledger() {
+        use crate::homeostasis::ledger::{ControllerRecord, ControllerRow, Envelope};
+        use roko_core::config::homeostasis::HomeostasisMode;
+
+        let temp = TempDir::new().expect("tempdir");
+        let layout = RokoLayout::for_project(temp.path());
+        let writer = TelemetryWriter::for_run(&layout, "gr-ctl", TelemetryWriterConfig::default())
+            .expect("start the writer");
+        let envelope = Envelope {
+            ts: "2026-10-03T12:00:00.000Z".to_string(),
+            run_id: Some("gr-ctl".to_string()),
+            policy_version: 1,
+            arm: crate::telemetry::Arm::Learned,
+            seq: 7,
+        };
+        let row = ControllerRow::Mode {
+            from: HomeostasisMode::Shadow,
+            to: HomeostasisMode::On,
+            actor: crate::homeostasis::ledger::Actor::Human,
+        };
+        let record = ControllerRecord::new(&envelope, row);
+        assert!(writer.submit(record.clone()));
+        assert!(writer.submit(record.clone()), "queued; the worker skips it");
+        let stats = writer.close();
+        assert_eq!((stats.written, stats.duplicates), (1, 1));
+        let ledger = layout.learn_dir().join("controller.jsonl");
+        let text = std::fs::read_to_string(&ledger).expect("read the ledger");
+        let lines: Vec<ControllerRecord> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a controller row"))
+            .collect();
+        assert_eq!(lines, [record]);
+        assert!(!layout.run_dir("gr-ctl").join("controller.jsonl").exists());
     }
 
     #[test]

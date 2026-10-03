@@ -1609,6 +1609,14 @@ impl RoutingLadder {
         let rungs = self.config.role_rungs(role);
         rungs.iter().any(|rung| rung.name == name)
     }
+
+    /// Index of the rung named `name` on `role`'s ladder, cheapest first,
+    /// runnable or not: where M1's tier floor and cap sit (8124).
+    #[must_use]
+    pub fn rung_index(&self, role: &str, name: &str) -> Option<usize> {
+        let rungs = self.config.role_rungs(role);
+        rungs.iter().position(|rung| rung.name == name)
+    }
 }
 
 /// The model name dispatch runs for a rung's model, or why the rung cannot

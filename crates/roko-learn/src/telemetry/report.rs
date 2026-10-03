@@ -27,8 +27,9 @@ use super::manifest::AttemptTally;
 use super::records::{
     ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptPredictionRecord,
     AttemptVerdictRecord, ContentDecisionPoint, ContentDecisionRecord, DECISION_SCHEMA,
-    DecisionSource, EXPOSURE_SCHEMA, ExecutedModel, ExposureRecord, PLACEBO_DECISION_POINT,
-    PREDICTION_SCHEMA, PlaceboDecisionRecord, RunFile, Stamped, VERDICT_SCHEMA,
+    DecisionSource, EXPOSURE_SCHEMA, ExecutedModel, ExposureRecord, HARNESS_POLICY_DECISION_POINT,
+    HarnessPolicyDecisionRecord, PLACEBO_DECISION_POINT, PREDICTION_SCHEMA, PlaceboDecisionRecord,
+    RunFile, Stamped, VERDICT_SCHEMA,
 };
 use crate::error::LearnError;
 use crate::loop_audit::arm_set::{
@@ -61,6 +62,9 @@ pub struct RunRecords {
     pub content_decisions: Vec<Stamped<ContentDecisionRecord>>,
     /// Placebo decision rows (S03 §4.3), one per attempt, in file order.
     pub placebo_decisions: Vec<Stamped<PlaceboDecisionRecord>>,
+    /// M1's `harness_policy` decision rows (A-DEC-H), one per attempt of a
+    /// run with an M1 sink, in file order.
+    pub harness_decisions: Vec<Stamped<HarnessPolicyDecisionRecord>>,
     /// Exposure rows, in file order.
     pub exposures: Vec<Stamped<ExposureRecord>>,
     /// Self-model prediction rows (S01 §5.6), in file order.
@@ -138,6 +142,9 @@ impl RunRecords {
             (RunFile::Decisions, DECISION_SCHEMA) if is_placebo_decision(&value) => {
                 serde_json::from_value(value).map(|record| self.placebo_decisions.push(record))
             }
+            (RunFile::Decisions, DECISION_SCHEMA) if is_harness_decision(&value) => {
+                serde_json::from_value(value).map(|record| self.harness_decisions.push(record))
+            }
             (RunFile::Decisions, DECISION_SCHEMA) => {
                 serde_json::from_value(value).map(|record| self.content_decisions.push(record))
             }
@@ -186,6 +193,11 @@ fn is_route_decision(value: &Value) -> bool {
 /// Whether a decision row is a placebo row (S03 §4.3).
 fn is_placebo_decision(value: &Value) -> bool {
     value.get("decision_point").and_then(Value::as_str) == Some(PLACEBO_DECISION_POINT)
+}
+
+/// Whether a decision row is M1's `harness_policy` row (A-DEC-H).
+fn is_harness_decision(value: &Value) -> bool {
+    value.get("decision_point").and_then(Value::as_str) == Some(HARNESS_POLICY_DECISION_POINT)
 }
 
 /// One run's attempt keys in the logs that predate S01, which gained an

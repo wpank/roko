@@ -247,6 +247,15 @@ impl AttemptBook {
         Arc::clone(run)
     }
 
+    /// The UTC day run `run_id` draws its chains' arms for: the day this
+    /// process opened it, else today, the day its first attempt opens it.
+    fn epoch(&self, run_id: &str) -> String {
+        self.runs.lock().get(run_id).map_or_else(
+            || chrono::Utc::now().format("%Y-%m-%d").to_string(),
+            |run| run.epoch.clone(),
+        )
+    }
+
     /// The arm set of `attempt`'s chain in its run (S02.P1-14): drawn over
     /// `workdir`'s loop registry in the mode `experiments` sets on the chain's
     /// first attempt, and inherited by its retries. `None` when no registry
@@ -346,6 +355,7 @@ impl AttemptBook {
             exposures: None,
             pricing: None,
             arm_set: None,
+            harness: None,
             run,
         }
     }
@@ -383,6 +393,9 @@ pub(super) struct AttemptContext {
     /// The arms of the attempt's chain (S02.P1-14), which every decision row
     /// of the attempt carries; `None` when no loop registry loaded.
     arm_set: Option<Arc<ArmSet>>,
+    /// M1's decision for the attempt (8123): its chain's arm on the
+    /// `harness_policy` layer and the θ it runs; `None` without an M1 sink.
+    harness: Option<Arc<crate::runtime_feedback::homeostasis::HarnessDecision>>,
     run: Arc<RunAttempts>,
 }
 
@@ -474,6 +487,37 @@ impl AttemptContext {
         };
         let decision = PlaceboDecisionRecord::new(self.identity.clone(), assignment.clone());
         self.run.submit(decision);
+    }
+
+    /// M1's decision for the attempt (S06 T13, 8123): its chain's arm on
+    /// the `harness_policy` layer and the θ it runs, queued as the attempt's
+    /// `harness_policy` decision row and stamped on its verdict. `pinned`
+    /// says a pin chooses the attempt's model, which B1 leaves alone (8124).
+    fn record_harness_decision(
+        &mut self,
+        sink: &crate::runtime_feedback::HomeostasisSink,
+        pinned: bool,
+    ) {
+        let decision = sink.decide(&self.key, &self.run.epoch);
+        self.run
+            .submit(decision.record(self.identity.clone(), pinned));
+        self.harness = Some(Arc::new(decision));
+    }
+
+    /// The θ the attempt runs; `None` when the run has no M1 sink, so the
+    /// config's values stand.
+    pub(super) fn harness_params(
+        &self,
+    ) -> Option<&roko_core::config::harness_params::HarnessParams> {
+        self.harness.as_ref().map(|decision| &decision.applied)
+    }
+
+    /// M1's decision for the attempt, with θ₀ beside the θ it runs; `None`
+    /// without an M1 sink.
+    pub(super) fn harness_decision(
+        &self,
+    ) -> Option<&crate::runtime_feedback::homeostasis::HarnessDecision> {
+        self.harness.as_deref()
     }
 
     /// The arms of the attempt's chain, which its prompt assembly reads to
@@ -589,6 +633,7 @@ impl AttemptContext {
             .and_then(|dispatch| dispatch.result.output.body.as_text().ok())
             .map(sha256_hex);
         verdict.exposures = self.exposures;
+        verdict.harness = self.harness.as_ref().map(|decision| decision.stamp());
         self.run.submit(verdict.clone());
         // DP1: a green attempt draws its audit ticket; the draw is only logged.
         if let Some(audit) = &self.run.audit {
@@ -600,6 +645,7 @@ impl AttemptContext {
             failure_reason,
             reflex_rule: self.reflex_rule,
             live_tool_calls: self.live_tool_calls,
+            harness: self.harness,
         }
     }
 }
@@ -739,6 +785,9 @@ pub(super) struct SettledAttempt {
     /// The tool calls the attempt's live output showed, which its efficiency
     /// row lists (bug-264c41).
     pub(super) live_tool_calls: LiveToolCalls,
+    /// M1's decision for the attempt, whose θ caps the task's climb after
+    /// it (8124); `None` without an M1 sink.
+    pub(super) harness: Option<Arc<crate::runtime_feedback::homeostasis::HarnessDecision>>,
 }
 
 impl SettledAttempt {
@@ -822,7 +871,51 @@ impl GraphTaskDispatcher {
             .attempts
             .arm_set(&attempt, &self.workdir, &self.config.experiments);
         attempt.record_placebo_decision();
+        // M1 (S06 T13, 8123): the θ the attempt runs, and its decision row.
+        if let Some(sink) = self.feedback.homeostasis.as_deref() {
+            attempt.record_harness_decision(sink, self.model_pinned(task));
+        }
         attempt
+    }
+
+    /// The θ the next attempt at task `task_id` of `spec`'s plan, in the run
+    /// `ctx` names, runs, read before the attempt opens: its chain's arm on
+    /// M1's holdout and the handle's θ. Every attempt of a chain draws the
+    /// same arm, so the next attempt's ordinal does not matter. Budget
+    /// admission (B8, 8125), the turn cap and the retry budget (B2, 8126)
+    /// read it. `None` without an M1 sink.
+    pub(super) fn next_attempt_theta(
+        &self,
+        spec: &TaskExecutionSpec,
+        task_id: &str,
+        ctx: &CellContext,
+    ) -> Option<roko_core::config::harness_params::HarnessParams> {
+        let sink = self.feedback.homeostasis.as_deref()?;
+        let run_id = self.attempts.run_id(ctx);
+        let plan_id = if spec.plan_id.is_empty() {
+            "-"
+        } else {
+            spec.plan_id.as_str()
+        };
+        let key = AttemptKey::new(run_id, plan_id, task_id, 1);
+        Some(sink.decide(&key, &self.attempts.epoch(run_id)).applied)
+    }
+
+    /// The share of `task`'s budget ceiling its next attempt may spend
+    /// (M1's B8, 8125): the `task_budget_scale` of the θ its chain runs.
+    /// Decrease-only: 1 without an M1 sink, and for anything but a share
+    /// below 1.
+    pub(super) fn task_budget_scale(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        ctx: &CellContext,
+    ) -> f64 {
+        let Some(theta) = self.next_attempt_theta(spec, &task.id, ctx) else {
+            return 1.0;
+        };
+        let scale = theta.task_budget_scale;
+        if scale > 0.0 && scale < 1.0 { scale } else { 1.0 }
     }
 
     /// Close run `run_id`'s attempt log once its plan has finished: wait
@@ -2077,6 +2170,123 @@ printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_c
             let costs = jsonl_rows(&roko.join("learn/costs.jsonl"), 1).await;
             assert_eq!(costs[0]["priced"], priced, "{prices:?}: {}", costs[0]);
             assert_eq!(costs[0]["cost_usd"], 0.0, "{prices:?}: {}", costs[0]);
+        }
+    }
+
+    /// S06 T13 (8123): every attempt writes one `harness_policy` row, with
+    /// its chain's arm on M1's fixed holdout, and a θ the controller swaps in
+    /// between attempts shows in the next row's version and digest.
+    #[tokio::test]
+    async fn harness_policy_decision_row_per_dispatch() {
+        use roko_core::config::harness_params::{HarnessLadders, HarnessParams, Knob, Step};
+        use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
+        use roko_learn::homeostasis::controller::Controller;
+        use roko_learn::homeostasis::detect::Baseline;
+        use roko_learn::homeostasis::holdout::HarnessHoldout;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+        use roko_learn::loop_audit::assign::takes_default;
+        use roko_learn::telemetry::DecisionSource;
+        use roko_learn::telemetry::report::RunRecords;
+
+        use crate::runtime_feedback::HomeostasisSink;
+
+        const POLICY: &str = "policy_version = 1\nholdout = 0.0\n\
+            ev.pass_rate = { lo = 0.70 }\nev.usd_per_verified_success = { hi = 0.12 }\n\
+            ev.false_green = { hi = 0.10 }\nev.latency_p90_s = { hi = 900 }\n";
+
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let config = roko_core::config::schema::RokoConfig::default();
+        let theta0 = HarnessParams::baseline(&config);
+        let ladders = HarnessLadders::from_config(&config);
+        let policy = ViabilityPolicy::parse(POLICY).expect("the policy parses");
+        let settings = HomeostasisConfig {
+            mode: HomeostasisMode::On,
+            ..HomeostasisConfig::default()
+        };
+        let baseline = Baseline {
+            pass_rate: 0.80,
+            usd_per_resolution: 0.05,
+            wall_ms: 300_000.0,
+        };
+        let controller = Controller::new(
+            &settings,
+            policy,
+            theta0.clone(),
+            ladders.clone(),
+            baseline,
+            0,
+        );
+        let sink = Arc::new(HomeostasisSink::new(temp.path(), Some(controller), None));
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            homeostasis: Some(Arc::clone(&sink)),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let tasks: Vec<TaskDef> = ["H1", "H2", "H3"]
+            .into_iter()
+            .map(|id| TaskDef {
+                id: id.to_string(),
+                ..task.clone()
+            })
+            .collect();
+
+        // The controller raises the retry knob after the first attempt opens.
+        let first = dispatcher.open_attempt(&make_spec(&tasks[0]), &tasks[0], &ctx);
+        let raised = theta0
+            .step(Knob::RetryDelta, Step::Up, &ladders)
+            .expect("one more retry");
+        assert_eq!(sink.handle().swap(raised.clone(), "raised"), 1);
+        let second = dispatcher.open_attempt(&make_spec(&tasks[1]), &tasks[1], &ctx);
+        let third = dispatcher.open_attempt(&make_spec(&tasks[2]), &tasks[2], &ctx);
+        for attempt in [first, second, third] {
+            let passed = Settlement::verified(&Ok(TaskGateVerdict::Passed));
+            attempt.settle(passed, "stream-model", None);
+        }
+        dispatcher.close_run_attempts(RUN);
+
+        let run = RunRecords::load(&runs_dir.join(RUN)).expect("load the run");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        assert_eq!(run.harness_decisions.len(), 3);
+        for (line, (task, version)) in run
+            .harness_decisions
+            .iter()
+            .zip([("H1", 0), ("H2", 1), ("H3", 1)])
+        {
+            let row = &line.record;
+            assert_eq!(row.identity.task_id, task);
+            assert_eq!((row.source, row.mode), (DecisionSource::Control, HomeostasisMode::On));
+            assert_eq!(row.policy_version, version);
+            // The arm is the chain's draw on the harness_policy layer.
+            let epoch = row
+                .assignment
+                .salt_id
+                .strip_prefix("harness_policy@")
+                .expect("a harness_policy salt");
+            let key = AttemptKey::new(RUN, "stream-plan", task, 1);
+            let drawn = HarnessHoldout::new(0.0).assign(epoch, 0, &key);
+            assert_eq!((row.arm, row.assignment.arm), (drawn.arm, drawn.arm));
+            // The learned arm runs the controller's θ; the others run θ₀.
+            let chosen = if version == 0 { &theta0 } else { &raised };
+            let ran = if takes_default(row.arm) { &theta0 } else { chosen };
+            assert_eq!(row.params_digest, ran.params_digest());
+            assert_eq!(&row.chosen, chosen);
+            assert_eq!(row.default, theta0);
+            assert_eq!(row.differs, version == 1);
+            // The attempt's verdict carries the same stamp.
+            let verdict = run
+                .verdicts
+                .iter()
+                .find(|verdict| verdict.record.identity.task_id == task)
+                .expect("a verdict");
+            let stamp = verdict.record.harness.as_ref().expect("a harness stamp");
+            assert_eq!(
+                (stamp.arm, stamp.policy_version, stamp.params_digest.as_str()),
+                (row.arm, version, row.params_digest.as_str())
+            );
         }
     }
 }

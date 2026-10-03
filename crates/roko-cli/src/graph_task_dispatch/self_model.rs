@@ -218,6 +218,27 @@ impl SelfModelRuntime {
         self.forecasts.lock().remove(attempt_key)
     }
 
+    /// The model's forecast of `arms` for a task with `features`.
+    #[must_use]
+    pub fn forecast(&self, features: &TaskFeatures, arms: &[ArmKey]) -> Vec<CandidateForecast> {
+        self.model.read().forecast(features, arms)
+    }
+
+    /// The features of the run's most recently settled attempts, at most `n`, oldest first:
+    /// the recent task mix M1's move priors forecast (8122).
+    #[must_use]
+    pub fn recent_features(&self, n: usize) -> Vec<TaskFeatures> {
+        let settled = self.settled.lock();
+        let skip = settled.order.len().saturating_sub(n);
+        settled
+            .order
+            .iter()
+            .skip(skip)
+            .filter_map(|key| settled.units.get(key))
+            .map(|(_, features)| features.clone())
+            .collect()
+    }
+
     /// Teach the model `unit`, whose features were `features`, with weight `w`.
     pub fn observe(&self, unit: &Unit, features: &TaskFeatures, w: f64) {
         self.model.write().observe_with(unit, features, w);
@@ -675,7 +696,7 @@ fn task_features(task: &TaskDef, inputs: &RoutingInputs) -> TaskFeatures {
 }
 
 /// The arm that runs `model`: roko's harness on the model's `[models.*]` provider.
-fn arm_of(config: &RokoConfig, model: &str) -> ArmKey {
+pub(crate) fn arm_of(config: &RokoConfig, model: &str) -> ArmKey {
     let models = &config.models;
     let profile = models
         .get(model)

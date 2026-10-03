@@ -30,10 +30,10 @@ pub(super) fn is_express_task(
     config.conductor.express_mode && task.tier_class() == roko_core::task::TaskTier::Mechanical
 }
 
-/// [`task_turn_limit_with`] without learned tier limits.
+/// [`task_turn_limit_with`] without learned tier limits or M1.
 #[cfg(test)]
 pub(super) fn task_turn_limit(config: &RokoConfig, task: &TaskDef, express_active: bool) -> u32 {
-    task_turn_limit_with(config, None, task, express_active)
+    task_turn_limit_with(config, None, task, express_active, 1.0)
 }
 
 /// Provider turn cap for one Graph task dispatch.
@@ -41,7 +41,8 @@ pub(super) fn task_turn_limit(config: &RokoConfig, task: &TaskDef, express_activ
 /// Every task gets its tier's `[pipeline.<tier>] max_turns` (unknown tiers
 /// read as focused, so the cap is never unbounded). With the workspace's
 /// `learned` tier limits and `[pipeline] learned_limits = "on"`, a tier with
-/// enough history gets its learned cap instead (gap-5a6e01). Express
+/// enough history gets its learned cap instead (gap-5a6e01). M1's B2 knob
+/// scales the tier's cap by `turn_cap_mult` (8126; 1.0 without M1). Express
 /// dispatch lowers the cap further to [`EXPRESS_MAX_TURNS`]. The provider
 /// adapter decides how the cap binds (`ProviderAdapter::turn_cap_enforcement`),
 /// and agent construction warns when a provider can treat it only as
@@ -51,15 +52,40 @@ pub(super) fn task_turn_limit_with(
     learned: Option<&LearnedTierLimits>,
     task: &TaskDef,
     express_active: bool,
+    turn_cap_mult: f64,
 ) -> u32 {
     let tier = task.tier_class();
     let tier_limit = learned
         .and_then(|learned| learned.applied(tier).max_turns)
         .unwrap_or_else(|| config.pipeline.max_turns_for_tier(tier));
+    let tier_limit = scaled_turns(tier_limit, turn_cap_mult);
     if express_active {
         tier_limit.min(EXPRESS_MAX_TURNS)
     } else {
         tier_limit
+    }
+}
+
+/// `turns` times M1's turn-cap multiplier `mult`, rounded, and never below
+/// one turn. A multiplier that is not a positive number leaves it as it is.
+fn scaled_turns(turns: u32, mult: f64) -> u32 {
+    if !(mult.is_finite() && mult > 0.0) {
+        return turns;
+    }
+    ((f64::from(turns) * mult).round() as u32).max(1)
+}
+
+impl GraphTaskDispatcher {
+    /// M1's B2 turn-cap multiplier for `task`'s next attempt (8126): the
+    /// `turn_cap_mult` of the θ its chain runs, 1 without M1.
+    pub(super) fn turn_cap_mult(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        ctx: &CellContext,
+    ) -> f64 {
+        self.next_attempt_theta(spec, &task.id, ctx)
+            .map_or(1.0, |theta| theta.turn_cap_mult)
     }
 }
 
@@ -556,7 +582,7 @@ mod tests {
         let spec = make_spec(&focused);
 
         assert_eq!(
-            task_turn_limit_with(&config, Some(&learned), &focused, false),
+            task_turn_limit_with(&config, Some(&learned), &focused, false, 1.0),
             50
         );
         assert_eq!(
@@ -564,13 +590,13 @@ mod tests {
             500_000
         );
         assert_eq!(
-            task_turn_limit_with(&config, Some(&learned), &focused, true),
+            task_turn_limit_with(&config, Some(&learned), &focused, true, 1.0),
             EXPRESS_MAX_TURNS,
             "express still lowers the learned cap"
         );
         let mechanical = make_task_def("mechanical");
         assert_eq!(
-            task_turn_limit_with(&config, Some(&learned), &mechanical, false),
+            task_turn_limit_with(&config, Some(&learned), &mechanical, false, 1.0),
             40,
             "a tier without history keeps its configured cap"
         );
@@ -586,7 +612,7 @@ mod tests {
             config.pipeline.learned_limits = mode;
             let learned = LearnedTierLimits::from_attempts(&config, &attempts);
             assert_eq!(
-                task_turn_limit_with(&config, Some(&learned), &focused, false),
+                task_turn_limit_with(&config, Some(&learned), &focused, false, 1.0),
                 60
             );
             assert_eq!(
@@ -596,6 +622,18 @@ mod tests {
         }
         assert_eq!(task_turn_limit(&config, &focused, false), 60);
         assert_eq!(base_attempt_timeout_ms(&config, &spec), 600_000);
+        // M1's B2 multiplier scales the tier's cap (8126); express still
+        // caps it.
+        for (mult, cap) in [(0.75, 45), (1.0, 60), (1.5, 90)] {
+            assert_eq!(
+                task_turn_limit_with(&config, None, &focused, false, mult),
+                cap
+            );
+        }
+        assert_eq!(
+            task_turn_limit_with(&config, None, &focused, true, 1.5),
+            EXPRESS_MAX_TURNS
+        );
     }
 
     /// gap-5a6e01: dispatch learns its tier limits from the settled attempts

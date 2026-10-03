@@ -87,7 +87,7 @@ impl OnlineLogit {
         x.pairs()
             .map(|(name, value)| {
                 let h = self.curvature.get(name).copied().unwrap_or(0.0);
-                value * value / (h + LAMBDA2)
+                value.powi(2) / (h + LAMBDA2)
             })
             .sum()
     }

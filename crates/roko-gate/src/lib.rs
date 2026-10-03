@@ -85,7 +85,6 @@ pub mod audit;
 /// Criterion benchmark regression detection: parse JSON output, compare against baselines.
 pub mod benchmark_gate;
 mod cancel_safe_command;
-/// The citations rung: every DOI, arXiv id and URL an artefact cites resolves (9122).
 pub mod citation_gate;
 pub mod clippy_gate;
 pub mod code_exec;
@@ -99,7 +98,6 @@ pub mod env_builder;
 pub mod error;
 pub mod error_patterns;
 pub mod eval_generator;
-/// The judge rung's verdict: criterion scores count only with quoted evidence (9123).
 pub mod evidence_judge;
 pub mod fact_check;
 pub mod feedback;
@@ -134,7 +132,6 @@ pub mod registry;
 pub mod review_verdict;
 pub mod rung_dispatch;
 pub mod rung_selector;
-/// The schema rung: JSON, JSONL and CSV artefacts match a schema (9124).
 pub mod schema_gate;
 pub mod shell;
 /// Statistical Process Control extensions: CUSUM, EWMA Control Chart, BOCPD (GATE-01).

@@ -202,9 +202,11 @@ impl RunOrigin {
     }
 }
 
-/// `text`, untrusted data a run's prompt carries, after `intro` and between
-/// an `open` and a `close` line, either marker inside it escaped so that it
-/// cannot end the fence early (9117; the `agent.task` cell's inputs, 9127).
+/// Fences `text`, untrusted data a run's prompt carries.
+///
+/// The result is `intro`, then `text` between an `open` and a `close` line,
+/// with either marker inside `text` escaped so that it cannot end the fence
+/// early (9117; the `agent.task` cell's inputs, 9127).
 #[must_use]
 pub fn fence_untrusted(intro: &str, open: &str, close: &str, text: &str) -> String {
     // `<<\<`: a marker with its first `<<<` broken cannot form again.

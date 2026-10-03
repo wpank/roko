@@ -52,8 +52,9 @@ const ANNOTATIONS: &[&str] = &[
     "format",
 ];
 
-/// The schema rung `gate`'s verdict on `artefacts`, each a path and its
-/// text, against the schema file `schema_path`, whose text is
+/// The schema rung `gate`'s verdict on `artefacts`, each a path and its text.
+///
+/// The schema is the file `schema_path`, whose text is
 /// `schema_text`. It fails, listing the violations, when an artefact does not
 /// match; it is skipped when the schema uses a keyword the check does not
 /// cover; it passes otherwise.

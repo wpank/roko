@@ -141,7 +141,7 @@ impl Recalibrator {
         if self.window.len() > WINDOW {
             self.window.pop_front();
         }
-        if self.outcomes >= MIN_OUTCOMES && self.outcomes % REFIT_EVERY == 0 {
+        if self.outcomes >= MIN_OUTCOMES && self.outcomes.is_multiple_of(REFIT_EVERY) {
             self.refit();
         }
     }

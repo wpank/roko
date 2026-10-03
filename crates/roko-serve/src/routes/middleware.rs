@@ -45,9 +45,11 @@ pub(crate) fn privy_allow_list_configured(auth: &ServeAuthConfig) -> bool {
 }
 
 /// Header containing an ERC-3009 payment authorization as JSON.
+#[cfg(feature = "chain")]
 pub const X_PAYMENT_AUTHORIZATION: &str = "x-payment-authorization";
 
 /// Header carrying the same payment challenge returned in an HTTP 402 body.
+#[cfg(feature = "chain")]
 pub const X_PAYMENT_REQUEST: &str = "x-payment-request";
 
 /// Verify the structural x402 authorization required to read a paid feed.

@@ -138,8 +138,9 @@ pub trait CitationResolver: Send + Sync {
     async fn resolve(&self, citation: &Citation) -> Result<Resolution, String>;
 }
 
-/// Looks citations up over HTTP through roko's shared client, and keeps
-/// each answer for the life of the resolver, one plan run. A lookup that
+/// Looks citations up over HTTP through roko's shared client.
+///
+/// It keeps each answer for the life of the resolver, one plan run. A lookup that
 /// could not be made is not kept, so a later attempt tries it again.
 #[derive(Debug, Default)]
 pub struct HttpCitationResolver {
@@ -273,8 +274,9 @@ async fn resolve_url(url: &str) -> Result<Resolution, String> {
     }
 }
 
-/// The citations rung `gate`'s verdict on `artefacts`, each a path and its
-/// text. It fails, naming them, when citations do not resolve; else it is
+/// The citations rung `gate`'s verdict on `artefacts`, each a path and its text.
+///
+/// It fails, naming them, when citations do not resolve; else it is
 /// skipped when a citation could not be looked up; else it passes. Its
 /// detail lists every lookup.
 pub async fn check_citations(

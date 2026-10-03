@@ -25,9 +25,6 @@ command = "grep -qw 'def test_policy_report_reuses_passk_and_cluster_bootstrap' 
 command = "grep -rqw 'fn learn_self_model_fit_reports_insufficient_n' crates/roko-cli/src/ && cargo test -p roko-cli learn_self_model_fit_reports_insufficient_n"
 
 [[verify]]
-command = "test -n \"$(find benchmarks/viabilitybench/reports -name econ-report.json 2>/dev/null)\""
-
-[[verify]]
 command = "grep -rqw 'fn prediction_record_round_trips_and_lands_in_predictions_jsonl' crates/roko-learn/src/telemetry/ && cargo test -p roko-learn prediction_record_round_trips_and_lands_in_predictions_jsonl"
 
 [[verify]]
@@ -38,9 +35,6 @@ command = "grep -rqw 'fn self_model_shadow_writes_predictions_and_keeps_routing'
 
 [[verify]]
 command = "grep -rqw 'fn settled_verdict_updates_self_model_state' crates/roko-cli/src/ && cargo test -p roko-cli settled_verdict_updates_self_model_state"
-
-[[verify]]
-command = "grep -rqw 'fn active_self_model_picks_start_rung_and_logs_propensity' crates/roko-cli/src/ && cargo test -p roko-cli active_self_model_picks_start_rung_and_logs_propensity"
 +++
 
 ## Problem
@@ -106,3 +100,4 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - 6128: implemented at 59156dc0a
 - 6129: implemented at 0f1da8903
 - 6130: blocked: it composes the self-model's rung into S03's single route table (holdout, explore, propensity), which PK43 (gap-c1d920) is wiring into `ModelRouter::decide` in `model_routing.rs` now; the task forbids editing that file in parallel with S03.T11, and a second L-M3 draw would duplicate the table. It can go once PK43 is merged.
+- 2026-10-03 (coordinator, gate 8c): 6125 (the replay on the pilot matrix) left this item for the held gap-8a26fc (no pilot records yet), and 6130 (the active self-model's start rung) for gap-d2d750, which follows PK43 now that both are merged.

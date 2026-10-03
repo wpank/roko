@@ -4,13 +4,17 @@
 //! - [`worktree`]: the audit worktree of a selection's result tree, with the
 //!   visible tests the attempt changed restored from its base (7122);
 //! - [`rerun`]: A2, the task's checks run three times in that worktree
-//!   (7122).
+//!   (7122);
+//! - [`worker`]: each run's audit worker, which takes the run's selected
+//!   units one at a time, runs phase A and phase B on them, and appends
+//!   their `audit.result` (7123).
 //!
 //! Selection (DP1) is `graph_task_dispatch::audit_select`; the lottery, the
 //! ledger, the hidden-suite store and the canary scanner are
 //! `roko_gate::audit`.
 
 pub mod rerun;
+pub mod worker;
 pub mod worktree;
 
 use std::path::Path;

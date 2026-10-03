@@ -1,8 +1,9 @@
-//! A2, the clean re-run (S05 §4.3, 7122): a task's checks run [`RUNS`] times
-//! in an audit worktree whose visible tests are the task's own
-//! ([`super::worktree`]). Every run failing gives Y = 1, every run passing
-//! Y = 0, and a mix is `flaky` with Y = null; a run the budget cuts short
-//! leaves Y null too.
+//! A2, the clean re-run (S05 §4.3, 7122).
+//!
+//! A task's checks run [`RUNS`] times in an audit worktree whose visible
+//! tests are the task's own ([`super::worktree`]). Every run failing gives
+//! Y = 1, every run passing Y = 0, and a mix is `flaky` with Y = null; a run
+//! the budget cuts short leaves Y null too.
 //!
 //! The checks are the task's authored verify steps, then `cargo test -p` for
 //! each crate the attempt touched ([`checks_for`]). In a Cargo workspace they
@@ -75,10 +76,11 @@ pub fn target_dir(vault: &AuditVault) -> PathBuf {
     vault.worktrees_dir().join(".target")
 }
 
-/// Ready `worktree` to build in `target`: its `target/` links there, so cargo
-/// run by the production gate executor builds there too, and the files the
-/// attempt changed are touched, so a target other worktrees used does not
-/// reuse stale crates.
+/// Ready `worktree` to build in the audit target directory `target`.
+///
+/// Its `target/` links there, so cargo run by the production gate executor
+/// builds there too, and the files the attempt changed are touched, so a
+/// target other worktrees used does not reuse stale crates.
 ///
 /// # Errors
 ///
@@ -137,9 +139,10 @@ pub fn checks_for(
 }
 
 /// Run `checks` [`RUNS`] times in `worktree` within `budget`, the audit's
-/// wall-clock and CPU cap; shell steps build in `target` when given. A Cargo
-/// workspace with a `service` context goes through the production gate
-/// executor.
+/// wall-clock and CPU cap.
+///
+/// Shell steps build in `target` when given. A Cargo workspace with a
+/// `service` context goes through the production gate executor.
 pub async fn rerun(
     worktree: &Path,
     checks: &[Check],

@@ -1,0 +1,44 @@
+# H6 live, Stage B (S09 v1.5 §5, E7; task 3361): IAE (integrated absolute error) under disturbance, over the 5
+# kinds S09 §5's prereg sketch names ("kinds":["provider_fault","model_swap","harder_mix","budget_cut",
+# "convention_flip"]), gated on C5 (flaky-verifier hold) and C6 ("live_7_of_9"). Stage A, the dry validity pass on
+# the same disturbances, is LOG1 block D (experiments/log1.toml); Stage B is this live run.
+#
+# One block covers all 5 kinds in one pass: s3_disturbance's own hooks file positions each kind at a disjoint
+# range of the 40-item stream (streams/s3_disturbance_hooks.toml, compiled by 3331), so a single `disturbance =`
+# reference exercises all 5 without five separate blocks. 9 seeds x 40 items = 360 runs x $0.075 (S09 §3) is
+# budget.toml's own BL3 planned figure ("H6 Stage B live (9 x 40)"), confirmed here as 9 x 40 x 0.075 = $27.00.
+#
+# requires_live: the audit-exposure loops S09 §5's h5_live.toml example names (3359's own example); H6 has no
+# separate list in the prereg text read for this task, so this manifest reuses H5's set as the reasonable default
+# pending a more specific one. A loop not LIVE at the harness sha refuses the campaign and reports NOT RUN (3359).
+#
+# Budget: line BL3 (experiments/budget.toml), planned $27, cap $30; this manifest's one block plans exactly $27,
+# with max_cost_usd at the line's own cap (a single block is the whole line, so its ceiling is the line's). Stop
+# rules (S09 §5): the ledger refuses past the line cap; an infra_error rate above 10% pauses the campaign for a
+# logged deviation (vb.deviation/1), since vb.experiment/1's schema has no field for that rule
+# (schema/experiment.schema.json, additionalProperties false).
+#
+# This experiment id starts with E-, so campaign.requires_lock also makes it run only under the pre-registration
+# lock (3341; the lock itself is task 3345, held for the author as gap-394f28) in addition to requires_live
+# (3359). experiments/test_live.py fakes both to validate this manifest's own shape; it does not take the lock.
+#
+# Validate and estimate with
+#     benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/driver/vb.py campaign \
+#         --manifest benchmarks/viabilitybench/experiments/h6_live.toml --dry-run
+schema_version = "vb.experiment/1"
+id = "E-H6-live"
+title = "H6 live, Stage B: roko_fixed on s3_disturbance's 5 kinds, 9 seeds (G4, BL3)"
+requires_lock = true
+requires_live = ["L-audit", "L-gate-depth", "L-route-trust"]
+order = { kind = "as_listed" }
+
+[[block]]
+id = "h6-stage-b"
+stream = "s3_disturbance"
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "1-9"
+line = "BL3"
+disturbance = "streams/s3_disturbance_hooks.toml"
+planned_usd = 27.00   # 9 seeds x 40 items x $0.075 = budget.toml's BL3 plan, exactly
+max_cost_usd = 30.00  # BL3's own cap: this one block is the whole line

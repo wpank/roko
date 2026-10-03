@@ -1,0 +1,51 @@
+# H7 live, E3 (S09 v1.5 §5, E7; task 3361): the harmful-loop demotion test ("anytime_p(E3_harmful_demotion)"),
+# gated on E1 (synthetic fault injection: 500 dry-run contexts, no `vb run`, out of this manifest's scope), E2
+# ("cp_upper_le_005") and the placebo-no-transition check. E0 (the companion-audit check on today's real loops)
+# is `closure_4`'s own census check, not a `vb run` either.
+#
+# stream: s5_holdout (3331), "a 120-item harmful-loop stream plus placebo" — the placebo items that feed
+# `placebo_no_transition` are already part of this one compiled stream, so E3 needs only this block.
+# budget.toml's BL5 content note reads "H7 E3: the S1 stream and the harmful stream"; nothing in the S09 text
+# read for this task (3361) names a second stream's file for H7 beyond s5_holdout, so this manifest runs the one
+# stream 3331 built for it. If a second "S1" component turns out to mean a distinct dispatch (not just a label
+# inside H7's own E3 sub-design), add its block here rather than a second manifest, so the secret-file rule below
+# still holds across both.
+#
+# requires_live: `closure_4`'s own census check for H7 (S09 §5's prereg sketch: "closure_4":
+# "census_check(H7_E0: L-M1,L-audit,L-route-trust LIVE)") — distinct from H5/H6's set in naming L-M1 instead of
+# L-gate-depth. A loop not LIVE at the harness sha refuses the campaign and reports NOT RUN (3359).
+#
+# Secrets (S09 §4.1, this task's plan step 2): H7's stream is never split across secret files. One block on one
+# stream already satisfies this; if a second block is ever added for the same experiment id, it must run under
+# the same secret_fingerprint as this one, never a different file for part of s5_holdout.
+#
+# Budget: line BL5 (experiments/budget.toml), planned $23, cap $26. This block plans $18.00 (2 seeds x 120 items
+# x $0.075, S09 §3), comfortably under the cap; max_cost_usd leaves headroom to $24 without approaching BL5's $26
+# ceiling. Stop rules (S09 §5): the ledger refuses past the line cap; the harm rule itself (a demotion detected)
+# is E3's own positive result, not a campaign-level stop, and an infra_error rate above 10% pauses the campaign
+# for a logged deviation (vb.deviation/1), since vb.experiment/1's schema has no field for either rule
+# (schema/experiment.schema.json, additionalProperties false).
+#
+# This experiment id starts with E-, so campaign.requires_lock also makes it run only under the pre-registration
+# lock (3341; the lock itself is task 3345, held for the author as gap-394f28) in addition to requires_live
+# (3359). experiments/test_live.py fakes both to validate this manifest's own shape; it does not take the lock.
+#
+# Validate and estimate with
+#     benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/driver/vb.py campaign \
+#         --manifest benchmarks/viabilitybench/experiments/h7_live.toml --dry-run
+schema_version = "vb.experiment/1"
+id = "E-H7-live"
+title = "H7 live, E3: roko_fixed on s5_holdout's harmful-loop stream, 2 seeds (G4, BL5)"
+requires_lock = true
+requires_live = ["L-M1", "L-audit", "L-route-trust"]
+order = { kind = "as_listed" }
+
+[[block]]
+id = "h7-e3"
+stream = "s5_holdout"
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "1-2"
+line = "BL5"
+planned_usd = 18.00   # 2 seeds x 120 items x $0.075
+max_cost_usd = 24.00

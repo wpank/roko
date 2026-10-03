@@ -61,7 +61,7 @@ use roko_learn::routing_log::{
     RoutingDecisionLog,
 };
 use roko_learn::telemetry::records::{AuditFields, DecisionAssignment, DecisionOpportunity};
-use roko_learn::telemetry::{Arm, AssignmentUnit, AttemptKey, DecisionSource, LayerSpec, assign};
+use roko_learn::telemetry::{AssignmentUnit, AttemptKey, DecisionSource, LayerSpec, assign};
 
 use super::DispatchContext;
 use super::outcome::RunnerDispatchError;
@@ -1164,17 +1164,7 @@ fn route_assignment(inputs: &RoutingInputs, assigned_at: i64) -> Option<Decision
         };
         assign(&spec, key)
     });
-    let audit_epoch = draw
-        .salt_id
-        .split_once('@')
-        .map_or_else(String::new, |(_, epoch)| epoch.to_string());
-    Some(DecisionAssignment {
-        unit_key: draw.unit.unit_key(key),
-        audit_epoch,
-        global_off: draw.arm == Arm::GlobalOff,
-        assigned_at,
-        draw,
-    })
+    Some(DecisionAssignment::new(draw, key, assigned_at))
 }
 
 // ─── Ladder ────────────────────────────────────────────────────────────
@@ -2479,7 +2469,7 @@ mod tests {
     #[test]
     fn route_decision_logs_arm_before_plan_and_executed_model() {
         use roko_learn::loop_audit::census::measure;
-        use roko_learn::telemetry::Assignment;
+        use roko_learn::telemetry::{Arm, Assignment};
         use roko_learn::telemetry::records::{
             AttemptIdentity, AttemptOutcome, AttemptVerdictRecord, DECISION_SCHEMA, Stamped,
             VERDICT_SCHEMA,

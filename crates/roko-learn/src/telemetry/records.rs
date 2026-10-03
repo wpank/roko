@@ -1333,6 +1333,25 @@ pub struct DecisionAssignment {
     pub assigned_at: i64,
 }
 
+impl DecisionAssignment {
+    /// `draw` of `key`'s unit, made at `assigned_at`, with its epoch read
+    /// from the salt id (`"{layer}@{epoch}"`).
+    #[must_use]
+    pub fn new(draw: Assignment, key: &AttemptKey, assigned_at: i64) -> Self {
+        let audit_epoch = draw
+            .salt_id
+            .split_once('@')
+            .map_or_else(String::new, |(_, epoch)| epoch.to_string());
+        Self {
+            unit_key: draw.unit.unit_key(key),
+            audit_epoch,
+            global_off: draw.arm == Arm::GlobalOff,
+            assigned_at,
+            draw,
+        }
+    }
+}
+
 /// Proof that a decision reached the executed request (S01 §5.3 `receipt`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionReceipt {

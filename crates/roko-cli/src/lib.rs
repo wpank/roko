@@ -181,6 +181,7 @@ pub(crate) mod knowledge_helpers;
 #[path = "../../../scripts/layer_check.rs"]
 pub mod layer_check;
 pub mod learning_helpers;
+pub mod loop_canary;
 pub mod model_selection;
 pub mod note_cluster;
 // oneshot.rs was removed in #363 (zero callers after develop deprecation).

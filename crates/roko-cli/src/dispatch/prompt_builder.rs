@@ -3112,6 +3112,22 @@ impl Default for PromptAssembler {
     }
 }
 
+/// What the cached knowledge and playbook readers select for `task` from
+/// the run snapshot `cache`: the entry ids and the playbook ids a prompt
+/// built from it carries. The loop canary's P3 reads it (backlog 5127).
+pub(crate) fn cached_reader_ids(
+    task: &TaskDef,
+    cache: &PromptCache,
+) -> (Vec<String>, Vec<String>) {
+    let knowledge = collect_neuro_knowledge_cached(task, &cache.neuro_entries)
+        .map(|section| section.knowledge_ids)
+        .unwrap_or_default();
+    let playbooks = collect_playbooks_cached(task, &cache.playbooks)
+        .map(|section| section.playbook_ids)
+        .unwrap_or_default();
+    (knowledge, playbooks)
+}
+
 fn render_gate_feedback(feedback: &GateFeedback) -> String {
     let mut buf = String::from(
         "# Previous attempt feedback\n\n\

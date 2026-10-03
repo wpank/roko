@@ -1477,9 +1477,8 @@ impl Controller {
     fn relax_due(&self, estimates: &EvEstimates) -> bool {
         let cheap = self.policy.ev.outer(Ev::UsdPerVerifiedSuccess) * RELAX_COST_SHARE;
         let cost = estimates.usd_per_verified_success.value;
-        self.state.theta != self.state.theta0
-            && self.state.calm_streak >= self.config.relax_window
-            && cost.is_some_and(|usd| usd < cheap)
+        let calm = self.state.calm_streak >= self.config.relax_window;
+        self.state.theta != self.state.theta0 && calm && cost.is_some_and(|usd| usd < cheap)
     }
 
     /// Step one cost-raising knob one notch back toward θ₀, judged like a

@@ -56,7 +56,7 @@ async fn chain_family_parked() -> (StatusCode, Json<Value>) {
 
 /// The answer of a parked route: `what` is not included in this build, and
 /// `feature` is the cargo feature that adds it.
-fn parked(what: &str, feature: &str) -> (StatusCode, Json<Value>) {
+pub(crate) fn parked(what: &str, feature: &str) -> (StatusCode, Json<Value>) {
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(json!({

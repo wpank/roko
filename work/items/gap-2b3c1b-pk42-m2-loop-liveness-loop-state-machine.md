@@ -85,3 +85,16 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK09 (gap-cc5051), PK34 (gap-ac2611), PK40 (gap-1f4bec).
 - Suggested model: opus.
+
+## Progress
+
+Worker w3 (no cargo; Rust checks deferred to the batch gate), base `f74890b4b`, branch `work/gap-2b3c1b`:
+
+- 5114 `14de42f0c`: `loop_audit::state` holds the state machine with the six false-demotion guards (dwell, N thresholds, the ε rule first, the placebo and SRM tripwires, exempt and enforce).
+- 5115 `a9afabeb9`: `loop_audit::ledger` holds the `roko.loop_audit/1` and `roko.fault/1` rows and their locked JSONL writer. S01 §5.10's three examples round-trip.
+- 5116 `17359688d`: `DashboardEvent::{LoopHealth, LoopTransition}`. The match arms in `roko-serve/src/lib.rs` (a hot file) are additive only.
+- 5117 `b4912a855`: E2 (`sim::e2_run`) and `examples/loop_audit_sim.rs`. The 10⁴-rep output is for the gate to produce; a Python replica predicts 0/10000 (95% CI 0–0.0004) and a legacy A/A false-winner rate of 0.3352.
+- 5118 `a043c553f`: prompt experiments draw uniformly through `telemetry::assign` with a logged propensity and conclude on per-pair `DifferenceCs`. `tests/legacy_rule_live.rs` is deleted, and L-prompt-exp's `misspecified` finding is retired.
+- 5119 `8488f2d1d`: model experiments use the same draws (`model_experiment` layer) and the same rule. `DefaultHasher` and UCB1 are gone, `roko experiment model show` prints draws, and L-model-exp's finding is retired.
+- 5120 `d5f30aa80`: `loop_audit::faults` adds flags behind the `fault-injection` feature, with ground-truth rows. `crates/roko-learn/Cargo.toml` gains a `[features]` table.
+- 5121 `88da18324`: `loop_audit::canary` adds the probe driver with frozen `CanaryWriter` and `DryRunPlanner` traits.

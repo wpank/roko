@@ -1117,6 +1117,7 @@ mod tests {
                 usage: Some(crate::runtime::RunResultUsage {
                     input_tokens: 12,
                     output_tokens: 3,
+                    model: None,
                 }),
                 gate_results: Vec::new(),
             })

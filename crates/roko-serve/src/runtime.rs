@@ -23,6 +23,11 @@ pub struct RunResultUsage {
     pub input_tokens: u64,
     /// Number of output (completion) tokens generated.
     pub output_tokens: u64,
+    /// The model the provider reported serving the call, when it named one:
+    /// what `roko serve`'s bench prices a task's tokens at, never the model it
+    /// asked for (3343).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Result of a single `run_once()` invocation.

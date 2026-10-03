@@ -117,6 +117,7 @@ impl CliRuntime for RokoCliRuntime {
             usage: Some(RunResultUsage {
                 input_tokens: result.input_tokens,
                 output_tokens: result.output_tokens,
+                model: Some(result.model),
             }),
             gate_results: Vec::new(),
         })
@@ -211,6 +212,7 @@ impl CliRuntime for RokoCliRuntime {
                     usage: Some(RunResultUsage {
                         input_tokens: dispatch.input_tokens,
                         output_tokens: dispatch.output_tokens,
+                        model: Some(dispatch.model),
                     }),
                     gate_results: Vec::new(),
                 })
@@ -1394,9 +1396,11 @@ fn simulate_bench_result(prompt: &str) -> RunResult {
         } else {
             "[demo] Simulated failure — gate check did not pass".to_string()
         }),
+        // A simulated run names no served model, so its cost stays unknown.
         usage: Some(RunResultUsage {
             input_tokens,
             output_tokens,
+            model: None,
         }),
         gate_results: Vec::new(),
     }
@@ -1486,6 +1490,7 @@ pub(crate) async fn dispatch_bench_prompt(
                     text: response.content,
                     input_tokens: response.usage.input_tokens,
                     output_tokens: response.usage.output_tokens,
+                    model: response.model,
                 });
             }
             Err(error) => error,
@@ -1601,6 +1606,8 @@ pub(crate) struct BenchDispatchResult {
     pub(crate) text: String,
     pub(crate) input_tokens: u64,
     pub(crate) output_tokens: u64,
+    /// The model the provider reported serving the call.
+    pub(crate) model: String,
 }
 
 fn runner_events_offset(workdir: &Path) -> u64 {

@@ -1,0 +1,20 @@
+# Stream s3_disturbance (S08 §4.7; work item gap-eb1aa3, task 3328): compiled by streams/compile.py --seed 1, 40 tasks.
+# Do not hand-edit: regenerate with the same --seed for a byte-identical file.
+schema_version = "vb.stream/1"
+
+[stream]
+id = "s3_disturbance"
+spec_variant = "precise"
+families = { F1 = "families/f1_pyconv", F4 = "families/f4_kvtool" }
+instances = [
+  "F1-l1-0022", "F4-l1-0104", "F1-l1-0134", "F4-l1-0270",
+  "F1-l1-0298", "F4-l1-0334", "F1-l1-0378", "F4-l1-0403",
+  "F1-l2-0086", "F4-l2-0240", "F1-l2-0190", "F4-l2-0388",
+  "F1-l2-0454", "F4-l2-0401", "F1-l2-0475", "F4-l2-0430",
+  "F1-l3-0016", "F4-l3-0157", "F1-l3-0047", "F4-l3-0169",
+  "F1-l3-0188", "F4-l3-0173", "F1-l3-0232", "F4-l3-0416",
+  "F1-l4-0085", "F4-l4-0019", "F1-l4-0216", "F4-l4-0195",
+  "F1-l4-0273", "F4-l4-0259", "F1-l4-0470", "F4-l4-0290",
+  "F1-l5-0278", "F4-l5-0060", "F1-l5-0362", "F4-l5-0246",
+  "F1-l5-0483", "F4-l5-0278", "F1-l5-0495", "F4-l5-0325",
+]

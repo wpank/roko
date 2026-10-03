@@ -73,3 +73,28 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK49 (gap-7ec3ef), PK58 (gap-f0a7ee), PK59 (gap-147c4d).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-940e44`; cargo verification deferred to the batch gate. `773e82eef` applies lint fixes to
+7131, 7134 and 7135.
+
+- 7131: implemented at `c3c8c2715`. `roko_gate::audit::window` (window close, per-stratum Hájek/Wilson estimates and
+  null bounds) and `audit::feedback` (the DP3 ladder in the vault's `ladder.json`, the trust book in `trust.json`,
+  `close_due_windows`). The worker closes due windows after each result and at drain. One reading to check: a
+  window with no known label of a task type doesn't step the ladder.
+- 7133: implemented at `4c40a2b28`. DP4 is in `CascadeRouter`: `set_audit_trust`, `filter_untrusted`, used by
+  `filter_unhealthy` and the health-scored route. Trust is loaded at plan start from `routing_context.rs`, through a
+  one-line call in `attempt.rs`. An exclusion is a route decision candidate with `ineligible_reason = "audit_trust"`,
+  which needed a small additive edit in `dispatch/model_routing.rs`.
+- 7134: implemented at `429f9276b`. `audit/labels.rs` writes `vs.label` rows (a new `vs.label` ledger event, plus
+  `.roko/runs/<run>/labels.jsonl`). A known VS teaches the run's self-model through 6129's `observe_label` with
+  weight 1/π. The plan's audit selector passes the self-model to the worker (`audit_select.rs`, `attempt.rs`).
+- 7135: implemented at `46ddf7882`. `roko_gate::audit::incident`: incident records with their status history, fix
+  proposals (`<id>.task.toml`, option (b)) and isolation proposals that an operator confirms. The worker opens
+  incidents for confirmed Y/G findings and for gate-gaming alerts. Each new incident downgrades the pair's routing
+  trust at once.
+- 7136: implemented at `5a51212dc`. `commands/audit.rs` (`status [--strata]`, `replay --runs N`, `reveal <run_id>`,
+  `incidents`) is registered as `Command::Audit`. I left CLAUDE.md alone, since its row edits are held in gap-3698cd
+  while main carries an uncommitted CLAUDE.md edit. The row for the "Learning & feedback" table is:
+  `` | `roko audit status/replay/reveal/incidents` | M4 audits, read-only: window estimates, ladder and trust, lottery replay, a run's draws recomputed from its revealed key, incidents | ``

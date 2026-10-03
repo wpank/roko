@@ -227,6 +227,34 @@ mod tests {
     /// A `spec.quality` line of `task`, as the spec gate writes it for the plan `plan_id`
     /// whose `tasks.toml` sits in `plans/<directory>/`.
     fn record(plan_id: &str, directory: &str, task: &str) -> String {
+        // Split out of the record below: one json! of both overruns the macro
+        // recursion limit.
+        let features = serde_json::json!({
+            "verify_max_class": "test",
+            "n_verify": 2,
+            "n_accept": 0,
+            "n_no_run": 0,
+            "n_self_exit": 0,
+            "has_test_verify": true,
+            "has_acceptance": true,
+            "has_acceptance_fields": true,
+            "n_acceptance": 3,
+            "n_observable": 2,
+            "ac_coverage": 0.5,
+            "desc_words": 54,
+            "vague_density": 1.25,
+            "vague_terms": ["robust"],
+            "n_read_files": 1,
+            "n_read_files_why": 1,
+            "n_symbols": 2,
+            "n_symbols_anchored": 1,
+            "n_files": 3,
+            "max_loc": 200,
+            "has_non_goals": false,
+            "has_hidden_hook": false,
+            "planner_test": false,
+            "refine_rounds": 0
+        });
         serde_json::json!({
             "ev": "spec.quality",
             "linter": "sq-3",
@@ -245,32 +273,7 @@ mod tests {
             "rules": {"SQ01": 1.0, "SQ02": 0.5, "SQ03": 0.25},
             "verify_classes": ["test", "compile"],
             "red_on_base": "unknown",
-            "features": {
-                "verify_max_class": "test",
-                "n_verify": 2,
-                "n_accept": 0,
-                "n_no_run": 0,
-                "n_self_exit": 0,
-                "has_test_verify": true,
-                "has_acceptance": true,
-                "has_acceptance_fields": true,
-                "n_acceptance": 3,
-                "n_observable": 2,
-                "ac_coverage": 0.5,
-                "desc_words": 54,
-                "vague_density": 1.25,
-                "vague_terms": ["robust"],
-                "n_read_files": 1,
-                "n_read_files_why": 1,
-                "n_symbols": 2,
-                "n_symbols_anchored": 1,
-                "n_files": 3,
-                "max_loc": 200,
-                "has_non_goals": false,
-                "has_hidden_hook": false,
-                "planner_test": false,
-                "refine_rounds": 0
-            },
+            "features": features,
             "run_id": "run-a",
             "recorded_at_ms": 1_759_400_000_000_i64
         })

@@ -907,7 +907,10 @@ mod tests {
         spec.max_retries = 5;
 
         // What a retry after a gate failure does on each rung: the cheap rung fails it, the
-        // mid rung passes half of the time, and the strong rung passes it.
+        // mid rung passes about half of the time, and the strong rung passes it. The rungs take
+        // turns for nine rounds, under N_MIN outcomes, so the forecasts are L0's (cheap 0.02,
+        // mid 0.55, strong 0.98). L1's per-feature steps swing the mid rung's forecast between
+        // about 0.03 and 0.97 with each of its outcomes, so no step can be tested on them.
         let retry = TaskFeatures {
             title: "Fix the parser".to_string(),
             family: "focused".to_string(),
@@ -918,12 +921,13 @@ mod tests {
             error_class: Some("gate_failed".to_string()),
             ..TaskFeatures::default()
         };
-        for (slug, cost) in [
+        let training = [
             ("claude-haiku-4-5", 0.01),
             ("glm-4.7", 0.02),
             ("claude-sonnet-4-6", 0.02),
-        ] {
-            for index in 0..60_u32 {
+        ];
+        for index in 0..9_u32 {
+            for (slug, cost) in training {
                 let passed = match slug {
                     "claude-haiku-4-5" => false,
                     "glm-4.7" => index % 2 == 0,
@@ -954,6 +958,7 @@ mod tests {
                 runtime.observe(&unit, &retry, 1.0);
             }
         }
+        assert!(runtime.model.read().cold_start(), "L0 alone forecasts");
 
         // The self-model started T-M3's chain on the cheap rung.
         let arms = rungs

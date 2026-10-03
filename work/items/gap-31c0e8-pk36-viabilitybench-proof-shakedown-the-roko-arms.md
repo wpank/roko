@@ -20,12 +20,6 @@ links = { depends_on = ["gap-625195", "gap-e00238", "gap-f548c1", "gap-cc5051", 
 
 [[verify]]
 command = "test -x target/debug/roko && test \"$(grep -c 'def test_shakedown_' benchmarks/viabilitybench/driver/test_shakedown.py)\" -ge 8 && VB_REQUIRE_REAL_ROKO=1 benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_shakedown.py -k shakedown -q"
-
-[[verify]]
-command = "test -f benchmarks/viabilitybench/reports/pilot_c/metrics.json && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/analysis/report.py --check benchmarks/viabilitybench/reports/pilot_c"
-
-[[verify]]
-command = "grep -qw 'def test_pilot_page_shows_the_ladder_arm_and_the_v7_bar' benchmarks/viabilitybench/analysis/test_analysis.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_analysis.py -k test_pilot_page_shows_the_ladder_arm_and_the_v7_bar -q"
 +++
 
 ## Problem
@@ -79,3 +73,6 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - 3316: blocked. Its premise is false at BASE: `analysis/pilot_page.py` and `report.py --pilot` do not exist yet.
   Both are gap-d9e9fe's own deliverable (3316's Notes: "Starts after gap-d9e9fe has created the page"), and
   gap-d9e9fe is still `open`, not done. This blocks 3316 independently of 3315's live data.
+- 2026-10-03 (coordinator, gate 7a): task 3315's verify (Pilot C's committed metrics) left this item for its own held follow-up: it needs a live, paid run after Pilot A's checks, and Pilot A waits on its key file.
+- 2026-10-03 (coordinator, gate 7a): task 3316's verify left this item for its own follow-up, which waits on gap-d9e9fe (the pilot page itself).
+- 2026-10-03 (coordinator, gate 7a): 3314's shakedown, run with the batch's own binary (`VB_REQUIRE_REAL_ROKO=1`), fails all eight scenarios at setup: the driver's config template still writes the removed `[learning] replan_on_gate_failure` (planemit.py, run_roko_plan.py), so `roko plan validate --strict` refuses every Roko arm's plan (gap-821c93). This item stays open until that lands and the shakedown's real verdicts are read.

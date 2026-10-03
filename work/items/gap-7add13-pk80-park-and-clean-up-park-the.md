@@ -34,9 +34,6 @@ command = "grep -q '^active-inference' crates/roko-learn/Cargo.toml && grep -B1 
 command = "grep -rqw 'fn default_episode_has_no_hdc_fingerprint' crates/roko-cli/ && cargo test -p roko-cli default_episode_has_no_hdc_fingerprint"
 
 [[verify]]
-command = "ls benchmarks/park/*.json >/dev/null 2>&1 && grep -q 'Parked (off the default build)' CLAUDE.md"
-
-[[verify]]
 command = "grep -rqw 'fn disk_report_skips_creation_marker_dir' crates/roko-cli/src/ && cargo test -p roko-cli disk_report_skips_creation_marker_dir"
 +++
 
@@ -96,3 +93,4 @@ Implemented on `work/gap-7add13`; cargo verification is deferred to the batch ga
 - 9226: implemented at 5535ba81e
 - 9227: implemented at 8673f9541 (CLAUDE.md left to the coordinator; the cargo tree and cold-build numbers in benchmarks/park/ are null)
 - 9237: implemented at af8428e43
+- 2026-10-03 (coordinator, gate 7a): task 9227's CLAUDE.md section and its verify (`grep -q 'Parked (off the default build)' CLAUDE.md`) moved to gap-3698cd, held on the main checkout's uncommitted CLAUDE.md Goal-line edit; the rest of 9227 (`benchmarks/park/`, the docs index) is merged. The gate placed the section after the Components table (the worker's patch put it inside it).

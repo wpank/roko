@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 111 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 109 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -40,19 +40,19 @@ _1 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRI
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- **P1** [gap-a42df2](items/gap-a42df2-pk45-viabilitybench-proof-requires-live-refuse-a.md) PK45 ViabilityBench proof: requires_live: refuse a live manifest whose loops are not LIVE at its harness_sha (+1 more) · size S · verified 2026-10-02
 - **P1** [gap-ed1a08](items/gap-ed1a08-pk67-viabilitybench-proof-replay-r-h6-s06.md) PK67 ViabilityBench proof: Replay R-H6: S06's controllers A0-A5 plus A3-gated and A3-mis (+2 more) · size L · verified 2026-10-02
 - **P2** [gap-9ecd37](items/gap-9ecd37-pk82-showcase-and-deploy-showcase-bundle-builder.md) PK82 Showcase and deploy: Showcase bundle builder and verifier (Python, in ViabilityBench) (+7 more) · size L · verified 2026-10-02
+- **P1** [dec-20744e](items/dec-20744e-accept-same-uid-keychain-risk-for-subscription.md) Accept same-uid keychain risk for subscription arms, or containerize them (S08 decision 4) [decision] · size S · verified 2026-10-02
 
-_15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- **P2** [gap-2e4a81](items/gap-2e4a81-pk64-m4-deep-audits-dp3-dispatch-applies.md) PK64 M4 deep audits: DP3: dispatch applies the verify depth the ladder sets, V0 to V4 (S05 task 12, part 2) · size M · verified 2026-10-02
 - **P3** [gap-4cbd80](items/gap-4cbd80-pk65-m2-loop-liveness-census-measures-l.md) PK65 M2 loop-liveness: Census measures L-M1, L-M3 and L-M4 from their receipts · size S · verified 2026-10-02
 - **P3** [gap-414e56](items/gap-414e56-pk66-m3-self-model-after-a-low.md) PK66 M3 self-model: After a low-confidence pass, request deeper verification from S05's ladder before… (+1 more) · size M · verified 2026-10-02
+- **P2** [gap-fa4d4b](items/gap-fa4d4b-pk70-m1-controller-b3-and-b7-publish.md) PK70 M1 controller: B3 and B7: publish verify-depth floors and audit boosts to M4, with automatic audit… · size M · verified 2026-10-02
 
-_29 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_28 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

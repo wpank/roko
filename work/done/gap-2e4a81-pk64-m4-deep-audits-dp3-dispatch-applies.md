@@ -2,7 +2,7 @@
 id = "gap-2e4a81"
 kind = "gap"
 title = "PK64 M4 deep audits: DP3: dispatch applies the verify depth the ladder sets, V0 to V4 (S05 task 12, part 2)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 64
 size = "M"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "343bc053f"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK64"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs"]
 lane = "rust-hot"
@@ -20,6 +21,17 @@ links = { depends_on = ["gap-f0a7ee", "gap-940e44", "gap-eb39c1"], blocks = [], 
 
 [[verify]]
 command = "grep -rqw 'fn dispatch_applies_the_ladder_depth_and_never_lowers_it_mid_window' crates/roko-cli/src/ && cargo test -p roko-cli --lib dispatch_applies_the_ladder_depth_and_never_lowers_it_mid_window"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-03T22:14:11Z"
+commit = "343bc053f"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T20:55:01Z"
+forced = false
+evidence = "Gate 10a (work/backlog-batch-10a, merged into main as 343bc053f): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 4,234 tests over roko-cli and roko-gate, roko-cli bin 438 passed and the golden-path canaries pass incl. the audit canary drill (plan_validate: only bug-2a31bc's two known alias tests fail), the bench driver and experiments suites 182 passed; every [[verify]] passes. PK64 1/1 (7132): verify_depth.rs applies max(the DP3 ladder's level, M1's verify-depth floor) after the judge, V1 to V4, each check a depth:<V>/<check> verdict row."
 +++
 
 ## Problem

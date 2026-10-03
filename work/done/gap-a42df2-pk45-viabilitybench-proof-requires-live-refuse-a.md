@@ -2,7 +2,7 @@
 id = "gap-a42df2"
 kind = "gap"
 title = "PK45 ViabilityBench proof: requires_live: refuse a live manifest whose loops are not LIVE at its harness_sha (+1 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -10,8 +10,9 @@ rank = 45
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "343bc053f"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK45"
 anchors = ["benchmarks/viabilitybench/driver", "benchmarks/viabilitybench/experiments"]
 lane = "bench"
@@ -23,6 +24,17 @@ command = "grep -qw 'def test_live_manifest_refuses_loops_that_are_not_live' ben
 
 [[verify]]
 command = "grep -qw 'def test_live_manifests_name_lines_caps_and_required_loops' benchmarks/viabilitybench/experiments/test_live.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/experiments/test_live.py -k test_live_manifests_name_lines_caps_and_required_loops -q"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-03T22:14:17Z"
+commit = "343bc053f"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T20:55:02Z"
+forced = false
+evidence = "Gate 10a (work/backlog-batch-10a, merged into main as 343bc053f): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 4,234 tests over roko-cli and roko-gate, roko-cli bin 438 passed and the golden-path canaries pass incl. the audit canary drill (plan_validate: only bug-2a31bc's two known alias tests fail), the bench driver and experiments suites 182 passed; every [[verify]] passes. PK45 2/2: campaign.py refuses a live manifest before dispatch when a requires_live loop isn't LIVE (a NOT RUN stub names the loops and harness sha); h5/h6/h7_live.toml manifests validate by dry run."
 +++
 
 ## Problem

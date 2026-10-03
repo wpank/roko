@@ -92,6 +92,7 @@ fn canary_context(task: &TaskDef, workdir: &Path) -> DispatchContext {
         concurrent_plans: Vec::new(),
         attempt_key: None,
         arm_set: None,
+        self_model_rung: None,
     }
 }
 

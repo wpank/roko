@@ -125,7 +125,9 @@ impl SelfModel {
     /// The forecast for each of `arms` on `task`.
     #[must_use]
     pub fn forecast(&self, task: &TaskFeatures, arms: &[ArmKey]) -> Vec<CandidateForecast> {
-        arms.iter().map(|arm| self.forecast_arm(task, arm)).collect()
+        arms.iter()
+            .map(|arm| self.forecast_arm(task, arm))
+            .collect()
     }
 
     /// The forecast for `arm` on `task`.
@@ -180,7 +182,8 @@ impl SelfModel {
         self.recal.observe(raw, passed, w);
         let rungs = [(GATE_RUNG, Some(passed))];
         self.gates.observe(&x, l0.p, &rungs, unit.label.y_vs, w);
-        self.prior.observe(&arm.model, &task.family, &task.role, passed, w);
+        self.prior
+            .observe(&arm.model, &task.family, &task.role, passed, w);
         let cost_x = cost_features(task, arm);
         self.costs.observe(
             &cost_x,
@@ -330,7 +333,10 @@ mod tests {
         assert_eq!(load, StateLoad::Loaded);
         assert_eq!(loaded.version, model.version);
         assert_eq!(loaded.outcomes, model.outcomes);
-        assert!(!path.with_extension("json.tmp").exists(), "the write was atomic");
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "the write was atomic"
+        );
         // JSON keeps every float to within a rounding step, so the forecasts agree.
         let arms = [
             ArmKey::roko("cerebras", "gpt-oss-120b"),
@@ -349,7 +355,10 @@ mod tests {
         assert_eq!(model.version, version);
         assert!(model.version.0.starts_with("m3-l1-"));
         let next_schema = predictor_version(MODEL_CLASS, "m3-features/2", snapshot.id());
-        assert_ne!(next_schema, version, "a new feature schema is a new predictor");
+        assert_ne!(
+            next_schema, version,
+            "a new feature schema is a new predictor"
+        );
     }
 
     #[test]

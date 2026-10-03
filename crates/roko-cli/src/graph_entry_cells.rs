@@ -78,7 +78,11 @@ impl AgentTaskConfig {
         let prompt = text("prompt").ok_or("it needs a `prompt`")?;
         let max_usd = node
             .get("max_usd")
-            .and_then(|value| value.as_float().or_else(|| value.as_integer().map(|n| n as f64)))
+            .and_then(|value| {
+                value
+                    .as_float()
+                    .or_else(|| value.as_integer().map(|n| n as f64))
+            })
             .filter(|usd| usd.is_finite() && *usd > 0.0)
             .ok_or("it needs a `max_usd` above 0: the most its run may spend")?;
         let inputs = node
@@ -158,7 +162,10 @@ impl Cell for AgentTaskCell {
         if let Some(capabilities) = &ctx.capabilities
             && !capabilities.contains(Capability::Llm)
         {
-            return Err(refused(format!("it requires capability {}", Capability::Llm)));
+            return Err(refused(format!(
+                "it requires capability {}",
+                Capability::Llm
+            )));
         }
         let config = self.config.clone().map_err(refused)?;
         let prompt = config.prompt_with_inputs(&input);
@@ -347,7 +354,10 @@ command = "true"
             .await
             .expect("the graph runs");
         assert!(output.success, "{}", output.summary());
-        assert_eq!(output.gate_verdicts.get("work"), Some(&TaskGateVerdict::Passed));
+        assert_eq!(
+            output.gate_verdicts.get("work"),
+            Some(&TaskGateVerdict::Passed)
+        );
         let runs: Vec<PathBuf> = std::fs::read_dir(tmp.path().join(".roko/runs"))
             .expect("the run's directory")
             .map(|entry| entry.expect("a run").path())

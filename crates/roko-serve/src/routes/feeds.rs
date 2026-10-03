@@ -639,16 +639,17 @@ mod tests {
             session_pricing: None,
             protocol: PaymentProtocol::X402,
         };
-        let paid_id = state
-            .feeds
-            .write()
-            .await
-            .register(feed("paid-signals", FeedAccess::Paid, Some(pricing)));
-        let free_id = state
-            .feeds
-            .write()
-            .await
-            .register(feed("free-signals", FeedAccess::Public, None));
+        let paid_id = state.feeds.write().await.register(feed(
+            "paid-signals",
+            FeedAccess::Paid,
+            Some(pricing),
+        ));
+        let free_id =
+            state
+                .feeds
+                .write()
+                .await
+                .register(feed("free-signals", FeedAccess::Public, None));
         let app = routes().with_state(state);
 
         // No x402 check exists in this build, so no authorization unlocks the feed.

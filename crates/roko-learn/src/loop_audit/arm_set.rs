@@ -229,7 +229,9 @@ mod tests {
 
     use roko_core::config::experiments::ExperimentsConfig;
 
-    use super::{ArmDraws, ArmMode, ArmSet, FORCED_CONDITION, MAXIMIZE_CONDITION, NORMAL_CONDITION};
+    use super::{
+        ArmDraws, ArmMode, ArmSet, FORCED_CONDITION, MAXIMIZE_CONDITION, NORMAL_CONDITION,
+    };
     use crate::loop_audit::spec::Registry;
     use crate::telemetry::{Arm, AttemptKey};
 
@@ -311,8 +313,12 @@ mod tests {
         // left out.
         let mut config = ExperimentsConfig::default();
         assert_eq!(ArmMode::for_config(&config), ArmMode::Normal);
-        config.force_arms.insert("L-know".to_string(), "default".to_string());
-        config.force_arms.insert("sections".to_string(), "sometimes".to_string());
+        config
+            .force_arms
+            .insert("L-know".to_string(), "default".to_string());
+        config
+            .force_arms
+            .insert("sections".to_string(), "sometimes".to_string());
         assert_eq!(ArmMode::for_config(&config), forced);
         config.maximize = true;
         assert_eq!(ArmMode::for_config(&config), ArmMode::Maximize);

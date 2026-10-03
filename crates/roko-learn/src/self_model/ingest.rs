@@ -174,7 +174,10 @@ impl RunLines {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             return false;
         };
-        match value.get("schema_version").and_then(serde_json::Value::as_str) {
+        match value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_str)
+        {
             Some(ATTEMPT_OPEN_SCHEMA) => {
                 let Ok(open) = serde_json::from_value::<AttemptOpenRecord>(value) else {
                     return false;

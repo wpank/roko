@@ -259,7 +259,12 @@ impl AttemptBook {
     ) -> Option<Arc<ArmSet>> {
         let (loops, mode) = self
             .arm_inputs
-            .get_or_init(|| Some((load_loop_registry(workdir)?, ArmMode::for_config(experiments))))
+            .get_or_init(|| {
+                Some((
+                    load_loop_registry(workdir)?,
+                    ArmMode::for_config(experiments),
+                ))
+            })
             .as_ref()?;
         Some(attempt.run.arm_set(&attempt.key, loops, mode))
     }

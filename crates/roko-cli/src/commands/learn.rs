@@ -2591,7 +2591,10 @@ fn cmd_learn_patterns(workdir: &std::path::Path, graduate: bool, json: bool) -> 
         ERROR_PATTERNS_FILE, ErrorPatternStore, GRADUATION_MIN_OCCURRENCES, GRADUATION_MIN_PLANS,
     };
 
-    let path = workdir.join(".roko").join("learn").join(ERROR_PATTERNS_FILE);
+    let path = workdir
+        .join(".roko")
+        .join("learn")
+        .join(ERROR_PATTERNS_FILE);
     let store = ErrorPatternStore::load(&path);
     if !graduate {
         if json {

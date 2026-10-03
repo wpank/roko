@@ -238,8 +238,7 @@ pub fn auroc(forecasts: &[Scored]) -> Option<f64> {
         negatives_below += negative;
         positives += positive;
     }
-    (positives > 0.0 && negatives_below > 0.0)
-        .then_some(concordant / (positives * negatives_below))
+    (positives > 0.0 && negatives_below > 0.0).then_some(concordant / (positives * negatives_below))
 }
 
 #[cfg(test)]
@@ -272,7 +271,10 @@ mod tests {
         ];
         let murphy = murphy(&golden).expect("decomposition");
         let brier = brier(&golden).expect("brier");
-        assert!((murphy.brier() - brier).abs() < 1e-9, "{murphy:?} against {brier}");
+        assert!(
+            (murphy.brier() - brier).abs() < 1e-9,
+            "{murphy:?} against {brier}"
+        );
         assert!(murphy.reliability >= 0.0 && murphy.resolution >= 0.0);
         // Weight 11, six of it events: the base rate is 6/11.
         assert!((murphy.uncertainty - 30.0 / 121.0).abs() < 1e-12);

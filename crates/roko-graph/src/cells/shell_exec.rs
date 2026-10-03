@@ -92,7 +92,9 @@ impl ShellExecConfig {
                 .as_integer()
                 .and_then(|secs| u64::try_from(secs).ok())
                 .filter(|secs| (1..=MAX_TIMEOUT_SECS).contains(secs))
-                .ok_or(format!("its `timeout_secs` must be from 1 to {MAX_TIMEOUT_SECS}"))?,
+                .ok_or(format!(
+                    "its `timeout_secs` must be from 1 to {MAX_TIMEOUT_SECS}"
+                ))?,
         };
         let env = node
             .get("env")
@@ -336,7 +338,9 @@ async fn run(
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             duration_ms: elapsed(),
         }),
-        Ok(Err(error)) => Err(Failure::Spawn(format!("the command failed to run: {error}"))),
+        Ok(Err(error)) => Err(Failure::Spawn(format!(
+            "the command failed to run: {error}"
+        ))),
         Err(_) => {
             if let Some(group) = group {
                 kill_group(group);

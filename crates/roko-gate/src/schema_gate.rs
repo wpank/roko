@@ -346,7 +346,9 @@ impl JsonSchema<'_> {
         if keyword == "anyOf" && matching == 0 {
             found.push(format!("{pointer}: matches none of `anyOf`'s schemas"));
         } else if keyword == "oneOf" && matching != 1 {
-            found.push(format!("{pointer}: matches {matching} of `oneOf`'s schemas, not one"));
+            found.push(format!(
+                "{pointer}: matches {matching} of `oneOf`'s schemas, not one"
+            ));
         }
         Ok(())
     }
@@ -390,7 +392,9 @@ fn check_type(
             "array" => instance.is_array(),
             "string" => instance.is_string(),
             "number" => instance.is_number(),
-            "integer" => instance.as_f64().is_some_and(|number| number.fract() == 0.0),
+            "integer" => instance
+                .as_f64()
+                .is_some_and(|number| number.fract() == 0.0),
             other => return Err(format!("the type `{other}`")),
         };
     }
@@ -524,9 +528,13 @@ fn check_table(
             .map(|name| cell(name).to_string())
             .collect();
         if key.iter().any(String::is_empty) {
-            violations.push(format!("{path}: row {number}, the primary key is incomplete"));
+            violations.push(format!(
+                "{path}: row {number}, the primary key is incomplete"
+            ));
         } else if let Some(first) = keys.insert(key, number) {
-            violations.push(format!("{path}: row {number} repeats row {first}'s primary key"));
+            violations.push(format!(
+                "{path}: row {number} repeats row {first}'s primary key"
+            ));
         }
     }
     Ok(())

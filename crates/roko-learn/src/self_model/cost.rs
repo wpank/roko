@@ -233,7 +233,10 @@ impl CostModel {
             (format!("arm:{arm}"), 1.0),
             ("log_spec_tokens".to_string(), log_tokens),
             (format!("family:{family}"), 1.0),
-            ("n_declared_paths".to_string(), declared_paths.unwrap_or(0.0)),
+            (
+                "n_declared_paths".to_string(),
+                declared_paths.unwrap_or(0.0),
+            ),
         ])
     }
 
@@ -327,7 +330,10 @@ mod tests {
         }
         let narrow = trained.forecast(&x);
         assert!(narrow.cost_q90 / narrow.cost_q50 < 3.0, "{narrow:?}");
-        assert!((narrow.cost_q50 - (-4.0_f64).exp()).abs() < 0.005, "{narrow:?}");
+        assert!(
+            (narrow.cost_q50 - (-4.0_f64).exp()).abs() < 0.005,
+            "{narrow:?}"
+        );
         assert!((narrow.lat_q50_s - 90.0).abs() < 1.0, "{narrow:?}");
     }
 

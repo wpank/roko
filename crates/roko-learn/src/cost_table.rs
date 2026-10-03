@@ -533,9 +533,9 @@ mod tests {
                     AgentRuntimeEvent::TurnCompleted { total_cost_usd, .. } => total_cost_usd,
                     _ => None,
                 });
-            let expected = model.and_then(|slug| snapshot.row(slug)).map(|row| {
-                (600.0 * row.input + 400.0 * row.cache_read + 100.0 * row.output) / 1e6
-            });
+            let expected = model
+                .and_then(|slug| snapshot.row(slug))
+                .map(|row| (600.0 * row.input + 400.0 * row.cache_read + 100.0 * row.output) / 1e6);
             match (cost, expected) {
                 (Some(cost), Some(expected)) => assert!(
                     (cost - expected).abs() < 1e-12,

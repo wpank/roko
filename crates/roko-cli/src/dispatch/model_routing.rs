@@ -1001,7 +1001,6 @@ impl ModelRouter {
     fn provider_of(&self, slug: &str) -> String {
         self.model_providers.get(slug).cloned().unwrap_or_default()
     }
-
 }
 
 // ─── Ladder ────────────────────────────────────────────────────────────

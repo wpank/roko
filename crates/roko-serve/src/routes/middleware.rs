@@ -4,9 +4,9 @@ use std::sync::{Arc, OnceLock};
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, UPGRADE};
 #[cfg(feature = "chain")]
 use axum::http::HeaderValue;
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, UPGRADE};
 use axum::http::{HeaderMap, Method, Request};
 use axum::http::{HeaderName, StatusCode};
 use axum::middleware::Next;

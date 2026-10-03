@@ -335,7 +335,10 @@ mod tests {
     fn lcb_matches_reference_beta_quantiles() {
         // An empty stratum under a parent at 0.25 is Beta(1, 3): BetaQ(p) = 1 − (1 − p)^(1/3).
         let lcb = BetaCounts::default().lcb(0.25, ALPHA0, LCB_DELTA);
-        assert!((lcb - (1.0 - 0.8_f64.powf(1.0 / 3.0))).abs() < 1e-6, "{lcb}");
+        assert!(
+            (lcb - (1.0 - 0.8_f64.powf(1.0 / 3.0))).abs() < 1e-6,
+            "{lcb}"
+        );
         for (p, a, b, reference) in [
             (0.2, 2.0, 1.0, 0.2_f64.sqrt()),
             (0.9, 4.0, 1.0, 0.9_f64.powf(0.25)),
@@ -386,7 +389,10 @@ mod tests {
         for _ in 0..4 {
             plain.observe("m", "f", "r", false, 1.0);
         }
-        let (a, b) = (audited.forecast("m", "f", "r"), plain.forecast("m", "f", "r"));
+        let (a, b) = (
+            audited.forecast("m", "f", "r"),
+            plain.forecast("m", "f", "r"),
+        );
         assert!(a.p < GLOBAL_PRIOR && b.p < GLOBAL_PRIOR);
         assert!((a.p - b.p).abs() < 0.03, "{a:?} against {b:?}");
     }

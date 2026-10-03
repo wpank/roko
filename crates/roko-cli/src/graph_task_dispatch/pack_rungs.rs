@@ -364,7 +364,9 @@ impl GraphTaskDispatcher {
             Err(error) => Verdict::skip(&label, format!("the judge could not answer: {error}")),
         };
         let detail = verdict.detail.clone().unwrap_or_default();
-        verdict.with_detail(format!("judge: {judge} (cross_family: {cross_family})\n{detail}"))
+        verdict.with_detail(format!(
+            "judge: {judge} (cross_family: {cross_family})\n{detail}"
+        ))
     }
 }
 
@@ -777,7 +779,11 @@ mod tests {
         );
         let prompt = dispatcher.prompt_task(&make_spec(&task), &task);
         assert_eq!(prompt.verify.len(), 1, "{:?}", prompt.verify);
-        assert!(prompt.verify[0].command.starts_with("# rung `sources` (citations): every DOI"));
+        assert!(
+            prompt.verify[0]
+                .command
+                .starts_with("# rung `sources` (citations): every DOI")
+        );
 
         let offline = Arc::new(FakeResolver { known: None });
         let (dispatcher, _) = make_test_dispatcher_with(

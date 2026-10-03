@@ -311,10 +311,7 @@ pub async fn check_citations(
         .filter(|(_, answer)| matches!(answer, Ok(Resolution::Unresolved { .. })))
         .map(|(citation, _)| citation.to_string())
         .collect();
-    let unchecked = lookups
-        .iter()
-        .filter(|(_, answer)| answer.is_err())
-        .count();
+    let unchecked = lookups.iter().filter(|(_, answer)| answer.is_err()).count();
     let total = lookups.len();
     let verdict = if !unresolved.is_empty() {
         Verdict::fail(

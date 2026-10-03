@@ -295,19 +295,17 @@ impl PriceSnapshot {
         LOADED
             .lock()
             .entry(key)
-            .or_insert_with(
-                || match Self::for_workspace(pricing, workspace_root) {
-                    Ok(snapshot) => Some(Arc::new(snapshot)),
-                    Err(error) => {
-                        tracing::warn!(
-                            workspace = %workspace_root.display(),
-                            %error,
-                            "no price snapshot: the costs it would price stay unknown"
-                        );
-                        None
-                    }
-                },
-            )
+            .or_insert_with(|| match Self::for_workspace(pricing, workspace_root) {
+                Ok(snapshot) => Some(Arc::new(snapshot)),
+                Err(error) => {
+                    tracing::warn!(
+                        workspace = %workspace_root.display(),
+                        %error,
+                        "no price snapshot: the costs it would price stay unknown"
+                    );
+                    None
+                }
+            })
             .clone()
     }
 

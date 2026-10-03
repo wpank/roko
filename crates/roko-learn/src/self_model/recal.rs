@@ -160,8 +160,11 @@ impl Recalibrator {
             let map = IsotonicMap::fit(&fit);
             let outcome = |y: bool| if y { 1.0 } else { 0.0 };
             let raw = mean_square(held_out.iter().map(|&(p, y, w)| (p - outcome(y), w)));
-            let mapped =
-                mean_square(held_out.iter().map(|&(p, y, w)| (map.apply(p) - outcome(y), w)));
+            let mapped = mean_square(
+                held_out
+                    .iter()
+                    .map(|&(p, y, w)| (map.apply(p) - outcome(y), w)),
+            );
             self.accepted[fold] =
                 matches!((mapped, raw), (Some(mapped), Some(raw)) if mapped < raw);
             self.maps[fold] = Some(map);
@@ -210,7 +213,10 @@ mod tests {
         let map = IsotonicMap::fit(&points);
         assert!(map.is_monotone(), "{map:?}");
         let mapped: Vec<f64> = (0..=20).map(|i| map.apply(f64::from(i) / 20.0)).collect();
-        assert!(mapped.windows(2).all(|pair| pair[0] <= pair[1]), "{mapped:?}");
+        assert!(
+            mapped.windows(2).all(|pair| pair[0] <= pair[1]),
+            "{mapped:?}"
+        );
         assert!(mapped.iter().all(|p| (0.0..=1.0).contains(p)));
         // Violators pool: an outcome order against the forecasts' becomes one flat block.
         let pooled = IsotonicMap::fit(&[(0.2, true, 1.0), (0.8, false, 1.0)]);

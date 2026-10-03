@@ -253,7 +253,9 @@ mod tests {
             let z: f64 = truth.iter().zip(&x).map(|(w, x)| w * x).sum();
             let y = rng.bernoulli(sigmoid(z));
             let features = FeatureVector::from_pairs(
-                x.iter().enumerate().map(|(j, value)| (format!("x{j}"), *value)),
+                x.iter()
+                    .enumerate()
+                    .map(|(j, value)| (format!("x{j}"), *value)),
             );
             model.update(&features, 0.0, y, 1.0);
         }

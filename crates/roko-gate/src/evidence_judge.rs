@@ -56,7 +56,9 @@ pub fn evidence_prompt(criteria: &[String], artefacts: &[(String, String)], diff
     }
     if !diff.trim().is_empty() {
         let diff = truncated(diff, MAX_PROMPT_DIFF_BYTES);
-        prompt.push_str(&format!("\nThe attempt's changes, for context only:\n{diff}\n"));
+        prompt.push_str(&format!(
+            "\nThe attempt's changes, for context only:\n{diff}\n"
+        ));
     }
     prompt.push_str(
         "\nAnswer with a JSON array and nothing else, one object per criterion, such as \
@@ -116,7 +118,9 @@ pub fn evidence_verdict(
         };
         let score = answer.score.clamp(0.0, 1.0);
         let quote = answer.quote.trim();
-        lines.push(format!("{number}. {criterion}: {score:.2}, quoting \"{quote}\""));
+        lines.push(format!(
+            "{number}. {criterion}: {score:.2}, quoting \"{quote}\""
+        ));
         if score < min_score {
             low.push(format!("criterion {number} scored {score:.2}"));
         }
@@ -126,7 +130,10 @@ pub fn evidence_verdict(
         let reason = format!("below {min_score:.2} with evidence: {}", low.join(", "));
         Verdict::fail(gate, reason)
     } else if scores.is_empty() {
-        Verdict::skip(gate, "no_evidence: no criterion's verdict quotes an artefact")
+        Verdict::skip(
+            gate,
+            "no_evidence: no criterion's verdict quotes an artefact",
+        )
     } else {
         let lowest = scores.iter().copied().fold(1.0_f32, f32::min);
         let mut verdict = Verdict::pass(gate).with_score(lowest);
@@ -166,8 +173,7 @@ mod tests {
         ];
         let artefacts = vec![(
             "report.md".to_string(),
-            "Transformers replaced recurrence (Vaswani et al., 2017).\nSummary: short."
-                .to_string(),
+            "Transformers replaced recurrence (Vaswani et al., 2017).\nSummary: short.".to_string(),
         )];
         let reply = "Here you go:\n[{\"criterion\": 1, \"score\": 0.3, \"quote\": \
                      \"Transformers replaced  recurrence\"}, {\"criterion\": 2, \"score\": 0.9, \

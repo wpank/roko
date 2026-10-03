@@ -400,14 +400,19 @@ mod tests {
 
         // T1 passes its verify step on its retry, T2 passes with nothing to
         // verify it, and T3 passes without having failed.
-        let fixed = verified("T1", "Added `greet`.\n\nIt returns a greeting.\nDone.\nMore.");
+        let fixed = verified(
+            "T1",
+            "Added `greet`.\n\nIt returns a greeting.\nDone.\nMore.",
+        );
         assert!(sink.interested(&fixed));
         sink.on_event(&fixed).await.expect("record the fix");
         let unverified = completed("T2", AttemptOutcome::Unverified, "unverified");
         assert!(!sink.interested(&unverified));
         sink.on_event(&unverified).await.expect("ignore the pass");
         let never_failed = verified("T3", "Nothing to fix.");
-        sink.on_event(&never_failed).await.expect("nothing to record");
+        sink.on_event(&never_failed)
+            .await
+            .expect("nothing to record");
 
         let saved = ErrorPatternStore::load(&path);
         assert_eq!(saved.len(), 2);

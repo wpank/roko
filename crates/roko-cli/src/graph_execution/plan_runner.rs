@@ -1399,6 +1399,10 @@ async fn run_graph_plan_body(
     // Create separate TUI bridges for the task dispatcher (agent output
     // streaming) and the graph lifecycle bridge (plan/node events).
     let dispatcher_tui_bridge = crate::runner::tui_bridge::TuiBridge::new(state_hub_sender.clone());
+    // M1 shows its EVs and episode moves on the run's StateHub (8130).
+    if let Some(sink) = &homeostasis {
+        sink.publish_to(dispatcher_tui_bridge.clone());
+    }
     let graph_tui_bridge = crate::runner::graph_tui_bridge::GraphTuiBridge::new(
         crate::runner::tui_bridge::TuiBridge::new(state_hub_sender),
     );

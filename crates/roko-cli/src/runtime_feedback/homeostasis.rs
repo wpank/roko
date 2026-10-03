@@ -45,12 +45,13 @@ use roko_core::config::harness_params::{
 };
 use roko_core::config::homeostasis::HomeostasisMode;
 use roko_core::config::schema::RokoConfig;
+use roko_core::dashboard_snapshot::DashboardEvent;
 use roko_core::task::TaskTier;
 use roko_fs::layout::RokoLayout;
 use roko_learn::homeostasis::controller::{Controller, ControllerEvent};
 use roko_learn::homeostasis::coupling::{AuditBoosts, audit_rate};
 use roko_learn::homeostasis::detect::Baseline;
-use roko_learn::homeostasis::ev::Ev;
+use roko_learn::homeostasis::ev::{Ev, EvBounds};
 use roko_learn::homeostasis::holdout::HarnessHoldout;
 use roko_learn::homeostasis::ledger::{
     Actor, ControllerRecord, ControllerRow, Envelope, ParamChange, append, ledger_path,
@@ -100,7 +101,19 @@ pub struct HomeostasisSink {
     audit_policy: AuditPolicy,
     /// The audit couplings that run (8127).
     boosts: parking_lot::Mutex<AuditBoosts>,
+    /// The run's StateHub, which shows what M1 sees and does (8130).
+    events: std::sync::OnceLock<Events>,
     state: parking_lot::Mutex<SinkState>,
+}
+
+/// The bridge the sink publishes its live events through.
+#[derive(Clone)]
+struct Events(crate::runner::tui_bridge::TuiBridge);
+
+impl std::fmt::Debug for Events {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Events")
+    }
 }
 
 /// What M1 decided for one attempt (8123).
@@ -211,8 +224,16 @@ impl HomeostasisSink {
             holdout: HarnessHoldout::new(holdout),
             audit_policy,
             boosts: parking_lot::Mutex::new(AuditBoosts::default()),
+            events: std::sync::OnceLock::new(),
             state: parking_lot::Mutex::new(state),
         }
+    }
+
+    /// Publish what M1 sees and does through `bridge`, the run's StateHub:
+    /// each EV after a resolution and each episode move (8130). The first
+    /// bridge stays.
+    pub fn publish_to(&self, bridge: crate::runner::tui_bridge::TuiBridge) {
+        let _ = self.events.set(Events(bridge));
     }
 
     /// M1's decision for the attempt `key`, whose run draws its arms on
@@ -500,6 +521,7 @@ impl HomeostasisSink {
         if let Some(reason) = swap_reason {
             self.handle.swap(controller.theta().clone(), reason);
         }
+        self.publish(controller, &events);
         if events
             .iter()
             .any(|event| matches!(event, ControllerEvent::Hold { .. }))
@@ -510,6 +532,78 @@ impl HomeostasisSink {
             );
         }
     }
+}
+
+impl HomeostasisSink {
+    /// Publish one resolution's view (8130): each EV's estimate and band
+    /// state, then each episode move among `events`.
+    fn publish(&self, controller: &Controller, events: &[ControllerEvent]) {
+        let Some(Events(bridge)) = self.events.get() else {
+            return;
+        };
+        let estimates = controller.estimates();
+        let breached = controller.breached();
+        for ev in Ev::ALL {
+            let (bound, inner) = ev_band(&controller.policy().ev, ev);
+            let state = if breached.contains(&ev) {
+                "breached"
+            } else {
+                "in_bounds"
+            };
+            bridge.publish_event(DashboardEvent::EvUpdate {
+                ev: label(ev),
+                value: estimates.get(ev).value,
+                bound,
+                inner: Some(inner),
+                state: state.to_string(),
+            });
+        }
+        for event in events {
+            if let Some(event) = episode_event(controller, event) {
+                bridge.publish_event(event);
+            }
+        }
+    }
+}
+
+/// `ev`'s S5 bound and inner band.
+fn ev_band(bounds: &EvBounds, ev: Ev) -> (f64, f64) {
+    let upper = |bound: &roko_learn::homeostasis::ev::UpperBound| (bound.outer(), bound.inner());
+    match ev {
+        Ev::PassRate => (bounds.pass_rate.lo, bounds.pass_rate.inner()),
+        Ev::UsdPerVerifiedSuccess => upper(&bounds.usd_per_verified_success),
+        Ev::FalseGreen => upper(&bounds.false_green),
+        Ev::LatencyP90S => upper(&bounds.latency_p90_s),
+    }
+}
+
+/// The `m1.episode` event of a controller `event` that moves an episode:
+/// it opens, closes, holds or changes θ.
+fn episode_event(controller: &Controller, event: &ControllerEvent) -> Option<DashboardEvent> {
+    let (episode_id, change) = match event {
+        ControllerEvent::EpisodeOpen { episode_id, .. }
+        | ControllerEvent::EpisodeClose { episode_id, .. } => (episode_id.clone(), None),
+        ControllerEvent::Hold { episode_id, .. } => (episode_id.clone().unwrap_or_default(), None),
+        ControllerEvent::Change(change) => {
+            let moved = format!("{}: {} -> {}", change.knob, change.from, change.to);
+            let episode_id = change.episode_id.as_deref().unwrap_or("relax");
+            (episode_id.to_string(), Some(moved))
+        }
+        _ => return None,
+    };
+    Some(DashboardEvent::M1Episode {
+        episode_id,
+        phase: label(controller.phase()),
+        change,
+    })
+}
+
+/// `value`'s name as records write it, e.g. `pass_rate` or `search`.
+fn label<T: serde::Serialize>(value: T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// Append `events`, the mode change M2's demotion of L-M1 forced, to the

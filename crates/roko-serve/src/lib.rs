@@ -2313,6 +2313,8 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::CrossCutCascade { .. }
         | DashboardEvent::LoopHealth { .. }
         | DashboardEvent::LoopTransition { .. }
+        | DashboardEvent::EvUpdate { .. }
+        | DashboardEvent::M1Episode { .. }
         | DashboardEvent::SnapshotRebased { .. } => None,
     }
 }

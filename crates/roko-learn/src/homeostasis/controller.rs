@@ -762,6 +762,13 @@ impl Controller {
         &self.policy
     }
 
+    /// Every EV's estimate over the window, E3 judged against the S5
+    /// bounds, as `ev.update` events show it (8130).
+    #[must_use]
+    pub fn estimates(&self) -> EvEstimates {
+        self.window.estimate(&self.policy.ev)
+    }
+
     /// The breached EVs, E1 first: past the outer bound and not yet back
     /// in the inner band, by the window's band or a confirmed detector.
     #[must_use]

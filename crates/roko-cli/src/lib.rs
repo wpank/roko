@@ -164,6 +164,7 @@ pub mod github_ops_impl;
 pub mod graph_checkpoint;
 #[path = "commands/graph.rs"]
 pub(crate) mod graph_command;
+pub mod graph_entry_cells;
 pub mod graph_execution;
 pub mod graph_task_dispatch;
 pub mod hints;

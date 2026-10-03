@@ -454,8 +454,6 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         std::fs::write(&path, &seeded).expect("seed the thresholds");
         let feedback = GraphFeedbackContext {
             gate_thresholds_path: Some(path.clone()),
-            post_gate_reflection_path: Some(learn.join("post-gate-reflections.json")),
-            replan_on_gate_failure: true,
             ..GraphFeedbackContext::default()
         };
         let (dispatcher, mut task) = make_test_dispatcher(
@@ -482,10 +480,10 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
     }
 
     /// Decision 2218: a frozen run's failed verify step leaves
-    /// `gate-thresholds.json` as it was and asks the helper model for no
-    /// post-gate reflection, while a live run records the step and asks for
-    /// one. The diagnosis the retry prompt carries is within-run context, so
-    /// both ask for that.
+    /// `gate-thresholds.json` as it was, while a live run records the step.
+    /// No run asks for a post-gate reflection since decision 4108, and the
+    /// diagnosis the retry prompt carries is within-run context, so both ask
+    /// for that.
     #[tokio::test]
     async fn frozen_gate_failure_writes_no_thresholds_or_reflections() {
         let frozen = tempdir().expect("tempdir");
@@ -494,21 +492,10 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         let live = tempdir().expect("tempdir");
         let (seeded, after) = failed_verify_attempt(&live, false).await;
         assert_ne!(after, seeded, "a live run records its verify run");
-
-        // The reflection runs in the background. Once the live run's has
-        // asked, a frozen run's would have asked too.
-        let live_asked = live.path().join("reflection-calls");
-        for _ in 0..600 {
-            if live_asked.exists() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        for run in [&frozen, &live] {
+            let reflections = run.path().join("learn/post-gate-reflections.json");
+            assert!(!reflections.exists(), "no run keeps a reflection (4108)");
         }
-        assert!(live_asked.exists(), "a live run asks for a reflection");
-        let frozen_asked = frozen.path().join("reflection-calls");
-        assert!(!frozen_asked.exists(), "a frozen run asks for none");
-        let reflections = frozen.path().join("learn/post-gate-reflections.json");
-        assert!(!reflections.exists(), "a frozen run keeps none");
     }
 
     /// gap-7a3527: a Graph verify run moves the pass-rate EMA by

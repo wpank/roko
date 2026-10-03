@@ -1455,10 +1455,11 @@ sibling_settle_secs = 0
             timeout_secs: 30,
             required: true,
             parallel_with: Vec::new(),
+            ..Default::default()
         }];
         let run_dir = repo.join(".roko").join("runs").join("run-1");
         std::fs::create_dir_all(&run_dir).expect("run dir");
-        let verify = prompt_verify_steps(repo, &gates);
+        let verify = prompt_verify_steps(repo, &gates, None);
         prompt_tasks_file(
             "run-1",
             "Say done",
@@ -1466,6 +1467,7 @@ sibling_settle_secs = 0
             "implementer",
             verify,
             None,
+            &RunOrigin::Cli,
             repo,
         )
         .write(&run_dir.join("tasks.toml"))

@@ -937,6 +937,7 @@ mod tests {
         let request = RunRequest {
             prompt: "add a test for the parser".into(),
             workdir: None,
+            domain: None,
         };
         let response = start_run(State(Arc::clone(&state)), ValidJson(request))
             .await
@@ -980,6 +981,7 @@ mod tests {
         let request = RunRequest {
             prompt: "add a test".into(),
             workdir: None,
+            domain: None,
         };
         let err = match start_run(State(Arc::clone(&state)), ValidJson(request)).await {
             Ok(_) => panic!("a live plan run must refuse the prompt run"),

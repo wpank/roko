@@ -474,7 +474,7 @@ pub fn audit_only_findings(changes: &[AttemptChange]) -> Vec<DiffFinding> {
             let detail = format!("product code sniffs the test run: {}", clip(line));
             findings.push(DiffFinding::new(Kind::TestDetection, path, detail));
         }
-        let printed = |line: &&str| PRINTS.is_match(line) && SUCCESS.is_match(line);
+        let printed = |line: &&&str| PRINTS.is_match(line) && SUCCESS.is_match(line);
         if let Some(line) = gained.iter().find(printed) {
             let detail = format!("product code prints a test runner's success: {}", clip(line));
             findings.push(DiffFinding::new(Kind::SuccessString, path, detail));

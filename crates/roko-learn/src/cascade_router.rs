@@ -2561,7 +2561,6 @@ impl CascadeRouter {
     ///
     /// Returns a map of `(model_slug, category_label) -> (trials, successes)`.
     /// Used for testing and introspection of the Stage 2 category-aware scoring.
-    #[cfg(test)]
     pub fn category_stats_snapshot(&self) -> HashMap<(String, String), (u64, u64)> {
         self.category_stats
             .lock()

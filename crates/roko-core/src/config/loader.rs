@@ -1950,6 +1950,9 @@ fn build_schema_tree() -> toml::Value {
     chain.bounty_market = Some(String::new());
     chain.deployer = Some(String::new());
     chain.finality_confirmations = Some(0);
+    let showcase = &mut config.showcase;
+    showcase.public_origin = Some(String::new());
+    showcase.models.price_snapshot_id = Some(String::new());
     let relay = &mut config.relay;
     relay.url = Some(String::new());
     relay.workspace_name = Some(String::new());

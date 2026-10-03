@@ -393,7 +393,8 @@ receipt = "params_digest"
 outcome = "IAE and drive against the holdout under the same disturbance, plus U"
 fixed_holdout = 0.10
 notes = [
-    "Not built: S06. Its holdout is S06's fixed static arm, never 0 while M1 is on; a demotion forces S06 into shadow mode.",
+    "S06 writes one harness_policy decision row per attempt (8123); the census measures ε from them: the params digest the attempt ran against the controller's θ, honest when the verdict's harness stamp agrees (5135). In shadow mode the learned arm runs θ₀, so ε stays 0.",
+    "Its holdout is S06's fixed static arm, never 0 while M1 is on; a demotion forces S06 into shadow mode.",
 ]
 
 [[loop]]
@@ -405,7 +406,8 @@ opportunity = "every dispatch whose allocation is not pinned"
 default_policy = "the static allocation: config default model, effort and verify depth"
 receipt = "prediction_consumed"
 notes = [
-    "Not built: S04. Shares the route layer with L-route, rotating by epoch; predictions are computed on both arms, so the CUPED covariate exists on each.",
+    "S04's active self-model writes route rows under this loop id in its epochs (6130); the census measures ε from them, its receipt the attempt's prediction row (5135).",
+    "Shares the route layer with L-route, rotating by epoch; predictions are computed on both arms, so the CUPED covariate exists on each.",
 ]
 
 [[loop]]
@@ -418,7 +420,8 @@ default_policy = "audits run and are measured, but give no feedback"
 receipt = "audit_penalty_applied"
 outcome = "the true false-green rate on hidden tests, plus U"
 notes = [
-    "Not built: S05. M4's feedback is auditable (S03 §9.6). The M4 sensor, the audits themselves, is exempt (`m4_sensor` in [learning.audit] exempt): never demoted, checked by planted known-bad passes, and outcome_sensor_degraded freezes β-based transitions when its catch rate falls.",
+    "S05's feedback shows in later route rows: DP4's audit trust leaves a candidate out with ineligible_reason audit_trust (7131); the census measures ε from those rows, the reason its receipt (5135).",
+    "M4's feedback is auditable (S03 §9.6). The M4 sensor, the audits themselves, is exempt (`m4_sensor` in [learning.audit] exempt): never demoted, checked by planted known-bad passes, and outcome_sensor_degraded freezes β-based transitions when its catch rate falls.",
 ]
 
 # ── The placebo (S03 §4.3) ────────────────────────────────────────────────

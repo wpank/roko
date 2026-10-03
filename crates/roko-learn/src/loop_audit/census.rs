@@ -16,10 +16,19 @@
 //! declared findings do. Rows written before A-DEC count as
 //! pre-instrumentation. The audit tick (backlog 5126) reads the same fold
 //! through [`measure_at`], its sequences at the auditor's α/K.
+//!
+//! The regulators are measured from their own receipts (S03 §4.8; backlog
+//! 5135): L-M1 from M1's `harness_policy` rows (`params_digest`: the θ the
+//! attempt ran against the controller's θ, on S06's fixed holdout), L-M3
+//! from the route rows its epochs write (`prediction_consumed`: the
+//! attempt's prediction row), and L-M4 from later route rows in which
+//! audit feedback left a candidate out (`audit_penalty_applied`: the
+//! candidate's `audit_trust` reason, S05 DP4).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use roko_core::config::homeostasis::HomeostasisMode;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -37,6 +46,7 @@ use crate::routing_log::{DecisionState, RoutingDecisionLog};
 use crate::runtime_feedback::LearningPaths;
 use crate::telemetry::records::{
     AuditFields, ContentDecisionPoint, ContentDecisionRecord, DecisionSource, ExecutedModel,
+    HarnessPolicyDecisionRecord, HarnessStamp,
 };
 use crate::telemetry::report::{RunRecords, undated};
 
@@ -64,6 +74,17 @@ const DREAM_ROUTING_ADVICE: &str = "dream-routing-advice.json";
 const RUNS_DIR: &str = "runs";
 /// The loop whose layer a route row without a `loop_id` drew on.
 const ROUTE_LOOP: &str = "L-route";
+/// The loop M1's `harness_policy` rows belong to.
+const HARNESS_LOOP: &str = "L-M1";
+/// The loop whose epochs let the self-model choose on the route layer.
+const SELF_MODEL_LOOP: &str = "L-M3";
+/// The loop whose feedback later route rows show.
+const AUDIT_FEEDBACK_LOOP: &str = "L-M4";
+/// L-M4's layer, when a chain's arm set draws one.
+const AUDIT_FEEDBACK_LAYER: &str = "audit_feedback";
+/// A route candidate's `ineligible_reason` when audit trust left it out
+/// (S05 DP4).
+const AUDIT_TRUST_REASON: &str = "audit_trust";
 
 /// Where a row's reason comes from (S03 §9.11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -398,9 +419,11 @@ pub fn read_runs(runs_dir: &Path) -> Vec<RunRecords> {
 
 /// Each loop's exposure and influence over the decision rows of `runs`
 /// (S03 §4.4), by loop id. A route row belongs to its `loop_id`, L-route by
-/// default; knowledge and playbook rows belong to L-know and L-play. A row
-/// without S03's fields counts as pre-instrumentation, and a pin (a task
-/// hint, an override, a ladder rung) is no opportunity.
+/// default; knowledge and playbook rows belong to L-know and L-play; M1's
+/// `harness_policy` rows to L-M1; and a route row in which audit feedback
+/// left a candidate out counts for L-M4 too (S03 §4.8). A row without S03's
+/// fields counts as pre-instrumentation, and a pin (a task hint, an
+/// override, a ladder rung outside L-M3's epochs) is no opportunity.
 #[must_use]
 pub fn measure(runs: &[RunRecords]) -> BTreeMap<String, MeasuredLoop> {
     measure_at(runs, &AuditParams::default())
@@ -435,18 +458,36 @@ fn tallies(runs: &[RunRecords], alpha: f64) -> BTreeMap<String, Tally> {
                 )
             })
             .collect();
+        let predicted: HashSet<&str> = run
+            .predictions
+            .iter()
+            .map(|line| line.record.identity.attempt_key.as_str())
+            .collect();
         for line in &run.decisions {
             let row = &line.record;
+            let ran = row
+                .attempt_key
+                .as_deref()
+                .and_then(|key| executed.get(key).copied());
+            if let Some(opportunity) = audit_feedback_opportunity(row, ran) {
+                let feedback = tally_of(&mut tallies, AUDIT_FEEDBACK_LOOP, alpha);
+                if feedback.count(&row.audit) {
+                    feedback.push(&opportunity);
+                }
+            }
             let loop_id = row.audit.loop_id.as_deref().unwrap_or(ROUTE_LOOP);
             let loop_tally = tally_of(&mut tallies, loop_id, alpha);
             if !loop_tally.count(&row.audit) {
                 continue;
             }
-            let ran = row
-                .attempt_key
-                .as_deref()
-                .and_then(|key| executed.get(key).copied());
-            if let Some(opportunity) = route_opportunity(row, ran) {
+            let opportunity = if loop_id == SELF_MODEL_LOOP {
+                let key = row.attempt_key.as_deref();
+                let consumed = key.is_some_and(|key| predicted.contains(key));
+                self_model_opportunity(row, ran, consumed)
+            } else {
+                route_opportunity(row, ran)
+            };
+            if let Some(opportunity) = opportunity {
                 loop_tally.push(&opportunity);
             }
         }
@@ -461,6 +502,23 @@ fn tallies(runs: &[RunRecords], alpha: f64) -> BTreeMap<String, Tally> {
                 continue;
             }
             if let Some(opportunity) = content_opportunity(row) {
+                loop_tally.push(&opportunity);
+            }
+        }
+        let stamps: HashMap<&str, &HarnessStamp> = run
+            .verdicts
+            .iter()
+            .filter_map(|line| {
+                let stamp = line.record.harness.as_ref()?;
+                Some((line.record.identity.attempt_key.as_str(), stamp))
+            })
+            .collect();
+        for line in &run.harness_decisions {
+            let row = &line.record;
+            let loop_tally = tally_of(&mut tallies, HARNESS_LOOP, alpha);
+            loop_tally.rows += 1;
+            let stamp = stamps.get(row.identity.attempt_key.as_str()).copied();
+            if let Some(opportunity) = harness_opportunity(row, stamp) {
                 loop_tally.push(&opportunity);
             }
         }
@@ -561,6 +619,131 @@ fn content_opportunity(row: &ContentDecisionRecord) -> Option<Opportunity<BTreeS
         honest: receipt.is_none_or(|receipt| receipt.ok),
         read: read_status(row.state.as_ref()),
         receipt: receipt.is_some(),
+        cites: None,
+    })
+}
+
+/// The opportunity an L-M3 route row records (S03 §4.8), if it is one: the
+/// self-model proposed the start rung and no pin decided. Its held-out
+/// chains ran the ladder's own rung, π⁰, so a ladder source is its default
+/// arm rather than a pin. The self-model read its state to propose, and the
+/// receipt is the attempt's consumed prediction row.
+fn self_model_opportunity(
+    row: &RoutingDecisionLog,
+    ran: Option<&ExecutedModel>,
+    consumed: bool,
+) -> Option<Opportunity<String>> {
+    let pinned = matches!(
+        row.source,
+        Some(DecisionSource::TaskHint | DecisionSource::Override)
+    );
+    if pinned || !eligible(&row.audit) {
+        return None;
+    }
+    let learned = row.proposals.learned.clone()?;
+    let reported = ran.and_then(|ran| ran.model_reported.as_deref());
+    let honest = reported.is_none_or(|reported| undated(reported) == undated(&row.selected_model));
+    let (learned_arm, propensity) = arm_of(&row.audit, row.arm_set.as_ref());
+    let default = row
+        .proposals
+        .default
+        .clone()
+        .or_else(|| row.default_model.clone());
+    Some(Opportunity {
+        learned_arm,
+        propensity,
+        learned,
+        default: default.unwrap_or_default(),
+        learned_again: row.proposals.aa.clone(),
+        executed: row.selected_model.clone(),
+        honest,
+        read: ReadStatus::Loaded,
+        receipt: consumed,
+        cites: None,
+    })
+}
+
+/// The opportunity a route row records for L-M4 (S03 §4.8), if it is one:
+/// audit feedback left a candidate out (S05 DP4). The learned action is the
+/// candidates feedback allowed; π⁰'s, every candidate; the executed one,
+/// the allowed set, widened by an excluded model that ran all the same. The
+/// receipt is the candidates' `audit_trust` reason, the penalty in a later
+/// decision's learned state.
+fn audit_feedback_opportunity(
+    row: &RoutingDecisionLog,
+    ran: Option<&ExecutedModel>,
+) -> Option<Opportunity<BTreeSet<String>>> {
+    let reason = Some(AUDIT_TRUST_REASON);
+    let excluded: BTreeSet<String> = row
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.ineligible_reason.as_deref() == reason)
+        .map(|candidate| candidate.model.clone())
+        .collect();
+    if excluded.is_empty() {
+        return None;
+    }
+    let every: BTreeSet<String> = row
+        .candidates
+        .iter()
+        .map(|candidate| candidate.model.clone())
+        .collect();
+    let learned: BTreeSet<String> = every.difference(&excluded).cloned().collect();
+    let mut executed = learned.clone();
+    if excluded.contains(&row.selected_model) {
+        executed.insert(row.selected_model.clone());
+    }
+    let reported = ran.and_then(|ran| ran.model_reported.as_deref());
+    let honest = reported.is_none_or(|reported| undated(reported) == undated(&row.selected_model));
+    let draw = row
+        .arm_set
+        .as_ref()
+        .and_then(|arms| arms.get(AUDIT_FEEDBACK_LAYER));
+    let (learned_arm, propensity) =
+        draw.map_or((true, 1.0), |draw| (!takes_default(draw.arm), draw.propensity));
+    Some(Opportunity {
+        learned_arm,
+        propensity,
+        learned,
+        default: every,
+        learned_again: None,
+        executed,
+        honest,
+        read: read_status(row.state.as_ref()),
+        receipt: true,
+        cites: None,
+    })
+}
+
+/// The opportunity M1's `harness_policy` row records (S03 §4.8), if it is
+/// one: the controller's θ differs from θ₀ and no pin chose the model. The
+/// actions are θs by digest: the controller's (learned), θ₀ (π⁰) and the θ
+/// the attempt ran. The controller is read unless M1 is off; the receipt is
+/// the row's params digest, honest when the verdict's stamp names the same
+/// θ.
+fn harness_opportunity(
+    row: &HarnessPolicyDecisionRecord,
+    stamp: Option<&HarnessStamp>,
+) -> Option<Opportunity<String>> {
+    if !row.differs || row.pinned {
+        return None;
+    }
+    let read = if row.mode == HomeostasisMode::Off {
+        ReadStatus::Missing
+    } else {
+        ReadStatus::Loaded
+    };
+    let honest = stamp.is_none_or(|stamp| stamp.params_digest == row.params_digest);
+    Some(Opportunity {
+        learned_arm: !takes_default(row.arm),
+        propensity: row.assignment.propensity,
+        learned: row.chosen.params_digest(),
+        default: row.default.params_digest(),
+        learned_again: None,
+        executed: row.params_digest.clone(),
+        honest,
+        read,
+        receipt: !row.params_digest.is_empty(),
         cites: None,
     })
 }
@@ -1282,5 +1465,144 @@ mod tests {
                 .row("L-sec")
                 .is_some_and(|row| row.measured.is_none())
         );
+    }
+    /// A chain's draw on the `harness_policy` layer that landed in `arm`, on
+    /// S06's fixed 10% holdout.
+    fn harness_draw(arm: Arm) -> Assignment {
+        let propensity = if arm == Arm::Learned { 0.9 } else { 0.1 };
+        Assignment {
+            unit: AssignmentUnit::Chain,
+            layer: "harness_policy".to_string(),
+            salt_id: "harness_policy@2026-10-03".to_string(),
+            u: 0.5,
+            h: 0.1,
+            g: 0.0,
+            arm,
+            propensity,
+        }
+    }
+
+    /// S03 §4.8 (backlog 5135): the census measures the regulators from
+    /// their own receipts, on synthetic rows in the shapes their writers
+    /// write. L-M1: ten `harness_policy` rows, one on the default arm and
+    /// one in shadow mode, so eight of nine learned-arm attempts ran the
+    /// controller's θ (ε = 8/9). L-M3: ten route rows of its epochs, seven
+    /// with the attempt's prediction row (ε = 0.7). L-M4: ten route rows in
+    /// which audit trust left `model-x` out, one of which ran it anyway
+    /// (ε = 0.9).
+    #[test]
+    fn census_measures_meta_loops_from_receipts() {
+        use roko_core::config::harness_params::HarnessParams;
+
+        use crate::routing_log::CandidateEntry;
+        use crate::telemetry::records::{
+            AttemptPredictionRecord, HARNESS_POLICY_DECISION_POINT, PREDICTION_SCHEMA,
+            PredictionDecision, PredictionPredictor,
+        };
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let run_dir = dir.path().join(".roko").join(RUNS_DIR).join("gr-meta");
+        std::fs::create_dir_all(&run_dir).expect("the run dir");
+        let (mut decisions, mut predictions, mut seq) = (String::new(), String::new(), 0_u64);
+        let mut next = || {
+            seq += 1;
+            seq
+        };
+
+        let theta0 = HarnessParams::baseline(&roko_core::config::schema::RokoConfig::default());
+        let theta = HarnessParams {
+            retry_delta: 1,
+            ..theta0.clone()
+        };
+        for index in 0..10 {
+            let key = AttemptKey::new("gr-meta", "plan", format!("m1-{index}"), 1);
+            let arm = if index == 0 {
+                Arm::Default
+            } else {
+                Arm::Learned
+            };
+            let mode = if index == 1 {
+                HomeostasisMode::Shadow
+            } else {
+                HomeostasisMode::On
+            };
+            let controls = arm == Arm::Learned && mode == HomeostasisMode::On;
+            let ran = if controls { &theta } else { &theta0 };
+            let row = HarnessPolicyDecisionRecord {
+                identity: AttemptIdentity::new(&key),
+                decision_point: HARNESS_POLICY_DECISION_POINT.to_string(),
+                assignment: harness_draw(arm),
+                arm,
+                mode,
+                policy_version: 2,
+                params_digest: ran.params_digest(),
+                chosen: theta.clone(),
+                default: theta0.clone(),
+                differs: true,
+                source: DecisionSource::Control,
+                pinned: false,
+            };
+            decisions.push_str(&line(DECISION_SCHEMA, next(), row));
+        }
+
+        for index in 0..10 {
+            let key = AttemptKey::new("gr-meta", "plan", format!("m3-{index}"), 1);
+            let mut row = route_row(&key, true);
+            row.audit.loop_id = Some(SELF_MODEL_LOOP.to_string());
+            row.source = Some(DecisionSource::SelfModel);
+            row.selected_model = "model-a".to_string();
+            decisions.push_str(&line(DECISION_SCHEMA, next(), row));
+            if index < 7 {
+                let predictor = PredictionPredictor {
+                    version: "m3-v1".to_string(),
+                    class: "m3-l1".to_string(),
+                    mode: "active".to_string(),
+                    trained_on_n: 40,
+                    features_schema: 1,
+                    features_hash: "b3:features".to_string(),
+                };
+                let decision = PredictionDecision {
+                    would_choose: Some("model-a".to_string()),
+                    default: Some("model-c".to_string()),
+                    action: "dispatch".to_string(),
+                };
+                let identity = AttemptIdentity::new(&key);
+                let prediction =
+                    AttemptPredictionRecord::new(identity, predictor, Vec::new(), decision);
+                predictions.push_str(&line(PREDICTION_SCHEMA, next(), prediction));
+            }
+        }
+
+        for index in 0..10 {
+            let key = AttemptKey::new("gr-meta", "plan", format!("m4-{index}"), 1);
+            let mut row = route_row(&key, true);
+            let trusted = CandidateEntry::new("model-a", "provider-a", 0.9, None);
+            let reason = Some(AUDIT_TRUST_REASON.to_string());
+            let distrusted = CandidateEntry::new("model-x", "provider-x", 0.8, reason);
+            row.candidates = vec![trusted, distrusted];
+            let selected = if index == 0 { "model-x" } else { "model-a" };
+            row.selected_model = selected.to_string();
+            decisions.push_str(&line(DECISION_SCHEMA, next(), row));
+        }
+        std::fs::write(RunFile::Decisions.path_in(&run_dir), decisions).expect("decisions");
+        std::fs::write(RunFile::Predictions.path_in(&run_dir), predictions).expect("predictions");
+
+        let registry = Registry::embedded().expect("the embedded registry");
+        let report = run(dir.path(), &registry, None);
+        let measured = |loop_id: &str| {
+            let row = report.row(loop_id).expect("a registered loop");
+            row.measured.clone().expect("measured from its receipts")
+        };
+        let m1 = measured("L-M1");
+        assert_eq!((m1.n_opp, m1.n_learned, m1.n_default), (10, 9, 1));
+        assert_eq!(m1.eps.est, 8.0 / 9.0, "{m1:?}");
+        assert_eq!(m1.iota_net, 1.0, "the controller's θ differs from θ₀");
+        let m3 = measured("L-M3");
+        assert_eq!((m3.n_opp, m3.n_learned), (10, 10));
+        assert_eq!((m3.eps.est, m3.eps.receipt), (0.7, 0.7), "{m3:?}");
+        let m4 = measured("L-M4");
+        assert_eq!(m4.n_opp, 10);
+        assert_eq!(m4.eps.est, 0.9, "{m4:?}");
+        assert_eq!(m4.eps.reach, 0.9, "the excluded model ran once");
     }
 }

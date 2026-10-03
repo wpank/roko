@@ -58,3 +58,7 @@ D2, D4, D5, D6 and D10 pass on the same binary; D3 and D7 fail on a different ca
 ## Notes
 
 - Found by gap-821c93's run of the shakedown (w3-pk21, 2026-10-03).
+
+## Progress
+
+- bug-ef82eb: implemented on work/bug-ef82eb at b67a1428d; cargo verification deferred to the batch gate. Cause: D1's stub wrote `calc/ops.py`, which the base holds, without reading it, and the implementer contract (`RequireToolBeforeEdit`) refused that write on every attempt, so each ended `pre_verify:no_changes`; D6 shows the same refusal with no blank answer. The retry after a blank answer inherits nothing from it. D1's stub now reads the file first: D1 passes against main's binary (823f2cfca), with 6 of 8 shakedown scenarios passing (D3 and D7 are bug-0b7695). Rust test: `graph_task_dispatch::failover::tests::retry_after_a_blank_answer_completes`.

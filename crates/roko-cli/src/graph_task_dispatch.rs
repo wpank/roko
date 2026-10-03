@@ -1074,6 +1074,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             Some(self.learned_tier_limits()),
             &task,
             express_active,
+            self.turn_cap_mult(spec, &task, ctx),
         );
         // The last attempt stopped at its turn cap with partial work on disk:
         // raise the cap and tell the agent to resume, never rerun the same cap.
@@ -2336,6 +2337,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             max_retries: task.max_retries,
             task_def_json: serde_json::to_string(task).expect("serialize task"),
             keep_workspace: false,
+            retry_budget: None,
         }
     }
 

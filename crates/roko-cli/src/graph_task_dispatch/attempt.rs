@@ -871,10 +871,31 @@ impl GraphTaskDispatcher {
         attempt
     }
 
-    /// The share of `task`'s budget ceiling its next attempt in the run `ctx`
-    /// names may spend (M1's B8, 8125): the `task_budget_scale` of the θ its
-    /// chain runs, read before the attempt opens. Every attempt of a chain
-    /// draws the same arm, so the next attempt's ordinal does not matter.
+    /// The θ the next attempt at task `task_id` of `spec`'s plan, in the run
+    /// `ctx` names, runs, read before the attempt opens: its chain's arm on
+    /// M1's holdout and the handle's θ. Every attempt of a chain draws the
+    /// same arm, so the next attempt's ordinal does not matter. Budget
+    /// admission (B8, 8125), the turn cap and the retry budget (B2, 8126)
+    /// read it. `None` without an M1 sink.
+    pub(super) fn next_attempt_theta(
+        &self,
+        spec: &TaskExecutionSpec,
+        task_id: &str,
+        ctx: &CellContext,
+    ) -> Option<roko_core::config::harness_params::HarnessParams> {
+        let sink = self.feedback.homeostasis.as_deref()?;
+        let run_id = self.attempts.run_id(ctx);
+        let plan_id = if spec.plan_id.is_empty() {
+            "-"
+        } else {
+            spec.plan_id.as_str()
+        };
+        let key = AttemptKey::new(run_id, plan_id, task_id, 1);
+        Some(sink.decide(&key, &self.attempts.epoch(run_id)).applied)
+    }
+
+    /// The share of `task`'s budget ceiling its next attempt may spend
+    /// (M1's B8, 8125): the `task_budget_scale` of the θ its chain runs.
     /// Decrease-only: 1 without an M1 sink, and for anything but a share
     /// below 1.
     pub(super) fn task_budget_scale(
@@ -883,18 +904,10 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         ctx: &CellContext,
     ) -> f64 {
-        let Some(sink) = self.feedback.homeostasis.as_deref() else {
+        let Some(theta) = self.next_attempt_theta(spec, &task.id, ctx) else {
             return 1.0;
         };
-        let run_id = self.attempts.run_id(ctx);
-        let plan_id = if spec.plan_id.is_empty() {
-            "-"
-        } else {
-            spec.plan_id.as_str()
-        };
-        let key = AttemptKey::new(run_id, plan_id, &task.id, 1);
-        let decision = sink.decide(&key, &self.attempts.epoch(run_id));
-        let scale = decision.applied.task_budget_scale;
+        let scale = theta.task_budget_scale;
         if scale > 0.0 && scale < 1.0 { scale } else { 1.0 }
     }
 

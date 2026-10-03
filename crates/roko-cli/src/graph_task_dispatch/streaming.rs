@@ -108,6 +108,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             Some(self.learned_tier_limits()),
             &task,
             express_active,
+            self.turn_cap_mult(spec, &task, ctx),
         );
         if express_active {
             tracing::info!(

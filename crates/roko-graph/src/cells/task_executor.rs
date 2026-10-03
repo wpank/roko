@@ -55,7 +55,40 @@ pub struct TaskExecutionSpec {
     /// that checkout, so it must outlive the dispatch. The attempt's output
     /// carries the lease (see [`TaskAttempt::lease`]).
     pub keep_workspace: bool,
+    /// The task's live retry budget, which the executor reads before each
+    /// retry decision in place of `max_retries` (M1's B2); `None`, as the
+    /// converter leaves it, keeps `max_retries`.
+    pub retry_budget: Option<LiveRetryBudget>,
 }
+
+/// A live retry budget for plan tasks (M1's B2, S06): the executor reads it
+/// before each retry decision, so a budget that changes during the run
+/// reaches the task's next retry. Without one, a task keeps the
+/// [`TaskExecutionSpec::max_retries`] its plan was converted with.
+pub trait RetryBudgetSource: Send + Sync {
+    /// The retry budget of `spec`'s task in the run `ctx` names, now; `None`
+    /// keeps `spec.max_retries`.
+    fn max_retries(&self, spec: &TaskExecutionSpec, ctx: &CellContext) -> Option<u32>;
+}
+
+/// A [`RetryBudgetSource`] as a [`TaskExecutionSpec`] holds it: two specs
+/// hold the same budget when they share one source.
+#[derive(Clone)]
+pub struct LiveRetryBudget(pub Arc<dyn RetryBudgetSource>);
+
+impl std::fmt::Debug for LiveRetryBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LiveRetryBudget(..)")
+    }
+}
+
+impl PartialEq for LiveRetryBudget {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for LiveRetryBudget {}
 
 impl TaskExecutionSpec {
     /// Decode the converter-owned TOML node configuration.
@@ -105,7 +138,18 @@ impl TaskExecutionSpec {
                 .and_then(|value| value.get("keep_workspace"))
                 .and_then(toml::Value::as_bool)
                 .unwrap_or(false),
+            retry_budget: None,
         }
+    }
+
+    /// The task's retry budget now, in the run `ctx` names: what its live
+    /// source says, else `max_retries`.
+    #[must_use]
+    pub fn current_max_retries(&self, ctx: &CellContext) -> u32 {
+        self.retry_budget
+            .as_ref()
+            .and_then(|live| live.0.max_retries(self, ctx))
+            .unwrap_or(self.max_retries)
     }
 }
 
@@ -878,6 +922,14 @@ impl TaskExecutorCell {
         self.backoff = backoff;
         self
     }
+
+    /// Read the task's retry budget from `source` before each retry decision
+    /// instead of keeping its converted `max_retries` (M1's B2).
+    #[must_use]
+    pub fn with_retry_budget(mut self, source: Arc<dyn RetryBudgetSource>) -> Self {
+        self.spec.retry_budget = Some(LiveRetryBudget(source));
+        self
+    }
 }
 
 impl Default for TaskExecutorCell {
@@ -957,7 +1009,7 @@ impl Cell for TaskExecutorCell {
                         // only delay, and so does a run cancelled while the
                         // attempt ran (bug-ceb581).
                         Err(error)
-                            if retry < self.spec.max_retries
+                            if retry < self.spec.current_max_retries(ctx)
                                 && !ctx.is_cancelled()
                                 && !matches!(
                                     error,
@@ -977,7 +1029,7 @@ impl Cell for TaskExecutorCell {
                                 plan = %self.spec.plan_id,
                                 task = %self.spec.title,
                                 attempt = retry,
-                                max_retries = self.spec.max_retries,
+                                max_retries = self.spec.current_max_retries(ctx),
                                 wait_ms,
                                 error = %error,
                                 "TaskExecutorCell attempt failed; retrying in {wait_ms} ms"
@@ -1001,7 +1053,7 @@ impl Cell for TaskExecutorCell {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     use parking_lot::Mutex;
 
@@ -1126,6 +1178,72 @@ task_def_json = "{}"
 
         assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 2);
         assert_eq!(output[0].body.as_text().expect("text"), "retry-output");
+    }
+
+    /// A live retry budget that [`MovesBudgetDispatcher`] moves.
+    struct MovableBudget(AtomicU32);
+
+    impl RetryBudgetSource for MovableBudget {
+        fn max_retries(&self, _spec: &TaskExecutionSpec, _ctx: &CellContext) -> Option<u32> {
+            Some(self.0.load(Ordering::SeqCst))
+        }
+    }
+
+    /// Fails every attempt's verify step, and sets `budget` to `to` during
+    /// attempt `at` (0-based).
+    struct MovesBudgetDispatcher {
+        calls: AtomicUsize,
+        budget: Arc<MovableBudget>,
+        at: usize,
+        to: u32,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for MovesBudgetDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == self.at {
+                self.budget.0.store(self.to, Ordering::SeqCst);
+            }
+            Err(RokoError::gate("test", "the verify step failed"))
+        }
+    }
+
+    /// M1's B2 (8126): the executor reads a task's live retry budget before
+    /// each retry decision, so a budget moved during an attempt decides
+    /// whether the next one runs. Lowered below the converted `max_retries`
+    /// (2) it stops the task early; raised above it, the task retries on.
+    /// Without a source the converted budget holds.
+    #[tokio::test(start_paused = true)]
+    async fn task_executor_reads_live_retry_budget() {
+        // The starting budget (none: no source), the attempt that moves it,
+        // its new value, and the attempts the task then runs.
+        let cases = [(None, 0, 0, 3), (Some(4), 1, 1, 2), (Some(0), 0, 3, 4)];
+        for (start, at, to, attempts) in cases {
+            let budget = Arc::new(MovableBudget(AtomicU32::new(start.unwrap_or(0))));
+            let dispatcher = Arc::new(MovesBudgetDispatcher {
+                calls: AtomicUsize::new(0),
+                budget: Arc::clone(&budget),
+                at,
+                to,
+            });
+            let mut cell = TaskExecutorCell::live(config(), dispatcher.clone());
+            if start.is_some() {
+                cell = cell.with_retry_budget(budget);
+            }
+            cell.execute(Vec::new(), &CellContext::new())
+                .await
+                .expect_err("every attempt fails");
+            assert_eq!(
+                dispatcher.calls.load(Ordering::SeqCst),
+                attempts,
+                "{start:?} -> {to}"
+            );
+        }
     }
 
     /// Fails its first dispatches with `failures`, in order, then succeeds,

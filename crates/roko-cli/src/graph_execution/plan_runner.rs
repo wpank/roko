@@ -3179,6 +3179,18 @@ fn drop_exclusion_for_worktrees(graph: &mut roko_graph::Graph, worktree_per_task
     }
 }
 
+/// `cell`, reading the live `budgets` before each retry when M1 moves them
+/// (B2, 8126).
+fn with_live_budgets(
+    cell: roko_graph::cells::TaskExecutorCell,
+    budgets: Option<&Arc<dyn roko_graph::cells::RetryBudgetSource>>,
+) -> roko_graph::cells::TaskExecutorCell {
+    match budgets {
+        Some(budgets) => cell.with_retry_budget(Arc::clone(budgets)),
+        None => cell,
+    }
+}
+
 /// Run one admitted plan to a terminal checkpoint.
 ///
 /// A plan that cannot be converted or validated still gets a terminal
@@ -3217,6 +3229,15 @@ async fn run_one_plan(
             .map(|(task_id, info)| (task_id.clone(), info.max_retries));
         sink.set_retry_limits(&plan.id, limits);
     }
+    // M1 moves the budgets the tasks do not author during the run (B2,
+    // 8126); `--max-retries` fixes every budget.
+    let live_budgets = if ctx.max_retries.is_none()
+        && ctx.graph_task_dispatcher.homeostasis_sink().is_some()
+    {
+        Some(Arc::clone(ctx.graph_task_dispatcher).live_retry_budgets(retry_budgets))
+    } else {
+        None
+    };
 
     // An omitted `max_parallel` converts as 1, as it did before it meant "as
     // wide as the DAG allows" (gap-272448): the checkpoint identity hashes
@@ -3265,7 +3286,8 @@ async fn run_one_plan(
                 roko_graph::register_topology_cells(&mut reg);
                 let plan_dispatcher = Arc::clone(ctx.task_dispatcher);
                 reg.register("task-executor", move |config| {
-                    Box::new(TaskExecutorCell::live(config, Arc::clone(&plan_dispatcher)))
+                    let cell = TaskExecutorCell::live(config, Arc::clone(&plan_dispatcher));
+                    Box::new(with_live_budgets(cell, live_budgets.as_ref()))
                 });
                 (g, reg)
             }
@@ -3286,7 +3308,8 @@ async fn run_one_plan(
                 let mut reg = roko_graph::default_registry();
                 let plan_dispatcher = Arc::clone(ctx.task_dispatcher);
                 reg.register("task-executor", move |config| {
-                    Box::new(TaskExecutorCell::live(config, Arc::clone(&plan_dispatcher)))
+                    let cell = TaskExecutorCell::live(config, Arc::clone(&plan_dispatcher));
+                    Box::new(with_live_budgets(cell, live_budgets.as_ref()))
                 });
                 (g, reg)
             }

@@ -22,9 +22,6 @@ links = { depends_on = ["gap-cc5051", "gap-f61823", "gap-b5caf3", "gap-aea13a", 
 command = "grep -rqw 'fn withhold_arm_omits_sections_and_logs_propensity' crates/roko-cli/src/ && cargo test -p roko-cli withhold_arm_omits_sections_and_logs_propensity"
 
 [[verify]]
-command = "grep -rqw 'fn withheld_error_patterns_leave_the_prompt' crates/roko-cli/src/ && cargo test -p roko-cli withheld_error_patterns_leave_the_prompt"
-
-[[verify]]
 command = "grep -rqw 'fn pinned_sections_never_excluded' crates/roko-cli/src/ && cargo test -p roko-cli pinned_sections_never_excluded"
 
 [[verify]]
@@ -89,3 +86,4 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - 4129: implemented at 8cd3972da (cargo verification deferred to the batch gate). RAG-10 writes, `retrieval_ctx` and `retrieval_outcomes_path` removed; the TUI and serve readers keep the historical file.
 - 4131: implemented at 80abfe778 and a9a495a15 (cargo verification deferred to the batch gate). Census adds store.arm_set, reader.withhold_arms, store.placebo, sink.router_source_credit and a live/observe_only/retired state per registry loop; the fixture shows the section and playbook joins. Not shown: "a verified pass reinforces the included knowledge" (the fixture has no knowledge store).
 - gap-29fe0a: implemented at a0da86af0 (cargo verification deferred to the batch gate). Maximize mode zeroes the spec gate's holdout_frac (plan-load gate and plan run's pre-check); test `no_holdout_flag_draws_no_holdout_attempts`.
+- 2026-10-03 (coordinator, gate 7b): task 4121 (an L-err withhold arm) is not done and its verify left this item: decision 4115 (DECISIONS.md, 2026-10-02) confirmed "no L-err arm", so the loop stays observe-only.

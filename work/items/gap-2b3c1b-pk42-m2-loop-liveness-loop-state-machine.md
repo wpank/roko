@@ -98,3 +98,7 @@ Worker w3 (no cargo; Rust checks deferred to the batch gate), base `f74890b4b`, 
 - 5119 `8488f2d1d`: model experiments use the same draws (`model_experiment` layer) and the same rule. `DefaultHasher` and UCB1 are gone, `roko experiment model show` prints draws, and L-model-exp's finding is retired.
 - 5120 `d5f30aa80`: `loop_audit::faults` adds flags behind the `fault-injection` feature, with ground-truth rows. `crates/roko-learn/Cargo.toml` gains a `[features]` table.
 - 5121 `88da18324`: `loop_audit::canary` adds the probe driver with frozen `CanaryWriter` and `DryRunPlanner` traits.
+- 2026-10-03 (coordinator, gate 7b): task 5117's example, run at the gate (`cargo run -q -p roko-learn --release --example loop_audit_sim -- --reps 10000`, 265 s):
+  `C4 family-wise false harm-demotion: 0.0000 (0/10000, K = 8; 95% CI 0.0000–0.0004)`
+  `legacy check_conclusion A/A false-winner: 0.3352 (3352/10000)`
+  Both match the worker's Python replica.

@@ -14,6 +14,9 @@ workspace = true
 ## Chaos engineering / fault injection framework for evaluation testing.
 ## Activate with `--features chaos` and set `ROKO_CHAOS_MODE=1` at runtime.
 chaos = []
+## The SPC ensemble (CUSUM, EWMA chart, BOCPD), PELT and Hotelling's T-squared:
+## nothing reads their alerts, so they are parked out of the default build (9224).
+spc = []
 
 [dependencies]
 roko-core = { path = "../roko-core" }

@@ -11,6 +11,8 @@
 //! - `golden_path_fixture_plan_merges_green`: the plan runs through the
 //!   ladder on the scripted provider, escalates once, is delivered into the
 //!   run's batch branch, and the merged seed is green.
+//! - `golden_path_live` (backlog 3117, ignored): the same run on the real
+//!   models of an operator's ladder, with a report of what it cost.
 //!
 //! The TypeScript checks need Node 22.6 or later, which runs TypeScript by
 //! stripping its types; without it they are skipped, and the test says so.
@@ -21,6 +23,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::Instant;
 
 use assert_cmd::cargo::cargo_bin;
 use common::scripted_provider::{Script, ScriptedProvider, Turn};
@@ -297,12 +300,11 @@ fn seed_repo(repo: &Path, config: &str) {
 
 /// `roko --json plan run plans/golden-path` in `repo` through the built
 /// binary, as a user whose home is `home`, without the invoking
-/// environment's provider keys, `ROKO_*` variables, log and config
-/// variables. Cargo builds into each checkout's own `target/` (a relative
-/// `CARGO_TARGET_DIR`), so no task's worktree reuses crates another one built
-/// from older sources, and finds its toolchains where the real home keeps
-/// them.
-fn plan_run(repo: &Path, home: &Path) -> Output {
+/// environment's `ROKO_*` variables, log and config variables. Cargo builds
+/// into each checkout's own `target/` (a relative `CARGO_TARGET_DIR`), so no
+/// task's worktree reuses crates another one built from older sources, and
+/// finds its toolchains where the real home keeps them.
+fn plan_command(repo: &Path, home: &Path) -> Command {
     let mut command = Command::new(cargo_bin("roko"));
     command
         .current_dir(repo)
@@ -318,9 +320,6 @@ fn plan_run(repo: &Path, home: &Path) -> Output {
             }
         }
     }
-    for name in roko_core::child_env::PROVIDER_KEY_VARS {
-        command.env_remove(name);
-    }
     for (name, _) in std::env::vars_os() {
         if name.to_string_lossy().starts_with("ROKO_") {
             command.env_remove(name);
@@ -329,32 +328,104 @@ fn plan_run(repo: &Path, home: &Path) -> Output {
     for name in ["RUST_LOG", "XDG_CONFIG_HOME", "CLAUDECODE"] {
         command.env_remove(name);
     }
-    command.output().expect("run roko plan run")
+    command
 }
 
 /// The run's JSON summary: the last stdout line that opens an object,
-/// through the end of stdout.
-fn run_summary(stdout: &[u8], log: &str) -> Value {
+/// through the end of stdout; `None` when that is not JSON.
+fn run_summary(stdout: &[u8]) -> Option<Value> {
     let stdout = String::from_utf8_lossy(stdout);
     let start = stdout.rfind("\n{").map_or(0, |index| index + 1);
-    serde_json::from_str(&stdout[start..]).unwrap_or_else(|error| panic!("{error}: {log}"))
+    serde_json::from_str(&stdout[start..]).ok()
 }
 
-/// The verdict rows of the run's attempt log, `.roko/runs/<run>/attempts.jsonl`.
-fn verdicts(repo: &Path) -> Vec<Value> {
-    let runs: Vec<PathBuf> = fs::read_dir(repo.join(".roko/runs"))
+/// The run's directory, `.roko/runs/<run>`: there is one run in `repo`.
+fn run_dir(repo: &Path) -> PathBuf {
+    let mut runs: Vec<PathBuf> = fs::read_dir(repo.join(".roko/runs"))
         .expect("the run wrote .roko/runs")
         .map(|entry| entry.expect("a run directory").path())
         .filter(|path| path.is_dir())
         .collect();
     assert_eq!(runs.len(), 1, "{runs:?}");
-    fs::read_to_string(runs[0].join("attempts.jsonl"))
+    runs.remove(0)
+}
+
+/// The verdict rows of the attempt log in `run_dir`, `attempts.jsonl`.
+fn verdicts(run_dir: &Path) -> Vec<Value> {
+    fs::read_to_string(run_dir.join("attempts.jsonl"))
         .expect("read the run's attempts.jsonl")
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str::<Value>(line).expect("a JSON row"))
         .filter(|row| row["schema_version"] == "roko.verdict/1")
         .collect()
+}
+
+/// Where an attempt ran and how it ended: `<rung> <reason> <outcome>`, with
+/// `-` for a pinned attempt's rung.
+fn place(verdict: &Value) -> String {
+    let ladder = &verdict["ladder"];
+    format!(
+        "{} {} {}",
+        ladder["rung"].as_str().unwrap_or("-"),
+        ladder["reason"].as_str().unwrap_or("?"),
+        verdict["outcome"].as_str().unwrap_or("?")
+    )
+}
+
+/// What a run of the fixture plan in `repo` must show, scripted or live: it
+/// exited 0 with one delivered batch, every task's last attempt passed and
+/// none ran pinned, and the seed's `main` takes the batch branch by
+/// fast-forward, after which the seed, built into `target`, passes the
+/// plan's whole-plan check. Returns each task's attempts, in order, as
+/// [`place`]s.
+fn assert_merges_green(
+    repo: &Path,
+    plan: &TasksFile,
+    run: &Output,
+    target: &Path,
+) -> BTreeMap<String, Vec<String>> {
+    let log = format!(
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(run.status.success(), "{log}");
+    let summary = run_summary(&run.stdout).unwrap_or_else(|| panic!("no JSON summary: {log}"));
+    let batch = &summary["batch"];
+    let deliveries = batch["deliveries"].as_array().map_or(0, Vec::len);
+    assert_eq!(deliveries, 1, "{summary:#}");
+    let delivered = batch["deliveries"][0]["state"].as_str();
+    assert_eq!(delivered, Some("delivered"), "{summary:#}");
+    let branch = batch["branch"].as_str().expect("the run's batch branch");
+
+    let mut attempts: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for verdict in verdicts(&run_dir(repo)) {
+        let task = verdict["task_id"].as_str().unwrap_or("?").to_string();
+        attempts.entry(task).or_default().push(place(&verdict));
+    }
+    for task in &plan.tasks {
+        let tried = attempts.get(&task.id).cloned().unwrap_or_default();
+        let id = &task.id;
+        let last = tried.last().map_or("none", String::as_str);
+        assert!(
+            last.ends_with(" passed"),
+            "{id} did not pass: {tried:?}\n{log}"
+        );
+        let pinned = tried.iter().any(|place| place.contains(" pinned "));
+        assert!(!pinned, "{id} ran pinned: {tried:?}");
+    }
+
+    git(repo, &["merge", "--ff-only", branch]);
+    for step in &plan.meta.verify {
+        let (passed, printed) = sh(repo, target, &step.command);
+        assert!(
+            passed,
+            "the merged seed fails `{}`:\n{printed}",
+            step.command
+        );
+    }
+    attempts
 }
 
 /// backlog 3116: the fixture plan runs end to end on the scripted provider,
@@ -378,45 +449,14 @@ fn golden_path_fixture_plan_merges_green() {
     let home = temp.path().join("home");
     fs::create_dir_all(&home).expect("create the home directory");
 
-    let run = plan_run(&repo, &home);
-    let log = format!(
-        "stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr)
-    );
-    assert!(run.status.success(), "{log}");
-    let summary = run_summary(&run.stdout, &log);
-    let batch = &summary["batch"];
-    let deliveries = batch["deliveries"].as_array().map_or(0, Vec::len);
-    assert_eq!(deliveries, 1, "{summary:#}");
-    let delivered = batch["deliveries"][0]["state"].as_str();
-    assert_eq!(delivered, Some("delivered"), "{summary:#}");
-    let branch = batch["branch"].as_str().expect("the run's batch branch");
+    // The scripted run has no use for the invoking environment's keys.
+    let mut command = plan_command(&repo, &home);
+    for name in roko_core::child_env::PROVIDER_KEY_VARS {
+        command.env_remove(name);
+    }
+    let run = command.output().expect("run roko plan run");
 
-    // Each task's attempts, in order: `<rung> <reason> <outcome>`.
-    let mut attempts: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for verdict in verdicts(&repo) {
-        let ladder = &verdict["ladder"];
-        let place = format!(
-            "{} {} {}",
-            ladder["rung"].as_str().unwrap_or("-"),
-            ladder["reason"].as_str().unwrap_or("?"),
-            verdict["outcome"].as_str().unwrap_or("?")
-        );
-        let task = verdict["task_id"].as_str().unwrap_or("?").to_string();
-        attempts.entry(task).or_default().push(place);
-    }
-    for task in &plan.tasks {
-        let tried = attempts.get(&task.id).cloned().unwrap_or_default();
-        let id = &task.id;
-        let last = tried.last().map_or("none", String::as_str);
-        assert!(
-            last.ends_with(" passed"),
-            "{id} did not pass: {tried:?}\n{log}"
-        );
-        let pinned = tried.iter().any(|place| place.contains(" pinned "));
-        assert!(!pinned, "{id} ran pinned: {tried:?}");
-    }
+    let attempts = assert_merges_green(&repo, &plan, &run, &temp.path().join("target"));
     assert_eq!(
         attempts[ESCALATED],
         [
@@ -424,19 +464,183 @@ fn golden_path_fixture_plan_merges_green() {
             "cheap start gate_failed",
             "mid escalated passed",
         ],
-        "{log}"
+        "{attempts:#?}"
     );
+}
 
-    // The seed's `main` takes the batch by fast-forward, and the merged seed,
-    // built into a target of its own, passes the plan's whole-plan check.
-    git(&repo, &["merge", "--ff-only", branch]);
-    let target = temp.path().join("target");
-    for step in &plan.meta.verify {
-        let (passed, printed) = sh(&repo, &target, &step.command);
+/// The live run's `roko.toml`: the operator's file at `path`, which names
+/// the providers, `[models.*]` and `[routing.ladder]` to run on, with its
+/// plan budget set to `max_usd` and a turn cap of at most $0.50 unless it
+/// sets its own.
+fn live_config(path: &Path, max_usd: f64) -> String {
+    let text = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let mut config: toml::Table = toml::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} is not TOML: {error}", path.display()));
+    for table in ["providers", "models"] {
         assert!(
-            passed,
-            "the merged seed fails `{}`:\n{printed}",
-            step.command
+            config.contains_key(table),
+            "{} has no [{table}]",
+            path.display()
         );
+    }
+    let routing = config.get("routing");
+    let has_ladder = routing.is_some_and(|routing| routing.get("ladder").is_some());
+    assert!(has_ladder, "{} has no [routing.ladder]", path.display());
+    let budget = config
+        .entry("budget")
+        .or_insert(toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .expect("[budget] is a table");
+    budget.insert("max_plan_usd".to_string(), toml::Value::Float(max_usd));
+    budget
+        .entry("max_turn_usd")
+        .or_insert(toml::Value::Float(max_usd.min(0.5)));
+    toml::to_string(&config).expect("serialize the live config")
+}
+
+/// The live run's report: its id, wall time and budget, each task's attempts
+/// (rung, why it ran there, model, outcome, cost), the escalations, and the
+/// cost per verified task.
+fn live_report(
+    run_path: &Path,
+    summary: &Value,
+    verdicts: &[Value],
+    wall_secs: f64,
+    max_usd: f64,
+) -> Value {
+    let mut tasks: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    let mut last_passed: BTreeMap<String, bool> = BTreeMap::new();
+    let mut escalations = Vec::new();
+    let (mut billed, mut api_equiv) = (0.0_f64, 0.0_f64);
+    for verdict in verdicts {
+        let task = verdict["task_id"].as_str().unwrap_or("?").to_string();
+        let (ladder, cost) = (&verdict["ladder"], &verdict["cost"]);
+        let attempt = serde_json::json!({
+            "rung": ladder["rung"],
+            "reason": ladder["reason"],
+            "model": verdict["executed"]["model_dispatched"],
+            "outcome": verdict["outcome"],
+            "billed_usd": cost["billed_usd"],
+            "api_equiv_usd": cost["api_equiv_usd"],
+        });
+        if ladder["reason"] == "escalated" {
+            escalations.push(serde_json::json!({ "task": task, "attempt": attempt }));
+        }
+        billed += cost["billed_usd"].as_f64().unwrap_or(0.0);
+        api_equiv += cost["api_equiv_usd"].as_f64().unwrap_or(0.0);
+        last_passed.insert(task.clone(), verdict["outcome"] == "passed");
+        tasks.entry(task).or_default().push(attempt);
+    }
+    let verified = last_passed.values().filter(|&&passed| passed).count();
+    let per_verified = |total: f64| (verified > 0).then_some(total / verified as f64);
+    let run_id = run_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    serde_json::json!({
+        "schema": "roko.golden_path_live/1",
+        "run_id": run_id,
+        "succeeded": summary["succeeded"],
+        "wall_secs": wall_secs,
+        "max_plan_usd": max_usd,
+        "tasks": tasks,
+        "escalations": escalations,
+        "verified_tasks": verified,
+        "cost_usd": { "billed": billed, "api_equiv": api_equiv },
+        "cost_per_verified_task_usd": {
+            "billed": per_verified(billed),
+            "api_equiv": per_verified(api_equiv),
+        },
+        "run_total_cost_usd": summary["total_cost_usd"],
+    })
+}
+
+/// Write `report` as `golden-path-live-<run>.json` to
+/// `ROKO_GOLDEN_PATH_REPORT_DIR`, else to a directory in the system's temp
+/// dir; never inside the repository, nor in `scratch`, which the test
+/// removes. Returns the file's path.
+fn write_report(report: &Value, scratch: &Path) -> PathBuf {
+    let dir = match std::env::var_os("ROKO_GOLDEN_PATH_REPORT_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => std::env::temp_dir().join("roko-golden-path-live"),
+    };
+    fs::create_dir_all(&dir).expect("create the report directory");
+    let dir = dir.canonicalize().expect("resolve the report directory");
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for outside in [repository, scratch.to_path_buf()] {
+        let outside = outside.canonicalize().expect("resolve a directory");
+        assert!(
+            !dir.starts_with(&outside),
+            "the report directory {} is inside {}",
+            dir.display(),
+            outside.display()
+        );
+    }
+    let run = report["run_id"].as_str().unwrap_or("unknown");
+    let path = dir.join(format!("golden-path-live-{run}.json"));
+    let text = serde_json::to_string_pretty(report).expect("serialize the report");
+    fs::write(&path, text + "\n").expect("write the report");
+    path
+}
+
+/// backlog 3117: the fixture plan on real models, through an operator's
+/// ladder. Ignored by default, since it spends money (decision 3114 caps
+/// it); an operator runs it on request:
+///
+/// ```text
+/// ROKO_GOLDEN_PATH_CONFIG=live.toml cargo test -p roko-cli \
+///     --test golden_path_acceptance golden_path_live -- --ignored --nocapture
+/// ```
+///
+/// `ROKO_GOLDEN_PATH_CONFIG` names the `roko.toml` to run on (see
+/// [`live_config`]); the plan budget is `ROKO_GOLDEN_PATH_MAX_USD`, $4 by
+/// default. Keys come from the operator's environment: the test sets none,
+/// and with HOME a temp dir roko reads no `~/.roko/.env`. The run starts
+/// once and nothing touches it. Besides the scripted run's checks, it is not
+/// interrupted, and every attempt names the model it dispatched and has a
+/// cost amount. The report ([`live_report`]) goes to
+/// `ROKO_GOLDEN_PATH_REPORT_DIR`, else to a temp dir the test prints.
+#[test]
+#[ignore = "live models: it spends money"]
+fn golden_path_live() {
+    assert!(
+        node_runs_typescript(),
+        "node 22.6 or later must be on PATH: the plan has TypeScript checks"
+    );
+    let config_path = std::env::var_os("ROKO_GOLDEN_PATH_CONFIG")
+        .map(PathBuf::from)
+        .expect("ROKO_GOLDEN_PATH_CONFIG names the roko.toml to run on");
+    let max_usd = std::env::var("ROKO_GOLDEN_PATH_MAX_USD")
+        .map_or(Ok(4.0), |value| value.trim().parse::<f64>())
+        .expect("ROKO_GOLDEN_PATH_MAX_USD is an amount in dollars");
+    assert!(max_usd.is_finite() && max_usd > 0.0, "{max_usd}");
+    let plan = TasksFile::parse(&fixture("plan").join("tasks.toml")).expect("the plan parses");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    seed_repo(&repo, &live_config(&config_path, max_usd));
+    let home = temp.path().join("home");
+    fs::create_dir_all(&home).expect("create the home directory");
+
+    // One start, and no resume or edit to `.roko/` until the run ends.
+    let started = Instant::now();
+    let run = plan_command(&repo, &home)
+        .output()
+        .expect("run roko plan run");
+    let wall_secs = started.elapsed().as_secs_f64();
+    let run_path = run_dir(&repo);
+    let verdicts = verdicts(&run_path);
+    let summary = run_summary(&run.stdout).unwrap_or_default();
+    let report = live_report(&run_path, &summary, &verdicts, wall_secs, max_usd);
+    let written = write_report(&report, temp.path());
+    println!("golden-path live report: {}", written.display());
+
+    assert_merges_green(&repo, &plan, &run, &temp.path().join("target"));
+    assert!(summary["interrupted_by"].is_null(), "{summary:#}");
+    for verdict in &verdicts {
+        let dispatched = verdict["executed"]["model_dispatched"].is_string();
+        assert!(dispatched, "no dispatched model: {verdict:#}");
+        let cost = &verdict["cost"];
+        let amount = cost["billed_usd"].is_number() || cost["api_equiv_usd"].is_number();
+        assert!(amount, "no cost amount: {verdict:#}");
     }
 }

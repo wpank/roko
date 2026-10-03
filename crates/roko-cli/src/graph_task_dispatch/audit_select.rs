@@ -20,8 +20,9 @@
 //!   do not commit). The pre-verify screen notes the trees ([`AuditSelector::note_trees`]);
 //!   a selected unit's tree is pinned under `refs/roko/audit/<sel_id>`, so
 //!   git gc keeps it for the audit worker.
-//! - The attempt's output is scanned for hidden-suite canaries
-//!   (`audit.leak_canary`).
+//! - The attempt's output, and its composed prompt as dispatch sends it
+//!   ([`AuditSelector::scan_prompt`]), are scanned for hidden-suite canaries
+//!   (`audit.leak_canary`); a leaked suite is burned.
 //! - Each run has an audit worker (`crate::audit::worker`, 7123), started
 //!   when the run opens: a selected unit goes to it with the task inputs
 //!   noted when its attempt opened ([`AuditSelector::note_task`]), and the
@@ -38,7 +39,7 @@ use roko_core::audit_home::AuditVault;
 use roko_core::audit_types::Stratum;
 use roko_core::config::GatesConfig;
 use roko_core::config::audit::AuditConfig;
-use roko_gate::audit::canary::{CanaryScanner, scan_text};
+use roko_gate::audit::canary::{CanaryHit, CanaryScanner, scan_text};
 use roko_gate::audit::hidden::HiddenStore;
 use roko_gate::audit::ledger::{AuditEvent, AuditLedger};
 use roko_gate::audit::policy::{
@@ -374,15 +375,27 @@ impl AuditSelector {
         }
     }
 
-    /// Log every hidden-suite canary in `output` and expose its suite.
+    /// SC4 (7130): log every hidden-suite canary in an attempt's composed
+    /// prompt, its system and user parts, and burn its suite.
+    pub(super) fn scan_prompt(&self, system: &str, user: &str) {
+        let mut hits = scan_text(system);
+        hits.extend(scan_text(user));
+        self.report_canaries("prompt", &hits);
+    }
+
+    /// Log every hidden-suite canary in `output` and burn its suite.
     fn scan(&self, output: &str) {
-        let hits = scan_text(output);
+        self.report_canaries("output", &scan_text(output));
+    }
+
+    /// Log canary `hits` found at `place`, and burn their suites.
+    fn report_canaries(&self, place: &str, hits: &[CanaryHit]) {
         let Some(store) = self.hidden.as_ref().filter(|_| !hits.is_empty()) else {
             return;
         };
         let mut ledger = self.ledger.lock();
-        if let Err(error) = CanaryScanner::new(store).report(&mut ledger, "output", &hits) {
-            tracing::warn!(%error, "a hidden-suite canary in an agent's output was not logged");
+        if let Err(error) = CanaryScanner::new(store).report(&mut ledger, place, hits) {
+            tracing::warn!(place, %error, "a hidden-suite canary was not logged");
         }
     }
 

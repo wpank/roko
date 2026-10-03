@@ -8,10 +8,12 @@
 //! (`.roko/episodes.jsonl`, knowledge-store files, playbooks).
 //! [`CanaryScanner::report`] appends `audit.leak_canary { place, suite_id }`
 //! to the ledger for each (place, suite) pair once, with `suite_id`
-//! `unknown` for a canary the store does not hold, and moves an active suite
-//! to exposed. The scanner holds no secret: the canary form is public, and
-//! only a suite's body is hidden. Its callers are the settle-time scan of
-//! prompt, output and diff (7121) and the run-close sweep (7123).
+//! `unknown` for a canary the store does not hold, and burns an active
+//! suite: exposed, then retired, so B1 writes a replacement. The scanner
+//! holds no secret: the canary form is public, and only a suite's body is
+//! hidden. Its callers are the dispatch-time scan of the composed prompt
+//! (7130), the settle-time scan of the output (7121), and the audit
+//! worker's scan of the diff and its run-close sweep (7123).
 
 use std::collections::HashSet;
 use std::io::BufRead as _;
@@ -49,7 +51,7 @@ pub struct LeakReport {
     pub place: String,
     /// The suite, or [`UNKNOWN_SUITE`].
     pub suite_id: String,
-    /// Whether the report moved the suite to exposed.
+    /// Whether the report burned the suite: exposed, then retired.
     pub exposed: bool,
 }
 
@@ -119,8 +121,9 @@ impl<'a> CanaryScanner<'a> {
         }
     }
 
-    /// Log `hits`, found at `place`, and expose each active suite they
-    /// name. A (place, suite) pair already reported is skipped.
+    /// Log `hits`, found at `place`, and burn each active suite they name:
+    /// exposed, then retired. A (place, suite) pair already reported is
+    /// skipped.
     ///
     /// # Errors
     ///
@@ -146,9 +149,10 @@ impl<'a> CanaryScanner<'a> {
             })?;
             let exposed = match suite {
                 Some(meta) if meta.state == SuiteState::Active => {
-                    let to = SuiteState::Exposed;
-                    self.store
-                        .transition(ledger, &meta.suite_id, to, "canary_hit")?;
+                    for to in [SuiteState::Exposed, SuiteState::Retired] {
+                        self.store
+                            .transition(ledger, &meta.suite_id, to, "canary_hit")?;
+                    }
                     true
                 }
                 _ => false,
@@ -230,7 +234,7 @@ mod tests {
         assert_eq!(reports[0].suite_id, leaked.suite_id);
         assert!(reports[0].exposed);
         let state = store.meta(&leaked.suite_id).expect("meta").state;
-        assert_eq!(state, SuiteState::Exposed);
+        assert_eq!(state, SuiteState::Retired, "a leaked suite is burned");
         let again = scanner
             .sweep(&mut ledger, &[episodes])
             .expect("a second sweep");

@@ -261,10 +261,25 @@ impl ProviderHealth {
     ///
     /// The circuit opens immediately and stays open until the provider's
     /// reported reset rather than a class-default cooldown; after that the
-    /// next request is a half-open probe.
-    pub fn record_exhaustion(&mut self, now_ms: i64, until_ms: i64) {
-        self.record_failure(ErrorClass::Exhausted, now_ms);
+    /// next request is a half-open probe. A provider the generic failure path
+    /// already holds open for an exhaustion, as it does once it has
+    /// classified the same refusal, only has the quarantine's end moved: one
+    /// refusal is one failure (bug-c55f1c). Returns whether a failure was
+    /// recorded.
+    pub fn record_exhaustion(&mut self, now_ms: i64, until_ms: i64) -> bool {
+        let last_exhausted = self
+            .failure_window
+            .back()
+            .is_some_and(|record| record.error_class == ErrorClass::Exhausted);
+        let held = self.state == CircuitState::Open
+            && self.cooldown_until.is_some_and(|until| until > now_ms)
+            && last_exhausted;
+        if !held {
+            self.record_failure(ErrorClass::Exhausted, now_ms);
+        }
+        self.state = CircuitState::Open;
         self.cooldown_until = Some(until_ms.max(now_ms));
+        !held
     }
 
     /// Clear the live circuit state, as an operator does once the cause of a
@@ -560,23 +575,33 @@ impl ProviderHealthRegistry {
     /// The provider stays unavailable until `until_ms` (its reported reset
     /// time, or now plus a cooldown when none was reported), then admits one
     /// half-open probe. The state is persisted like any other outcome, so a
-    /// restarted run keeps routing around the provider.
+    /// restarted run keeps routing around the provider. A refusal the generic
+    /// failure path already recorded as an exhaustion is not counted again
+    /// ([`ProviderHealth::record_exhaustion`]).
     pub fn record_exhaustion(&self, provider_id: &str, until_ms: i64) {
         let key = normalize_provider_key(provider_id);
-        tracing::info!(
-            monotonic_counter.roko_provider_failures_total = 1_u64,
-            provider = %key,
-            error_class = ?ErrorClass::Exhausted,
-            until_ms,
-            "provider usage exhaustion recorded"
-        );
-        self.count_failure(&key, ErrorClass::Exhausted);
         let mut providers = self.providers.lock();
         let health = providers
             .entry(key.clone())
             .or_insert_with(|| new_provider_health(&key));
-        health.record_exhaustion(unix_ms_now(), until_ms);
+        let recorded = health.record_exhaustion(unix_ms_now(), until_ms);
         drop(providers);
+        if recorded {
+            tracing::info!(
+                monotonic_counter.roko_provider_failures_total = 1_u64,
+                provider = %key,
+                error_class = ?ErrorClass::Exhausted,
+                until_ms,
+                "provider usage exhaustion recorded"
+            );
+            self.count_failure(&key, ErrorClass::Exhausted);
+        } else {
+            tracing::info!(
+                provider = %key,
+                until_ms,
+                "provider usage exhaustion already recorded; its quarantine now ends at the reset"
+            );
+        }
         self.schedule_persist();
     }
 
@@ -2065,6 +2090,25 @@ mod tests {
             h.cooldown_until,
             Some(1_000 + DEFAULT_EXHAUSTION_COOLDOWN_MS)
         );
+    }
+
+    /// bug-c55f1c: the generic failure path records an exhaustion refusal
+    /// first, then the dedicated path quarantines the provider until its
+    /// reported reset; together they count one failure. An exhaustion after
+    /// the quarantine ended counts again.
+    #[test]
+    fn exhaustion_after_its_generic_failure_counts_once() {
+        let mut h = new_provider_health("claude_cli");
+        h.record_failure(ErrorClass::Exhausted, 1_000);
+        assert!(!h.record_exhaustion(1_001, 7_200_000));
+        assert_eq!(h.total_failures, 1);
+        assert_eq!(h.failure_window.len(), 1);
+        assert_eq!(h.cooldown_until, Some(7_200_000));
+
+        assert!(h.is_available(7_200_000));
+        assert!(h.record_exhaustion(7_200_001, 14_400_000));
+        assert_eq!(h.total_failures, 2);
+        assert_eq!(h.cooldown_until, Some(14_400_000));
     }
 
     #[test]

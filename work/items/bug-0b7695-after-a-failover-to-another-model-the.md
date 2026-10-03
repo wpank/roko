@@ -93,3 +93,25 @@ Shakedown D2, D4, D5, D6 and D10 pass on the same binary.
   A prototype of 1 and 2 (reverted) makes D3 dispatch `['glm-4.7', 'glm-4.7', 'gpt-5.4-mini']`; only 3 remains, and it
   needs a decision on how ViabilityBench meters probe calls. Also seen in D7: the stub's 401 is classed `Unknown`,
   not `AuthFailure`, so the provider is not quarantined at once.
+- 2026-10-03 (w4-length, second pass): the title's premise is false. After a failover the attempt record already
+  names the model that answered, and the only Roko mislabel was the episode's `initial_model` (67ab735ed, test
+  `failover_attempt_records_the_model_that_answered`). D3 and D7 really failed on three driver defects and one
+  classifier miss, all fixed on this branch:
+  1. ced3430c1: a routed arm's command lines name no `--model`, so the ladder, the probe and failover apply.
+  2. ced3430c1: the stub answers Roko's rung probe as a healthy model does (`answers_probes`: an `echo` call), and a
+     rung that is down fails it. D3 and D7 assert Roko's design (backlog 1121): the probe drops the dead rung before
+     attempt 1, so attempt 1 dispatches glm-4.7 and no attempt dispatches the dead rung. Their healthy rungs now
+     solve the task (`solves`: read, write, done); the old "Done." reply could never reach the `completed` status
+     they assert.
+  3. ced3430c1: proxy requests from before the first attempt started (S01's `attempt_started_at`) are plan-start
+     traffic. They are checked against the arm's rungs only, and metered with the first attempt, each at its own
+     model's price (`plan_start_calls`), so the record's cost still equals the proxy's (D3: $0.00350735 both).
+  4. d687e060a: the 401 classed `Unknown` was a classifier miss. An OpenAI-compatible 401 is the typed
+     `AuthFailure`, but Graph dispatch's provider health and the rung probe classify a failed run from its text,
+     "provider error: authentication failed", which the shared classifier did not know. `AUTH_FAILURE_MARKER` now
+     ties the Display text to the classifier (test `rendered_auth_failure_classifies_as_auth_failure`, plus a
+     roko-learn `ErrorClass` row). cargo is deferred to the batch gate.
+- Shakedown with a copy of the batch binary (484e172fe) and this branch's driver: D2, D3, D4, D5, D6, D7 and D10
+  pass, and D1 fails `gate_failed`. D1's fixture writes `calc/ops.py` before reading it, which Roko's implementer
+  contract refuses (RequireToolBeforeEdit). With `sequence(Blank(), READ_OP, *WRITE_OPS, DONE)` all eight pass (tried
+  locally, not committed: D1 is bug-ef82eb's). The driver's offline suite passes: 152 passed, 13 skipped.

@@ -9,15 +9,18 @@
 //! = false` still opts a plan out of all of them.
 //!
 //! A `command` rung runs its command as a verify step. A `citations` rung
-//! (9122) checks the citations in its artefacts once the attempt's verify
-//! steps pass ([`GraphTaskDispatcher::check_kind_rungs`]). The other kinds
-//! are not built yet (9123 judge, 9124 schema, 9137 confirm, and receipt
-//! with 9132's effects): an advisory or optional rung of such a kind is
-//! skipped, and a task that must pass one fails before its agent runs.
+//! (9122) and a `judge` rung (9123) check the files their artefacts match
+//! once the attempt's verify steps pass
+//! ([`GraphTaskDispatcher::check_kind_rungs`]); an advisory one, as a judge
+//! is by default, is recorded and never fails the attempt. The other kinds
+//! are not built yet (9124 schema, 9137 confirm, and receipt with 9132's
+//! effects): an advisory or optional rung of such a kind is skipped, and a
+//! task that must pass one fails before its agent runs.
 
 use roko_core::config::GateRungConfig;
 use roko_core::config::schema::RungKind;
 use roko_core::{TaskDomain, Verdict};
+use roko_gate::evidence_judge;
 use roko_learn::telemetry::VerifyStepVerdict;
 
 use super::verification::{published_gate_output, rung_step_label};
@@ -31,9 +34,13 @@ const MAX_ARTEFACT_FILES: usize = 50;
 const MAX_ARTEFACT_BYTES: u64 = 1 << 20;
 
 /// Whether rungs of `kind` have a check: `command` rungs run as verify
-/// steps, and `citations` rungs through `roko_gate`'s citation check (9122).
+/// steps, `citations` rungs through `roko_gate`'s citation check (9122), and
+/// `judge` rungs through an evidence-citing judge (9123).
 fn is_built(kind: RungKind) -> bool {
-    matches!(kind, RungKind::Command | RungKind::Citations)
+    matches!(
+        kind,
+        RungKind::Command | RungKind::Citations | RungKind::Judge
+    )
 }
 
 /// What an attempt's rungs of kinds other than `command` found
@@ -46,6 +53,18 @@ pub(super) struct KindRungs {
     /// Whether a rung that must pass could not run, so that the attempt is
     /// not verified.
     pub(super) skipped: bool,
+    /// Whether a rung that must pass passed, which verifies an attempt
+    /// that has no verify step.
+    pub(super) verified: bool,
+}
+
+impl KindRungs {
+    /// Whether an attempt whose verify steps passed, of which it has some
+    /// when `has_steps`, still ends unverified: a rung that must pass could
+    /// not run, or nothing verified the attempt at all.
+    pub(super) fn leaves_unverified(&self, has_steps: bool) -> bool {
+        self.skipped || (!has_steps && !self.verified)
+    }
 }
 
 impl GraphTaskDispatcher {
@@ -103,32 +122,46 @@ impl GraphTaskDispatcher {
         self
     }
 
-    /// The rungs of kinds other than `command` that an attempt at `task`
-    /// faces and that have a check: [`Self::check_kind_rungs`] runs them.
+    /// The rungs of kinds other than `command` that have a check and that an
+    /// attempt at `task` runs: those its pack holds that are required or
+    /// advisory, unless its plan opts out of the workspace rungs.
+    /// [`Self::check_kind_rungs`] runs them.
     pub(super) fn kind_rungs(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
     ) -> Vec<GateRungConfig> {
-        self.task_rungs(spec, task)
+        if !self.plan_runs_workspace_rungs(spec) {
+            return Vec::new();
+        }
+        self.pack_rungs(spec, task)
+            .iter()
             .filter(|rung| !rung.kind.is_command() && is_built(rung.kind))
+            .filter(|rung| rung.required || rung.is_advisory())
             .cloned()
             .collect()
     }
 
-    /// Run `rungs` ([`Self::kind_rungs`]) over the work an attempt at `task`
-    /// left in `workdir`, once its verify steps passed, and record each in
+    /// Run `rungs` ([`Self::kind_rungs`]) over the work attempt
+    /// `attempt_key` at `task`, which model `executor` ran, left in
+    /// `workdir`, once its verify steps passed, and record each in
     /// `step_verdicts` and on the dashboard, its detail included.
     ///
-    /// A `citations` rung looks up every citation in the files its
-    /// `artefacts` match (`roko_gate::check_citations`); it fails when none
-    /// matches. A rung that fails gives a line for the attempt's failure, and
-    /// one that could not run (a lookup it could not make) leaves the attempt
-    /// unverified, never passed.
+    /// Each checks the files its `artefacts` match, and fails when none
+    /// matches. A `citations` rung looks up every citation in them
+    /// (`roko_gate::check_citations`); a `judge` rung has a helper model
+    /// score them against its rubric, quoting them ([`Self::judge_rung`]).
+    /// A rung that must pass and fails gives a line for the attempt's
+    /// failure, and one that could not run (a lookup it could not make, a
+    /// judge that quoted nothing) leaves the attempt unverified, never
+    /// passed. An advisory rung's verdict is only recorded.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn check_kind_rungs(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
+        attempt_key: &str,
+        executor: &str,
         rungs: &[GateRungConfig],
         workdir: &Path,
         step_verdicts: &mut Vec<VerifyStepVerdict>,
@@ -138,20 +171,29 @@ impl GraphTaskDispatcher {
             let label = rung_step_label(&rung.name);
             let shown = format!("{} {}", rung.kind, rung.artefacts.join(" "));
             let started = Instant::now();
-            let verdict = match rung.kind {
-                RungKind::Citations => {
-                    let artefacts = read_artefacts(workdir, &rung.artefacts);
-                    if artefacts.is_empty() {
-                        let globs = rung.artefacts.join(", ");
-                        Verdict::fail(&label, format!("no artefact matches {globs}"))
-                    } else {
+            let artefacts = read_artefacts(workdir, &rung.artefacts);
+            let verdict = if artefacts.is_empty() {
+                let globs = rung.artefacts.join(", ");
+                Verdict::fail(&label, format!("no artefact matches {globs}"))
+            } else {
+                match rung.kind {
+                    RungKind::Citations => {
                         let resolver = self.citation_resolver.as_ref();
                         roko_gate::check_citations(&label, &artefacts, resolver).await
                     }
+                    RungKind::Judge => {
+                        let judged = JudgedArtefacts {
+                            attempt_key,
+                            executor,
+                            workdir,
+                            artefacts: &artefacts,
+                        };
+                        self.judge_rung(spec, task, rung, &judged).await
+                    }
+                    // A rung of a kind not built yet refused the attempt
+                    // before its agent ran (`unbuilt_rung`).
+                    _ => continue,
                 }
-                // A rung of a kind not built yet refused the attempt before
-                // its agent ran (`unbuilt_rung`).
-                _ => continue,
             };
             let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             let verdict = verdict.with_duration(elapsed);
@@ -182,9 +224,14 @@ impl GraphTaskDispatcher {
                 skip_reason: verdict.skip_reason.clone(),
                 ..VerifyStepVerdict::default()
             });
+            if !rung.required || rung.is_advisory() {
+                continue;
+            }
             if verdict.skipped {
                 checked.skipped = true;
-            } else if !verdict.passed {
+            } else if verdict.passed {
+                checked.verified = true;
+            } else {
                 let detail = verdict.detail.as_deref().unwrap_or_default();
                 checked
                     .failures
@@ -193,6 +240,83 @@ impl GraphTaskDispatcher {
         }
         checked
     }
+
+    /// A `judge` rung's verdict on `judged` (9123): a helper model scores
+    /// the artefacts against each criterion of the rung's rubric, or of the
+    /// task's acceptance criteria, with the attempt's diff as context, and
+    /// must quote an artefact for each score to count
+    /// (`roko_gate::evidence_judge`). The helper model is one of another
+    /// model family than the executor's when one is configured; the
+    /// verdict's detail says which, as `cross_family`. With no criterion, no
+    /// helper model, or no answer it can read, the rung is skipped.
+    async fn judge_rung(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        rung: &GateRungConfig,
+        judged: &JudgedArtefacts<'_>,
+    ) -> Verdict {
+        let label = rung_step_label(&rung.name);
+        let criteria = rubric_criteria(judged.workdir, rung, task);
+        if criteria.is_empty() {
+            return Verdict::skip(&label, "no rubric or acceptance criteria to judge against");
+        }
+        let chosen = super::routing_context::select_judge_model_key(&self.config, judged.executor);
+        let Some((model_key, cross_family)) = chosen else {
+            return Verdict::skip(&label, "no helper model can judge");
+        };
+        let diff = match self
+            .attempt_diff(spec, task, judged.attempt_key, judged.workdir)
+            .await
+        {
+            Some(diff) => diff.patch().await.unwrap_or_default(),
+            None => String::new(),
+        };
+        let prompt = evidence_judge::evidence_prompt(&criteria, judged.artefacts, &diff);
+        let judge = model_key.clone();
+        let oracle = roko_gate::AgentJudgeOracle::new(Arc::new(self.helper_agent(model_key)));
+        let verdict = match oracle.answer(&prompt).await {
+            Ok(reply) => match evidence_judge::parse_criterion_answers(&reply) {
+                Some(answers) => evidence_judge::evidence_verdict(
+                    &label,
+                    &criteria,
+                    judged.artefacts,
+                    &answers,
+                    self.config.gates.llm_judge_min_score,
+                ),
+                None => Verdict::skip(&label, "the judge's answer holds no criterion verdicts"),
+            },
+            Err(error) => Verdict::skip(&label, format!("the judge could not answer: {error}")),
+        };
+        let detail = verdict.detail.clone().unwrap_or_default();
+        verdict.with_detail(format!("judge: {judge} (cross_family: {cross_family})\n{detail}"))
+    }
+}
+
+/// The work a `judge` rung looks at: the attempt, the model that ran it, its
+/// workspace and the artefacts read from it.
+pub(super) struct JudgedArtefacts<'a> {
+    attempt_key: &'a str,
+    executor: &'a str,
+    workdir: &'a Path,
+    artefacts: &'a [(String, String)],
+}
+
+/// The criteria a `judge` rung scores against: its `rubric`, the text or
+/// the workspace file it names, a criterion per non-empty line, list
+/// markers dropped; else the task's acceptance criteria.
+fn rubric_criteria(workdir: &Path, rung: &GateRungConfig, task: &TaskDef) -> Vec<String> {
+    let rubric = rung.rubric.as_deref().map_or("", str::trim);
+    if rubric.is_empty() {
+        return task.acceptance.clone();
+    }
+    let text = std::fs::read_to_string(workdir.join(rubric)).unwrap_or_else(|_| rubric.to_string());
+    text.lines()
+        .map(|line| line.trim().trim_start_matches(['-', '*']).trim())
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
 }
 
 /// The files `globs` match in `workdir`, each as its path in `workdir` and
@@ -296,18 +420,23 @@ fn checks(rung: &GateRungConfig) -> String {
         RungKind::Citations => {
             format!("every DOI, arXiv id and URL that {artefacts} cites must resolve")
         }
+        RungKind::Judge => {
+            format!("a judge scores {artefacts} against its rubric, quoting it as evidence")
+        }
         _ => format!("it checks {artefacts}"),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use roko_core::config::schema::{GatePackConfig, RungKind};
+    use roko_core::agent::ProviderKind;
+    use roko_core::config::schema::{GatePackConfig, ModelProfile, ProviderConfig, RungKind};
     use tempfile::tempdir;
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_spec, make_test_dispatcher, make_test_dispatcher_with, no_auto_fix,
+        FIXTURE_PROVIDER_TIMEOUT_MS, VERIFY_PROVIDER, final_turn, make_spec, make_test_dispatcher,
+        make_test_dispatcher_with, no_auto_fix, spawn_openai_mock,
     };
 
     /// A required `command` rung `name` that runs `command`.
@@ -554,6 +683,101 @@ mod tests {
         assert_eq!(
             TaskGateVerdict::from_signals(&unverified),
             Some(TaskGateVerdict::Unverified)
+        );
+    }
+
+    /// A `research` pack whose one rung, blocking, has a judge score
+    /// `report.md` against one criterion; the helper model is
+    /// `judge-model`, on an OpenAI-compatible mock at `base_url`.
+    fn judge_pack(config: &mut RokoConfig, base_url: String) {
+        no_auto_fix(config);
+        config.providers.insert(
+            "judge_api".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(base_url),
+                api_key_env: Some("PATH".to_string()),
+                timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ttft_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                connect_timeout_ms: Some(FIXTURE_PROVIDER_TIMEOUT_MS),
+                ..ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "judge-model".to_string(),
+            ModelProfile {
+                provider: "judge_api".to_string(),
+                slug: "judge-1".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        config.routing.fast_task_model = "judge-model".to_string();
+        let rubric = GateRungConfig {
+            kind: RungKind::Judge,
+            artefacts: vec!["report.md".to_string()],
+            rubric: Some("Every claim cites a source".to_string()),
+            advisory: Some(false),
+            ..rung("rubric", "")
+        };
+        let research = GatePackConfig {
+            rungs: vec![rubric],
+        };
+        config.gates.packs.insert("research".to_string(), research);
+    }
+
+    /// 9123: a blocking `judge` rung's score counts only with a quote from
+    /// the artefact. A verdict that quotes nothing is `no_evidence`: it does
+    /// not fail the attempt, which ends unverified. A quoted low score fails
+    /// it.
+    #[tokio::test]
+    async fn judge_rung_without_quoted_evidence_gives_no_score() {
+        let temp = tempdir().expect("tempdir");
+        let report = "Transformers replaced recurrence (Vaswani et al., 2017).\n";
+        std::fs::write(temp.path().join("report.md"), report).expect("report");
+        let unquoted = r#"[{"criterion": 1, "score": 0.2, "quote": ""}]"#;
+        let quoted = r#"[{"criterion": 1, "score": 0.2, "quote": "replaced recurrence (Vaswani"}]"#;
+        // The failed attempt asks the helper model for a diagnosis too.
+        let replies = vec![
+            final_turn(unquoted),
+            final_turn(quoted),
+            final_turn("diagnosis"),
+        ];
+        let (base_url, requests) = spawn_openai_mock(replies);
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| judge_pack(config, base_url),
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify.clear();
+        task.domain = Some(TaskDomain::Research);
+
+        let outputs = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("a verdict without evidence does not fail the attempt");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Unverified)
+        );
+        let prompt = requests.lock()[0].to_string();
+        assert!(prompt.contains("Every claim cites a source"), "{prompt}");
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("a quoted low score fails a blocking judge rung");
+        let RokoError::Verify { message, .. } = error else {
+            panic!("expected a verify failure, got {error}");
+        };
+        assert!(
+            message.contains("below 0.80 with evidence: criterion 1 scored 0.20"),
+            "{message}"
         );
     }
 }

@@ -99,6 +99,8 @@ pub mod env_builder;
 pub mod error;
 pub mod error_patterns;
 pub mod eval_generator;
+/// The judge rung's verdict: criterion scores count only with quoted evidence (9123).
+pub mod evidence_judge;
 pub mod fact_check;
 pub mod feedback;
 /// Forensic causal chain reconstruction from content-addressed artifacts (GATE-07).

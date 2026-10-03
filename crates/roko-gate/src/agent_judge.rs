@@ -28,6 +28,28 @@ impl AgentJudgeOracle {
     pub fn new(agent: Arc<dyn Agent>) -> Self {
         Self { agent }
     }
+
+    /// The agent's whole answer to `prompt`, as the judge rung reads it
+    /// (9123).
+    ///
+    /// # Errors
+    ///
+    /// When the agent's run fails or its answer is not text.
+    pub async fn answer(&self, prompt: &str) -> Result<String, String> {
+        let input = Signal::builder(Kind::Prompt)
+            .body(Body::text(prompt.to_string()))
+            .build();
+        let result = self.agent.run(&input, &Context::now()).await;
+        if !result.success {
+            return Err(format!("judge agent `{}` failed", self.agent.name()));
+        }
+        result
+            .output
+            .body
+            .as_text()
+            .map(str::to_string)
+            .map_err(|error| format!("judge answer is not text: {error}"))
+    }
 }
 
 impl std::fmt::Debug for AgentJudgeOracle {
@@ -41,19 +63,8 @@ impl std::fmt::Debug for AgentJudgeOracle {
 #[async_trait]
 impl JudgeOracle for AgentJudgeOracle {
     async fn judge(&self, prompt: &str) -> Result<f32, String> {
-        let input = Signal::builder(Kind::Prompt)
-            .body(Body::text(format!("{prompt}\n\n{ANSWER_FORMAT}")))
-            .build();
-        let result = self.agent.run(&input, &Context::now()).await;
-        if !result.success {
-            return Err(format!("judge agent `{}` failed", self.agent.name()));
-        }
-        let answer = result
-            .output
-            .body
-            .as_text()
-            .map_err(|error| format!("judge answer is not text: {error}"))?;
-        parse_judge_score(answer).ok_or_else(|| {
+        let answer = self.answer(&format!("{prompt}\n\n{ANSWER_FORMAT}")).await?;
+        parse_judge_score(&answer).ok_or_else(|| {
             let start: String = answer.chars().take(80).collect();
             format!("no score in the judge's answer: {start}")
         })

@@ -697,7 +697,12 @@ impl GraphTaskDispatcher {
     /// reflection calls, which count toward the attempt being verified
     /// ([`HelperAgent`]).
     fn cheap_agent(&self) -> Option<HelperAgent> {
-        let model_key = select_cheap_model_key(&self.config)?;
+        select_cheap_model_key(&self.config).map(|model_key| self.helper_agent(model_key))
+    }
+
+    /// A helper agent wired to `model_key`, as [`Self::cheap_agent`] builds
+    /// one. The judge rung asks one from another model family (9123).
+    fn helper_agent(&self, model_key: String) -> HelperAgent {
         let target = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
             .resolve(&model_key);
         let agent = CheapFactoryAgent {
@@ -711,7 +716,7 @@ impl GraphTaskDispatcher {
                 .max(1)
                 .saturating_mul(1_000),
         };
-        Some(HelperAgent::new(agent, target, self.pricing_snapshot()))
+        HelperAgent::new(agent, target, self.pricing_snapshot())
     }
 
     /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`

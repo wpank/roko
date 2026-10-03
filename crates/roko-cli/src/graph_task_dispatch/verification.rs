@@ -110,6 +110,7 @@ impl GraphTaskDispatcher {
                 retry_key,
                 attempt_number,
                 attempt_key,
+                &dispatch.target.model_slug,
                 progress_tx,
                 unchanged_tree,
                 steps,
@@ -163,6 +164,7 @@ impl GraphTaskDispatcher {
         retry_key: &str,
         attempt_number: u32,
         attempt_key: &str,
+        executor: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
         unchanged_tree: bool,
         step_verdicts: &mut Vec<VerifyStepVerdict>,
@@ -180,7 +182,7 @@ impl GraphTaskDispatcher {
         // The pack's rungs of kinds other than `command`, which run once the
         // steps pass (9122, `pack_rungs`).
         let kind_rungs = self.kind_rungs(spec, task);
-        let mut kinds_skipped = false;
+        let mut kinds = pack_rungs::KindRungs::default();
         if !steps.is_empty() || !kind_rungs.is_empty() {
             let payload = GatePayload::in_dir(&effective_workdir)
                 .with_label(format!("{}/{}", spec.plan_id, task.id))
@@ -531,11 +533,18 @@ impl GraphTaskDispatcher {
             }
 
             if failures.is_empty() && !kind_rungs.is_empty() {
-                let checked = self
-                    .check_kind_rungs(spec, task, &kind_rungs, &effective_workdir, step_verdicts)
+                kinds = self
+                    .check_kind_rungs(
+                        spec,
+                        task,
+                        attempt_key,
+                        executor,
+                        &kind_rungs,
+                        &effective_workdir,
+                        step_verdicts,
+                    )
                     .await;
-                kinds_skipped = checked.skipped;
-                failures.extend(checked.failures);
+                failures.append(&mut kinds.failures);
             }
 
             // A probe of an unchanged tree settles here: nothing auto-fixes
@@ -546,7 +555,7 @@ impl GraphTaskDispatcher {
                     self.gate_retry_context.clear(&spec.plan_id, &task.id);
                     self.retrieval_ctx.lock().remove(&retry_key);
                     self.forget_diff_base(attempt_key);
-                    return Ok(if kinds_skipped {
+                    return Ok(if kinds.leaves_unverified(!steps.is_empty()) {
                         TaskGateVerdict::Unverified
                     } else {
                         TaskGateVerdict::Passed
@@ -1086,7 +1095,7 @@ impl GraphTaskDispatcher {
         }
 
         self.forget_diff_base(attempt_key);
-        Ok(if (steps.is_empty() && kind_rungs.is_empty()) || kinds_skipped {
+        Ok(if kinds.leaves_unverified(!steps.is_empty()) {
             TaskGateVerdict::Unverified
         } else if preexisting_filtered {
             TaskGateVerdict::PassedWithPreexistingFailures

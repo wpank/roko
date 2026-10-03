@@ -88,6 +88,28 @@ pub(super) fn select_cheap_model_key(config: &RokoConfig) -> Option<String> {
     select_cheap_model_key_with(config, |key| config.provider_available_for_model_key(key))
 }
 
+/// The helper model that judges an attempt `executor` (a model slug) ran
+/// (9123): the cheap helper model among those of another model family, with
+/// `true`, when one is available; else the cheap helper model, with `false`.
+pub(super) fn select_judge_model_key(
+    config: &RokoConfig,
+    executor: &str,
+) -> Option<(String, bool)> {
+    let family = |slug: &str| roko_core::config::model_registry::model_meta(slug).family;
+    let executor_family = family(executor);
+    let models = config.effective_models();
+    let cross_family = select_cheap_model_key_with(config, |key| {
+        config.provider_available_for_model_key(key)
+            && models
+                .get(key)
+                .is_some_and(|profile| family(&profile.slug) != executor_family)
+    });
+    match cross_family {
+        Some(key) => Some((key, true)),
+        None => select_cheap_model_key(config).map(|key| (key, false)),
+    }
+}
+
 /// [`select_cheap_model_key`] with an injectable provider-availability check.
 fn select_cheap_model_key_with(
     config: &RokoConfig,

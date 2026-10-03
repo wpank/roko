@@ -192,14 +192,19 @@ A rung's `kind` says what it checks. `command`, the default, runs `command` unde
 DataCite), arXiv id (DataCite) and http(s) URL (`HEAD`, then `GET`) that the files its `artefacts`
 match cite. One that does not resolve fails the task and is named in the retry feedback; one that
 cannot be looked up (no network, a timeout, a server error, or a URL roko's network policy refuses)
-leaves the task unverified, never passed. Every lookup is listed in the rung's gate output. `judge`,
-`schema`, `receipt` and `confirm` parse and are validated but are not built yet: a plan task that
-must pass one fails before its agent runs, and an advisory or optional one is skipped. Loading fails when a rung lacks what its kind needs: a `command` rung a command, a
+leaves the task unverified, never passed. Every lookup is listed in the rung's gate output. `judge`
+runs then too: a helper model, from another model family than the attempt's when one is configured,
+scores the files its `artefacts` match against each line of `rubric` (or the task's acceptance
+criteria), with the attempt's diff as context. A score counts only when the judge quotes an artefact
+word for word; a criterion without such a quote is `no_evidence`, and a rung with no counted score
+is skipped. The gate output names the judge model and `cross_family`. `schema`, `receipt` and
+`confirm` parse and are validated but are not built yet: a plan task that must pass one fails
+before its agent runs, and an advisory or optional one is skipped. Loading fails when a rung lacks what its kind needs: a `command` rung a command, a
 `schema` rung `schema` (a file relative to the task's workspace), and a `citations`, `judge` or
 `schema` rung `artefacts` (globs relative to the task's workspace). `rubric` is a `judge` rung's
 rubric, as text or a file path. A rung with `advisory = true` only advises: its verdict is recorded
 and never fails the task, so no verify step runs it. A `judge` rung advises unless it sets
-`advisory = false`.
+`advisory = false`; then a counted score below `[gates] llm_judge_min_score` fails the task.
 
 ---
 

@@ -2,7 +2,7 @@
 id = "gap-aea13a"
 kind = "gap"
 title = "PK33 Prompt composition: Delete roko-execution's duplicate prompt cache, which nothing reads (+13 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -10,8 +10,9 @@ rank = 33
 size = "L"
 subsystem = ["roko-cli/prompt"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "5bb643122"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK33"
 anchors = ["crates/roko-cli/src/dispatch/factory.rs", "crates/roko-cli/src/dispatch/mod.rs", "crates/roko-cli/src/dispatch/model_routing.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-cli/src/dispatch/prompt_cache.rs", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/runtime_feedback/error_patterns.rs", "crates/roko-cli/src/runtime_feedback/verified_knowledge.rs", "crates/roko-cli/tests/dispatch_feedback_projection_e2e.rs", "crates/roko-compose/src/context_provider.rs", "crates/roko-execution/src/builder.rs", "crates/roko-execution/src/lib.rs", "crates/roko-execution/src/prompt/cache.rs", "crates/roko-execution/src/prompt/mod.rs", "crates/roko-learn/src/error_pattern_store.rs", "crates/roko-neuro/src/lifecycle.rs"]
 lane = "rust-hot"
@@ -59,6 +60,17 @@ command = "grep -rqw 'fn verified_task_prompt_asks_for_a_lesson_line' crates/rok
 
 [[verify]]
 command = "grep -rqw 'fn verified_pass_stores_stated_lesson' crates/roko-cli/src/ && grep -rqw 'fn verified_pass_without_lesson_admits_no_entry' crates/roko-neuro/src/ && cargo test -p roko-cli --lib verified_pass_stores_stated_lesson && cargo test -p roko-neuro verified_pass_without_lesson_admits_no_entry"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T00:42:00Z"
+commit = "5bb643122"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T22:19:31Z"
+forced = false
+evidence = "Gate 5a (merged into main as 5bb643122, tree identical to work/backlog-batch-5a apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 12,477 passed over 12 crates, roko-cli bin + golden-path canaries + plan_revise/plan_validate/plan_spec_gate integration tests (only bug-2a31bc's two known alias tests fail), ViabilityBench suite 548 passed, portal vitest + tsc; every [[verify]] passes."
 +++
 
 ## Problem

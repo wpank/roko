@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 16 anchor gone · 80 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 17 anchor gone · 117 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -28,15 +28,15 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 - **P2** [gap-4b890c](items/gap-4b890c-pk06-operator-control-and-guards-approval-help.md) PK06 Operator control and guards: --approval help and validate_graph_execution_options describe an approval mode that… (+4 more) · size L · verified 2026-10-02
 - **P2** [gap-a0043b](items/gap-a0043b-pk08-attempt-ledger-roko-toml-s-cheap.md) PK08 Attempt ledger: roko.toml's cheap-model rates match the dated price snapshot (+11 more) · size L · verified 2026-10-02
 
-_14 more open · `goal = "truth"`_
+_13 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - **P2** [gap-997366](items/gap-997366-pk14-defaults-that-apply-a-plan-budget.md) PK14 Defaults that apply: A plan budget without max_turn_usd reserves a share per call, and any wait is logged (+8 more) · size L · verified 2026-10-02
 - **P1** [gap-c1f4ac](items/gap-c1f4ac-pk15-defaults-that-apply-one-resolver-for.md) PK15 Defaults that apply: One resolver for [runner] worktree_per_task, and roko run follows it (+4 more) · size L · verified 2026-10-02
-- **P2** [gap-de0b87](items/gap-de0b87-pk19-specs-a-cheap-model-can-execute.md) PK19 Specs a cheap model can execute: The generator prompt sizes tasks for their executor tier (+9 more) · size L · verified 2026-10-02
+- **P2** [gap-e120a1](items/gap-e120a1-pk24-specs-a-cheap-model-can-execute.md) PK24 Specs a cheap model can execute: Refiner loop against a stub model: additive only, with sources (+3 more) · size M · verified 2026-10-02
 
-_2 more open · on hold: gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_1 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -52,7 +52,7 @@ _14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a
 - **P2** [gap-943046](items/gap-943046-pk35-loops-re-closed-section-bandit-per.md) PK35 Loops re-closed: Section bandit: per-section posteriors and exclusion probabilities (+7 more) · size L · verified 2026-10-02
 - **P2** [gap-894977](items/gap-894977-pk38-loops-re-closed-knowledge-and-playbook.md) PK38 Loops re-closed: Knowledge and playbook withhold arms: a withheld source stays out of the prompt and is… (+5 more) · size L · verified 2026-10-02
 
-_29 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_28 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -73,10 +73,10 @@ _3 more open · `goal = "visibility"`_
 ## 9. Learning loops on the Graph path
 
 - **P2** [gap-2b5d37](items/gap-2b5d37-pk11-decision-records-and-census-a-frozen.md) PK11 Decision records and census: A frozen gate settlement writes no thresholds and makes no reflection call (+1 more) · size M · verified 2026-10-02
-- **P2** [gap-aea13a](items/gap-aea13a-pk33-prompt-composition-delete-roko-execution-s.md) PK33 Prompt composition: Delete roko-execution's duplicate prompt cache, which nothing reads (+13 more) · size L · verified 2026-10-02
 - **P2** [gap-222d47](items/gap-222d47-pk39-prompt-composition-prompt-relevance-canary-over.md) PK39 Prompt composition: Prompt-relevance canary: over two scripted runs, each prompt holds only its own task's… (+3 more) · size L · verified 2026-10-02
+- **P2** [q-6b7cca](items/q-6b7cca-graph-plan-runs-never-emit-plancompleted-wire.md) Graph plan runs never emit PlanCompleted: wire the four plan-completion sinks (the dream sink starts claude) or remove them? [question] · size S · verified 2026-09-29
 
-_4 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_3 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 

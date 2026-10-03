@@ -2,7 +2,7 @@
 id = "gap-de0b87"
 kind = "gap"
 title = "PK19 Specs a cheap model can execute: The generator prompt sizes tasks for their executor tier (+9 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -10,8 +10,9 @@ rank = 19
 size = "L"
 subsystem = ["roko-cli/plan_policy"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "5bb643122"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK19"
 anchors = ["apps/portal/src/components/stage/PlanView.tsx", "crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/plan_generate.rs", "crates/roko-cli/src/plan_policy.rs", "crates/roko-cli/src/plan_validate.rs", "crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/tests/plan_validate.rs", "crates/roko-gate/src/acceptance_contract.rs", "crates/roko-gate/src/lib.rs"]
 lane = "rust-hot"
@@ -44,6 +45,17 @@ command = "grep -rqw 'fn spec_gate_holdout_tasks_skip_score_blocks' crates/roko-
 
 [[verify]]
 command = "grep -qw 'def test_degrade_is_idempotent' benchmarks/viabilitybench/specops/tests/test_degrade.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_degrade.py -q"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T00:42:02Z"
+commit = "5bb643122"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T22:19:29Z"
+forced = false
+evidence = "Gate 5a (merged into main as 5bb643122, tree identical to work/backlog-batch-5a apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 12,477 passed over 12 crates, roko-cli bin + golden-path canaries + plan_revise/plan_validate/plan_spec_gate integration tests (only bug-2a31bc's two known alias tests fail), ViabilityBench suite 548 passed, portal vitest + tsc; every [[verify]] passes."
 +++
 
 ## Problem

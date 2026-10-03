@@ -2,7 +2,7 @@
 id = "gap-9e3134"
 kind = "gap"
 title = "PK13 Attempt ledger: Plan runs price model calls from the dated price snapshot (+1 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -10,8 +10,9 @@ rank = 13
 size = "M"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "5bb643122"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK13"
 anchors = ["crates/roko-cli/src/dispatch_v2.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/feedback.rs", "crates/roko-core/src/config/provider.rs"]
 lane = "rust-cold"
@@ -29,6 +30,17 @@ command = "grep -rq 'api_equiv_usd = ' crates/roko-cli/src"
 
 [[verify]]
 command = "grep -rqw 'fn verdict_and_cost_rows_carry_the_snapshot_price' crates/roko-cli/src/ && cargo test -p roko-cli verdict_and_cost_rows_carry_the_snapshot_price"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T00:41:57Z"
+commit = "5bb643122"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-02T22:19:30Z"
+forced = false
+evidence = "Gate 5a (merged into main as 5bb643122, tree identical to work/backlog-batch-5a apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 12,477 passed over 12 crates, roko-cli bin + golden-path canaries + plan_revise/plan_validate/plan_spec_gate integration tests (only bug-2a31bc's two known alias tests fail), ViabilityBench suite 548 passed, portal vitest + tsc; every [[verify]] passes."
 +++
 
 ## Problem

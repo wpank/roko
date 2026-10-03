@@ -2,7 +2,7 @@
 id = "gap-33eec2"
 kind = "gap"
 title = "PK55 M4 deep audits: Python: the gold-task planter and a per-check sensitivity and specificity report (S05…"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 55
 size = "S"
 subsystem = ["benchmarks/viabilitybench/audit"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "5bb643122"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK55"
 anchors = ["benchmarks/viabilitybench"]
 lane = "bench"
@@ -20,6 +21,17 @@ links = { depends_on = ["gap-dff960"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -qw 'def test_gold_units_report_sensitivity_and_specificity' benchmarks/viabilitybench/audit/tests/test_gold.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/audit/tests/test_gold.py -q"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T00:42:10Z"
+commit = "5bb643122"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-02T22:19:32Z"
+forced = false
+evidence = "Gate 5a (merged into main as 5bb643122, tree identical to work/backlog-batch-5a apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 12,477 passed over 12 crates, roko-cli bin + golden-path canaries + plan_revise/plan_validate/plan_spec_gate integration tests (only bug-2a31bc's two known alias tests fail), ViabilityBench suite 548 passed, portal vitest + tsc; every [[verify]] passes."
 +++
 
 ## Problem

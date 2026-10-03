@@ -121,3 +121,4 @@ Implemented on `work/gap-2339e2`; cargo verification of the Rust tasks (9204-920
 - 9211: implemented at fda0e42bc
 - 9212: implemented at 16afd36ae
 - 9213: implemented at a065d94cb
+- 2026-10-03 (coordinator, gate 5a): every task is merged in 5bb643122 except the CLAUDE.md lines of 9209–9213, left out because the main checkout has an uncommitted CLAUDE.md edit (the Goal line) that isn't the batch's. They're saved as `pk78-claude-md.patch` in the coordinator's scratchpad, beside PK08's, and land once that edit is committed; this item closes then.

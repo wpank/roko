@@ -223,7 +223,8 @@ def recoverability(plan: instance.Plan, latent: str = "v1") -> list[dict]:
     documented = ["docs/kvtool.md"] if knobs["k_doc"] == "documented" else []
     examples = [e.path for e in plan.exemplars if e.style != "legacy"]
     source = ["bin/kvtool (source)"]
-    idempotent = {"req": "a second run exits 0 and changes nothing (AC4)", "evidence": ["spec.precise.md#AC4"]}
+    idempotent = {"req": "a second run exits 0 and changes nothing (AC4)",
+                 "evidence": ["spec.precise.md#AC4"] + helpful + documented + examples + source}
     if plan.collide:
         idempotent = {"req": f"a second run changes nothing (AC4): `{plan.dst}` starts with `{plan.src}`, so the "
                              f"rename must leave the `{plan.dst}` keys alone (kvtool rename --exclude)",
@@ -239,7 +240,8 @@ def recoverability(plan: instance.Plan, latent: str = "v1") -> list[dict]:
     flag = "--yes" if latent == "v2" else "--apply"
     return [
         {"req": f"rename every `{plan.src}` key to `{plan.dst}` with its value, and lose or add no other key "
-                "(AC1, AC2)", "evidence": ["spec.precise.md#AC1", "spec.precise.md#AC2"]},
+                "(AC1, AC2)",
+         "evidence": ["spec.precise.md#AC1", "spec.precise.md#AC2"] + helpful + documented + examples + source},
         write,
         {"req": "resume every interruption (exit status 3) with the newest token kvtool prints on stderr, with "
                 f"{flag} again (AC3)",

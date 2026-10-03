@@ -2,6 +2,7 @@
 
 pub(super) mod experiments;
 pub(crate) mod helpers;
+pub(crate) mod loops;
 pub(crate) mod router_state;
 
 use std::collections::HashMap;
@@ -63,6 +64,12 @@ pub fn routes() -> Router<Arc<AppState>> {
         // P2-17: Per-role cost profiles
         .route("/learn/role-costs", get(role_costs))
         .route("/learning/role-costs", get(role_costs))
+        // S03 §5: the loop audit (5132)
+        .route("/learn/loops", get(loops::loops))
+        .route("/learn/loops/{id}", get(loops::loop_detail))
+        .route("/learn/loops/{id}/decisions", get(loops::loop_decisions))
+        .route("/showcase/m2/loops", get(loops::loops))
+        .route("/showcase/m2/loops/{id}/ledger", get(loops::loop_ledger))
 }
 
 // ── handlers kept in mod.rs ──────────────────────────────────────────

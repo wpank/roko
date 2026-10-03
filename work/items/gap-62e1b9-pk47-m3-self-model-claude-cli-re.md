@@ -101,3 +101,18 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK12 (gap-08120e), PK13 (gap-9e3134).
 - Suggested model: opus.
+
+## Progress
+
+- 6105: implemented at 8dbc8777f; cargo verification deferred to the batch gate.
+- 6106: implemented at 6a047fae7; cargo verification deferred to the batch gate.
+- 6107: blocked: the probe table needs live `claude -p` and `codex exec` runs on Will's subscriptions (D42 to re-confirm first; not an approved spend), so no table was written.
+- 6108: implemented at e4539f251; cargo verification deferred to the batch gate.
+- 6109: implemented at dbd6b0371; cargo verification deferred to the batch gate.
+- 6110: implemented at f3d8f0613; cargo verification deferred to the batch gate.
+- 6111: implemented at a9fdbfb8f; cargo verification deferred to the batch gate.
+- 6112: implemented at 2431a28f5; cargo verification deferred to the batch gate.
+- 6113: implemented at 1f0d30806; cargo verification deferred to the batch gate.
+- 6114: implemented at dcbcb966e; cargo verification deferred to the batch gate.
+- 6115: implemented at ee91f2008; cargo verification deferred to the batch gate.
+- 6116: implemented at 6fea5b450; cargo verification deferred to the batch gate.

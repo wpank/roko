@@ -347,6 +347,10 @@ pub struct FaultRecord {
     pub actor: FaultActor,
     /// It runs on dry-run plans only.
     pub dry_run: bool,
+    /// HARMFUL's spend cap for the run, at most $1.50 (S03 §4.9); absent for
+    /// the dry-run kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_cap_usd: Option<f64>,
 }
 
 /// Append one row as a JSON line to `path`, under its `*.jsonl.lock`.
@@ -529,6 +533,7 @@ mod tests {
             decisions_affected: 0,
             actor: FaultActor::Env,
             dry_run: true,
+            spend_cap_usd: None,
         };
         let json = serde_json::to_value(&row).expect("serialize");
         assert_eq!(json["fault"], "cut");

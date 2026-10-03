@@ -37,5 +37,9 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = { workspace = true }
 proptest = "1"
 
+[features]
+# S03 §4.9's "break a loop" fault flags (loop_audit::faults); off by default.
+fault-injection = []
+
 [package.metadata.roko]
 layer = 2

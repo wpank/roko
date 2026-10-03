@@ -26,7 +26,7 @@ H3_SAMPLE = [("f1_pyconv", "F1-l1-0001"), ("f1_pyconv", "F1-l5-0002"), ("f4_kvto
 
 def _materialize(tmp_path, family: str, instance_id: str, *, spec_variant: str = "precise", tag: str = ""):
     root = tmp_path / f"{family}-{instance_id}{tag}"
-    return materialize.materialize(family_dir=f"families/{family}", instance_id=instance_id,
+    return materialize.materialize(family_dir=VB_ROOT / "families" / family, instance_id=instance_id,
                                    workdir=root / "work", private_dir=root / "private", spec_variant=spec_variant)
 
 
@@ -49,8 +49,8 @@ def test_h3_variants_pass_the_manipulation_check(tmp_path, family, instance_id):
 @pytest.mark.parametrize("family,instance_id", H3_SAMPLE)
 def test_the_vague_variant_is_cached_in_the_manifest(tmp_path, family, instance_id):
     root = tmp_path / f"{family}-{instance_id}"
-    vague = materialize.materialize(family_dir=f"families/{family}", instance_id=instance_id, workdir=root / "work",
-                                    private_dir=root / "private", spec_variant="vague")
+    vague = materialize.materialize(family_dir=VB_ROOT / "families" / family, instance_id=instance_id,
+                                    workdir=root / "work", private_dir=root / "private", spec_variant="vague")
     on_disk = json.loads(vague.manifest_path.read_text(encoding="utf-8"))
     assert on_disk["spec"]["vague"] == vague.manifest["spec"]["vague"]
     # A second materialize() of a *different* workdir, same private_dir's task.json, reads the cached file rather

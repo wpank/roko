@@ -316,7 +316,8 @@ mod tests {
     }
 
     /// A perfectly calibrated window: ten forecasts at each of 0.1 to 0.9 (and ten more at
-    /// 0.5), 10·p of each group passing; the model routed the 0.7 to 0.9 groups.
+    /// 0.5), 10·p of each group passing; the model routed the 0.7 to 0.9 groups. Each group's
+    /// passes are spread through it, so the breaker's five-outcome bins see its rate too.
     fn calibrated() -> CalibrationWindow {
         let mut window = CalibrationWindow::new(version("m3-l1-a"));
         for p in [0.1_f64, 0.2, 0.3, 0.4, 0.5, 0.5, 0.6, 0.7, 0.8, 0.9] {
@@ -324,7 +325,7 @@ mod tests {
             for i in 0..10 {
                 let outcome = WindowOutcome {
                     p,
-                    y: i < passes,
+                    y: (i + 1) * passes / 10 > i * passes / 10,
                     w: 1.0,
                     routed: p >= 0.7,
                 };

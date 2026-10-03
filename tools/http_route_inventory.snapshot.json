@@ -1,6 +1,6 @@
 {
-  "total_registrations": 459,
-  "canonical_registrations": 400,
+  "total_registrations": 461,
+  "canonical_registrations": 402,
   "alias_count": 59,
   "conflict_count": 0,
   "unparsed_count": 0,
@@ -1094,6 +1094,22 @@
       "handler": "dream_journal"
     },
     {
+      "source_file": "crates/roko-serve/src/routes/effects.rs",
+      "line": 37,
+      "router_fn": "routes",
+      "path": "/effects",
+      "method": "GET",
+      "handler": "list_effects_handler"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/effects.rs",
+      "line": 38,
+      "router_fn": "routes",
+      "path": "/effects/{id}/decision",
+      "method": "POST",
+      "handler": "decide_effect_handler"
+    },
+    {
       "source_file": "crates/roko-serve/src/routes/event_ingest.rs",
       "line": 19,
       "router_fn": "routes",
@@ -1991,7 +2007,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 407,
+      "line": 409,
       "router_fn": "build_router",
       "path": "/workflow/events",
       "method": "GET",
@@ -1999,7 +2015,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 515,
+      "line": 517,
       "router_fn": "build_router",
       "path": "/health",
       "method": "GET",
@@ -2007,7 +2023,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 517,
+      "line": 519,
       "router_fn": "build_router",
       "path": "/ready",
       "method": "GET",
@@ -2015,7 +2031,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 519,
+      "line": 521,
       "router_fn": "build_router",
       "path": "/metrics",
       "method": "GET",

@@ -789,6 +789,44 @@ impl CliRuntime for RokoCliRuntime {
 
         Ok(Some(revision_to_dto(outcome)))
     }
+
+    async fn list_effects(
+        &self,
+        workdir: &Path,
+        run_id: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(crate::effects_apply::effects_report(workdir, run_id))
+    }
+
+    async fn decide_effect(
+        &self,
+        workdir: &Path,
+        effect_id: &str,
+        decision: roko_serve::runtime::EffectDecisionInput,
+    ) -> Result<serde_json::Value, roko_serve::runtime::EffectDecisionError> {
+        use crate::effects_apply::{DecideError, EffectDecision, McpEffectApplier};
+        use roko_serve::runtime::EffectDecisionError;
+
+        let config = load_effective_roko_config(workdir, &self.repo_registry)
+            .map_err(|error| EffectDecisionError::Failed(format!("{error:#}")))?;
+        let applier = McpEffectApplier::new(workdir.to_path_buf(), config.clone());
+        let decision = EffectDecision {
+            approve: decision.approve,
+            note: decision.note,
+            decided_by: decision.decided_by,
+        };
+        let record =
+            crate::effects_apply::decide_effect(workdir, &config, effect_id, decision, &applier)
+                .await
+                .map_err(|error| match error {
+                    DecideError::NotFound(id) => EffectDecisionError::NotFound(id),
+                    DecideError::AlreadyDecided(id, outcome) => {
+                        EffectDecisionError::AlreadyDecided(id, outcome.to_string())
+                    }
+                    DecideError::Io(error) => EffectDecisionError::Failed(error.to_string()),
+                })?;
+        serde_json::to_value(record).map_err(|error| EffectDecisionError::Failed(error.to_string()))
+    }
 }
 
 impl RokoCliRuntime {

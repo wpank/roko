@@ -14,7 +14,7 @@ use anyhow::{Context as _, Result};
 use clap::Subcommand;
 use roko_cli::effects_apply::{
     DecideError, EffectDecision, EffectOutcome, EffectRecord, McpEffectApplier, decide_effect,
-    list_holds, read_records,
+    effects_report, list_holds, read_records,
 };
 
 use crate::{Cli, EXIT_FAILURE, EXIT_SUCCESS, resolve_workdir};
@@ -95,27 +95,13 @@ pub(crate) async fn cmd_effects(cli: &Cli, cmd: EffectsCmd) -> Result<i32> {
 /// Print the waiting effects and the recent decisions. Arguments are never
 /// printed here: they may carry secrets.
 fn list(cli: &Cli, workdir: &Path) -> Result<i32> {
-    let holds = list_holds(workdir);
-    let records = read_records(workdir);
     if cli.json {
-        let waiting: Vec<serde_json::Value> = holds
-            .iter()
-            .map(|(_, hold)| {
-                serde_json::json!({
-                    "effect_id": hold.effect_id,
-                    "run_id": hold.run_id,
-                    "plan_id": hold.plan_id,
-                    "task_id": hold.task_id,
-                    "tool": hold.tool,
-                    "server": hold.server,
-                    "proposed_at": hold.proposed_at,
-                })
-            })
-            .collect();
-        let report = serde_json::json!({ "waiting": waiting, "decided": records });
+        let report = effects_report(workdir, None);
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(EXIT_SUCCESS);
     }
+    let holds = list_holds(workdir);
+    let records = read_records(workdir);
     if holds.is_empty() {
         println!("no effects wait for a decision");
     }

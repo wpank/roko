@@ -194,6 +194,37 @@ pub fn read_records(workdir: &Path) -> Vec<EffectRecord> {
         .collect()
 }
 
+/// The staged effects of the workspace at `workdir`, as `roko effects list
+/// --json` and `GET /api/effects` show them (9133): those that wait, oldest
+/// first and without their arguments, and the decisions, newest first; only
+/// `run_id`'s when it is set.
+#[must_use]
+pub fn effects_report(workdir: &Path, run_id: Option<&str>) -> serde_json::Value {
+    let of_run = |run: &str| run_id.is_none_or(|wanted| wanted == run);
+    let waiting: Vec<serde_json::Value> = list_holds(workdir)
+        .into_iter()
+        .filter(|(_, hold)| of_run(&hold.run_id))
+        .map(|(_, hold)| {
+            serde_json::json!({
+                "effect_id": hold.effect_id,
+                "run_id": hold.run_id,
+                "plan_id": hold.plan_id,
+                "task_id": hold.task_id,
+                "attempt": hold.attempt,
+                "tool": hold.tool,
+                "server": hold.server,
+                "proposed_at": hold.proposed_at,
+            })
+        })
+        .collect();
+    let decided: Vec<EffectRecord> = read_records(workdir)
+        .into_iter()
+        .rev()
+        .filter(|record| of_run(&record.run_id))
+        .collect();
+    serde_json::json!({ "waiting": waiting, "decided": decided })
+}
+
 /// Decide the staged effect `effect_id` in the workspace at `workdir`, as
 /// `decision` says ([module docs](self)): an approval applies it once
 /// through `applier` and runs the receipt rungs of its task's pack; a

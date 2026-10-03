@@ -40,6 +40,13 @@ WRITE_OPS = (
                                            "content": "def clamp(value, low, high):\n"
                                                       "    return max(low, min(value, high))\n"})}}]},
 )
+# The base already holds calc/ops.py, and Roko's implementer contract (RequireToolBeforeEdit) refuses a write to a
+# file the attempt has not read: a scenario that must change it reads it first (bug-ef82eb).
+READ_OPS = (
+    {"role": "assistant", "content": None, "tool_calls": [{"index": 0, "id": "call_0", "type": "function",
+                                      "function": {"name": "read_file",
+                                                   "arguments": json.dumps({"path": "calc/ops.py"})}}]},
+)
 DONE = "Done."
 
 if os.environ.get("VB_REQUIRE_REAL_ROKO") == "1" and not os.access(REAL_ROKO, os.X_OK):
@@ -106,9 +113,9 @@ def sequence(*replies: object):
 def test_shakedown_d1_blank_answer_does_not_isolate_the_task(places, tmp_path):
     # G01/D1: a blank answer must not isolate the task for good. The first attempt gets an empty reply (no content,
     # no tool call); if that still ends the task's only attempt, the fix has not landed. A second attempt that
-    # solves the task must be allowed to run.
+    # solves the task, reading calc/ops.py before it writes it (READ_OPS), must be allowed to run and complete.
     arm = fast_arm(tmp_path, ARM)
-    respond = sequence(Blank(), *WRITE_OPS, DONE)
+    respond = sequence(Blank(), *READ_OPS, *WRITE_OPS, DONE)
     with StubServer(respond) as stub:
         assert run_vb(places, arm, stub.url) == 0
     [record] = read_jsonl(run_dir(places) / "records.jsonl")

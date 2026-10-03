@@ -1857,6 +1857,119 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         assert_eq!(logged_models(&models), ["claude-sonnet-4-6"]);
     }
 
+    /// bug-ef82eb (shakedown D1): an API model that answers blank fails its
+    /// attempt as an empty response, and the task is retried, not isolated.
+    /// The retry reads the file before it writes it, as the implementer's
+    /// contract requires (`RequireToolBeforeEdit` refused D1's scripted write
+    /// to a file the attempt never read, which was why D1 ended gate-failed),
+    /// and the task completes: its second attempt passes its verify step.
+    #[tokio::test]
+    async fn retry_after_a_blank_answer_completes() {
+        use crate::graph_task_dispatch::diff_snapshot::tests::commit_repo;
+        use crate::graph_task_dispatch::tests::verify_step;
+
+        const RUN: &str = "blank-retry";
+        let temp = tempdir().expect("tempdir");
+        let one = "pub fn one() -> u8 {\n    1\n}\n";
+        let two = format!("{one}\npub fn two() -> u8 {{\n    one() + one()\n}}\n");
+        commit_repo(temp.path(), &[("src/lib.rs", one)]);
+        let (base_url, requests) = spawn_openai_mock(vec![
+            final_turn(""),
+            tool_call_turn(
+                "call-read",
+                "read_file",
+                serde_json::json!({ "path": "src/lib.rs" }),
+            ),
+            tool_call_turn(
+                "call-write",
+                "write_file",
+                serde_json::json!({ "path": "src/lib.rs", "content": two }),
+            ),
+            final_turn("Done."),
+        ]);
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "api-model".to_string();
+        config.agent.bare_mode = false;
+        // `PATH` is always set, standing in for an API key.
+        config.providers.insert(
+            "mock_api".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(base_url),
+                api_key_env: Some("PATH".to_string()),
+                command: None,
+                ..cli_provider("")
+            },
+        );
+        config.models.insert(
+            "api-model".to_string(),
+            ModelProfile {
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                tool_format: "openai_json".to_string(),
+                ..model("mock_api", "api-model-1", None)
+            },
+        );
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let runs_dir = temp.path().join(".roko/runs");
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_feedback(GraphFeedbackContext {
+                runs_dir: Some(runs_dir.clone()),
+                ..GraphFeedbackContext::default()
+            });
+        let task = TaskDef {
+            id: "T01".to_string(),
+            title: "Add two".to_string(),
+            description: Some("Add `two` to src/lib.rs".to_string()),
+            model_hint: Some("api-model".to_string()),
+            files: vec!["src/lib.rs".to_string()],
+            verify: vec![verify_step("check", "grep -q 'fn two' src/lib.rs")],
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            max_retries: 1,
+            ..make_task_def("focused")
+        };
+        let cell_config = toml::Value::Table(toml::map::Map::from_iter([
+            (
+                "plan_id".to_string(),
+                toml::Value::String("p-blank".to_string()),
+            ),
+            ("title".to_string(), toml::Value::String(task.title.clone())),
+            (
+                "timeout_secs".to_string(),
+                toml::Value::Integer(FIXTURE_HANG_GUARD_SECS as i64),
+            ),
+            ("max_retries".to_string(), toml::Value::Integer(1)),
+            (
+                "task_def_json".to_string(),
+                toml::Value::String(serde_json::to_string(&task).expect("serialize task")),
+            ),
+        ]));
+        let cell = roko_graph::cells::TaskExecutorCell::live(cell_config, Arc::new(dispatcher));
+        let ctx = CellContext::new()
+            .with_cell_id("T01".to_string())
+            .with_run_id(RUN.to_string());
+        cell.execute(Vec::new(), &ctx)
+            .await
+            .expect("the retry after the blank answer completes the task");
+
+        assert_eq!(requests.lock().len(), 4, "blank, read, write, done");
+        let lib = std::fs::read_to_string(temp.path().join("src/lib.rs")).expect("src/lib.rs");
+        assert!(lib.contains("fn two"), "{lib}");
+        let attempts = runs_dir.join(RUN).join("attempts.jsonl");
+        let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
+        let verdicts = jsonl_rows_where(&attempts, 2, is_verdict).await;
+        let outcomes: Vec<&str> = verdicts
+            .iter()
+            .map(|verdict| verdict["outcome"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(outcomes, ["provider_error", "passed"], "{verdicts:?}");
+    }
+
     /// backlog 1121 (decision 1119, 3-A): at plan start each rung model that
     /// roko's tool loop drives gets one tool-use probe; the CLI rungs bring
     /// their own tools and get none. The `mid` rung's model answers with

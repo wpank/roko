@@ -32,6 +32,7 @@ pub mod bash;
 pub mod capabilities;
 pub mod contract;
 pub mod data_llm;
+pub mod effects;
 pub mod git;
 pub mod hallucination;
 pub mod hooks;

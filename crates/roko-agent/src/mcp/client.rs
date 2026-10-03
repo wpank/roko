@@ -87,11 +87,13 @@ pub struct McpToolDef {
 /// These annotations let Roko map dynamic MCP tools onto its static
 /// permission model without trusting every external tool equally.
 ///
-/// Both the legacy (`readOnly`/`openWorld`) and the MCP-2025 spec names
-/// (`readOnlyHint`/`openWorldHint`) are accepted on inbound JSON so that
-/// servers which follow the newer spec (such as `roko-mcp-code`) are
-/// handled correctly. Use [`McpToolAnnotations::is_read_only`] and
-/// [`McpToolAnnotations::is_open_world`] instead of reading the raw fields
+/// Both the legacy (`readOnly`/`openWorld`/`idempotent`) and the MCP-2025
+/// spec names (`readOnlyHint`/`openWorldHint`/`idempotentHint`) are accepted
+/// on inbound JSON so that servers which follow the newer spec (such as
+/// `roko-mcp-code`) are handled correctly; `destructiveHint` has only the
+/// spec name. Use [`McpToolAnnotations::is_read_only`],
+/// [`McpToolAnnotations::is_open_world`] and
+/// [`McpToolAnnotations::is_idempotent`] instead of reading the raw fields
 /// directly to get the merged value.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpToolAnnotations {
@@ -107,9 +109,18 @@ pub struct McpToolAnnotations {
     /// Tool accesses open-world resources such as network services (MCP-2025 spec name).
     #[serde(default, rename = "openWorldHint")]
     pub open_world_hint: Option<bool>,
-    /// Calling the tool twice with the same arguments has no extra effect.
+    /// Calling the tool twice with the same arguments has no extra effect
+    /// (legacy name).
     #[serde(default)]
     pub idempotent: Option<bool>,
+    /// Calling the tool twice with the same arguments has no extra effect
+    /// (MCP-2025 spec name).
+    #[serde(default, rename = "idempotentHint")]
+    pub idempotent_hint: Option<bool>,
+    /// The tool may destroy or overwrite state, not only add to it (MCP-2025
+    /// spec name). It means something only for a tool that is not read-only.
+    #[serde(default, rename = "destructiveHint")]
+    pub destructive_hint: Option<bool>,
     /// Human-readable title for UI surfaces.
     #[serde(default)]
     pub title: Option<String>,
@@ -126,6 +137,13 @@ impl McpToolAnnotations {
     #[must_use]
     pub fn is_open_world(&self) -> bool {
         self.open_world.unwrap_or(false) || self.open_world_hint.unwrap_or(false)
+    }
+
+    /// Returns `true` if either `idempotent` or `idempotentHint` is set to
+    /// `true`.
+    #[must_use]
+    pub fn is_idempotent(&self) -> bool {
+        self.idempotent.unwrap_or(false) || self.idempotent_hint.unwrap_or(false)
     }
 }
 

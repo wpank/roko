@@ -28,7 +28,7 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 - **P2** [bug-dd20bd](items/bug-dd20bd-a-frozen-roko-run-still-appends-a.md) A frozen roko run still appends a workflow_complete episode, because record_workflow_feedback ignores [learning] frozen [bug] · size S · verified 2026-10-03
 - **P2** [bug-045773](items/bug-045773-a-reattached-worktree-s-base-commit-is.md) A reattached worktree's base_commit is hardcoded to None instead of read back from the original attach [bug] · size M · verified 2026-10-03
 
-_16 more open · on hold: gap-3698cd · `goal = "truth"`_
+_19 more open · on hold: gap-3698cd · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -44,7 +44,7 @@ _1 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRI
 - **P2** [gap-63fd4c](items/gap-63fd4c-pk50-viabilitybench-proof-replays-r-h4-and.md) PK50 ViabilityBench proof: Replays R-H4 and R-M3 on S04's prequential replay · size S · verified 2026-10-02
 - **P1** [gap-ed1a08](items/gap-ed1a08-pk67-viabilitybench-proof-replay-r-h6-s06.md) PK67 ViabilityBench proof: Replay R-H6: S06's controllers A0-A5 plus A3-gated and A3-mis (+2 more) · size L · verified 2026-10-02
 
-_14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_16 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -52,7 +52,7 @@ _14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-39
 - **P3** [gap-a21195](items/gap-a21195-pk51-specs-a-cheap-model-can-execute.md) PK51 Specs a cheap model can execute: Export the spec features to the M3 self-model · size S · verified 2026-10-02
 - **P2** [gap-0c429f](items/gap-0c429f-pk52-m3-self-model-let-an-active.md) PK52 M3 self-model: Let an active self-model climb early after a failure, within the ladder's limits · size M · verified 2026-10-02
 
-_24 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_28 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -84,7 +84,7 @@ _5 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 - **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
 - **P2** [gap-082a14](items/gap-082a14-graph-runs-never-write-task-status-back.md) Graph runs never write task status back to tasks.toml · verified 2026-10-01
 
-_14 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_15 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

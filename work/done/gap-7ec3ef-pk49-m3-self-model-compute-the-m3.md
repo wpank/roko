@@ -113,3 +113,11 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - 6129: implemented at 0f1da8903
 - 6130: blocked: it composes the self-model's rung into S03's single route table (holdout, explore, propensity), which PK43 (gap-c1d920) is wiring into `ModelRouter::decide` in `model_routing.rs` now; the task forbids editing that file in parallel with S03.T11, and a second L-M3 draw would duplicate the table. It can go once PK43 is merged.
 - 2026-10-03 (coordinator, gate 8c): 6125 (the replay on the pilot matrix) left this item for the held gap-8a26fc (no pilot records yet), and 6130 (the active self-model's start rung) for gap-d2d750, which follows PK43 now that both are merged.
+- 2026-10-03 (wave-8 follow-up): re-checked the 2026-10-02 note above against 6123's landed implementation.
+  `envelope_ratio_r`/`envelope_ratio_c` are now confirmed produced (`envelope.py::level_metrics`). `cc_<k>` and
+  per-task `cost_cv` are still unproduced (`econ.py` has no `metrics.Metric` call at all; its `cost_cv_median` is
+  a different, aggregate statistic) — filed separately as gap-889682, since this item is now closed. Also filed
+  from the same PK49 package: gap-b10978 (the replay matrix collapses an arm's several models into one cell;
+  `econ.py::_matrix` copies the same join) and bug-9099b7 (the offline fit drops `forced_accept` verdicts via
+  `learning_label_for`'s established "no learning signal" rule, while the live `SelfModelOutcomeSink` counts them
+  as failures — the two disagree).

@@ -78,6 +78,11 @@ touch the Goal line.
   `show`, `approve`, `reject`), wired at `main.rs:753-759` — lists the tool calls a `stage` policy held for
   approval and lets an operator approve or reject one. Suggested row, after `roko new`:
   `| roko effects list/show/approve/reject | List, inspect and approve or reject a staged (held) tool call |`.
+- 2026-10-03 (wave-8 follow-up, PK49/gap-7ec3ef): also add two Learning-table rows, both real, shipped
+  subcommands with no CLI-table row today: `roko learn self-model fit` and `roko learn self-model replay`
+  (`crates/roko-cli/src/commands/learn_self_model.rs::SelfModelCmd::Fit`/`::Replay` — the M3 offline fit over S01
+  run logs with a data audit and prequential scores; policy replays over a run-record matrix, S09 R-H4), and
+  `roko learn econ prices` (`::EconCmd::Prices` — the price snapshot's rows with their source URLs).
 
 PK08 (task 2121):
 

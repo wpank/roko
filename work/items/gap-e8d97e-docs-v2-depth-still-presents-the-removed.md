@@ -57,3 +57,12 @@ source cut now applies to the request), or mark the section historical where it 
 ## Notes
 
 - Found by the workflow-audit migration (session roko-7d, 2026-10-02). docs/v1 is deprecated and out of scope.
+- 2026-10-03 (wave-8 follow-up, PK39/gap-222d47): the same class of staleness also affects `docs/v2/19-CONFIG.md`
+  (the top-level `docs/v2` tree, not `docs/v2-depth`) — its `### 8.17 [prompt] -- PromptConfig` section
+  (lines 800-807) still documents `composition_strategy`'s `vcg` option and `vcg_warmup_observations` as live,
+  meaningful fields ("Minimum bidder observations before `auto` enables VCG allocation"), but the VCG auction was
+  retired (backlog 4218, `crates/roko-compose/src/strategy.rs:1945`'s comment) and `vcg_warmup_observations` is
+  now explicitly marked deprecated/ignored on the `roko-core` config side (`crates/roko-core/src/config/schema.rs:240-241,3121`).
+  docs/v2 is historical per Will, so this is recorded here rather than as its own item — fold it into whatever
+  pass eventually touches `docs/v2/19-CONFIG.md`, or drop the section if `[prompt]`'s `vcg`-related fields are
+  removed from the schema entirely.

@@ -467,7 +467,11 @@ pub async fn git_take_batch(workspace: &Path, batch: &str) -> Result<()> {
         .await
         .context("spawn git diff --name-only HEAD <batch>")?;
     if !changed.status.success() {
-        return Err(git_error("git diff --name-only HEAD <batch>", &changed, None));
+        return Err(git_error(
+            "git diff --name-only HEAD <batch>",
+            &changed,
+            None,
+        ));
     }
     let changed = String::from_utf8_lossy(&changed.stdout);
     let paths: Vec<&str> = changed
@@ -478,10 +482,7 @@ pub async fn git_take_batch(workspace: &Path, batch: &str) -> Result<()> {
     if paths.is_empty() {
         bail!("nothing to commit (the run's batch branch {batch} holds no change)");
     }
-    let excluded: Vec<&str> = paths
-        .into_iter()
-        .filter(|path| is_excluded(path))
-        .collect();
+    let excluded: Vec<&str> = paths.into_iter().filter(|path| is_excluded(path)).collect();
     if !excluded.is_empty() {
         bail!(
             "the run's batch branch {batch} changes paths a cloud worker never pushes: {}",

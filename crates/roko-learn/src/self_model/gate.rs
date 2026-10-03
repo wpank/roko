@@ -177,12 +177,10 @@ impl CalibrationGate {
         if n < WINDOW {
             reasons.push(format!("n = {n}, below the window of {WINDOW}"));
         }
-        let mut bound = |value: Option<f64>, holds: &dyn Fn(f64) -> bool, rule: &str| {
-            match value {
-                Some(value) if holds(value) => {}
-                Some(value) => reasons.push(format!("{rule}: {value:.3}")),
-                None => reasons.push(format!("{rule}: unknown")),
-            }
+        let mut bound = |value: Option<f64>, holds: &dyn Fn(f64) -> bool, rule: &str| match value {
+            Some(value) if holds(value) => {}
+            Some(value) => reasons.push(format!("{rule}: {value:.3}")),
+            None => reasons.push(format!("{rule}: unknown")),
         };
         bound(ece, &|value| value <= ECE_MAX, "ECE above 0.08");
         bound(
@@ -344,8 +342,16 @@ mod tests {
         assert_eq!(report.n, WINDOW);
         assert!(report.ece.is_some_and(|ece| ece < 1e-12), "{report:?}");
         assert!(report.bss.is_some_and(|bss| (bss - 0.24).abs() < 1e-9));
-        assert!(report.auroc.is_some_and(|auroc| (auroc - 0.78).abs() < 1e-9));
-        assert!(report.route_pass.is_some_and(|rate| (rate - 0.8).abs() < 1e-9));
+        assert!(
+            report
+                .auroc
+                .is_some_and(|auroc| (auroc - 0.78).abs() < 1e-9)
+        );
+        assert!(
+            report
+                .route_pass
+                .is_some_and(|rate| (rate - 0.8).abs() < 1e-9)
+        );
         assert!(!report.breaker_tripped);
 
         // One outcome short of the window.
@@ -355,7 +361,12 @@ mod tests {
         }
         let report = gate.evaluate(&short);
         assert!(!report.eligible);
-        assert!(report.reasons.iter().any(|reason| reason.starts_with("n = 99")));
+        assert!(
+            report
+                .reasons
+                .iter()
+                .any(|reason| reason.starts_with("n = 99"))
+        );
 
         // Forecasts 0.1 too high fail calibration-in-the-large, and the report says so.
         let mut high = CalibrationWindow::new(version("m3-l1-a"));
@@ -370,7 +381,10 @@ mod tests {
         assert!(!report.eligible);
         let calibration = "|calibration-in-the-large| above 0.05";
         assert!(
-            report.reasons.iter().any(|reason| reason.starts_with(calibration)),
+            report
+                .reasons
+                .iter()
+                .any(|reason| reason.starts_with(calibration)),
             "{report:?}"
         );
     }

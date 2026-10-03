@@ -16,7 +16,9 @@
 
 use std::path::Path;
 
-use super::ledger::{CanaryRow, LOOP_AUDIT_SCHEMA, Ledger, LoopAuditRecord, LoopAuditRow, ProbeRow};
+use super::ledger::{
+    CanaryRow, LOOP_AUDIT_SCHEMA, Ledger, LoopAuditRecord, LoopAuditRow, ProbeRow,
+};
 use crate::telemetry::records::{RunFile, b3_digest};
 
 /// A loop's own writer and reader, as the canary drives them (S03 §4.7).
@@ -249,7 +251,11 @@ fn probe(
             return;
         }
     };
-    probes.check("P1", true, format!("state version {version} holds the nonce"));
+    probes.check(
+        "P1",
+        true,
+        format!("state version {version} holds the nonce"),
+    );
 
     // P2 loaded: the reader loaded that version or a later one.
     let loaded = writer.loaded_version();
@@ -257,7 +263,11 @@ fn probe(
         || "the reader loaded no state".to_string(),
         |loaded| format!("the reader loaded version {loaded} of {version}"),
     );
-    if !probes.check("P2", loaded.is_some_and(|loaded| loaded >= version), evidence) {
+    if !probes.check(
+        "P2",
+        loaded.is_some_and(|loaded| loaded >= version),
+        evidence,
+    ) {
         return;
     }
 
@@ -386,8 +396,15 @@ mod tests {
             };
             let mut writer = self.clone();
             let mut planner = ToyPlanner { toy: self.clone() };
-            run_canary(&mut writer, &mut planner, &self.run_dir, &task, true, ledger)
-                .expect("append the canary row")
+            run_canary(
+                &mut writer,
+                &mut planner,
+                &self.run_dir,
+                &task,
+                true,
+                ledger,
+            )
+            .expect("append the canary row")
         }
     }
 

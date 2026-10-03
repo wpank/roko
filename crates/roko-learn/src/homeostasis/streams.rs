@@ -18,8 +18,8 @@ use std::path::PathBuf;
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use roko_core::config::harness_params::{HarnessLadders, HarnessParams};
 use roko_core::config::RokoConfig;
+use roko_core::config::harness_params::{HarnessLadders, HarnessParams};
 
 use super::catalog::DisturbanceKind;
 use super::detect::Baseline;
@@ -272,7 +272,11 @@ impl SyntheticStream {
     /// The resolution at `position` under θ₀.
     #[must_use]
     pub fn resolution(&self, position: u64) -> TaskResolution {
-        resolve(position, &self.regime(position), &Draws::at(self.seed, position))
+        resolve(
+            position,
+            &self.regime(position),
+            &Draws::at(self.seed, position),
+        )
     }
 
     /// Positions 1 to `length` under θ₀.
@@ -373,10 +377,7 @@ fn quantile(values: &mut [f64], q: f64) -> f64 {
 pub fn replay_theta0() -> (HarnessParams, HarnessLadders) {
     let mut config = RokoConfig::default();
     for name in ["primary", "secondary"] {
-        config
-            .providers
-            .entry(name.to_string())
-            .or_default();
+        config.providers.entry(name.to_string()).or_default();
     }
     (
         HarnessParams::baseline(&config),
@@ -497,7 +498,10 @@ mod tests {
         let spec = StreamSpec::parse("synthetic:model_swap@20").expect("a synthetic spec");
         assert_eq!(spec.label(), "synthetic:model_swap@20");
         let historical = StreamSpec::parse("historical:.roko/learn").expect("a historical spec");
-        assert_eq!(historical, StreamSpec::Historical(PathBuf::from(".roko/learn")));
+        assert_eq!(
+            historical,
+            StreamSpec::Historical(PathBuf::from(".roko/learn"))
+        );
         assert!(StreamSpec::parse("synthetic:model_swap").is_err());
         assert!(StreamSpec::parse("synthetic:meteor@3").is_err());
         assert!(StreamSpec::parse("live:x").is_err());

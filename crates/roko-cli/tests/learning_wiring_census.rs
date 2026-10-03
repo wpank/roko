@@ -534,8 +534,8 @@ fn loop_census_fixture_settles_one_record_per_attempt() {
     let moved = counts(&arms.included) + counts(&arms.excluded) - 4.0;
     assert!((moved - 4.0).abs() < 1e-9, "{arms:?}");
     assert!(arms.opportunities >= 4, "{arms:?}");
-    let playbook = fs::read_to_string(roko.join("learn/playbooks/pb-verify.json"))
-        .expect("read the playbook");
+    let playbook =
+        fs::read_to_string(roko.join("learn/playbooks/pb-verify.json")).expect("read the playbook");
     let playbook: roko_learn::playbook::Playbook =
         serde_json::from_str(&playbook).expect("parse the playbook");
     assert_eq!((playbook.success_count, playbook.failure_count), (1, 2));

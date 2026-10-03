@@ -501,7 +501,11 @@ mod tests {
         let read = ledger.read().expect("read");
         assert_eq!(read, [health.clone(), transition, later]);
         let line = std::fs::read_to_string(ledger.path()).expect("the file");
-        assert!(line.lines().next().is_some_and(|first| first.contains(r#""run_id":null"#)));
+        assert!(
+            line.lines()
+                .next()
+                .is_some_and(|first| first.contains(r#""run_id":null"#))
+        );
 
         let latest = latest_health(&read);
         assert_eq!(latest.get("L-know").map(|row| row.h), Some(0.2));

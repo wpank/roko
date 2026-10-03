@@ -170,7 +170,10 @@ pub fn list_holds(workdir: &Path) -> Vec<(PathBuf, EffectHold)> {
         .flatten()
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
         .filter_map(|path| {
             let hold = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
             Some((path, hold))
@@ -654,7 +657,11 @@ command = 'grep -q delivered "$ROKO_EFFECT_FILE"'
             .await
             .expect("the rejection");
         assert_eq!(record.outcome, EffectOutcome::Rejected);
-        assert_eq!(queued.calls.load(Ordering::SeqCst), 1, "a rejection applied");
+        assert_eq!(
+            queued.calls.load(Ordering::SeqCst),
+            1,
+            "a rejection applied"
+        );
 
         assert!(list_holds(workdir).is_empty(), "a decided hold stays");
         let outcomes: Vec<EffectOutcome> = read_records(workdir)
@@ -669,8 +676,7 @@ command = 'grep -q delivered "$ROKO_EFFECT_FILE"'
                 EffectOutcome::Rejected
             ]
         );
-        let missing =
-            decide_effect(workdir, &config, "effect-none", decision(true), &queued).await;
+        let missing = decide_effect(workdir, &config, "effect-none", decision(true), &queued).await;
         assert!(
             matches!(missing, Err(DecideError::NotFound(_))),
             "{missing:?}"

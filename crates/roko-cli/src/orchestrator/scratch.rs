@@ -245,7 +245,10 @@ mod tests {
 
         std::fs::write(dir.join("data/export.csv"), "id,name\n1,grace\n").expect("edit");
         let original = std::fs::read_to_string(workdir.join("data/export.csv")).expect("original");
-        assert_eq!(original, "id,name\n1,ada\n", "the edit reached the original");
+        assert_eq!(
+            original, "id,name\n1,ada\n",
+            "the edit reached the original"
+        );
         let changes = lease.finish().expect("the result manifest");
         assert_eq!(changes.changed, ["data/export.csv"]);
         assert!(

@@ -210,7 +210,10 @@ mod tests {
         let additive = mcp_tool(json!({ "openWorldHint": false, "destructiveHint": false }));
         assert!(!is_outbound_effect(&additive));
         let silent = mcp_tool(Value::Null);
-        assert!(is_outbound_effect(&silent), "an unknown effect fails closed");
+        assert!(
+            is_outbound_effect(&silent),
+            "an unknown effect fails closed"
+        );
 
         let plugin = |network: bool, write: bool| ToolDef {
             name: "post".to_string(),

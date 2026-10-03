@@ -476,7 +476,10 @@ impl Auditor {
                 AuditState::Probation,
                 None,
                 "T_re elapsed, a version shift, or a recorded repair",
-                format!("SPIBB: learned only in strata with ≥ {} opportunities", p.spibb_n),
+                format!(
+                    "SPIBB: learned only in strata with ≥ {} opportunities",
+                    p.spibb_n
+                ),
             );
         }
         None
@@ -491,7 +494,12 @@ fn structural_reason(checks: Structural) -> Option<ReasonCode> {
         (checks.no_opportunity, ReasonCode::NoOpportunity),
         (checks.no_learning, ReasonCode::NoLearning),
     ];
-    ReasonCode::cheapest(failing.iter().filter(|(fails, _)| *fails).map(|(_, code)| *code))
+    ReasonCode::cheapest(
+        failing
+            .iter()
+            .filter(|(fails, _)| *fails)
+            .map(|(_, code)| *code),
+    )
 }
 
 /// The policy a loop executes in `state` with `reason`: π⁰ for an enforced
@@ -634,7 +642,10 @@ mod tests {
 
         let real = LoopStatus::registered(true, false, false);
         let frozen = auditor.evaluate(&real, &harmful, &AuditorSignals::default());
-        assert!(frozen.audit_broken && frozen.transition.is_none(), "{frozen:?}");
+        assert!(
+            frozen.audit_broken && frozen.transition.is_none(),
+            "{frozen:?}"
+        );
 
         let mut srm = Auditor::new(AuditParams::default());
         let signals = AuditorSignals {
@@ -700,7 +711,11 @@ mod tests {
             ..LoopEvidence::default()
         };
         let evaluation = auditor.evaluate(&status, &evidence, &AuditorSignals::default());
-        assert_eq!(evaluation.reason, Some(ReasonCode::Unlogged), "{evaluation:?}");
+        assert_eq!(
+            evaluation.reason,
+            Some(ReasonCode::Unlogged),
+            "{evaluation:?}"
+        );
 
         let null = auditor.evaluate(
             &status,

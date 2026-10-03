@@ -384,15 +384,9 @@ mod tests {
             usd_per_resolution: 0.05,
             wall_ms: 300_000.0,
         };
-        let mut controller = Controller::new(
-            &settings,
-            policy.clone(),
-            theta0,
-            ladders,
-            baseline,
-            7,
-        )
-        .with_prior(Box::new(M3Prior::new(stub(Some(0.03), false), &policy)));
+        let mut controller =
+            Controller::new(&settings, policy.clone(), theta0, ladders, baseline, 7)
+                .with_prior(Box::new(M3Prior::new(stub(Some(0.03), false), &policy)));
         let mut first = None;
         for index in 1..=24 {
             let passed = index <= 20 && index % 5 != 1;
@@ -404,7 +398,10 @@ mod tests {
         }
         let first = first.expect("the breach makes a move");
         assert_eq!(first.knob, Knob::RetryDelta);
-        assert_eq!(first.predicted.map(|prior| prior.source), Some(PriorSource::M3));
+        assert_eq!(
+            first.predicted.map(|prior| prior.source),
+            Some(PriorSource::M3)
+        );
         let predictions = M3Predictions::new(stub(Some(0.03), false), policy);
         let handed = predictions.prior();
         assert!((handed.prior(controller.theta(), &candidate, &breached).mean).is_finite());

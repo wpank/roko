@@ -12,7 +12,9 @@ use thiserror::Error;
 
 use roko_core::corrigibility::{ActionContext, evaluate_action};
 use roko_core::extension::CamelTaintLevel;
-use roko_core::tool::{ExternalAction, OutboundPolicy, ToolCall, ToolContext, ToolError, ToolResult};
+use roko_core::tool::{
+    ExternalAction, OutboundPolicy, ToolCall, ToolContext, ToolError, ToolResult,
+};
 
 const CONTRACT_DIR: &str = "src/safety/contracts";
 const NETWORK_TOOLS: &[&str] = &["web_fetch", "web_search"];

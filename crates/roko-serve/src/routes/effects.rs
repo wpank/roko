@@ -166,7 +166,10 @@ mod tests {
             let mut applied = self.applied.lock().expect("applied");
             if *applied > 0 {
                 let outcome = "applied".to_string();
-                return Err(EffectDecisionError::AlreadyDecided(effect_id.to_string(), outcome));
+                return Err(EffectDecisionError::AlreadyDecided(
+                    effect_id.to_string(),
+                    outcome,
+                ));
             }
             *applied += usize::from(approve);
             Ok(serde_json::json!({

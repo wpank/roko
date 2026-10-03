@@ -473,8 +473,8 @@ fn golden_path_fixture_plan_merges_green() {
 /// plan budget set to `max_usd` and a turn cap of at most $0.50 unless it
 /// sets its own.
 fn live_config(path: &Path, max_usd: f64) -> String {
-    let text = fs::read_to_string(path)
-        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let text =
+        fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let mut config: toml::Table = toml::from_str(&text)
         .unwrap_or_else(|error| panic!("{} is not TOML: {error}", path.display()));
     for table in ["providers", "models"] {

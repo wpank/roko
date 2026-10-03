@@ -74,7 +74,9 @@ fn parse_args(mut words: impl Iterator<Item = String>) -> Result<Args, String> {
             "--mode" => mode = parse_mode(&value)?,
             "--seed" => seed = value.parse().map_err(|error| format!("--seed: {error}"))?,
             "--length" => {
-                let parsed = value.parse().map_err(|error| format!("--length: {error}"))?;
+                let parsed = value
+                    .parse()
+                    .map_err(|error| format!("--length: {error}"))?;
                 length = Some(parsed);
             }
             "--policy" => policy = Some(PathBuf::from(value)),

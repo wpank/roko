@@ -45,11 +45,11 @@ use roko_core::{Body, Kind, Provenance, Signal, ToolPermissions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::safety::effects::{EffectHold, OutboundPolicy, is_outbound_effect};
 use crate::safety::provenance_sink::{
     ProvenanceAck, ProvenanceCall, ProvenanceIntent, ProvenanceOutcome, ProvenanceVerdict,
     SafetyProvenanceSink, arguments_digest, result_digest,
 };
-use crate::safety::effects::{EffectHold, OutboundPolicy, is_outbound_effect};
 use crate::safety::{HookDecision, SafetyLayer};
 use crate::tool_immune::{
     check_tool_control, is_untrusted_source, screen_tool_result, validate_tool_call_identity,

@@ -285,10 +285,7 @@ mod tests {
                 below_target: false,
             }
         );
-        assert_eq!(
-            choice.feasible,
-            [arms[3].arm.clone(), arms[4].arm.clone()]
-        );
+        assert_eq!(choice.feasible, [arms[3].arm.clone(), arms[4].arm.clone()]);
         // A budget the 0.9 arm's 90th percentile overruns leaves no arm in F.
         let tight = policy.choose(&arms, Some(0.15), None, 0.05);
         assert_eq!(

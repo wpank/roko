@@ -779,9 +779,7 @@ impl Controller {
     /// S5's ceiling); θ then stays.
     pub fn adopt(&mut self, theta: HarnessParams) -> Result<(), Verdict> {
         let context = self.context(ChangeKind::Restore);
-        let verdict = self
-            .safety
-            .validate(&self.state.theta0, &theta, &context);
+        let verdict = self.safety.validate(&self.state.theta0, &theta, &context);
         if !verdict.passed() {
             return Err(verdict);
         }

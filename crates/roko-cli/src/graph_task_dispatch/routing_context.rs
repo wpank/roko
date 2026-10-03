@@ -272,7 +272,9 @@ pub(super) fn outbound_policy(
         .as_ref()
         .and_then(|domain| super::pack_rungs::domain_profile(config, domain))
         .and_then(|profile| profile.outbound);
-    let ops = domain.as_ref().is_some_and(|domain| domain.label() == "ops");
+    let ops = domain
+        .as_ref()
+        .is_some_and(|domain| domain.label() == "ops");
     let default = if ops {
         OutboundPolicy::Stage
     } else {

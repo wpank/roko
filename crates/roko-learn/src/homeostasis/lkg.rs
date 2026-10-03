@@ -365,7 +365,11 @@ mod tests {
         // θ₁, the mechanical floor one rung up, committed through the guard.
         let theta1 = fixture
             .theta0
-            .step(Knob::TierFloor(TaskTier::Mechanical), Step::Up, &fixture.ladders)
+            .step(
+                Knob::TierFloor(TaskTier::Mechanical),
+                Step::Up,
+                &fixture.ladders,
+            )
             .expect("cheap -> mid");
         let mut lkg = fixture.lkg(&learn);
         let decision = lkg

@@ -212,7 +212,9 @@ impl DisturbanceSpec {
             problem: problem.to_string(),
         };
         if self.start_at == 0 || self.end_at.is_some_and(|end| end < self.start_at) {
-            return Err(invalid("start_at is a position from 1, and end_at none before it"));
+            return Err(invalid(
+                "start_at is a position from 1, and end_at none before it",
+            ));
         }
         match self.kind {
             DisturbanceKind::BudgetCut => {
@@ -305,7 +307,9 @@ pub fn overlay(
         }
         DisturbanceKind::PriceShock => {
             let Some(snapshot) = spec.text("snapshot") else {
-                return Err(invalid("needs `snapshot`, the shocked table's id".to_string()));
+                return Err(invalid(
+                    "needs `snapshot`, the shocked table's id".to_string(),
+                ));
             };
             changed.pricing.snapshot = snapshot.to_string();
         }
@@ -334,7 +338,10 @@ pub fn shocked_prices(
         problem,
     };
     if spec.kind != DisturbanceKind::PriceShock {
-        return Err(invalid(format!("{} is not a price shock", spec.kind.name())));
+        return Err(invalid(format!(
+            "{} is not a price shock",
+            spec.kind.name()
+        )));
     }
     spec.check()?;
     let model = spec.text("model").unwrap_or_default();
@@ -352,7 +359,13 @@ pub fn shocked_prices(
             continue;
         }
         found = true;
-        for rate in ["input", "cache_read", "cache_write_5m", "cache_write_1h", "output"] {
+        for rate in [
+            "input",
+            "cache_read",
+            "cache_write_5m",
+            "cache_write_1h",
+            "output",
+        ] {
             let value = row.get(rate).and_then(|value| {
                 value
                     .as_float()
@@ -527,11 +540,7 @@ mod tests {
             .lines()
             .find(|line| line.starts_with("KINDS = ("))
             .expect("disturb.py defines KINDS");
-        let kinds: Vec<&str> = line
-            .split('"')
-            .skip(1)
-            .step_by(2)
-            .collect();
+        let kinds: Vec<&str> = line.split('"').skip(1).step_by(2).collect();
         let ours: Vec<&str> = DisturbanceKind::DISTURB_PY
             .iter()
             .map(|kind| kind.name())
@@ -642,7 +651,13 @@ mod tests {
         };
         let ts = "2026-10-02T14:03:21.950Z";
         let inject = writer
-            .record(DisturbanceEvent::Inject, "dist-3", &spec, Origin::SpecFile, ts)
+            .record(
+                DisturbanceEvent::Inject,
+                "dist-3",
+                &spec,
+                Origin::SpecFile,
+                ts,
+            )
             .expect("inject row");
         let end = writer
             .record(DisturbanceEvent::End, "dist-3", &spec, Origin::SpecFile, ts)

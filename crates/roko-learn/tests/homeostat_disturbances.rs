@@ -106,7 +106,10 @@ fn setup(
         IN_CONTROL,
         seed,
     );
-    (controller, SyntheticTable::new(stream, ONSET + 200, theta0, ladders))
+    (
+        controller,
+        SyntheticTable::new(stream, ONSET + 200, theta0, ladders),
+    )
 }
 
 /// Run the controller over `length` positions: in `on` mode each position
@@ -236,7 +239,11 @@ fn canonical_disturbances_meet_c1_c2_c5_c7() {
                 .unwrap_or_else(|| panic!("{} seed {seed}: no episode", kind.name()));
             let proposed = moves(&episode);
             let first = proposed.first().expect("the episode moves");
-            assert!(no_locked_knob(&proposed, &ladders), "{}: {proposed:?}", kind.name());
+            assert!(
+                no_locked_knob(&proposed, &ladders),
+                "{}: {proposed:?}",
+                kind.name()
+            );
             let placed = match kind.kind {
                 DisturbanceKind::ConventionFlip => {
                     in_row(first, kind_row, &ladders) || in_row(first, swap_row, &ladders)
@@ -299,7 +306,9 @@ fn canonical_disturbances_meet_c1_c2_c5_c7() {
         let held = episode
             .iter()
             .any(|event| matches!(event, ControllerEvent::Hold { .. }));
-        let after = &calm[usize::try_from(opened).unwrap_or(usize::MAX).min(calm.len())..];
+        let after = &calm[usize::try_from(opened)
+            .unwrap_or(usize::MAX)
+            .min(calm.len())..];
         let mut streak = 0;
         let settled = after.iter().any(|&quiet| {
             streak = if quiet { streak + 1 } else { 0 };

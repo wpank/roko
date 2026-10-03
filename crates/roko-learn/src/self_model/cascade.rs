@@ -128,7 +128,11 @@ pub fn after_failure(
     if options.is_empty() || best_p < P_ABANDON {
         return StepAction::Abandon;
     }
-    if context.spec_score.is_some_and(|score| score < SPEC_SCORE_MIN) && best_p < TARGET {
+    if context
+        .spec_score
+        .is_some_and(|score| score < SPEC_SCORE_MIN)
+        && best_p < TARGET
+    {
         return StepAction::RefineSpec;
     }
     options

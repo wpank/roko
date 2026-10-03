@@ -756,8 +756,7 @@ pub(crate) async fn run_plan_execution(
         // `[runner] worktree_per_task`, as `roko plan run` resolves it with no
         // flag (backlog 3113); the run then ends with the merge hint.
         worktree_per_task: roko_cli::graph_execution::batch::resolve_worktree_per_task(
-            None,
-            workdir,
+            None, workdir,
         ),
         worktree_per_task_explicit: false,
         rich_topology: false,

@@ -123,7 +123,10 @@ impl SyntheticTable {
         let moves = self.moves(theta);
         let countered = match self.row() {
             Some(row) if position > self.stream.onset && row.expected == Expected::Regulate => {
-                moves.iter().filter(|entry| row.counters_with(entry)).count()
+                moves
+                    .iter()
+                    .filter(|entry| row.counters_with(entry))
+                    .count()
             }
             _ => 0,
         };
@@ -826,7 +829,11 @@ mod tests {
                 assert_eq!(resolution.resolved_at, a0.resolutions[index].resolved_at);
             }
             // Until an arm first moves θ, it sees exactly what A0 sees.
-            let same = run.thetas.iter().take_while(|theta| **theta == theta0).count();
+            let same = run
+                .thetas
+                .iter()
+                .take_while(|theta| **theta == theta0)
+                .count();
             assert_eq!(run.resolutions[..same], a0.resolutions[..same]);
         }
         // A1 runs one retry more from the start; M1 waits for a breach.

@@ -66,6 +66,14 @@ pub const ERROR_PATTERNS_FILE: &str = "error-patterns.json";
 /// The longest fix a verified pass records on a pattern (backlog 4125).
 pub const MAX_RESOLUTION_CHARS: usize = 400;
 
+/// How often a pattern must recur before `roko learn` proposes a check for
+/// it (decision 4127).
+pub const GRADUATION_MIN_OCCURRENCES: u32 = 3;
+
+/// In how many plans a pattern must recur before `roko learn` proposes a
+/// check for it (decision 4127).
+pub const GRADUATION_MIN_PLANS: usize = 2;
+
 /// Runner-v2's pattern file in `.roko/learn`, which nothing writes any more.
 /// [`retire_legacy_discovered_patterns`] sets it aside.
 pub const LEGACY_DISCOVERED_PATTERNS_FILE: &str = "discovered-patterns.json";
@@ -135,6 +143,28 @@ pub struct ErrorPattern {
     pub resolved_by: Option<String>,
     /// Auto-fix hint extracted from rustc output.
     pub suggestion: Option<String>,
+}
+
+/// A failure pattern ready to graduate into a permanent check (decision
+/// 4127): it kept recurring across plans and has a verified fix. `roko learn
+/// patterns --graduate` proposes the check; a person writes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GraduationCandidate {
+    /// The pattern's key.
+    pub key: String,
+    /// Its normalized signature.
+    pub digest: String,
+    /// The verify command that failed, if known.
+    pub gate: Option<String>,
+    /// How many times it was seen.
+    pub occurrences: u32,
+    /// In how many plans.
+    pub plans: usize,
+    /// The fix a verified retry recorded.
+    pub resolution: String,
+    /// The check that would catch it before a retry has to: a regression
+    /// test, a clippy lint or a verify step.
+    pub suggested_check: String,
 }
 
 /// A structured gate failure observation emitted by gates, review parsing, or
@@ -478,6 +508,41 @@ impl ErrorPatternStore {
         true
     }
 
+    /// The patterns ready to graduate into a lint or a verify step (decision
+    /// 4127): with a recorded fix, seen at least `min_occurrences` times in at
+    /// least `min_plans` plans, most frequent first, each with a suggested
+    /// check.
+    pub fn graduation_candidates(
+        &self,
+        min_occurrences: u32,
+        min_plans: usize,
+    ) -> Vec<GraduationCandidate> {
+        let mut ready: Vec<&ErrorPattern> = self
+            .patterns
+            .iter()
+            .filter(|pattern| pattern.occurrences >= min_occurrences)
+            .filter(|pattern| pattern.plan_ids.len() >= min_plans)
+            .filter(|pattern| pattern.resolution.is_some())
+            .collect();
+        ready.sort_by(|a, b| {
+            b.occurrences
+                .cmp(&a.occurrences)
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        ready
+            .into_iter()
+            .map(|pattern| GraduationCandidate {
+                key: pattern.key.clone(),
+                digest: pattern.digest.clone(),
+                gate: pattern.gate.clone(),
+                occurrences: pattern.occurrences,
+                plans: pattern.plan_ids.len(),
+                resolution: pattern.resolution.clone().unwrap_or_default(),
+                suggested_check: pattern.suggested_check(),
+            })
+            .collect()
+    }
+
     /// The patterns with a recorded fix, seen at least twice, that are about
     /// a crate `paths` name (backlog 4126), most frequent first and at most
     /// `limit`. A pattern is about the crates its verify command, digest and
@@ -703,6 +768,22 @@ impl ErrorPatternStore {
 }
 
 impl ErrorPattern {
+    /// The check that would catch the pattern before a retry has to, from
+    /// its verify command: a clippy lint, a regression test or a verify
+    /// step.
+    fn suggested_check(&self) -> String {
+        match self.gate.as_deref() {
+            Some(gate) if gate.contains("clippy") => {
+                format!("deny the lint `{gate}` reports in the crate's [lints] table")
+            }
+            Some(gate) if gate.contains("test") => {
+                format!("a regression test for this failure that `{gate}` runs")
+            }
+            Some(gate) => format!("a verify step running `{gate}`"),
+            None => format!("a verify step that reproduces: {}", self.digest),
+        }
+    }
+
     /// The crates the pattern is about: those its verify command, digest
     /// and fix name ([`crates_named`]).
     fn crates(&self) -> BTreeSet<String> {
@@ -915,6 +996,53 @@ fn crate_name(text: &str) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Decision 4127: a pattern graduates only when it recurred at least
+    /// three times across at least two plans and has a verified fix. One seen
+    /// in a single plan, one seen twice, and one without a fix stay out; each
+    /// candidate carries its fix and a suggested check.
+    #[test]
+    fn graduation_candidates_need_recurrence_and_a_resolution() {
+        let cases: [(&str, &str, &[&str], bool); 5] = [
+            ("ready", "cargo test", &["p1", "p2", "p2"], true),
+            ("one-plan", "cargo clippy", &["p1", "p1", "p1"], true),
+            ("twice", "cargo build", &["p1", "p2"], true),
+            ("unfixed", "cargo check", &["p1", "p2", "p3"], false),
+            ("lint", "cargo clippy", &["p1", "p2", "p3", "p3"], true),
+        ];
+        let mut store = ErrorPatternStore::empty();
+        for (key, command, plans, fixed) in cases {
+            for plan in plans {
+                store.observe_gate_failure(GateFailureObservation::new(
+                    key,
+                    *plan,
+                    Some("T1".to_string()),
+                    command,
+                    "verify",
+                    format!("{command} failed"),
+                    GateFailureSource::GateClassification,
+                ));
+            }
+            if fixed {
+                store.record_resolution(key, &format!("Fixed `{command}`"), "gr:p1:T1:2");
+            }
+        }
+
+        let candidates =
+            store.graduation_candidates(GRADUATION_MIN_OCCURRENCES, GRADUATION_MIN_PLANS);
+        let keys: Vec<&str> = candidates
+            .iter()
+            .map(|candidate| candidate.key.as_str())
+            .collect();
+        assert_eq!(keys, ["lint", "ready"]);
+        let lint = &candidates[0];
+        assert_eq!((lint.occurrences, lint.plans), (4, 3));
+        assert_eq!(lint.resolution, "Fixed `cargo clippy`");
+        let check = &lint.suggested_check;
+        assert!(check.contains("lint"), "{check}");
+        let check = &candidates[1].suggested_check;
+        assert!(check.contains("regression test"), "{check}");
+    }
 
     /// backlog 4209: a keyed summary selects a pattern of the same task, or
     /// of one of the task's verify commands from another task, and skips a

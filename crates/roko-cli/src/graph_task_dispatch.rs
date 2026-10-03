@@ -808,6 +808,15 @@ impl GraphTaskDispatcher {
         if let Some(rejection) = self.unbuilt_rung(spec, task) {
             return Err(rejection);
         }
+        // A task that works in a scratch copy of its data waits for scratch
+        // workspaces (9134, 9135).
+        if task.workspace_kind(&self.config) == roko_core::WorkspaceKind::ScratchDir {
+            return Err(RokoError::Rejected(format!(
+                "task `{}` was not run: it works in a scratch_dir workspace, which plan runs do \
+                 not build yet",
+                task.id
+            )));
+        }
         // The prompt shows every check that will judge the task: its own
         // verify steps, then the workspace rungs it faces.
         let task = &self.prompt_task(spec, task);

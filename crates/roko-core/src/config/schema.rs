@@ -340,6 +340,10 @@ pub struct DomainProfile {
     /// domain, `allow` elsewhere (9131).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outbound: Option<OutboundPolicy>,
+    /// Where the domain's tasks work when they name no `workspace` of their
+    /// own: `git_worktree` or `scratch_dir` (9134).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<crate::WorkspaceKind>,
     /// Forward-compatible profile-local extension fields.
     #[serde(default, flatten)]
     pub extra: HashMap<String, toml::Value>,
@@ -361,6 +365,7 @@ impl DomainProfile {
             pack: child.pack.or(parent.pack),
             role_identity: child.role_identity.or(parent.role_identity),
             outbound: child.outbound.or(parent.outbound),
+            workspace: child.workspace.or(parent.workspace),
             extra,
         }
     }
@@ -712,6 +717,21 @@ impl RokoConfig {
         }
 
         providers
+    }
+
+    /// The `[profiles.<label>]` entry a task of work domain `domain` follows,
+    /// resolved through its `base` chain, which may end at a built-in profile
+    /// (9125): `None` when the workspace declares no entry for the label, or
+    /// when its entry does not resolve.
+    #[must_use]
+    pub fn domain_profile(&self, domain: &crate::TaskDomain) -> Option<DomainProfile> {
+        let label = domain.label();
+        if !self.profiles.contains_key(label) {
+            return None;
+        }
+        let mut profiles = builtin_profiles();
+        profiles.extend(self.profiles.clone());
+        resolve_profile(label, &profiles).ok()
     }
 
     /// Return the explicit model registry that should be used at runtime.

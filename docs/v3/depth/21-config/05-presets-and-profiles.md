@@ -100,6 +100,7 @@ pub struct DomainProfile {
     pub pack: Option<String>,           // A [gates.packs.<name>] (9125)
     pub role_identity: Option<String>,  // One line that leads the prompt (9125)
     pub outbound: Option<OutboundPolicy>, // allow, stage or deny (9131)
+    pub workspace: Option<WorkspaceKind>, // git_worktree or scratch_dir (9134)
     pub extra: HashMap<String, toml::Value>,
 }
 ```
@@ -124,6 +125,12 @@ which a chat host's `roko run` sets to `stage`; else the profile's `outbound`;
 else decision 9107's default, `stage` in the `ops` domain and `allow` elsewhere.
 Only in-process tool loops are covered: CLI agents such as Claude Code run their
 own tools.
+
+Workspace kinds (9134): a task's attempts work in a git worktree unless the task,
+or the profile of its domain, sets `workspace = "scratch_dir"`: a scratch copy of
+the data the task's `files` name, outside git. `roko plan validate` refuses a
+`scratch_dir` task that names no data (PLAN_048) or names a path git tracks
+(PLAN_049).
 
 `roko effects list | show <id> | approve <id> | reject <id>` decides a held effect
 (9132). An approval replays the call once through a fresh dispatcher over the

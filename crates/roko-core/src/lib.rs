@@ -422,7 +422,7 @@ pub use signal_kinds::*;
 pub use task::{
     GlobalTaskId, PlanStatus, Task, TaskCategory, TaskComplexityBand, TaskContextWeight,
     TaskDomain, TaskHints, TaskMeta, TaskQualityProfile, TaskReasoningLevel, TaskSpeedPriority,
-    TaskStatus, TaskTier,
+    TaskStatus, TaskTier, WorkspaceKind,
 };
 pub use usage::{UsageObservation, UsageSource};
 // Note: tool::FailureKind (for tool-call failures) is NOT re-exported here to avoid

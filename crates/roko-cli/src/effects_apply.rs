@@ -28,10 +28,7 @@ use roko_agent::dispatcher::{HandlerResolver, ToolDispatcher};
 use roko_agent::safety::authz::AuthorizationEvidence;
 use roko_agent::safety::effects::EffectHold;
 use roko_agent::{SafetyLayer, ToolPermissionPolicy};
-use roko_core::TaskDomain;
-use roko_core::config::schema::{
-    GateRungConfig, RokoConfig, RungKind, builtin_profiles, resolve_profile,
-};
+use roko_core::config::schema::{GateRungConfig, RokoConfig, RungKind};
 use roko_core::tool::{
     CorrelationEnvelope, NeverCancel, NoopAuditSink, NoopMetricsSink, NoopTraceSink, ToolCall,
     ToolContext, ToolError, ToolHandler, ToolRegistry, ToolResult, VecToolRegistry,
@@ -399,7 +396,7 @@ fn receipt_rungs(workdir: &Path, config: &RokoConfig, hold: &EffectHold) -> Vec<
         .or_else(|| default_domain.cloned());
     let named_pack = domain
         .as_ref()
-        .and_then(|domain| profile_pack(config, domain))
+        .and_then(|domain| config.domain_profile(domain)?.pack)
         .and_then(|name| config.gates.packs.get(&name));
     let rungs = named_pack.map_or_else(
         || config.gates.pack_for(domain.as_ref()),
@@ -410,18 +407,6 @@ fn receipt_rungs(workdir: &Path, config: &RokoConfig, hold: &EffectHold) -> Vec<
         .filter(|rung| rung.kind == RungKind::Receipt && !rung.command.trim().is_empty())
         .cloned()
         .collect()
-}
-
-/// The pack the `[profiles.<domain>]` entry for `domain` names, resolved
-/// through its `base` chain.
-fn profile_pack(config: &RokoConfig, domain: &TaskDomain) -> Option<String> {
-    let label = domain.label();
-    if !config.profiles.contains_key(label) {
-        return None;
-    }
-    let mut profiles = builtin_profiles();
-    profiles.extend(config.profiles.clone());
-    resolve_profile(label, &profiles).ok()?.pack
 }
 
 /// The task whose agent proposed `hold`'s call: in the plan of its run's

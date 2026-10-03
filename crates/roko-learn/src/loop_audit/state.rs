@@ -505,7 +505,7 @@ fn structural_reason(checks: Structural) -> Option<ReasonCode> {
 /// The policy a loop executes in `state` with `reason`: π⁰ for an enforced
 /// demotion, `inert` or `null`; the learned policy otherwise, and always
 /// with `enforce = false`. A dormant loop's decisions already equal π⁰'s.
-fn executed_policy(
+pub(crate) fn executed_policy(
     status: &LoopStatus,
     state: AuditState,
     reason: Option<ReasonCode>,

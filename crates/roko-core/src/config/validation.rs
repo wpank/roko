@@ -232,6 +232,17 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         results.push(invariant(12, InvariantSeverity::Error, key, message));
     }
 
+    // M2's section (S03 §5): every holdout rate lies between a positive
+    // floor and 0.5, g is at most 0.1, and the thresholds are in range.
+    for (key, problem) in config.learning.audit.problems() {
+        results.push(invariant(
+            13,
+            InvariantSeverity::Error,
+            format!("learning.audit.{key}"),
+            problem,
+        ));
+    }
+
     results
 }
 

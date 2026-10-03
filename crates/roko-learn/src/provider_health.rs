@@ -2034,6 +2034,10 @@ mod tests {
     fn error_class_from_failure_text_uses_the_shared_classifier() {
         for (text, class) in [
             ("Not logged in", ErrorClass::AuthFailure),
+            (
+                "agent error (cerebras): provider error: authentication failed",
+                ErrorClass::AuthFailure,
+            ),
             ("429 Too Many Requests", ErrorClass::RateLimit),
             ("503 service unavailable", ErrorClass::ServerError),
             ("something odd", ErrorClass::Unknown),

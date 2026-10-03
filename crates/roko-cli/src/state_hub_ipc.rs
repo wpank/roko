@@ -48,6 +48,10 @@
 //!
 //! `.roko/runtime/hub.sock` — alongside the daemon socket.  The socket and
 //! `hub.token` are created when the server starts and removed when it exits.
+//! A Unix socket path must fit `sun_path` (104 bytes on macOS, 108 on Linux),
+//! so under a deep checkout the server binds `hub.sock` in a short private
+//! directory instead, `/tmp/roko-<uid>/<workspace hash>/`, and writes that
+//! path to `.roko/runtime/hub.sock.path`, which clients read first (1224).
 //!
 //! # Fallback
 //!
@@ -147,8 +151,111 @@ mod unix {
     // ── Path helpers ─────────────────────────────────────────────────────────
 
     /// `.roko/runtime/hub.sock` — the well-known path for the StateHub IPC socket.
+    /// When it is too long for a Unix socket, the server binds elsewhere and
+    /// names the path in the pointer file `hub.sock.path` (1224).
     pub fn hub_socket_path(workdir: &Path) -> PathBuf {
         workdir.join(".roko").join("runtime").join("hub.sock")
+    }
+
+    /// The longest path `bind` takes for a Unix socket: `sun_path` holds 108
+    /// bytes on Linux and 104 on macOS and the BSDs, the closing NUL included.
+    const MAX_SOCKET_PATH_BYTES: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
+
+    /// The file beside a socket's home in the workspace that names the path
+    /// the socket is bound at instead: `hub.sock.path`, `<pid>.sock.path`.
+    pub(crate) fn socket_pointer_path(home: &Path) -> PathBuf {
+        let mut pointer = home.as_os_str().to_os_string();
+        pointer.push(".path");
+        PathBuf::from(pointer)
+    }
+
+    /// Where the socket whose home is `home` listens: the path its pointer
+    /// file names, when there is one, else `home`.
+    pub(crate) fn bound_socket_path(home: &Path) -> PathBuf {
+        std::fs::read_to_string(socket_pointer_path(home))
+            .ok()
+            .map(|path| PathBuf::from(path.trim()))
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| home.to_path_buf())
+    }
+
+    /// Bind the Unix socket whose home is `home`, a path in `workdir`, and
+    /// make it owner-only (`0600`). A home too long for `sun_path` (a deep
+    /// checkout, 1224) is bound under [`short_socket_dir`] instead, and its
+    /// pointer file names that path for clients ([`bound_socket_path`]).
+    /// Returns the listener and the path it is bound at; the caller removes
+    /// that path and the pointer file when it stops.
+    pub(crate) fn bind_socket(workdir: &Path, home: &Path) -> Result<(UnixListener, PathBuf)> {
+        let pointer = socket_pointer_path(home);
+        // A pointer an earlier run left behind.
+        let _ = std::fs::remove_file(&pointer);
+        let path = if home.as_os_str().len() <= MAX_SOCKET_PATH_BYTES {
+            home.to_path_buf()
+        } else {
+            let name = home
+                .file_name()
+                .with_context(|| format!("socket path {} has no file name", home.display()))?;
+            short_socket_dir(workdir)?.join(name)
+        };
+        // A socket an earlier run left behind.
+        let _ = std::fs::remove_file(&path);
+        let listener =
+            UnixListener::bind(&path).with_context(|| format!("bind socket {}", path.display()))?;
+        // Owner-only. The token handshake is the check that holds while this
+        // chmod has not happened yet, and on platforms that ignore
+        // socket-file permissions.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 0600 socket {}", path.display()))?;
+        }
+        if path != home {
+            write_owner_only(&pointer, &path.to_string_lossy(), "socket pointer")?;
+        }
+        Ok((listener, path))
+    }
+
+    /// The directory for the sockets of `workdir` whose homes are too long:
+    /// `/tmp/roko-<uid>/<the first 16 hex digits of the SHA-256 of the
+    /// canonical workdir>`. Each level is created `0700` and must be this
+    /// user's own directory, closed to everyone else, so no other user can
+    /// plant a socket there for a client to send its token to.
+    fn short_socket_dir(workdir: &Path) -> Result<PathBuf> {
+        use sha2::{Digest as _, Sha256};
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let canonical = workdir
+            .canonicalize()
+            .with_context(|| format!("resolve {}", workdir.display()))?;
+        let digest = format!("{:x}", Sha256::digest(canonical.as_os_str().as_bytes()));
+        let uid = rustix::process::geteuid().as_raw();
+        let user = Path::new("/tmp").join(format!("roko-{uid}"));
+        let dir = user.join(&digest[..16]);
+        private_dir(&user)?;
+        private_dir(&dir)?;
+        Ok(dir)
+    }
+
+    /// Create `dir` with mode `0700` unless it exists, then check that it is
+    /// a directory, not a link, that this user owns and no one else can open.
+    fn private_dir(dir: &Path) -> Result<()> {
+        use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+
+        if let Err(error) = std::fs::DirBuilder::new().mode(0o700).create(dir)
+            && error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(error).with_context(|| format!("create {}", dir.display()));
+        }
+        let meta =
+            std::fs::symlink_metadata(dir).with_context(|| format!("inspect {}", dir.display()))?;
+        anyhow::ensure!(
+            meta.is_dir()
+                && meta.uid() == rustix::process::geteuid().as_raw()
+                && meta.mode() & 0o077 == 0,
+            "{} is not a private directory of this user",
+            dir.display()
+        );
+        Ok(())
     }
 
     /// `.roko/runtime/hub.token` — the per-run token a client must present
@@ -173,10 +280,18 @@ mod unix {
     /// The file is created with mode `0600` under a temporary name and then
     /// renamed into place, so it is never wider than `0600`, even briefly.
     pub(crate) fn write_hub_token(path: &Path, token: &str) -> Result<()> {
+        write_owner_only(path, token, "hub token")
+    }
+
+    /// Write `contents` to `path` as [`write_hub_token`] writes a token;
+    /// `what` names the file in errors.
+    fn write_owner_only(path: &Path, contents: &str, what: &str) -> Result<()> {
         use std::io::Write as _;
         use std::os::unix::fs::OpenOptionsExt as _;
 
-        let tmp = path.with_extension("token.tmp");
+        let mut tmp = path.as_os_str().to_os_string();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
         // A leftover from a crashed start; `create_new` below refuses to
         // reuse it (or to follow a link planted in its place).
         let _ = std::fs::remove_file(&tmp);
@@ -185,12 +300,12 @@ mod unix {
             .create_new(true)
             .mode(0o600)
             .open(&tmp)
-            .with_context(|| format!("create hub token {}", tmp.display()))?;
-        file.write_all(token.as_bytes())
-            .with_context(|| format!("write hub token {}", tmp.display()))?;
+            .with_context(|| format!("create {what} {}", tmp.display()))?;
+        file.write_all(contents.as_bytes())
+            .with_context(|| format!("write {what} {}", tmp.display()))?;
         drop(file);
         std::fs::rename(&tmp, path)
-            .with_context(|| format!("install hub token {}", path.display()))?;
+            .with_context(|| format!("install {what} {}", path.display()))?;
         Ok(())
     }
 
@@ -229,7 +344,8 @@ mod unix {
     /// Start the StateHub IPC server.
     ///
     /// Writes a fresh token to `.roko/runtime/hub.token`, binds
-    /// `.roko/runtime/hub.sock`, and accepts connections. A client that
+    /// `.roko/runtime/hub.sock` (or, under a deep checkout, the path
+    /// `hub.sock.path` names), and accepts connections. A client that
     /// presents the token gets the current snapshot once, then live
     /// `DashboardEvent`s until the connection is closed or `shutdown` is
     /// cancelled; any other client is disconnected (see the module docs).
@@ -262,19 +378,13 @@ mod unix {
         let token: Arc<str> = mint_hub_token().into();
         write_hub_token(&token_path, &token)?;
 
-        let listener = UnixListener::bind(&socket_path)
+        // Bound owner-only (0600), at the socket's home or, when that is too
+        // long for a Unix socket, at the path its pointer file names.
+        let (listener, bound_path) = bind_socket(workdir, &socket_path)
             .with_context(|| format!("bind hub socket {}", socket_path.display()))?;
+        let pointer_path = socket_pointer_path(&socket_path);
 
-        // Restrict socket to owner-only (0600). The token handshake is the
-        // check that holds while this chmod has not happened yet, and on
-        // platforms that ignore socket-file permissions.
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("chmod 0600 hub socket {}", socket_path.display()))?;
-        }
-
-        tracing::debug!(path = %socket_path.display(), "StateHub IPC server bound");
+        tracing::debug!(path = %bound_path.display(), "StateHub IPC server bound");
 
         let handle = tokio::spawn(async move {
             loop {
@@ -303,8 +413,9 @@ mod unix {
                 }
             }
 
-            // Clean up the socket and token files on exit.
-            let _ = tokio::fs::remove_file(&socket_path).await;
+            // Clean up the socket, pointer and token files on exit.
+            let _ = tokio::fs::remove_file(&bound_path).await;
+            let _ = tokio::fs::remove_file(&pointer_path).await;
             let _ = tokio::fs::remove_file(&token_path).await;
         });
 
@@ -388,8 +499,9 @@ mod unix {
 
     /// Attempt to connect to a live StateHub IPC server.
     ///
-    /// If `.roko/runtime/hub.sock` exists and is connectable, presents the
-    /// token from `.roko/runtime/hub.token` and returns a [`SharedStateHub`]
+    /// If `.roko/runtime/hub.sock` (or the path `hub.sock.path` names, 1224)
+    /// exists and is connectable, presents the token from
+    /// `.roko/runtime/hub.token` and returns a [`SharedStateHub`]
     /// pre-seeded with the full current snapshot and wired to stream live
     /// events from the remote hub into its in-process event bus.
     ///
@@ -397,7 +509,7 @@ mod unix {
     /// the connection is refused or rejected, or any protocol error occurs.
     /// The caller should fall back to file polling.
     pub async fn try_connect_hub_ipc(workdir: &Path) -> Option<SharedStateHub> {
-        let socket_path = hub_socket_path(workdir);
+        let socket_path = bound_socket_path(&hub_socket_path(workdir));
         if !socket_path.exists() {
             return None;
         }
@@ -474,6 +586,9 @@ pub use unix::{hub_socket_path, hub_token_path, start_hub_ipc_server, try_connec
 // The frames and the token handshake of the `roko inject` socket (gap-f118b3).
 #[cfg(unix)]
 pub(crate) use unix::{mint_hub_token, read_frame, tokens_match, write_frame, write_hub_token};
+// Sockets whose homes are too long for `sun_path` (1224).
+#[cfg(unix)]
+pub(crate) use unix::{bind_socket, bound_socket_path, socket_pointer_path};
 
 /// On non-Unix targets there is no socket support; the client always returns
 /// `None` (file-polling fallback) and the server is a no-op.

@@ -1285,7 +1285,9 @@ impl PlanCmd {
     /// Whether dispatching this command can change plan state or artifacts.
     ///
     /// Read-only commands must not rebuild indexes: rebuilding writes generated index files and
-    /// makes commands such as `plan validate` unexpectedly dirty the caller's workspace.
+    /// makes commands such as `plan validate` unexpectedly dirty the caller's workspace. Nor does
+    /// `plan run`: it changes no plan definition, and its results go to the plan branch and
+    /// `.roko/`, so it leaves the operator's checkout as it found it (1222).
     fn should_rebuild_indexes(&self) -> bool {
         match self {
             Self::List { .. }
@@ -1293,6 +1295,7 @@ impl PlanCmd {
             | Self::Validate { .. }
             | Self::Index { .. }
             | Self::Queue { .. }
+            | Self::Run { .. }
             | Self::Pause { .. }
             | Self::Resume { .. }
             | Self::Cancel { .. }
@@ -1300,7 +1303,7 @@ impl PlanCmd {
             | Self::Budget { .. }
             | Self::Review { .. }
             | Self::Status { .. } => false,
-            Self::Run { dry_run, .. } | Self::Regenerate { dry_run, .. } => !dry_run,
+            Self::Regenerate { dry_run, .. } => !dry_run,
             Self::Create { .. }
             | Self::Generate { .. }
             | Self::Revise { .. }
@@ -1312,11 +1315,7 @@ impl PlanCmd {
     /// Workspace whose plan artifacts the command can mutate.
     fn index_rebuild_workdir(&self, cli: &Cli) -> PathBuf {
         match self {
-            Self::Run {
-                workdir: Some(workdir),
-                ..
-            }
-            | Self::Create {
+            Self::Create {
                 workdir: Some(workdir),
                 ..
             } => workdir.clone(),

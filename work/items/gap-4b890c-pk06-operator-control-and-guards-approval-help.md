@@ -73,3 +73,14 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK04 (gap-198c9c), PK05 (gap-843aef).
 - Suggested model: opus.
+
+## Progress
+
+Worker claude-agent on `work/gap-4b890c` from `e55d4c20f`, 2026-10-03. Rust tasks are implemented, not done: cargo is
+deferred to the batch gate. Anchors re-checked at BASE; 1210 (PK04) and PK05's held-task approval were already in.
+
+- 1221: implemented at a98d86b6b (`--approval`/`--tui` doc and examples say the run opens the TUI itself on a terminal and name the TUI, `roko plan review` and the portal for held tasks; `validate_graph_execution_options`, its call, its test and the unused `approval` value removed)
+- 1222: implemented at 6a229ef51 (`plan run` no longer rebuilds indexes; new canary `tests/operator_checkout_clean.rs`; `plan_run_does_not_rebuild_indexes`)
+- 1223: implemented at f26b7e259 (each hook runs the guard zlib-compressed and base64-encoded by `claude_cli_agent/guard_payload.rs`, no new crate; payload about 72 KB instead of about 160 KB; the hook text test now runs the hook)
+- 1224: implemented at 40f951a59 (`bind_socket` binds a too-long socket path under `/tmp/roko-<uid>/<hash>/` with a `.path` pointer; hub and inject clients follow it; tests for both sockets)
+- 1225: implemented at 950c76148 (status block rewritten at `e55d4c20f`: PARTIAL, the watchdog on by default, `supervise` named; 13 watchers in the block, table and verification commands)

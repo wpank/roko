@@ -967,7 +967,6 @@ fn read_only_plan_commands_do_not_rebuild_indexes() {
 fn mutating_plan_commands_rebuild_indexes_but_dry_runs_do_not() {
     let mutating = [
         Cli::try_parse_from(["roko", "plan", "create", "my-plan", "--title", "My Plan"]).unwrap(),
-        Cli::try_parse_from(["roko", "plan", "run", "plans/"]).unwrap(),
         Cli::try_parse_from(["roko", "plan", "generate", "fix", "the", "bug"]).unwrap(),
         Cli::try_parse_from(["roko", "plan", "regenerate", "plans/my-plan"]).unwrap(),
     ];
@@ -1000,6 +999,22 @@ fn mutating_plan_commands_rebuild_indexes_but_dry_runs_do_not() {
         };
         assert!(!cmd.should_rebuild_indexes());
     }
+}
+
+/// 1222: a successful plan run leaves the indexes in the operator's checkout
+/// alone. It changes no plan definition; its results go to the plan branch
+/// and `.roko/`.
+#[test]
+fn plan_run_does_not_rebuild_indexes() {
+    let cli = Cli::try_parse_from(["roko", "plan", "run", "plans/"]).unwrap();
+    let Some(Command::Plan { cmd }) = cli.command else {
+        panic!("expected a plan command");
+    };
+    assert!(!cmd.should_rebuild_indexes());
+    assert!(!should_rebuild_plan_indexes(
+        cmd.should_rebuild_indexes(),
+        Some(EXIT_SUCCESS)
+    ));
 }
 
 #[test]
@@ -1041,12 +1056,14 @@ fn nonzero_primary_result_is_preserved_without_index_rebuild() {
 }
 
 #[test]
-fn plan_run_rebuild_uses_the_command_workdir() {
+fn plan_create_rebuild_uses_the_command_workdir() {
     let cli = Cli::try_parse_from([
         "roko",
         "plan",
-        "run",
-        "plans",
+        "create",
+        "my-plan",
+        "--title",
+        "My Plan",
         "--workdir",
         "selected-workspace",
     ])

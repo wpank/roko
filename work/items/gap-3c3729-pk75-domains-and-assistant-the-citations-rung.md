@@ -77,3 +77,14 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK53 (gap-dff960), PK74 (gap-ce1d11).
 - Suggested model: opus.
+
+## Progress
+
+- 9122: implemented at b75ddcec5
+- 9123: implemented at 70e181687
+- 9124: implemented at d2d9fdb0b
+- 9125: implemented at 92e31eb7b
+- 9126: implemented at fc2c66f22
+- 9127: implemented at e9769a555
+
+The Rust tasks were checked statically (verify greps, hand formatting); cargo verification is left to the batch gate. 9124 adds no dependency: its JSON Schema check covers a draft 2020-12 subset and skips the rung on any other keyword.

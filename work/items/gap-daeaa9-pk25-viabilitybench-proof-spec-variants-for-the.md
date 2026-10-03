@@ -69,3 +69,31 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK19 (gap-de0b87), PK22 (gap-46fd19), PK23 (gap-eb1aa3), PK24 (gap-e120a1).
 - Suggested model: sonnet.
+
+## Progress
+
+- 3329: implemented at `78bb3417d`. `materialize.py` builds `spec.vague.md` itself on the first
+  `spec_variant="vague"` request (F1 and F4 only), caches it in the manifest, and checks recoverability before
+  writing (a `recoverability` entry backed only by `spec.precise.md#ACn` references, for an AC the vague spec no
+  longer states, fails materialization). Fixed a real gap this surfaced: `f4_kvtool/gen.py`'s recoverability had
+  two entries with no file-based evidence at all. Verified against the real F1/F4 generators: 0 recoverability
+  violations, and `specops.manipulation_check` (task 3234) reports gaps of 49-70 points on 4 real instances.
+- 3330: implemented at `44a17db14`. `streams/compile.py` gains `compile_log1`, one row per cell, reusing the
+  p1_core/p1_h3/pass^5 streams and `pilot.toml`. Verified: billed totals match S09 §4.3 exactly (A 960, B 660,
+  C 336, D 120, E 80 = 2,156); block C's precise row covers only rep 3, noting block A's seeds 1-2 as reps 1-2.
+- 3331: implemented at `1928525de`. `compile_s1`/`compile_s3`/`compile_s5` match S08 §4.7: S1 is F1-F4 x 24 in
+  24 blocks of 4; S3 is 10 nominal + 30 disturbed (6 per S08 §4.6 hook), F1/F4 only (discovered F2/F3 build
+  latent v1 only, so they can't take the convention_flip hook); S5 is 120 spread over P1-core's 6 families.
+  `compile_s3` also writes a real `vb.disturbance/1` file; verified it loads through `driver/disturb.py` with
+  each position resolving to exactly one covering hook.
+- 3332: implemented at `f1f20552c`. `external/swebench/select.py`: seed 20260928, stratified-by-repository
+  selection of 60, filtered by difficulty/FAIL_TO_PASS/patch size, capped at 12/repo, refusing fewer than 5
+  repos. `probe.py`: gives each model only the issue text, excludes at 2-of-5 gold-file agreement; its live run
+  is task 3353, out of scope here. Found and fixed a real bug along the way: naming the module `select.py`
+  collides with the standard library's own `select` (silently resolved once anything else imports it) - both
+  `probe.py` and its test load it by path instead. Verified offline against a synthetic fixture dataset and
+  stub models (9/9 tests); the real dataset fetch is never called by a test.
+
+All four tasks' own verify commands pass locally (pure Python, no cargo). No live model calls or spend, per
+this wave's brief. Full regression checks along the way (families/f1_pyconv, families/f4_kvtool, specops/,
+speclint/, the whole streams/ and external/swebench/ suites) all green.

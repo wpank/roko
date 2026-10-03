@@ -2042,7 +2042,11 @@ async fn record_agent_dispatch_feedback(
     latency_ms: u64,
     health_recorded: bool,
 ) {
-    let learn_dir = roko_fs::RokoLayout::for_project(&request.workdir).learn_dir();
+    // The workspace's learning state, at the root a Graph dispatch names as
+    // its `immune_root`, never under the attempt's own worktree: a row there
+    // would be committed with the attempt or lost with it (bug-412a5e).
+    let root = request.immune_root.as_deref().unwrap_or(&request.workdir);
+    let learn_dir = roko_fs::RokoLayout::for_project(root).learn_dir();
     let outcome = ProviderHealthOutcome::of(result);
     let mut recorder = ModelCallFeedbackRecorder::without_cascade_router(learn_dir);
     if health_recorded || !outcome.is_provider_outcome() {
@@ -3721,6 +3725,45 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             !tmp.path().join(".roko/learn/cascade-router.json").exists(),
             "the bridge must not observe or save the cascade router"
         );
+    }
+
+    /// bug-412a5e: a Graph attempt runs in its own worktree (`workdir`) and
+    /// names the workspace as its `immune_root`. Its model-call efficiency
+    /// row, and without a registry its provider's health, belong to the
+    /// workspace's `.roko/learn/`: in the worktree they would be committed
+    /// with the attempt, or lost with it.
+    #[tokio::test]
+    async fn model_call_efficiency_row_lands_at_workspace_root_not_the_worktree() {
+        let tmp = tempdir().expect("tempdir");
+        let script = write_fake_claude_script(
+            &tmp,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
+"#,
+        );
+        let worktree = tmp.path().join("worktrees/attempt-1");
+        std::fs::create_dir_all(&worktree).expect("create the attempt's worktree");
+        let mut request = fake_claude_request(&worktree, 10_000);
+        request.immune_root = Some(tmp.path().to_path_buf());
+
+        let dispatch = AgentDispatcherV2::new(Arc::new(fake_claude_config(&script)))
+            .run_agent_result_bridge(request)
+            .await
+            .expect("dispatch");
+        assert!(dispatch.result.success);
+
+        let root_learn = tmp.path().join(".roko/learn");
+        let efficiency = std::fs::read_to_string(root_learn.join("efficiency.jsonl"))
+            .expect("the workspace root holds the efficiency row");
+        assert!(efficiency.contains(r#""kind":"model_call""#));
+        assert!(efficiency.contains(r#""role":"dispatch_v2""#));
+        assert!(root_learn.join("provider-health.json").exists());
+        let attempt_learn = worktree.join(".roko/learn");
+        assert!(!attempt_learn.join("efficiency.jsonl").exists());
+        assert!(!attempt_learn.join("provider-health.json").exists());
     }
 
     /// A config whose one model, `dispatch-model`, runs the Claude CLI

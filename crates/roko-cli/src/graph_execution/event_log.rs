@@ -28,7 +28,7 @@
 //! Every run, with or without `--log-file`, also records its events in the
 //! workspace event log, `.roko/events.jsonl` ([`WorkspaceEventLog`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::future::Future;
 use std::io::{BufWriter, Write as _};
@@ -213,6 +213,7 @@ impl RunEventLog {
             wrote_start: false,
             task_outcomes: BTreeMap::new(),
             agent_calls: 0,
+            open_agents: BTreeSet::new(),
             events: 0,
             skipped: 0,
             write_error: None,
@@ -445,7 +446,8 @@ struct RunEndLine<'a> {
     duration_ms: u64,
     /// `TaskCompleted` events by outcome (`passed`, `failed`, ...).
     task_outcomes: &'a BTreeMap<String, usize>,
-    /// `AgentSpawned` events.
+    /// `AgentSpawned` events that opened an agent's row; failover's rename of
+    /// an open row is the same call (bug-ba53d1).
     total_agent_calls: usize,
     events_recorded: u64,
     events_skipped: u64,
@@ -462,6 +464,8 @@ struct EventLogWriter {
     wrote_start: bool,
     task_outcomes: BTreeMap<String, usize>,
     agent_calls: usize,
+    /// Agents whose row is open: spawned and not yet completed.
+    open_agents: BTreeSet<String>,
     events: u64,
     skipped: u64,
     /// First write failure; later lines are dropped.
@@ -482,7 +486,17 @@ impl EventLogWriter {
                     DashboardEvent::TaskCompleted { outcome, .. } => {
                         *self.task_outcomes.entry(outcome.clone()).or_default() += 1;
                     }
-                    DashboardEvent::AgentSpawned { .. } => self.agent_calls += 1,
+                    // Failover spawns an open row again to rename it to the
+                    // model that runs (backlog 1128): the same agent call,
+                    // where a retry, after its row completed, is a new one.
+                    DashboardEvent::AgentSpawned { agent_id, .. } => {
+                        if self.open_agents.insert(agent_id.clone()) {
+                            self.agent_calls += 1;
+                        }
+                    }
+                    DashboardEvent::AgentCompleted { agent_id, .. } => {
+                        self.open_agents.remove(agent_id);
+                    }
                     _ => {}
                 }
                 self.events += 1;
@@ -774,6 +788,73 @@ mod tests {
         assert_eq!(end["total_agent_calls"], 1);
         assert_eq!(end["task_outcomes"]["passed"], 1);
         assert!(end["timestamp_ms"].as_u64() >= lines[0]["timestamp_ms"].as_u64());
+    }
+
+    /// One attempt's dashboard row in plan `p1`: `AgentSpawned` naming
+    /// `model`, as dispatch and failover publish it.
+    fn spawned(model: &str) -> DashboardEvent {
+        DashboardEvent::AgentSpawned {
+            agent_id: "p1/T1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 0,
+            role: "implementer".to_string(),
+            model: model.to_string(),
+            provider: String::new(),
+        }
+    }
+
+    fn completed() -> DashboardEvent {
+        DashboardEvent::AgentCompleted {
+            agent_id: "p1/T1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 0,
+        }
+    }
+
+    /// The `total_agent_calls` of a run whose hub saw `events`.
+    async fn total_agent_calls(events: Vec<DashboardEvent>) -> serde_json::Value {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        let hub = crate::state_hub::shared_state_hub();
+        let log = RunEventLog::open(&path, &hub, false).expect("open log");
+        let sender = hub.sender();
+        for event in events {
+            sender.publish(event);
+        }
+        log.finish(&Ok(0)).await.expect("finish log");
+        let lines = read_lines(&path);
+        let end = lines.last().expect("run.completed");
+        assert_eq!(end["type"], "run.completed");
+        end["total_agent_calls"].clone()
+    }
+
+    /// bug-ba53d1: failover renames the row its attempt opened to the model
+    /// that runs by spawning it again under the same agent id (backlog
+    /// 1128). That attempt made one agent call, not two.
+    #[tokio::test]
+    async fn failed_over_attempt_counts_one_agent_call() {
+        let events = vec![
+            spawned("claude-sonnet-4-6"),
+            spawned("glm-4.7"),
+            completed(),
+        ];
+        assert_eq!(total_agent_calls(events).await, 1);
+    }
+
+    /// A retry opens the row again once its attempt completed: each attempt
+    /// counts, failed over or not.
+    #[tokio::test]
+    async fn each_attempt_counts_one_agent_call() {
+        let events = vec![
+            spawned("claude-sonnet-4-6"),
+            spawned("glm-4.7"),
+            completed(),
+            spawned("claude-sonnet-4-6"),
+            completed(),
+        ];
+        assert_eq!(total_agent_calls(events).await, 2);
     }
 
     /// bug-230de6: a run's hub events land in `.roko/events.jsonl` as the

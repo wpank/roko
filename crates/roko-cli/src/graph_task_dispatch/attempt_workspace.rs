@@ -948,6 +948,39 @@ printf '%s\n' '{"type":"result","session_id":"sess-w","model":"claude-sonnet-4-6
         assert_operator_checkout_untouched(repo.path(), &head);
     }
 
+    /// gap-7f32ed: acceptance commits everything in the attempt's worktree,
+    /// so roko's own records of the attempt belong at the workspace root. In
+    /// a repository that does not ignore `.roko/`, the plan branch holds the
+    /// agent's work and no `.roko/` path, and the attempt's model-call row
+    /// is at the root (bug-412a5e).
+    #[tokio::test]
+    async fn accepted_worktree_attempt_commits_no_roko_state() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let (dispatcher, task) = isolated_dispatcher(&repo, provider).await;
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt is accepted");
+
+        let plan_branch = format!("roko/plan/{}", spec.plan_id);
+        let committed = git(repo.path(), &["ls-tree", "-r", "--name-only", &plan_branch]);
+        assert!(
+            committed.lines().any(|path| path == "feature.txt"),
+            "{committed}"
+        );
+        assert!(
+            !committed.lines().any(|path| path.starts_with(".roko")),
+            "{committed}"
+        );
+        let efficiency = std::fs::read_to_string(repo.path().join(".roko/learn/efficiency.jsonl"))
+            .expect("the attempt's model-call row is at the workspace root");
+        assert!(efficiency.contains(r#""kind":"model_call""#));
+    }
+
     /// Passes a rung only in a tree that holds `feature.txt`.
     struct PassesWhereTheFeatureIs;
 

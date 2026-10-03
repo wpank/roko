@@ -126,3 +126,20 @@ reach a commit, not just this one); (b) `recording_feedback`'s doc comment ("Eve
 writes, under `workdir/.roko`") is ambiguous about which `workdir` and is test-only code using the same
 worktree-keyed pattern as the real bug — tighten its comment once this item's fix lands, so a future caller
 doesn't copy the pattern into production.
+
+## Progress
+
+- 2026-10-03 (w4-length): implemented on `work/bug-412a5e` at de1b9fb48; cargo verification deferred to the batch
+  gate. `record_agent_dispatch_feedback` now resolves its learn dir from the workspace root that the request names
+  as `immune_root` (Graph attempts and the stream path set it to the dispatcher's workspace), falling back to
+  `workdir`. This is the same idiom `pricing_snapshot_for` already uses. The recorder's provider-health file (written
+  when no registry is attached) moves with it, and the bridge never saves the cascade router, so nothing else in the
+  recorder stays mis-rooted. Helper calls (`CheapFactoryAgent`) already ran with the workspace as their `workdir`.
+  The attempt-level efficiency path (`GraphFeedbackContext::efficiency_path`) was already rooted correctly and is
+  untouched.
+- Test `model_call_efficiency_row_lands_at_workspace_root_not_the_worktree` (dispatch_v2.rs) dispatches with
+  `workdir` set to a worktree under the root and `immune_root` set to the root. It asserts that the efficiency row
+  and the provider-health record are at the root and absent from the worktree. `recording_feedback`'s doc comment
+  now says its `workdir` is the workspace root.
+- Not done here: the two-sibling commit test the Plan sketches, and tracing whether accepting an attempt stages the
+  whole worktree (a stray `.roko/` file of another kind would still reach the plan branch if it does).

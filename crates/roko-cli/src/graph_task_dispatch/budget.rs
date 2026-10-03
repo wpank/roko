@@ -2271,4 +2271,48 @@ exit 1
         let baseline = (*dispatcher.daily_budget.baseline.lock()).expect("read today");
         assert_eq!(baseline.day, today);
     }
+
+    /// bug-f03b0d: a call whose spend the plan budget cannot settle (here a
+    /// negative reported cost) ends its attempt after the call ran. Its
+    /// dashboard row says why and closes, as every other end of an attempt
+    /// closes it, so the task's next attempt opens the row again.
+    #[tokio::test]
+    async fn budget_refusal_after_a_call_closes_the_row() {
+        use roko_core::DashboardEvent;
+
+        let temp = tempdir().expect("tempdir");
+        let hub = StateHub::default_capacity();
+        let mut events = hub.subscribe_events();
+        let (dispatcher, task) = make_batch_dispatcher(&temp, -1.0, |_| {}).await;
+        let dispatcher = dispatcher.with_tui_bridge(TuiBridge::new(hub.sender()));
+        let spec = make_spec(&task);
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect_err("the plan budget cannot settle the call");
+        assert!(error.to_string().contains("invalid cost"), "{error}");
+
+        // The attempt's row, in the order its events were published.
+        let mut row = Vec::new();
+        while let Ok(envelope) = events.try_recv() {
+            match envelope.payload {
+                DashboardEvent::AgentSpawned { agent_id, .. } => {
+                    row.push(format!("spawned {agent_id}"));
+                }
+                DashboardEvent::AgentOutput {
+                    agent_id, content, ..
+                } => row.push(format!("output {agent_id}: {content}")),
+                DashboardEvent::AgentCompleted { agent_id, .. } => {
+                    row.push(format!("completed {agent_id}"));
+                }
+                _ => {}
+            }
+        }
+        let id = format!("{}/T-EXP", spec.plan_id);
+        assert_eq!(row.first(), Some(&format!("spawned {id}")), "{row:?}");
+        assert_eq!(row.last(), Some(&format!("completed {id}")), "{row:?}");
+        let said = format!("output {id}: the plan budget could not settle this call");
+        assert!(row.iter().any(|event| event.starts_with(&said)), "{row:?}");
+    }
 }

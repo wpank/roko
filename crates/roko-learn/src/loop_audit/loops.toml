@@ -272,24 +272,15 @@ layer = "sections"
 opportunity = "at least one optional section and the token budget binds"
 default_policy = "include every section by static priority"
 receipt = "included_ids"
+lifecycle = { retired = { by = "4217" } }
 notes = [
-    "Pending retirement: S02.P1-10's section bandit (L-sec) replaces it.",
+    "Retired by 4217 (S02 §9.9): the learner, its persistence and the factory hook are deleted, and S02.P1-10's section bandit (L-sec) replaces it. No run ever loaded, updated or saved the bidders, so VCG never ran.",
 ]
 
 [[loop.static_findings]]
-claim = "load_attention_bidders has test callers only (G75): no run loads the persisted bidders."
-pointer = "crates/roko-cli/src/dispatch/prompt_builder.rs::load_attention_bidders"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
-
-[[loop.static_findings]]
-claim = "PromptAssembler::record_outcome, the bidders' only update, has a test caller only."
-pointer = "crates/roko-cli/src/dispatch/prompt_builder.rs::PromptAssembler::record_outcome"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
-
-[[loop.static_findings]]
-claim = "The live .roko/learn/attention-bidders.json holds all 7 sections at Beta(39, 4)."
-pointer = "crates/roko-cli/src/dispatch/prompt_builder.rs::ATTENTION_BIDDERS_FILENAME"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+claim = "The live .roko/learn/attention-bidders.json holds all 7 sections at Beta(39, 4); 4217 left it on disk, and only the census reads it."
+pointer = "crates/roko-learn/src/loop_audit/census.rs::ATTENTION_BIDDERS"
+verified_at = "b1d498a02d5b7b75dbc075cd128683dc1c0afa16"
 
 [[loop]]
 id = "L-sec"

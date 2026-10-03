@@ -488,6 +488,10 @@ pub struct PromptRun<'a> {
     /// Where the request came from. A chat host's request is untrusted data,
     /// so its task carries it fenced (9117).
     pub origin: RunOrigin,
+    /// Maximize mode for this run alone (`roko run --no-holdout`, decision
+    /// 4115): no learning loop is withheld, no route explores and the spec
+    /// gate holds no task out, though every decision is logged.
+    pub no_holdout: bool,
 }
 
 /// Execute one prompt through the Graph engine.
@@ -648,7 +652,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             no_cascade: run.overrides.cascade_enabled == Some(false),
             // `[learning] frozen` freezes a `roko run`.
             frozen_learning: false,
-            no_holdout: false,
+            no_holdout: run.no_holdout,
             metrics: None,
         },
         Some(run_id.clone()),
@@ -1223,6 +1227,7 @@ command = "test -f README.md"
             domain: None,
             max_usd: None,
             origin: RunOrigin::Cli,
+            no_holdout: false,
         })
         .await
         .expect("roko run completes");
@@ -1255,6 +1260,53 @@ command = "test -f README.md"
         assert_eq!(manifest.run_id, report.run_id);
     }
 
+    /// gap-29fe0a: `roko run --no-holdout` reaches the run. With it, every
+    /// decision row of the one task carries its chain's arm set in the
+    /// `maximize` condition; without it, in the `normal` one.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_holdout_reaches_the_run() {
+        for (no_holdout, condition) in [(true, "maximize"), (false, "normal")] {
+            let tmp = fake_agent_workspace(
+                r#"
+[[gates.rungs]]
+name = "check"
+command = "test -f README.md"
+"#,
+            );
+            let report = run_prompt(PromptRun {
+                prompt: "Say done",
+                workdir: tmp.path(),
+                tier: "focused",
+                overrides: &CliOverrides::default(),
+                max_retries: Some(0),
+                quiet: true,
+                state_hub: None,
+                run_id: None,
+                cancel: None,
+                domain: None,
+                max_usd: None,
+                origin: RunOrigin::Cli,
+                no_holdout,
+            })
+            .await
+            .expect("roko run completes");
+            let run_dir = roko_fs::RokoLayout::for_project(tmp.path()).run_dir(&report.run_id);
+            let decisions = std::fs::read_to_string(run_dir.join("decisions.jsonl"))
+                .expect("the run's decision rows");
+            let conditions: Vec<String> = decisions
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter_map(|row| row["arm_set"]["condition_id"].as_str().map(str::to_string))
+                .collect();
+            assert!(!conditions.is_empty(), "{decisions}");
+            assert!(
+                conditions.iter().all(|found| found == condition),
+                "{no_holdout}: {conditions:?}"
+            );
+        }
+    }
+
     /// Run `Say done` in `workdir`, in work domain `domain`, and return the
     /// task of the one-task plan it wrote.
     #[cfg(unix)]
@@ -1272,6 +1324,7 @@ command = "test -f README.md"
             domain,
             max_usd: None,
             origin: RunOrigin::Cli,
+            no_holdout: false,
         })
         .await
         .expect("roko run completes");
@@ -1379,6 +1432,7 @@ sibling_settle_secs = 0
             domain: None,
             max_usd: None,
             origin: RunOrigin::Cli,
+            no_holdout: false,
         })
         .await
         .expect("roko run dispatches without a build manifest");

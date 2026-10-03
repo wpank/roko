@@ -5,7 +5,7 @@
 //! `Dispatcher` / `PromptAssembler` / `WarmPool`.  `SharedAgentFactory`
 //! creates these once at run start and hands them to every dispatch call.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,7 +15,6 @@ use roko_agent::AgentRuntimeEvent;
 use roko_agent::mcp::{McpConfig, McpRuntime, discover_mcp_runtime};
 use roko_agent::provider::{LocalToolRuntime, ProviderSemaphores};
 use roko_agent::rate_limit::ProviderRateLimiter;
-use roko_compose::{AttentionBidder, LearningBidder};
 use roko_core::config::schema::RokoConfig;
 use roko_core::tool::ToolDef;
 use roko_learn::provider_health::ProviderHealthRegistry;
@@ -172,7 +171,6 @@ impl SharedAgentFactory {
         // Apply [prompt] config knobs from roko.toml.
         let prompt_assembler = prompt_assembler
             .with_composition_strategy(config.prompt.composition_strategy)
-            .with_vcg_warmup_observations(config.prompt.vcg_warmup_observations)
             .with_pinned_sections(config.sections.pinned.clone());
         // Default warm-pool capacity: 2 slots per role. Zero-capacity silently
         // discards every pre-spawned agent on insert; using 2 lets the reviewer
@@ -485,17 +483,6 @@ impl SharedAgentFactory {
         self.cli_plugin_mcp_bridge
             .as_ref()
             .and_then(|bridge| bridge.session_config(worktree, immune_root, contract))
-    }
-
-    /// Set persisted learning bidders on the prompt assembler.
-    ///
-    /// Called at run startup after loading from `.roko/learn/attention-bidders.json`.
-    /// The bidders are passed to `PromptComposer::with_learning_bidders` when the
-    /// runner-v2 prompt path is routed through the canonical compose surface.
-    pub fn set_learning_bidders(&mut self, bidders: HashMap<AttentionBidder, LearningBidder>) {
-        self.dispatcher
-            .prompt_assembler()
-            .replace_learning_bidders(bidders);
     }
 
     /// Resolve the runtime for a model key.

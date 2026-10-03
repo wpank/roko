@@ -563,10 +563,6 @@ max_age_days = 7
 batch_size = 500
 interval_secs = 21600
 
-[prompt]
-composition_strategy = "auto"
-vcg_warmup_observations = 10
-
 [resources]
 min_free_disk_mb = 2048
 warn_disk_mb = 5120

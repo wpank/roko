@@ -217,45 +217,67 @@ pub struct RokoConfig {
 ///
 /// Mirrors [`roko_compose::CompositionStrategy`] so that `roko-core` (which cannot
 /// depend on `roko-compose`) can expose this knob in the config schema.  The CLI
-/// converts this value to the compose-side enum at construction time.
+/// converts this value to the compose-side enum at construction time. Every
+/// strategy allocates density-greedy: the VCG auction is retired (4218).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigCompositionStrategy {
-    /// Select `Vcg` once learned bidder observations are warm; otherwise use
-    /// the deterministic density-greedy path.
-    #[default]
+    /// Deprecated: loads as `density_greedy` (4219).
     Auto,
-    /// Deterministic greedy allocation by score density.
+    /// Deterministic greedy allocation by score density, the default.
+    #[default]
     DensityGreedy,
     /// Backward-compatible alias for density-greedy allocation.
     WeightedSum,
-    /// VCG-style allocation with payments and displacement diagnostics.
+    /// Deprecated: loads as `density_greedy` (4219).
     Vcg,
 }
 
-/// Default VCG warmup observation count (mirrors the compose-side constant).
+/// Default of the deprecated `vcg_warmup_observations`.
 const fn default_vcg_warmup_observations() -> u32 {
     10
 }
 
-/// Prompt composition configuration.
-///
-/// Controls how the runner-v2 `PromptComposer` allocates token budget across
-/// candidate prompt sections and when the VCG auction activates.
+/// Logged once: a config named a deprecated composition strategy.
+static LEGACY_COMPOSITION_STRATEGY: std::sync::Once = std::sync::Once::new();
+
+/// `[prompt] composition_strategy` as a config sets it. `auto` and `vcg`
+/// load as `density_greedy`, with a warning once per process: the VCG
+/// auction they named is retired (4218).
+fn deserialize_composition_strategy<'de, D>(
+    deserializer: D,
+) -> Result<ConfigCompositionStrategy, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let strategy = ConfigCompositionStrategy::deserialize(deserializer)?;
+    if !matches!(
+        strategy,
+        ConfigCompositionStrategy::Auto | ConfigCompositionStrategy::Vcg
+    ) {
+        return Ok(strategy);
+    }
+    LEGACY_COMPOSITION_STRATEGY.call_once(|| {
+        tracing::warn!(
+            "[prompt] composition_strategy `auto` and `vcg` are deprecated and now mean \
+             `density_greedy`: the VCG auction is retired"
+        );
+    });
+    Ok(ConfigCompositionStrategy::DensityGreedy)
+}
+
+/// Prompt composition configuration: how prompt assembly allocates the
+/// token budget across candidate prompt sections.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PromptConfig {
-    /// Budget-allocation strategy for prompt composition.
-    ///
-    /// - `auto` (default): density-greedy on cold start; VCG once bidders are warm.
-    /// - `density_greedy` / `weighted_sum`: always use the deterministic greedy path.
-    /// - `vcg`: always use VCG allocation (requires warm bidder observations).
-    #[serde(default)]
+    /// Budget-allocation strategy for prompt composition: `density_greedy`
+    /// (the default) or its alias `weighted_sum`. The deprecated `auto` and
+    /// `vcg` load as `density_greedy`, with a warning.
+    #[serde(default, deserialize_with = "deserialize_composition_strategy")]
     pub composition_strategy: ConfigCompositionStrategy,
-    /// Minimum bidder-observation count before `auto` enables VCG allocation.
-    ///
-    /// Defaults to 10. Setting this to 0 enables VCG immediately (not
-    /// recommended for cold starts).
+    /// Deprecated and ignored: the VCG auction it warmed up is retired
+    /// (4218). It still loads, so configs that set it keep working.
     #[serde(default = "default_vcg_warmup_observations")]
     pub vcg_warmup_observations: u32,
 }
@@ -1498,12 +1520,7 @@ impl RokoConfig {
         };
         let _ = writeln!(out, "# -- Prompt composition --");
         let _ = writeln!(out, "[prompt]");
-        let _ = writeln!(out, "composition_strategy = \"{}\"", strategy);
-        let _ = writeln!(
-            out,
-            "vcg_warmup_observations = {}\n",
-            c.prompt.vcg_warmup_observations
-        );
+        let _ = writeln!(out, "composition_strategy = \"{}\"\n", strategy);
     }
     fn write_example_tui_and_server(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- TUI preferences --");
@@ -3093,6 +3110,40 @@ pheromone_decay_rate = 0.5
         let example = RokoConfig::example_toml();
         let cfg = RokoConfig::from_toml(&example).expect("parse");
         assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    /// 4219: the VCG prompt keys still load. `auto` and `vcg` mean
+    /// `density_greedy` and `vcg_warmup_observations` is ignored; the default
+    /// is `density_greedy`, and the example config names neither old key.
+    #[test]
+    fn legacy_vcg_prompt_keys_load_as_density_greedy() {
+        for strategy in ["auto", "vcg"] {
+            let toml = format!(
+                "[prompt]\ncomposition_strategy = \"{strategy}\"\nvcg_warmup_observations = 3\n"
+            );
+            let cfg = RokoConfig::from_toml(&toml).expect("the legacy prompt keys load");
+            assert_eq!(
+                cfg.prompt.composition_strategy,
+                ConfigCompositionStrategy::DensityGreedy,
+                "{strategy}"
+            );
+        }
+        let cfg = RokoConfig::from_toml("[prompt]\ncomposition_strategy = \"weighted_sum\"\n")
+            .expect("parse");
+        assert_eq!(
+            cfg.prompt.composition_strategy,
+            ConfigCompositionStrategy::WeightedSum
+        );
+        assert_eq!(
+            PromptConfig::default().composition_strategy,
+            ConfigCompositionStrategy::DensityGreedy
+        );
+        let example = RokoConfig::example_toml();
+        assert!(!example.contains("vcg_warmup_observations"), "{example}");
+        assert!(
+            example.contains("composition_strategy = \"density_greedy\""),
+            "{example}"
+        );
     }
 
     /// 1210: the conductor supervises plan runs unless `[conductor]

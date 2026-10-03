@@ -1573,7 +1573,6 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             estimated_tokens: tokens,
             score: 1.0,
             bid_value: 1.0,
-            vcg_payment: None,
             reason: "selected".to_string(),
         };
         diagnostics.composition_manifest = Some(CompositionManifest {
@@ -1591,7 +1590,6 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
                 reason: "over budget".to_string(),
             }],
             scored_signals: Vec::new(),
-            vcg_diagnostics: None,
             total_tokens: 150,
             token_budget_limit: Some(160),
         });

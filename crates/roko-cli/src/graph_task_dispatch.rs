@@ -241,8 +241,9 @@ pub struct GraphTaskDispatcher {
     /// (`[meta] workspace_rungs`), per plan id, read once from the plan's
     /// `tasks.toml`.
     workspace_rung_plans: parking_lot::Mutex<HashMap<String, bool>>,
-    /// `(plan id, work domain)` pairs whose tasks face no workspace rungs
-    /// for want of a `[gates.packs]` entry, each logged once (`pack_rungs`).
+    /// `(plan id, notice)` pairs about a plan's work domains already logged,
+    /// such as a domain whose tasks face no workspace rungs for want of a
+    /// `[gates.packs]` entry (`pack_rungs`).
     unpacked_domains: parking_lot::Mutex<std::collections::HashSet<(String, String)>>,
     /// Looks up what a citations rung's artefacts cite, keeping the answers
     /// for the run (9122, `pack_rungs`).

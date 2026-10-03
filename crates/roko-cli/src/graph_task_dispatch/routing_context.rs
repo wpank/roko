@@ -352,6 +352,8 @@ pub(super) fn effective_agent_contract(
         .as_deref()
         .filter(|tools| !tools.is_empty());
     let domain = task.effective_domain(config.project.default_domain.as_ref());
+    // `[profiles.<domain>] tool_profile` picks the tool set (9125).
+    let domain = super::pack_rungs::tool_domain(config, domain);
     let denied = task_denied_tools(task, domain.as_ref(), task_allowed_tools);
     AgentContract::load_for_role_with_mode(task_role, ContractLoadMode::RestrictedFallback)
         .unwrap_or_else(|_| AgentContract::restricted(task_role))

@@ -1,7 +1,9 @@
 //! Verifier packs on the Graph path (9120): the workspace rungs a task faces
 //! by its work domain, and how an attempt runs a rung by its kind.
 //!
-//! `[gates.packs.<domain>]` declares a domain's rungs (`GatesConfig::pack_for`).
+//! `[gates.packs.<domain>]` declares a domain's rungs (`GatesConfig::pack_for`),
+//! unless the domain's `[profiles.<domain>]` entry names another pack, its
+//! tool set and its role identity (9125, [`domain_profile`]).
 //! A task with no domain faces `[[gates.rungs]]`, today's ladder, and so does
 //! a `code` task unless a `code` pack is declared; a task of another domain
 //! faces its pack, or only its own verify steps when it has none, so that it
@@ -18,7 +20,7 @@
 //! pass one fails before its agent runs.
 
 use roko_core::config::GateRungConfig;
-use roko_core::config::schema::RungKind;
+use roko_core::config::schema::{DomainProfile, RungKind, builtin_profiles, resolve_profile};
 use roko_core::{TaskDomain, Verdict};
 use roko_gate::{evidence_judge, schema_gate};
 use roko_learn::telemetry::VerifyStepVerdict;
@@ -76,6 +78,26 @@ impl GraphTaskDispatcher {
     pub(super) fn pack_rungs(&self, spec: &TaskExecutionSpec, task: &TaskDef) -> &[GateRungConfig] {
         let gates = &self.config.gates;
         let domain = task.effective_domain(self.config.project.default_domain.as_ref());
+        if let Some(domain) = &domain {
+            self.note_routing_keys(spec, domain);
+        }
+        let profile = domain
+            .as_ref()
+            .and_then(|domain| domain_profile(&self.config, domain));
+        if let Some(name) = profile.as_ref().and_then(|profile| profile.pack.as_deref()) {
+            if let Some(pack) = gates.packs.get(name) {
+                return &pack.rungs;
+            }
+            let key = (spec.plan_id.clone(), format!("missing pack {name}"));
+            if self.unpacked_domains.lock().insert(key) {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    pack = name,
+                    "a [profiles] entry names a pack [gates.packs] lacks: the domain's own pack \
+                     applies"
+                );
+            }
+        }
         let unpacked = domain.as_ref().filter(|domain| {
             !matches!(domain, TaskDomain::Code) && !gates.packs.contains_key(domain.label())
         });
@@ -111,6 +133,43 @@ impl GraphTaskDispatcher {
             rung.name,
             not_built(rung)
         )))
+    }
+
+    /// Warn, once per plan, that the `[profiles.<label>]` entry of `domain`
+    /// sets `model`, `effort` or `max_iterations`, which the tier ladder's
+    /// routing does not read (9125).
+    fn note_routing_keys(&self, spec: &TaskExecutionSpec, domain: &TaskDomain) {
+        let Some(own) = self.config.profiles.get(domain.label()) else {
+            return;
+        };
+        let routing = own.model.is_some() || own.effort.is_some() || own.max_iterations.is_some();
+        let key = (
+            spec.plan_id.clone(),
+            format!("profile routing {}", domain.label()),
+        );
+        if routing && self.unpacked_domains.lock().insert(key) {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                domain = domain.label(),
+                "a [profiles] entry sets model, effort or max_iterations, which plan runs ignore: \
+                 the tier ladder picks each task's model"
+            );
+        }
+    }
+
+    /// Lead `prompt_task`'s description, as its prompt shows it, with the
+    /// role identity of its domain's `[profiles.<label>]` entry (9125).
+    pub(super) fn lead_with_role_identity(&self, prompt_task: &mut TaskDef) {
+        let domain = prompt_task.effective_domain(self.config.project.default_domain.as_ref());
+        let identity = domain
+            .as_ref()
+            .and_then(|domain| domain_profile(&self.config, domain))
+            .and_then(|profile| profile.role_identity)
+            .filter(|identity| !identity.trim().is_empty());
+        if let Some(identity) = identity {
+            let description = prompt_task.description.take().unwrap_or_default();
+            prompt_task.description = Some(format!("{}\n\n{description}", identity.trim()));
+        }
     }
 
     /// Look citations up through `resolver` in place of the live one.
@@ -333,6 +392,40 @@ fn rubric_criteria(workdir: &Path, rung: &GateRungConfig, task: &TaskDef) -> Vec
         .map(str::to_string)
         .collect()
 }
+}
+
+/// The `[profiles.<label>]` entry a task of work domain `domain` follows,
+/// resolved through its `base` chain, which may end at a built-in profile
+/// (9125). `None` when the workspace declares no entry for the label, or
+/// when its entry does not resolve, which is logged.
+pub(super) fn domain_profile(config: &RokoConfig, domain: &TaskDomain) -> Option<DomainProfile> {
+    let label = domain.label();
+    if !config.profiles.contains_key(label) {
+        return None;
+    }
+    let mut profiles = builtin_profiles();
+    profiles.extend(config.profiles.clone());
+    resolve_profile(label, &profiles)
+        .inspect_err(|error| {
+            tracing::warn!(
+                domain = label,
+                %error,
+                "a [profiles] entry does not resolve: it is ignored"
+            );
+        })
+        .ok()
+}
+
+/// The work domain whose built-in tool set (`roko_std::roles`) a task of
+/// `domain` gets (9125): the one its `[profiles.<label>]` entry names as its
+/// `tool_profile`, else `domain` itself.
+pub(super) fn tool_domain(config: &RokoConfig, domain: Option<TaskDomain>) -> Option<TaskDomain> {
+    let named = domain
+        .as_ref()
+        .and_then(|domain| domain_profile(config, domain))
+        .and_then(|profile| profile.tool_profile)
+        .and_then(|name| TaskDomain::from_label(&name));
+    named.or(domain)
 }
 
 /// The files `globs` match in `workdir`, each as its path in `workdir` and
@@ -799,5 +892,76 @@ mod tests {
             message.contains("below 0.80 with evidence: criterion 1 scored 0.20"),
             "{message}"
         );
+    }
+
+    /// 9125: `[profiles.research]` with a `pack` and a `tool_profile` gives a
+    /// research task that pack, in place of `[gates.packs.research]`, and
+    /// that tool set, and leads its prompt with the profile's role identity;
+    /// `[profiles.legal]`, based on it, inherits all three.
+    #[tokio::test]
+    async fn profile_named_for_domain_sets_pack_and_tools() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                let packs = [
+                    ("research", "true # the research pack"),
+                    ("deep", "true # the deep pack"),
+                ];
+                for (label, command) in packs {
+                    let pack = GatePackConfig {
+                        rungs: vec![rung(label, command)],
+                    };
+                    config.gates.packs.insert(label.to_string(), pack);
+                }
+                config.profiles.insert(
+                    "research".to_string(),
+                    DomainProfile {
+                        name: "research".to_string(),
+                        pack: Some("deep".to_string()),
+                        tool_profile: Some("chain".to_string()),
+                        role_identity: Some("You are a careful research analyst.".to_string()),
+                        ..DomainProfile::default()
+                    },
+                );
+                config.profiles.insert(
+                    "legal".to_string(),
+                    DomainProfile {
+                        name: "legal".to_string(),
+                        base: Some("research".to_string()),
+                        ..DomainProfile::default()
+                    },
+                );
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+
+        for label in ["research", "legal"] {
+            task.domain = TaskDomain::from_label(label);
+            let spec = make_spec(&task);
+            let pack: Vec<&str> = dispatcher
+                .pack_rungs(&spec, &task)
+                .iter()
+                .map(|rung| rung.name.as_str())
+                .collect();
+            assert_eq!(pack, ["deep"], "{label}");
+            assert_eq!(
+                tool_domain(&dispatcher.config, task.domain.clone()),
+                Some(TaskDomain::Chain),
+                "{label}"
+            );
+            let led = dispatcher.prompt_task(&spec, &task).description;
+            let led = led.unwrap_or_default();
+            assert!(
+                led.starts_with("You are a careful research analyst.\n\n"),
+                "{label}: {led}"
+            );
+        }
+
+        task.domain = Some(TaskDomain::Docs);
+        let docs = tool_domain(&dispatcher.config, task.domain.clone());
+        assert_eq!(docs, Some(TaskDomain::Docs));
     }
 }

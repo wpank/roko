@@ -1351,6 +1351,7 @@ impl GraphTaskDispatcher {
             .collect();
         // Each workspace rung's step names the rung and its kind (9120).
         pack_rungs::name_rung_steps(&mut prompt_task.verify, self.task_rungs(spec, task));
+        self.lead_with_role_identity(&mut prompt_task);
         prompt_task
     }
 }

@@ -1778,6 +1778,8 @@ fn build_schema_tree() -> toml::Value {
             clippy_enabled: Some(false),
             max_rung: Some(0),
         }),
+        pack: Some(String::new()),
+        role_identity: Some(String::new()),
         ..DomainProfile::default()
     };
     config

@@ -25,6 +25,7 @@ use roko_learn::self_model::features::TaskFeatures;
 use roko_learn::self_model::gate::{CalibrationGate, CalibrationWindow, GateReport, WindowOutcome};
 use roko_learn::self_model::model::{MODEL_CLASS, SelfModel, StateLoad};
 use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, RouteAction, expected_cost};
+use roko_learn::self_model::spec_features::{SPEC_RECORDS_FILE, SpecFeatureIndex, SpecVector};
 use roko_learn::self_model::{ArmKey, CandidateForecast, LabelSource, PredictorVersion, Unit};
 use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord};
 use roko_learn::telemetry::records::{
@@ -71,6 +72,8 @@ pub struct SelfModelRuntime {
     /// Whether the self-model made each chain's last climb (6131), so the next
     /// attempt's ladder record can say so.
     early_climbs: parking_lot::Mutex<HashMap<String, bool>>,
+    /// Each run's spec records (3240), by run id, with the size of the file read.
+    spec_indexes: parking_lot::Mutex<HashMap<String, (u64, SpecFeatureIndex)>>,
 }
 
 /// The units a run settled, by attempt key, oldest first; past [`SETTLED_KEPT`] the oldest go.
@@ -183,6 +186,7 @@ impl SelfModelRuntime {
             chain_starts: parking_lot::Mutex::new(HashMap::new()),
             chain_plans: parking_lot::Mutex::new(HashMap::new()),
             early_climbs: parking_lot::Mutex::new(HashMap::new()),
+            spec_indexes: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -364,6 +368,27 @@ impl SelfModelRuntime {
             self.last_rung.lock().insert(chain, rung);
         }
         start
+    }
+
+    /// The spec vector of `task_id` in `plan_id` from the spec records of the run `run_id` in
+    /// `run_dir` (3240): read again whenever the file has grown, since each plan of a run
+    /// appends its records before its first task starts. `None` without a record.
+    fn spec_vector(
+        &self,
+        run_dir: &Path,
+        run_id: &str,
+        plan_id: &str,
+        task_id: &str,
+    ) -> Option<SpecVector> {
+        let metadata = std::fs::metadata(run_dir.join(SPEC_RECORDS_FILE)).ok()?;
+        let size = metadata.len();
+        let mut indexes = self.spec_indexes.lock();
+        let stale = indexes.get(run_id).is_none_or(|(read, _)| *read != size);
+        if stale {
+            let index = SpecFeatureIndex::read_run(run_dir).ok()?;
+            indexes.insert(run_id.to_string(), (size, index));
+        }
+        indexes.get(run_id)?.1.get(plan_id, task_id).cloned()
     }
 
     /// The self-model's step after an agent-blamed failure on ladder rung `rung` of a chain it
@@ -550,8 +575,14 @@ impl GraphTaskDispatcher {
         let task_key = format!("{}/{}", spec.plan_id, task.id);
         let used = self.attempt_in_run(&task_key);
         let retries_left = spec.max_retries.saturating_sub(used);
-        let features = task_features(task, &inputs);
         let identity = attempt.identity();
+        let mut features = task_features(task, &inputs);
+        // S07's spec features join the attempt by plan and task (3240).
+        if let Some(runs) = &self.feedback.runs_dir {
+            let run_dir = runs.join(&identity.run_id);
+            let vector = runtime.spec_vector(&run_dir, &identity.run_id, &spec.plan_id, &task.id);
+            features.spec = vector.unwrap_or_default();
+        }
         let (prediction, would_choose) =
             runtime.predict(identity, features, &candidates, retries_left);
         attempt.record_prediction(prediction);

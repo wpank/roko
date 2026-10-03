@@ -1342,6 +1342,49 @@ fn no_holdout_flag_sets_maximize_mode() {
     assert!(maximize("[experiments]\nmaximize = true\n", false));
 }
 
+/// gap-29fe0a: maximize mode holds nothing out of the plan-load spec gate.
+/// With `[spec_quality] holdout_frac = 1`, a run without the flag draws
+/// every task into the gate-off holdout; a `--no-holdout` run, or one under
+/// `[experiments] maximize`, draws none, though roko.toml keeps its rate.
+#[test]
+fn no_holdout_flag_draws_no_holdout_attempts() {
+    use roko_cli::graph_execution::plan_runner::apply_run_switches;
+    use roko_cli::spec_gate::{SpecGateAction, SpecGateDecision, SpecGateReport, apply_holdout};
+
+    let held_out = |toml: &str, no_holdout: bool| {
+        let mut config = roko_core::config::schema::RokoConfig::from_toml(toml).unwrap();
+        apply_run_switches(&mut config, false, no_holdout);
+        let decision = |task: String| SpecGateDecision {
+            plan_path: "plans/p/tasks.toml".to_string(),
+            task_id: task,
+            action: SpecGateAction::Allow,
+            score: 90.0,
+            band: "A",
+            findings: Vec::new(),
+            holdout: false,
+            propensity: None,
+        };
+        let mut report = SpecGateReport {
+            mode: config.spec_quality.mode,
+            quality: None,
+            decisions: (1..=20)
+                .map(|index| decision(format!("T{index}")))
+                .collect(),
+        };
+        apply_holdout(&mut report, config.spec_quality.holdout_frac, "2026-10-03");
+        report
+            .decisions
+            .iter()
+            .filter(|decision| decision.holdout)
+            .count()
+    };
+    let toml = "[spec_quality]\nholdout_frac = 1.0\n";
+    assert_eq!(held_out(toml, false), 20, "every task held out");
+    assert_eq!(held_out(toml, true), 0, "--no-holdout holds out none");
+    let maximize = "[spec_quality]\nholdout_frac = 1.0\n\n[experiments]\nmaximize = true\n";
+    assert_eq!(held_out(maximize, false), 0, "maximize holds out none");
+}
+
 #[test]
 fn cli_parses_plan_force_resume_flag() {
     let cli = Cli::try_parse_from(["roko", "plan", "run", "plans", "--force-resume"]).unwrap();

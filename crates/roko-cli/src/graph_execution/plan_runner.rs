@@ -2323,7 +2323,9 @@ async fn run_graph_plan_body(
 /// (`--frozen-learning`, decision 2218) freezes its learning and
 /// `no_holdout` (`--no-holdout`, decision 4115) turns on maximize mode, for
 /// this run alone. Without them the config's own `[learning] frozen` and
-/// `[experiments] maximize` stand.
+/// `[experiments] maximize` stand. Maximize mode, from either, holds nothing
+/// out: it zeroes the plan-load spec gate's gate-off holdout
+/// (`[spec_quality] holdout_frac`) too (gap-29fe0a).
 pub fn apply_run_switches(
     config: &mut roko_core::config::schema::RokoConfig,
     frozen_learning: bool,
@@ -2334,6 +2336,9 @@ pub fn apply_run_switches(
     }
     if no_holdout {
         config.experiments.maximize = true;
+    }
+    if config.experiments.maximize {
+        config.spec_quality.holdout_frac = 0.0;
     }
 }
 

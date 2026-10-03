@@ -114,3 +114,13 @@ constrains where that file may live or protects it from the attempt's own diff.
 ## Progress
 
 - bug-d5d55f: implemented on work/bug-d5d55f at 39ef31ea5; cargo verification deferred to the batch gate. `RungFileEdited` (tamper) covers every configured schema rung's schema and judge rung's file rubric (`GatesConfig::rung_files`), wired into Graph dispatch's pre-verify screen and the audit worker's A1; a task whose `files` name the rung file itself (not its directory) may write it. Tests: `schema_file_edited_in_the_same_diff_is_tamper` (roko-gate) and `loosening_a_schema_rung_s_schema_is_tampering` (dispatch).
+
+2026-10-03 (wave-7 follow-up, PK59): better shape for later, not a reopened bug — `RungFileEdited` catches an edit
+to a declared rung file *within the diff being checked*, which is sufficient today. But the actual schema/rubric
+*content* used for validation is still read live from the attempt's working tree
+(`crates/roko-cli/src/graph_task_dispatch/pack_rungs.rs:260,392`, `std::fs::read_to_string(workdir.join(schema))`
+/ `workdir.join(rubric)`), not pinned to an immutable commit. A more robust shape would read the schema and
+rubric from the attempt's *base* tree (`git show <base>:<path>`), so validation never depends on the attempt's
+current working tree or a moving main checkout between when the diff was computed and when the rung actually
+runs. Worth doing in a future pass; not required to close this item, which already fixed the real, currently
+exploitable gap (detecting the edit itself).

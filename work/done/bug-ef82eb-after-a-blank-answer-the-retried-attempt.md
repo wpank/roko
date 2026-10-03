@@ -2,7 +2,7 @@
 id = "bug-ef82eb"
 kind = "bug"
 title = "After a blank answer, the retried attempt ends gate_failed instead of completed (shakedown D1)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "425e256d5"
 source = "PK36 shakedown via gap-821c93 (2026-10-03)"
 discovered_from = "gap-821c93"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "benchmarks/viabilitybench/driver/test_shakedown.py"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["gap-31c0e8", "gap-821c93"], 
 
 [[verify]]
 command = "grep -rqw 'fn retry_after_a_blank_answer_completes' crates/roko-cli/src/ && cargo test -p roko-cli retry_after_a_blank_answer_completes"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T08:36:03Z"
+commit = "425e256d5"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T07:38:41Z"
+forced = false
+evidence = "Gate 8a (work/backlog-batch-8a, merged into main as 425e256d5): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 7,831 tests over roko-cli, -core, -learn and -serve (one MCP tool-count assertion fixed in 99b7b19a9), roko-cli bin 430 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail); every [[verify]] passes. The premise was false: roko's retry after a blank answer is sound. The shakedown's D1 stub wrote calc/ops.py without reading it, which RequireToolBeforeEdit refuses, so every attempt changed nothing. The stub now reads first (D1 passes; the shakedown is 6/8 with the batch binary, D3/D7 under bug-0b7695), and failover::tests::retry_after_a_blank_answer_completes pins the recovery. The feedback gap it exposed is gap-2e455d."
 +++
 
 ## Problem

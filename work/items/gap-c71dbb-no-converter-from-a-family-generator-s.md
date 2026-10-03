@@ -13,7 +13,7 @@ updated = 2026-10-03
 last_verified = 2026-10-03
 source = "wave-6 follow-up reports 2026-10-03 (PK24 gap-e120a1)"
 discovered_from = "gap-e120a1 (backlog task 3234)"
-anchors = ["tmp/backlog/2026-10-02-complete-and-wire/3234-manipulation-check-vague-30-below-precise.md", "benchmarks/viabilitybench/specops/manipulation_check.py"]
+anchors = ["benchmarks/viabilitybench/specops/manipulation_check.py"]
 lane = "bench"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 

@@ -123,3 +123,10 @@ Implemented on `work/gap-f7bab8`; cargo verification deferred to the batch gate.
 - Lint follow-up: 47aedae8f splits first doc paragraphs over 200 characters (8115, 8117, 8118, 8119).
 - model_swap vs convention_flip (S06 C2): with the catalog-sign prior both get B1 floor up first, which is in model_swap's row only. The controller's doc records it; 8120 checks convention_flip's first guided move against the union of the two rows; 8121's test shows calibrated M3 priors picking a convention_flip counter (B2 retries) first. budget_cut's signature (E2 high, budget ends) forms only after E1 confirms, so 8120 checks its row over the episode.
 - S06 A1 for `--seed 7`: an emulation of rand_chacha gives the first decision draw u = 0.158 < `random_step_prob` 0.2, so the first change is an Ashby step; the next decision (u = 0.99) is the directed B1 floor raise the verify greps for. Detection by resolution 30 for seed 7 is unverified.
+
+2026-10-03 (wave-7 follow-up, PK62): the "unverified" above is now resolved, and it misses. For seed 7, the
+pass_rate breach row actually lands at resolution 33, not by resolution 30 as S06 A1 claims — so both of A1's
+claims (the first move being the directed B1 floor raise, and detection by resolution 30) miss for seed 7: the
+first move is the Ashby step (confirmed above), and detection comes 3 resolutions late. If A1 is meant to hold
+for every seed (not just the ones already checked), this needs either a corrected resolution bound in S06/the
+test, or an acknowledgement that seed 7 is a documented exception.

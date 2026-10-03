@@ -73,6 +73,11 @@ touch the Goal line.
   `roko plan run --no-holdout` (it exists since PK35, decision 4115: it turns on `[experiments] maximize` for the
   run; gap-29fe0a covers only the spec gate's holdout, which the flag doesn't reach yet); and `roko learn patterns` has no CLI-table
   row despite existing as a real subcommand (`crates/roko-cli/src/commands/learn.rs`).
+- 2026-10-03 (wave-7 follow-up, PK76/gap-99c9ae): also add `roko effects` to the "### Utilities" CLI table (no
+  row today). It's a real, shipped command: `crates/roko-cli/src/commands/effects.rs::EffectsCmd` (`list`,
+  `show`, `approve`, `reject`), wired at `main.rs:753-759` — lists the tool calls a `stage` policy held for
+  approval and lets an operator approve or reject one. Suggested row, after `roko new`:
+  `| roko effects list/show/approve/reject | List, inspect and approve or reject a staged (held) tool call |`.
 
 PK08 (task 2121):
 

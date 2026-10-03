@@ -2,7 +2,7 @@
 id = "gap-a9c156"
 kind = "gap"
 title = "PK77 Domains and assistant: Accept a scratch_dir attempt: copy changed files back, and refuse when the base moved (+2 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "hermes"
@@ -10,8 +10,9 @@ rank = 77
 size = "L"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "425e256d5"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK77"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/attempt_workspace.rs"]
 lane = "rust-cold"
@@ -26,6 +27,17 @@ command = "grep -rqw 'fn confirm_rung_holds_until_the_host_answers' crates/roko-
 
 [[verify]]
 command = "grep -rqw 'fn mcp_effects_pending_lists_staged_effects' crates/roko-serve/ && cargo test -p roko-serve mcp_effects_pending_lists_staged_effects"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T08:36:03Z"
+commit = "425e256d5"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T07:38:40Z"
+forced = false
+evidence = "Gate 8a (work/backlog-batch-8a, merged into main as 425e256d5): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 7,831 tests over roko-cli, -core, -learn and -serve (one MCP tool-count assertion fixed in 99b7b19a9), roko-cli bin 430 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail); every [[verify]] passes. PK77 3/3: scratch-dir copy-back with conflict refusal, confirm rungs over the review hold, MCP effects and confirm tools."
 +++
 
 ## Problem

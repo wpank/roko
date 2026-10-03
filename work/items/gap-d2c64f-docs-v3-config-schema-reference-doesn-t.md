@@ -78,3 +78,9 @@ convenient, but they're independent: `[pricing]` is `PricingConfig`; `stream_usa
 (`crates/roko-core/src/config/schema.rs:207`, the config section backing the model-comparison arms per decision
 4115) is a real, existing config section with no mention in `01-schema-sections.md` either. Three independent
 sections now missing from this one file: `[pricing]`, `stream_usage`, `[experiments]`.
+
+2026-10-03 (wave-7 follow-up, PK38/gap-894977): a fourth, separate omission: `[sections]`
+(`crates/roko-core/src/config/sections.rs`, wired at `schema.rs:211`) — "the prompt sections the section bandit
+never leaves out, pinned on top of the built-in ones" (its own module doc comment). At least the `pinned` field
+needs documenting. Four independent sections now missing from this one file: `[pricing]`, `stream_usage`,
+`[experiments]`, `[sections]`.

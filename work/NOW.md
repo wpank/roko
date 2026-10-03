@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 119 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 118 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P2** [gap-fcb44c](items/gap-fcb44c-pk85-showcase-and-deploy-any-write-scoped.md) PK85 Showcase and deploy: Any write-scoped caller can mint a permanent public share link, also on a public bind (+8 more) · size L · verified 2026-10-02
 - **P2** [gap-3516d6](items/gap-3516d6-pk86-showcase-and-deploy-deploy-showcase-preflight.md) PK86 Showcase and deploy: `deploy/showcase/preflight.sh`: checks P1–P14, with a `--local` mode that boots a… (+1 more) · size M · verified 2026-10-02
 
-_10 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_11 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -28,7 +28,7 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 - **P2** [bug-412a5e](items/bug-412a5e-a-graph-attempt-s-model-call-efficiency.md) A Graph attempt's model-call efficiency row is written under its own worktree, not the workspace root [bug] · size M · verified 2026-10-03
 - **P2** [bug-dd20bd](items/bug-dd20bd-a-frozen-roko-run-still-appends-a.md) A frozen roko run still appends a workflow_complete episode, because record_workflow_feedback ignores [learning] frozen [bug] · size S · verified 2026-10-03
 
-_17 more open · on hold: gap-3698cd · `goal = "truth"`_
+_18 more open · on hold: gap-3698cd · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -44,7 +44,7 @@ _2 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRI
 - **P1** [gap-31c0e8](items/gap-31c0e8-pk36-viabilitybench-proof-shakedown-the-roko-arms.md) PK36 ViabilityBench proof: Shakedown: the Roko arms against the live-run defects, offline, before any paid Roko run (+2 more) · size M · verified 2026-10-02
 - **P1** [gap-a42df2](items/gap-a42df2-pk45-viabilitybench-proof-requires-live-refuse-a.md) PK45 ViabilityBench proof: requires_live: refuse a live manifest whose loops are not LIVE at its harness_sha (+1 more) · size S · verified 2026-10-02
 
-_15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_16 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -52,7 +52,7 @@ _15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a
 - **P2** [gap-85d176](items/gap-85d176-pk44-m2-loop-liveness-dryrunplanner-over-dispatcher.md) PK44 M2 loop-liveness: DryRunPlanner over Dispatcher::plan (probes P4 and P5) (+6 more) · size L · verified 2026-10-02
 - **P2** [gap-7ec3ef](items/gap-7ec3ef-pk49-m3-self-model-compute-the-m3.md) PK49 M3 self-model: Compute the M3 economics report from policy replays (+7 more) · size L · verified 2026-10-02
 
-_19 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_24 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -73,10 +73,10 @@ _4 more open · `goal = "visibility"`_
 ## 9. Learning loops on the Graph path
 
 - **P2** [gap-222d47](items/gap-222d47-pk39-prompt-composition-prompt-relevance-canary-over.md) PK39 Prompt composition: Prompt-relevance canary: over two scripted runs, each prompt holds only its own task's… (+3 more) · size L · verified 2026-10-02
+- **P2** [bug-a3f005](items/bug-a3f005-acp-serves-one-drawn-prompt-experiment-variant.md) ACP serves one drawn prompt-experiment variant but settles its receipt against a differently-drawn one [bug] · size M · verified 2026-10-03
 - **P2** [q-6b7cca](items/q-6b7cca-graph-plan-runs-never-emit-plancompleted-wire.md) Graph plan runs never emit PlanCompleted: wire the four plan-completion sinks (the dream sink starts claude) or remove them? [question] · size S · verified 2026-09-29
-- **P2** [gap-c8bfc8](items/gap-c8bfc8-quickreviewer-autofixer-s-zero-context-budget-drops.md) QuickReviewer/AutoFixer's zero context budget drops verify commands and gate feedback, not just cross-plan context · size M · verified 2026-10-03
 
-_4 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_6 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
@@ -84,7 +84,7 @@ _4 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 - **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
 - **P2** [gap-082a14](items/gap-082a14-graph-runs-never-write-task-status-back.md) Graph runs never write task status back to tasks.toml · verified 2026-10-01
 
-_13 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_14 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
@@ -96,10 +96,10 @@ _5 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b
 
 ## 12. Hermes and ACP integration
 
-- **P3** [gap-a9c156](items/gap-a9c156-pk77-domains-and-assistant-accept-a-scratch.md) PK77 Domains and assistant: Accept a scratch_dir attempt: copy changed files back, and refuse when the base moved (+2 more) · size L · verified 2026-10-02
 - **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
 - **P2** [gap-ac78fb](items/gap-ac78fb-acp-elicitation-notices-and-interactive-ux-primitives.md) ACP Elicitation, Notices, and Interactive UX Primitives · size L · verified 2026-09-29
+- **P2** [gap-31f96f](items/gap-31f96f-acp-registry-publication-and-editor-compatibility-matrix.md) ACP Registry Publication and Editor Compatibility Matrix · verified 2026-09-29
 
-_4 more open · on hold: gap-85f69b · `goal = "hermes"`_
+_3 more open · on hold: gap-85f69b · `goal = "hermes"`_
 
 11 open items have no goal (later); they are listed in `STATUS.md`.

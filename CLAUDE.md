@@ -287,7 +287,7 @@ safety, auth, persistence, migration, payment, or other high-risk changes. FAST 
 | roko-serve | `crates/roko-serve/` | HTTP control plane: REST routes + SSE + WebSocket on :6677 |
 | roko-gate | `crates/roko-gate/` | 19 gates, 7-rung pipeline, adaptive thresholds |
 | roko-compose | `crates/roko-compose/` | Prompt assembly, 11 role templates, enrichment |
-| roko-conductor | `crates/roko-conductor/` | 13 watchers, circuit breaker, diagnosis |
+| roko-conductor | `crates/roko-conductor/` | 12 watchers, circuit breaker, diagnosis |
 | roko-learn | `crates/roko-learn/` | Episodes, playbooks, bandits, model routing, experiments, efficiency |
 | roko-cli | `crates/roko-cli/` | CLI, plan DAG/runner, merge queue, worktree manager, ratatui TUI |
 | roko-fs | `crates/roko-fs/` | FileSubstrate (JSONL), GC, layout |
@@ -387,9 +387,8 @@ Long-term priorities that still hold:
    end. The blockers from the first dogfood run have regression fixes, but no live rerun has been
    recorded.
 2. **Learning loops on the Graph path**: several feedback paths were attached to the deleted
-   Runner-v2 event loop and have not been re-attached to Graph runs. For example, Graph runs never
-   emit `FeedbackEvent::PlanCompleted`, so the dream, daimon, theta and delta plan-completion sinks
-   never fire (q-6b7cca).
+   Runner-v2 event loop and have not been re-attached to Graph runs. For example, Graph task
+   dispatch passes `prompt_experiment: None` (`crates/roko-cli/src/graph_task_dispatch.rs:1791`).
 3. **roko tracks its own work**: the `roko work` CLI (it extends `roko backlog`, per
    `work/README.md`) plus plan-task `closes = [...]` links, so that roko itself maintains the work
    graph.

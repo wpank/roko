@@ -50,7 +50,9 @@ const DEFAULT_ANTI_PATTERNS: [&str; 3] = [
 ];
 
 /// The canonical sections no randomisation leaves out of a prompt (S02
-/// §4.4, L9): the role's identity, the task spec, the runner context that
+/// §4.4, L9).
+///
+/// They are the role's identity, the task spec, the runner context that
 /// carries the verify commands, the gate's feedback on a retry, the tool
 /// policy, and the safety rules (never check out, never push). `[sections]
 /// pinned` adds to them.
@@ -121,7 +123,7 @@ const fn names_equal(left: &str, right: &str) -> bool {
 pub fn is_droppable_section(section: &PromptSection, pinned: &[String]) -> bool {
     DROPPABLE_SECTIONS.contains(&section.name.as_str())
         && section.priority < SectionPriority::Critical
-        && !pinned.iter().any(|name| *name == section.name)
+        && !pinned.contains(&section.name)
 }
 
 /// Runtime source metadata for a built-in role prompt.

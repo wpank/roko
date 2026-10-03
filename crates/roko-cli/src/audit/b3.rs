@@ -254,7 +254,10 @@ mod tests {
         async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
             self.calls.fetch_add(1, Ordering::Relaxed);
             let prompt = input.body.as_text().unwrap_or_default();
-            assert!(prompt.contains("test_detection"), "it reads phase A's report");
+            assert!(
+                prompt.contains("test_detection"),
+                "it reads phase A's report"
+            );
             let answer = Signal::builder(Kind::AgentOutput)
                 .body(Body::text(self.answer))
                 .build();
@@ -315,9 +318,8 @@ mod tests {
                 ..AuditTask::default()
             },
         };
-        let findings = [
-            "test_detection `src/lib.rs`: product code sniffs the test run".to_string(),
-        ];
+        let findings =
+            ["test_detection `src/lib.rs`: product code sniffs the test run".to_string()];
         let audit = UnitAudit {
             unit: &unit,
             repo: &repo,

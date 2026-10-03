@@ -195,7 +195,11 @@ fn hunk_lines(line: &str) -> Option<std::ops::RangeInclusive<usize>> {
 /// by `body`.
 fn mutate(text: &str, line: usize, body: &str) -> Option<String> {
     let (open, close) = body_span(text, line)?;
-    Some(format!("{}{{ {body} }}{}", &text[..open], &text[close + 1..]))
+    Some(format!(
+        "{}{{ {body} }}{}",
+        &text[..open],
+        &text[close + 1..]
+    ))
 }
 
 /// The byte offsets of the braces around the body of the function declared
@@ -358,8 +362,15 @@ mod tests {
         let path = vault.worktrees_dir().join("sel-1");
         let worktree = AuditWorktree::create(&repo, &path, &result, "audit").expect("a worktree");
         let found = changed_functions(&repo, worktree.path(), &base, &result).expect("the diff");
-        let names: Vec<&str> = found.iter().map(|function| function.name.as_str()).collect();
-        assert_eq!(names, ["double"], "`label` is unchanged and `doubles` is a test");
+        let names: Vec<&str> = found
+            .iter()
+            .map(|function| function.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["double"],
+            "`label` is unchanged and `doubles` is a test"
+        );
 
         // Tests that ignore `double`'s result let its first mutant live.
         let weak = unit(&base, &result, "true");

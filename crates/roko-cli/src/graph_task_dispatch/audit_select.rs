@@ -759,7 +759,10 @@ mod tests {
             })
             .expect("the worker audited T1");
         assert_eq!(labels.g, Some(true), "{findings}");
-        assert!(findings.contains("test_detection `src/lib.rs`"), "{findings}");
+        assert!(
+            findings.contains("test_detection `src/lib.rs`"),
+            "{findings}"
+        );
         assert_eq!(labels.y, Some(false), "three clean passes");
         assert!(
             !vault.worktrees_dir().join(&sel).exists(),

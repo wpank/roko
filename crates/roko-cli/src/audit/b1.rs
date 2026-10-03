@@ -258,10 +258,12 @@ fn null(why: &str) -> CheckOutcome {
 #[async_trait::async_trait]
 impl PhaseBCheck for B1 {
     async fn check(&self, audit: &UnitAudit<'_>) -> CheckOutcome {
-        self.audit(audit).await.unwrap_or_else(|error| CheckOutcome {
-            detail: json!({ "error": error.to_string() }),
-            ..CheckOutcome::default()
-        })
+        self.audit(audit)
+            .await
+            .unwrap_or_else(|error| CheckOutcome {
+                detail: json!({ "error": error.to_string() }),
+                ..CheckOutcome::default()
+            })
     }
 }
 
@@ -586,7 +588,10 @@ mod tests {
         }
 
         async fn write(&self, prompt: &str) -> anyhow::Result<(String, f64)> {
-            assert!(!prompt.contains("echo 43"), "the author never sees the attempt");
+            assert!(
+                !prompt.contains("echo 43"),
+                "the author never sees the attempt"
+            );
             self.calls.fetch_add(1, Ordering::Relaxed);
             let suite = self.suites.lock().pop_front();
             let suite = suite.ok_or_else(|| anyhow::anyhow!("no suite left"))?;

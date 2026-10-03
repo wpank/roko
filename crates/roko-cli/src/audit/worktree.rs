@@ -46,7 +46,10 @@ impl AuditWorktree {
             std::fs::create_dir_all(parent)?;
         }
         let target = path.to_string_lossy();
-        git(repo, &["worktree", "add", "--detach", "--force", &target, &commit])?;
+        git(
+            repo,
+            &["worktree", "add", "--detach", "--force", &target, &commit],
+        )?;
         Ok(Self {
             repo: repo.to_path_buf(),
             path: path.to_path_buf(),
@@ -125,7 +128,10 @@ impl Drop for AuditWorktree {
 ///
 /// Git cannot compare the trees.
 pub fn changed_paths(repo: &Path, base: &str, result: &str) -> anyhow::Result<Vec<TreeChange>> {
-    let listing = git(repo, &["diff", "--name-status", "--no-renames", base, result])?;
+    let listing = git(
+        repo,
+        &["diff", "--name-status", "--no-renames", base, result],
+    )?;
     Ok(listing
         .lines()
         .filter_map(|line| {

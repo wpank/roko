@@ -1,7 +1,8 @@
-//! Disturbances for M1's experiments and demo (S06 §4.9): the
-//! [`DisturbanceSpec`], the between-run overlays that apply some kinds to a
-//! config copy, and the hidden ground truth (A-DIST, `roko.disturbance/1`,
-//! S01 v1.3 §5.10).
+//! Disturbances for M1's experiments and demo (S06 §4.9).
+//!
+//! This module holds the [`DisturbanceSpec`], the between-run overlays that
+//! apply some kinds to a config copy, and the hidden ground truth (A-DIST,
+//! `roko.disturbance/1`, S01 v1.3 §5.10).
 //!
 //! - The kinds are `disturb.py`'s six (`KINDS` in
 //!   `benchmarks/viabilitybench/driver/disturb.py`, which a test reads so
@@ -249,7 +250,9 @@ impl DisturbanceSpec {
     }
 }
 
-/// `spec` applied between runs to a copy of `config`: `budget_cut` scales
+/// `spec` applied between runs to a copy of `config`.
+///
+/// `budget_cut` scales
 /// `budget.max_task_usd` and `budget.max_task_retry_usd` by `factor`;
 /// `model_swap` replaces the model of the `[routing.ladder]` rung `tier`
 /// (every rung when `tier` is absent) with `to`; `price_shock` points
@@ -311,9 +314,11 @@ pub fn overlay(
     Ok(changed)
 }
 
-/// The price table of a `price_shock`: `snapshot_toml` with the rates of
-/// the spec's `model` multiplied by its `k`, under the id `id`
-/// (`prices-YYYY-MM-DD`, the file the run's workspace keeps it in).
+/// The price table of a `price_shock`.
+///
+/// It is `snapshot_toml` with the rates of the spec's `model` multiplied by
+/// its `k`, under the id `id` (`prices-YYYY-MM-DD`, the file the run's
+/// workspace keeps it in).
 ///
 /// # Errors
 ///

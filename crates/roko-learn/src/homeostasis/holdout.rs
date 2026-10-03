@@ -1,7 +1,8 @@
-//! The fixed `harness_policy` holdout (S06 §4.8): a share of task chains,
-//! 10% by default, runs θ₀ throughout, during episodes and disturbances
-//! too. It is the within-run counterfactual for SASO and L-M1's default arm
-//! for M2.
+//! The fixed `harness_policy` holdout (S06 §4.8).
+//!
+//! A share of task chains, 10% by default, runs θ₀ throughout, during
+//! episodes and disturbances too. It is the within-run counterfactual for
+//! SASO and L-M1's default arm for M2.
 //!
 //! - [`HarnessHoldout::layer`] is the `harness_policy` layer for S01's
 //!   [`assign`]: the unit is the chain, h is fixed (never S03's 20% → 5%

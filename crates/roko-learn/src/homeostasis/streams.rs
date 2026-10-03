@@ -291,8 +291,9 @@ impl SyntheticStream {
     }
 }
 
-/// The S5 policy a calibration at `baseline` proposes (S06 §4.2): E1 ≥
-/// max(0.5, p* − 0.15), E2 ≤ min(2 × the in-control cost per verified
+/// The S5 policy a calibration at `baseline` proposes (S06 §4.2).
+///
+/// E1 ≥ max(0.5, p* − 0.15), E2 ≤ min(2 × the in-control cost per verified
 /// success, $0.50), E3 ≤ 0.10, and E4 ≤ 2 × the in-control p90,
 /// `wall_p90_ms`. A live run uses bounds only once a person has written
 /// them to `.roko/policy/viability.toml`.

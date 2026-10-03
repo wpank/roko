@@ -248,10 +248,11 @@ pub trait Predictions: std::fmt::Debug + Send + Sync {
     fn prior(&self) -> Box<dyn MovePrior>;
 }
 
-/// A prior whose predictions are shuffled within stratum, the block: a
-/// candidate gets the inner prior of the move on another knob of its block,
-/// the knobs rotated by an offset the seed fixes. A block of one knob keeps
-/// its own. S09 X2's A3-mis.
+/// A prior whose predictions are shuffled within stratum: S09 X2's A3-mis.
+///
+/// The stratum is the block. A candidate gets the inner prior of the move
+/// on another knob of its block, the knobs rotated by an offset the seed
+/// fixes; a block of one knob keeps its own.
 #[derive(Debug)]
 pub struct ShuffledPrior {
     inner: Box<dyn MovePrior>,

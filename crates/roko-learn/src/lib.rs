@@ -134,6 +134,8 @@ pub mod routing_log;
 pub mod run_metrics;
 pub mod runtime_feedback;
 pub mod section_effect;
+/// M3: the calibrated self-model that forecasts each arm's pass, false-green, cost and latency.
+pub mod self_model;
 /// Prompt/context section outcome telemetry for future adaptive policy.
 pub mod section_outcome;
 pub mod skill_library;

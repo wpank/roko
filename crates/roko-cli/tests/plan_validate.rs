@@ -918,9 +918,11 @@ evidence_ref = "plans/architecture-core-queue/tasks.toml"
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    // Both discovered plans validate, including the intentionally absent output.
+    // Both discovered plans validate, including the intentionally absent
+    // output. The only diagnostic is 3230's warning that an acceptance
+    // contract is not enforced at run time (PLAN_046).
     assert!(
-        stdout.contains("0 diagnostics in 2 plans"),
+        stdout.contains("1 diagnostics in 2 plans") && stdout.contains("PLAN_046"),
         "unexpected stdout: {stdout}"
     );
 }

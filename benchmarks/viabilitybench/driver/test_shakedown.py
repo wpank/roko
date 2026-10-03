@@ -41,6 +41,10 @@ WRITE_OPS = (
                                                       "    return max(low, min(value, high))\n"})}}]},
 )
 DONE = "Done."
+ECHO = {"role": "assistant", "content": None, "tool_calls": [{"index": 0, "id": "call_probe", "type": "function",
+        "function": {"name": "echo", "arguments": json.dumps({"text": "roko rung probe"})}}]}
+READ_OP = {"role": "assistant", "content": None, "tool_calls": [{"index": 0, "id": "call_read", "type": "function",
+           "function": {"name": "read_file", "arguments": json.dumps({"path": "calc/ops.py"})}}]}
 
 if os.environ.get("VB_REQUIRE_REAL_ROKO") == "1" and not os.access(REAL_ROKO, os.X_OK):
     raise RuntimeError(f"VB_REQUIRE_REAL_ROKO=1 but no executable roko binary at {REAL_ROKO}: build target/debug/roko "
@@ -102,6 +106,36 @@ def sequence(*replies: object):
     return respond
 
 
+def is_probe(body: dict) -> bool:
+    """Whether a request is Roko's plan-start rung probe (backlog 1121), whose one tool is `echo`."""
+    return [(tool.get("function") or {}).get("name") for tool in body.get("tools") or []] == ["echo"]
+
+
+def answers_probes(respond):
+    """`respond`, with Roko's plan-start rung probe answered as a healthy model answers it: an `echo` call, then a
+    final answer once the tool's result is back. An error that `respond` returns for the probe's model comes back as
+    is: a rung that is down fails its probe, and the ladder drops it before the first attempt (bug-0b7695)."""
+
+    def answer(body: dict) -> object:
+        reply = respond(body)
+        if isinstance(reply, ErrorStatus) or not is_probe(body):
+            return reply
+        return DONE if any(message.get("role") == "tool" for message in body.get("messages") or []) else ECHO
+
+    return answer
+
+
+def solves(body: dict) -> object:
+    """A healthy model that solves the toy task in one attempt: it reads `calc/ops.py` (Roko's implementer contract
+    refuses an edit to a file the attempt has not read, RequireToolBeforeEdit), writes it, then answers once both
+    results are back. A request without Roko's file tools, such as a helper call, gets the final answer."""
+    tools = {(tool.get("function") or {}).get("name") for tool in body.get("tools") or []}
+    if not {"read_file", "write_file"} <= tools:
+        return DONE
+    results = sum(message.get("role") == "tool" for message in body.get("messages") or [])
+    return (READ_OP, *WRITE_OPS, DONE)[min(results, 2)]
+
+
 @shakedown
 def test_shakedown_d1_blank_answer_does_not_isolate_the_task(places, tmp_path):
     # G01/D1: a blank answer must not isolate the task for good. The first attempt gets an empty reply (no content,
@@ -140,17 +174,21 @@ def test_shakedown_d2_stream_chunks_keep_every_field(places, tmp_path):
 @shakedown
 def test_shakedown_d3_provider_error_climbs_the_ladder(places, tmp_path):
     # G12/D3: a provider error on the cheap rung must climb the ladder (to the next rung up), not stay stuck on a
-    # rung that never answers.
+    # rung that never answers. Roko's design (backlog 1121): the plan-start rung probe finds the cheap rung down and
+    # drops it, so the first attempt starts on the next rung up, which solves the task, and no attempt dispatches
+    # the dead rung.
     arm = fast_arm(tmp_path, LADDER_ARM)
 
     def respond(body: dict) -> object:
-        return ErrorStatus(500) if body.get("model") == PIN else DONE
+        return ErrorStatus(500) if body.get("model") == PIN else solves(body)
 
-    with StubServer(respond) as stub:
+    with StubServer(answers_probes(respond)) as stub:
         assert run_vb(places, arm, stub.url) == 0
+        probed = {request.get("model") for request in stub.requests if is_probe(request)}
+    assert PIN in probed, f"no rung probe asked the failing rung: probed {sorted(probed)}"
     [record] = read_jsonl(run_dir(places) / "records.jsonl")
     dispatched = [attempt["model_dispatched"] for attempt in record["execution"]["attempts"]]
-    assert MID in dispatched, f"never escalated off the failing rung: dispatched {dispatched}"
+    assert dispatched[:1] == [MID] and PIN not in dispatched, f"the failing rung was not dropped: {dispatched}"
     assert record["execution"]["status"] == "completed", record["execution"]["reason"]
 
 
@@ -163,12 +201,14 @@ def test_shakedown_d4_open_circuit_never_substitutes_outside_the_rungs(places, t
     calls = {"n": 0}
 
     def respond(body: dict) -> object:
+        if is_probe(body):  # every rung passes its plan-start probe: the hiccup is the first attempt's
+            return DONE
         calls["n"] += 1
         if body.get("model") == PIN and calls["n"] == 1:
             return ErrorStatus(500)
         return DONE
 
-    with StubServer(respond) as stub:
+    with StubServer(answers_probes(respond)) as stub:
         assert run_vb(places, arm, stub.url, PIN, "--limit", "2") == 0
     records = {record["task"]["instance_id"]: record for record in read_jsonl(run_dir(places) / "records.jsonl")}
     assert len(records) == 2
@@ -210,17 +250,20 @@ def test_shakedown_d6_openai_usage_reaches_roko_costs(places, tmp_path):
 @shakedown
 def test_shakedown_d7_auth_failure_keeps_healthy_circuits_closed(places, tmp_path):
     # G04/D7: an auth failure on one rung's provider must take just that provider out of the run, not open a
-    # general circuit that also denies a healthy rung's calls.
+    # general circuit that also denies a healthy rung's calls. As in D3, the plan-start rung probe meets the 401 and
+    # drops that rung (backlog 1121): a healthy rung solves the task, and no attempt dispatches the dead one.
     arm = fast_arm(tmp_path, LADDER_ARM)
 
     def respond(body: dict) -> object:
-        return ErrorStatus(401, auth=True) if body.get("model") == PIN else DONE
+        return ErrorStatus(401, auth=True) if body.get("model") == PIN else solves(body)
 
-    with StubServer(respond) as stub:
+    with StubServer(answers_probes(respond)) as stub:
         assert run_vb(places, arm, stub.url) == 0
+        probed = {request.get("model") for request in stub.requests if is_probe(request)}
+    assert PIN in probed, f"no rung probe asked the failing rung: probed {sorted(probed)}"
     [record] = read_jsonl(run_dir(places) / "records.jsonl")
     dispatched = [attempt["model_dispatched"] for attempt in record["execution"]["attempts"]]
-    assert MID in dispatched, f"the healthy rung was never reached after the auth failure: dispatched {dispatched}"
+    assert dispatched[:1] == [MID] and PIN not in dispatched, f"the healthy rung was not reached: {dispatched}"
     assert record["execution"]["status"] == "completed", record["execution"]["reason"]
 
 

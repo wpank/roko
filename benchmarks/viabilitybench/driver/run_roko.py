@@ -7,7 +7,9 @@ Before the first task, `preflight` emits the plan of a stand-in task into a scra
 
 1. emits a one-task plan and the workspace roko.toml into the task's workdir, which is Roko's workspace
    (`planemit`);
-2. runs `roko --repo <ws> --model <m> plan validate --strict --dag <ws>/plans`; a plan that fails is `infra_error`;
+2. runs `roko --repo <ws> --model <m> plan validate --strict --dag <ws>/plans`; a plan that fails is `infra_error`.
+   A routed arm's command lines name no `--model`, which would pin its start rung past the ladder (planemit's ladder
+   mode; bug-0b7695);
 3. reserves every attempt Roko may make on the run's budget line (`Ledger.reserve`: `max_retries` + 1 attempts, each
    an equal share of the task's worst case, $0 when unbilled), because Roko retries without the driver. A refusal
    ends the task `aborted_cap` (reason `budget`) before any model call. Then it runs
@@ -93,6 +95,12 @@ match, so the attempts fail as `no_proxy_traffic`.
   proxy stamps each request to the microsecond, as Roko stamps its episodes, so attempts that end within one second
   keep their own requests (bug-09fac4). With whole-second stamps on either side (an older proxy log), an attempt that
   ended in the same second as the one before cannot be told apart from it. Task totals are exact either way.
+- Requests from before the first attempt started (S01's `timing.attempt_started_at`) are Roko's plan-start traffic:
+  a routed arm's rung probes, one call per rung model (backlog 1121). Each need only name one of the arm's models
+  (bug-0b7695). They are metered with the first attempt, each priced by the model that served it, so the task's
+  cost still holds every billed call; that attempt's `plan_start_calls` counts them, apart from its own `calls`,
+  `usage` and `model_reported`. An older Roko's records carry no such timing, and its first attempt owns them
+  outright.
 - Every request's `model_requested` and `model_reported` must be the pin.
 - An attempt's usage is the sum of its billed requests (`usage_source` other than `none`), in run-record shape. It
   is priced from the snapshot by the model the provider reported. A billed request without usage leaves the
@@ -208,6 +216,8 @@ class RokoAttempt(harness.Attempt):
     model_swapped: bool = False  # a record says the declared swap's model served it (model_swap, gap-8bdf5e)
     usage_estimated: bool = False  # S01's verdict metered it from usage a call streamed (`cost.source` estimated)
     vendor_usd: float | None = None  # R, a claude_cli attempt's own figure (3318); None for every other provider
+    plan_start_calls: int = 0  # Roko's plan-start requests metered with this first attempt (bug-0b7695)
+    plan_start_usage: list[tuple[str | None, dict | None]] = field(default_factory=list)  # their billed model, usage
 
     def as_record(self) -> dict:
         record = super().as_record()
@@ -222,6 +232,8 @@ class RokoAttempt(harness.Attempt):
             record["calls"] = None
         if self.vendor_usd is not None:
             record["vendor_usd"] = self.vendor_usd
+        if self.plan_start_calls:
+            record["plan_start_calls"] = self.plan_start_calls
         return record
 
 
@@ -276,7 +288,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         if egress_proxy:  # 3318: Roko's claude children reach Anthropic only through this task's own egress proxy
             env = {**env, **agent_env.proxy_env(egress_proxy.url)}
         build = _build(binary, env, settings.get("build") or None, transcript, jail)
-        head = _head(binary, ctx.workdir, ctx.model)
+        head = _head(binary, ctx.workdir, None if spec.rungs else ctx.model)
         checked = _roko([*head, "plan", "validate", "--strict", "--dag", str(ctx.workdir / "plans")], ctx.workdir,
                         env, min(VALIDATE_TIMEOUT_S, _left(ctx, clock)), jail)
         transcript.append(checked.event("validate"))
@@ -378,8 +390,9 @@ def preflight(arm: dict, model: str, endpoint: provider.Endpoint, limits: caps.C
         env = {**agent_env.build(home=Path(scratch) / "home"), "ROKO_CONFIG": str(emitted.config_path),
                **{name: OFFLINE_KEY for name in {spec.api_key_env, *(rung.api_key_env for rung in spec.rungs)} if name}}
         jail = sandbox.command([], deny=(), network=sandbox.NETWORK_NONE, sockets=[workspace])  # validate needs none
-        checked = _roko([*_head(binary, workspace, model), "plan", "validate", "--strict", "--dag",
-                         str(workspace / "plans")], workspace, env, VALIDATE_TIMEOUT_S, jail)
+        head = _head(binary, workspace, None if spec.rungs else model)
+        checked = _roko([*head, "plan", "validate", "--strict", "--dag", str(workspace / "plans")], workspace, env,
+                        VALIDATE_TIMEOUT_S, jail)
     if checked.returncode != 0:
         said = (checked.stdout + checked.stderr).strip()[-500:]
         raise RunnerError(f"{binary} rejects the plan this arm emits: `plan validate --strict --dag` "
@@ -460,9 +473,11 @@ def _rung(arm: dict, model: str, snapshot: ledger.Snapshot, limits: caps.Caps) -
                          max_output=limits.max_output_tokens)
 
 
-def _head(binary: Path, workspace: Path, model: str) -> list[str]:
-    """Roko's command line up to its subcommand, pinned to `model`."""
-    return [str(binary), "--repo", str(workspace), "--model", model, "--no-serve", "--color", "never"]
+def _head(binary: Path, workspace: Path, model: str | None) -> list[str]:
+    """Roko's command line up to its subcommand, pinned to `model`. A routed arm passes None: `--model` would pin its
+    start rung past the ladder, so it would never escalate or fail over (planemit's ladder mode; bug-0b7695)."""
+    pin = ["--model", model] if model else []
+    return [str(binary), "--repo", str(workspace), *pin, "--no-serve", "--color", "never"]
 
 
 def binary_path(arm: dict) -> Path:
@@ -651,13 +666,26 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
     if len(attempts) > max_attempts:
         flag("extra_attempts", f"Roko made {len(attempts)} attempts; the plan allows {max_attempts}")
     if evidence.proxy_rows is not None:
-        _meter_from_proxy(attempts, evidence, model, flag, swap)
+        _meter_from_proxy(attempts, evidence, model, flag, swap, allowed=tuple(rung_index))
     for attempt in attempts:
         if attempt.cost is None:  # the proxy has already priced an attempt that billed nothing
             attempt.cost = ledger.price(attempt.reported_usage(), snapshot.row(attempt.model_reported))
             if attempt.usage_estimated and attempt.cost.source == "provider_usage":
                 attempt.cost = replace(attempt.cost, source="estimated")
+    if attempts and attempts[0].plan_start_usage:
+        attempts[0].cost = _plus_plan_start(attempts[0].cost, attempts[0].plan_start_usage, snapshot)
     return attempts, problems
+
+
+def _plus_plan_start(cost: ledger.Cost, usages: list[tuple[str | None, dict | None]],
+                     snapshot: ledger.Snapshot) -> ledger.Cost:
+    """`cost` plus Roko's billed plan-start requests (`usages`), each priced by the model that served it; unknown
+    when any of them is (bug-0b7695)."""
+    parts = [cost, *(ledger.price(usage, snapshot.row(served)) for served, usage in usages)]
+    if any(part.api_equiv_usd is None or part.without_cache_usd is None for part in parts):
+        return ledger.Cost(None, None, "unknown")
+    return replace(cost, api_equiv_usd=sum(part.api_equiv_usd for part in parts),
+                   without_cache_usd=sum(part.without_cache_usd for part in parts))
 
 
 def _meter_from_verdict(attempt: RokoAttempt, verdict: dict, snapshot: ledger.Snapshot) -> None:
@@ -700,7 +728,7 @@ def _meter_from_cli(attempt: RokoAttempt, executed: dict, snapshot: ledger.Snaps
 
 
 def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: str, flag,
-                      swap: str | None = None) -> None:
+                      swap: str | None = None, allowed: tuple[str, ...] = ()) -> None:
     """Assign the proxy's requests to attempts by time and meter each attempt from them (module docstring).
 
     Times compare to the microsecond when every stamp has one. With a whole-second stamp anywhere, they compare in
@@ -709,12 +737,39 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
 
     Each attempt's requests are checked against its own `model_dispatched` (3312: a routed attempt's rung, by then
     already held to the arm's rungs), falling back to `model` when it is unknown.
+
+    Requests from before the first attempt started (S01's `timing.attempt_started_at`) are Roko's plan-start traffic,
+    a routed arm's rung probes (backlog 1121; bug-0b7695). Each need only name a model the arm allows (`allowed`, a
+    routed arm's rungs, else `model`), and the first attempt is metered for them apart from its own requests:
+    `plan_start_calls`, and `plan_start_usage`, which `settle` prices by each request's own model. Without that
+    timing (an older Roko) the first attempt owns them outright, as before.
     """
     rows = sorted(evidence.proxy_rows or [], key=lambda row: row.get("ordinal") if isinstance(row.get("ordinal"), int)
                   else 0)
     stamps = [episode.get("completed_at") or episode.get("timestamp") for episode in evidence.episodes]
     clock = _instant if all(_subsecond(stamp) for stamp in [*stamps, *(row.get("ts") for row in rows)]) else _second
     ends = [clock(stamp) for stamp in stamps]
+    start = _first_attempt_start(evidence)
+    cutoff = clock(_iso(start)) if start is not None else None
+
+    def plan_start(row: dict) -> bool:
+        when = clock(row.get("ts"))
+        return when is not None and cutoff is not None and when < cutoff
+
+    plan = [row for row in rows if plan_start(row)]
+    for row in plan:
+        for key in ("model_requested", "model_reported"):
+            seen = row.get(key)
+            if not seen or any(records.same_model(want, seen) for want in allowed or (model,)):
+                continue
+            if not (swap and records.same_model(swap, seen)):
+                flag("model_mismatch", f"Roko's plan-start traffic: the proxy saw {key} {seen!r}, which this arm "
+                                       "does not allow")
+    if plan and attempts:
+        attempts[0].plan_start_calls = len(plan)
+        attempts[0].plan_start_usage = [(row.get("model_reported"), _proxy_usage(row.get("usage"))) for row in plan
+                                        if row.get("usage_source") != "none"]
+    rows = [row for row in rows if not plan_start(row)]
     windows: list[list[dict]] = [[] for _ in attempts]
     for row in rows:
         when = clock(row.get("ts"))
@@ -765,6 +820,13 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
             attempt.usage = total
         if not billed:  # every request of the attempt was refused, faulted or failed: none was billed
             attempt.cost = ledger.Cost(0.0, 0.0, "provider_usage")
+
+
+def _first_attempt_start(evidence: Evidence) -> dt.datetime | None:
+    """When Roko's first attempt started, by S01's verdict timing (`timing.attempt_started_at`); None when no verdict
+    says, as with an older Roko, whose plan-start traffic then stays in the first attempt's window."""
+    starts = [_from_unix_ms((verdict.get("timing") or {}).get("attempt_started_at")) for verdict in evidence.verdicts]
+    return min((start for start in starts if start is not None), default=None)
 
 
 def _proxy_usage(raw: object) -> dict | None:

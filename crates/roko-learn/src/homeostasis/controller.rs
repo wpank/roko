@@ -807,6 +807,13 @@ impl Controller {
         self.release(ReleaseReason::PolicyChanged)
     }
 
+    /// Swap the detectors' tuning, as the feedforward pre-arm does (8121):
+    /// the detectors restart under it.
+    pub fn set_detector_tuning(&mut self, tuning: DetectorTuning) {
+        self.tuning = tuning;
+        self.detectors = DetectorBank::new(self.baseline, &self.policy.ev, &tuning);
+    }
+
     /// A person switched the mode; M1 never switches its own.
     pub fn set_mode(&mut self, mode: HomeostasisMode) -> Vec<ControllerEvent> {
         let from = self.state.mode;

@@ -30,6 +30,7 @@
 //! [`AgentResultBridge`] that hides the provider for testing. Production
 //! callers wire in [`AgentDispatcherV2`]; tests can plug in a stub bridge.
 
+pub mod dry_run_planner;
 pub mod factory;
 pub mod model_routing;
 pub mod outcome;

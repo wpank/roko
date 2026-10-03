@@ -3010,6 +3010,7 @@ mod tests {
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),
+            attempt_key: None,
         }
     }
 

@@ -348,6 +348,7 @@ fn loosened_association(
         hdc_encoder_version: 0,
         access_count: 0,
         last_accessed: None,
+        contradiction_count: 0,
         activation_conditions: Vec::new(),
     }
 }
@@ -412,6 +413,7 @@ fn interrupt_to_insight(
         hdc_encoder_version: 0,
         access_count: 0,
         last_accessed: None,
+        contradiction_count: 0,
         activation_conditions: Vec::new(),
     }
 }
@@ -469,6 +471,7 @@ fn dali_insight(episode: &Episode, created_at: DateTime<Utc>) -> KnowledgeEntry 
         hdc_encoder_version: 0,
         access_count: 0,
         last_accessed: None,
+        contradiction_count: 0,
         activation_conditions: Vec::new(),
     }
 }
@@ -577,6 +580,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             },
             KnowledgeEntry {
@@ -615,6 +619,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             },
             KnowledgeEntry {
@@ -653,6 +658,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             },
             KnowledgeEntry {
@@ -691,6 +697,7 @@ mod tests {
                 hdc_encoder_version: 0,
                 access_count: 0,
                 last_accessed: None,
+                contradiction_count: 0,
                 activation_conditions: Vec::new(),
             },
         ];

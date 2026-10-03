@@ -1507,80 +1507,13 @@ impl ExperimentStore {
         Ok(winner_id)
     }
 
-    // ── RAG-11: Retrieval strategy A/B experiment helpers ────────────────
+    // ── RAG-11: the retired retrieval strategy experiment ─────────────────
 
-    /// Canonical experiment id used for retrieval strategy A/B experiments.
+    /// Id of the RAG-11 retrieval-strategy experiment. Graph dispatch no
+    /// longer draws its arms (4105): they labelled attempts without changing
+    /// retrieval. Stores written before then may still hold it, and prompt
+    /// treatments ignore it.
     pub const RETRIEVAL_STRATEGY_EXPERIMENT_ID: &'static str = "retrieval-strategy";
-
-    /// Ensure a retrieval-strategy experiment is registered in the store.
-    ///
-    /// The three arms are `"keyword"`, `"hdc-only"`, and `"hybrid"`, matching
-    /// the constants in `roko_learn::retrieval_outcome`. Calling this on a store
-    /// that already contains the experiment is a no-op.
-    pub fn ensure_retrieval_strategy_experiment(&mut self) {
-        use crate::retrieval_outcome::{STRATEGY_HDC_ONLY, STRATEGY_HYBRID, STRATEGY_KEYWORD};
-
-        if self
-            .experiments
-            .contains_key(Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID)
-        {
-            return;
-        }
-
-        let make_variant = |id: &str| PromptVariant {
-            id: id.to_string(),
-            name: id.to_string(),
-            section_name: Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID.to_string(),
-            content: id.to_string(),
-            slug: None,
-            active: true,
-        };
-
-        let variants = vec![
-            make_variant(STRATEGY_KEYWORD),
-            make_variant(STRATEGY_HDC_ONLY),
-            make_variant(STRATEGY_HYBRID),
-        ];
-
-        let mut exp = PromptExperiment::new(
-            Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID,
-            Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID,
-            variants,
-        );
-        // Lower the min-trials threshold so the experiment can converge on
-        // small workspaces with fewer than the default 10 tasks per arm.
-        exp.min_trials_per_variant = 5;
-        self.register(exp);
-    }
-
-    /// Assign a retrieval strategy for the next task dispatch.
-    ///
-    /// Returns the winning or UCB1-selected strategy name, or `None` when
-    /// no retrieval-strategy experiment is registered.
-    ///
-    /// Callers that want the bandit to learn should later call
-    /// [`Self::record_retrieval_outcome`] with the gate result.
-    #[must_use]
-    pub fn assign_retrieval_strategy(&self) -> Option<String> {
-        let exp = self
-            .experiments
-            .get(Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID)?;
-        let variant = exp.assign_variant()?;
-        Some(variant.id.clone())
-    }
-
-    /// Record a gate-pass outcome for the retrieval strategy experiment.
-    ///
-    /// `strategy` must match one of the three arm ids registered by
-    /// [`Self::ensure_retrieval_strategy_experiment`].  Unknown strategies
-    /// are silently ignored (best-effort, non-critical path).
-    pub fn record_retrieval_outcome(&mut self, strategy: &str, gate_passed: bool) {
-        self.record_outcome_for_experiment(
-            Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID,
-            strategy,
-            gate_passed,
-        );
-    }
 }
 
 impl Default for ExperimentStore {

@@ -445,6 +445,12 @@ pub struct KnowledgeEntry {
     /// Used for tier promotion: 2+ for Transient->Working.
     #[serde(default)]
     pub confirmation_count: u32,
+    /// Number of attempts that failed through the agent's own work while
+    /// their prompt surfaced this entry (S02 L5, decision 4): evidence that
+    /// it keeps company with failures, for audits to weigh. It changes no
+    /// confidence, balance or tier.
+    #[serde(default)]
+    pub contradiction_count: u32,
     /// Distinct context IDs (e.g. plan/task combos) that confirmed this entry.
     /// Used for tier promotion: 3+ distinct contexts for Working->Consolidated.
     #[serde(default)]
@@ -537,6 +543,7 @@ impl Default for KnowledgeEntry {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         }
     }
@@ -1648,6 +1655,7 @@ mod tests {
             hdc_encoder_version: 0,
             access_count: 0,
             last_accessed: None,
+            contradiction_count: 0,
             activation_conditions: Vec::new(),
         };
 

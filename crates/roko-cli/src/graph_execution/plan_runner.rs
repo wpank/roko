@@ -1347,7 +1347,6 @@ async fn run_graph_plan_body(
     );
     // CLI dispatch turns record with their run's provenance sink (gap-ca8022).
     graph_feedback.provenance_sinks = Some(provenance_sinks.clone());
-    let holdout_experiment = graph_feedback.holdout_experiment.clone();
 
     // ── TUI vs inline progress decision ──────────────────────────────
     //
@@ -2115,17 +2114,6 @@ async fn run_graph_plan_body(
         );
     }
 
-    // ── Persist holdout experiment state ────────────────────────────
-    //
-    // Save holdout state so overfitting detection survives across runs
-    // and partition assignments remain stable. Mirrors Runner-v2 cleanup.
-    if let Some(holdout) = &holdout_experiment
-        && let Ok(exp) = holdout.try_lock()
-        && let Err(err) = exp.save()
-    {
-        tracing::warn!(error = %err, "failed to persist holdout experiment state (non-fatal)");
-    }
-
     // ── Persist run metrics (backlog #169) ──────────────────────────
     //
     // Collect task counts and cost from the just-completed plan loop and
@@ -2337,8 +2325,8 @@ pub fn build_graph_feedback_context(
     let _ = std::fs::create_dir_all(&graph_learn_dir);
     // A frozen run (decision 2218) sets none of the paths that only write
     // learned state: playbook outcomes (prompts read playbooks from the
-    // workdir), prompt treatments, post-gate reflections and the holdout
-    // split. Paths that are also read stay; their writers check the flag.
+    // workdir) and prompt treatments. Paths that are also read stay; their
+    // writers check the flag.
     let learning = !config.learning.frozen;
 
     // #144: one daimon state, shared by the feedback facade (plan-completion
@@ -2351,38 +2339,6 @@ pub fn build_graph_feedback_context(
     // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
     let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
 
-    // ── P1-04: HoldoutExperiment ─────────────────────────────────────
-    //
-    // Deterministic 80/20 train/holdout split for detecting overfitting
-    // in learned routing. Learning updates are gated behind the holdout
-    // partition check.
-    let holdout_experiment = std::sync::Arc::new(tokio::sync::Mutex::new(
-        roko_learn::HoldoutExperiment::load_or_new(
-            graph_learn_dir.join("holdout-state.json"),
-        )
-        .unwrap_or_else(|err| {
-            tracing::warn!(error = %err, "failed to load holdout experiment state; starting fresh");
-            roko_learn::HoldoutExperiment::new(
-                graph_learn_dir.join("holdout-state.json"),
-            )
-        }),
-    ));
-
-    // ── P2-01: ShadowRunner ─────────────────────────────────────────
-    //
-    // Records shadow dispatch decisions (infrastructure-only; no actual
-    // shadow task spawn). Uses the configured default model as the
-    // shadow alternative.
-    let shadow_runner = std::sync::Arc::new(roko_learn::shadow::ShadowRunner::new(
-        roko_learn::shadow::ShadowConfig {
-            model_slug: config.agent.default_model.clone(),
-            prompt_variant: None,
-            label: "graph-shadow".to_string(),
-        },
-        graph_learn_dir.join("shadow-results.jsonl"),
-    ));
-
-    let post_gate_reflections = graph_learn_dir.join("post-gate-reflections.json");
     crate::graph_task_dispatch::GraphFeedbackContext {
         feedback_facade: Some(build_graph_feedback_facade(
             workdir,
@@ -2401,11 +2357,7 @@ pub fn build_graph_feedback_context(
         daimon_state: shared_daimon_state,
         experiment_store_path: learning.then(|| graph_learn_dir.join("experiments.json")),
         gate_failures_path: Some(graph_layout.gate_failures_path()),
-        post_gate_reflection_path: learning.then_some(post_gate_reflections),
-        replan_on_gate_failure: config.learning.replan_on_gate_failure,
         coding_oracle: Some(coding_oracle),
-        holdout_experiment: learning.then_some(holdout_experiment),
-        shadow_runner: Some(shadow_runner),
         // P2-LRN-6 Loop 1: Gate threshold EMA updates after each task's
         // verify sequence. Uses the canonical workspace path so the TUI,
         // serve, and `roko learn gates` all read from the same file.
@@ -5167,7 +5119,6 @@ max_retries = 0
                 "sink.section_effect",
                 "store.attempt_log",
                 "store.prompt_experiment",
-                "store.holdout",
                 "store.decision_writer",
                 "store.exposure_writer",
                 "store.record_access",
@@ -5563,8 +5514,6 @@ max_retries = 0
         let frozen = config.learning.frozen;
         assert_eq!(feedback.playbook_dir.is_none(), frozen);
         assert_eq!(feedback.experiment_store_path.is_none(), frozen);
-        assert_eq!(feedback.post_gate_reflection_path.is_none(), frozen);
-        assert_eq!(feedback.holdout_experiment.is_none(), frozen);
         assert!(feedback.runs_dir.is_some());
         assert!(feedback.gate_thresholds_path.is_some());
         let workdir = workdir.to_path_buf();
@@ -5575,18 +5524,17 @@ max_retries = 0
 
     /// Decision 2218: a frozen run's dispatcher has no learning sink, and
     /// none of the paths that only write learned state (playbook outcomes,
-    /// prompt treatments, post-gate reflections, the holdout split). Its
-    /// telemetry and the state it also reads stay. A live run has them all.
+    /// prompt treatments). Its telemetry and the state it also reads stay. A
+    /// live run has them all.
     #[tokio::test]
     async fn frozen_run_registers_no_learning_sinks() {
-        const LEARNING: [&str; 7] = [
+        const LEARNING: [&str; 6] = [
             "sink.episode",
             "sink.routing",
             "sink.knowledge_ingestion",
             "sink.playbook_outcome",
             "sink.error_pattern",
             "store.prompt_experiment",
-            "store.holdout",
         ];
         const KEPT: [&str; 4] = [
             "store.attempt_log",

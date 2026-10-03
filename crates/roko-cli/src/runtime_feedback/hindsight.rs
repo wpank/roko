@@ -18,7 +18,9 @@
 //! confidence counts (`CascadeRouter::retract_success`; the `LinUCB` bandit
 //! keeps its update). The router retraction is journaled in the run's
 //! learning WAL, as the routing outcome was, so it survives a crash before
-//! the run saves its router (bug-583e50).
+//! the run saves its router (bug-583e50). A success the router was not
+//! credited with (a ladder rung, a task hint, a guard's fallback or the
+//! default chose its model, decision 4111) has no router credit to retract.
 //!
 //! Nothing else relabels. On the Graph path every episode is a fresh attempt
 //! that edits files, so a later failure of the same task, or of one that
@@ -49,6 +51,11 @@ pub(crate) const PLAYBOOK_IDS_KEY: &str = "playbook_ids";
 /// Episode `extra` key holding the task category the routing sink credited
 /// the attempt under.
 pub(crate) const ROUTING_CATEGORY_KEY: &str = "routing_category";
+
+/// Episode `extra` key saying whether the routing sink credited the router
+/// with the attempt at all (decision 4111). An episode written before the
+/// key was credited.
+pub(crate) const ROUTER_CREDITED_KEY: &str = "router_credited";
 
 /// Tasks a verify failure reason blames, as `"{plan_id}/{task_id}"` keys.
 ///
@@ -208,10 +215,15 @@ fn episode_playbook_ids(episode: &Episode) -> Vec<String> {
 
 /// The routing credit the routing sink gave `episode`'s attempt: its model,
 /// and the category it counted under. An attempt that failed over ran a
-/// model the router did not pick, so it earned none; an episode with no
+/// model the router did not pick, and one whose model the router did not
+/// choose is marked uncredited, so neither earned any; an episode with no
 /// recorded category counted under the routing sink's fallback category.
 fn routing_credit(episode: &Episode) -> Option<(String, TaskCategory)> {
-    if episode.extra.contains_key("failover_chain") {
+    let credited = episode
+        .extra
+        .get(ROUTER_CREDITED_KEY)
+        .and_then(serde_json::Value::as_bool);
+    if episode.extra.contains_key("failover_chain") || credited == Some(false) {
         return None;
     }
     let category = episode
@@ -540,5 +552,46 @@ mod tests {
         }
         // T1's success is retracted; T2's failure is a trial of its own.
         assert_eq!(sonnet_confidence(&router), Some((2, 0)));
+    }
+
+    /// Decision 4111: a success whose model a ladder rung chose earned the
+    /// router no credit, so a later verify failure that blames it relabels
+    /// the episode and retracts nothing from the router.
+    #[tokio::test]
+    async fn hindsight_retracts_no_router_credit_a_rung_never_earned() {
+        let dir = tempdir().unwrap();
+        let workdir = dir.path();
+        let episodes = roko_fs::RokoLayout::for_project(workdir).root_episodes_path();
+        let router = Arc::new(CascadeRouter::new(vec!["claude-sonnet-4-6".to_string()]));
+        let adjustments = roko_learn::hindsight::workspace_adjustments_path(workdir);
+        let hindsight =
+            HindsightSink::new(&episodes, &adjustments).with_router(Some(Arc::clone(&router)));
+        let facade = FeedbackFacade::new()
+            .with_sink(Arc::new(EpisodeSink::at(&episodes)))
+            .with_sink(Arc::new(hindsight))
+            .with_sink(Arc::new(RoutingObservationSink::new(Arc::clone(&router))));
+
+        // T0, the router's own pick, passes and is credited; T1 passes on a
+        // ladder rung, which teaches the router nothing.
+        let picked = completed("T0", true, None);
+        facade.on_event(&picked).await.unwrap();
+        let mut laddered = completed("T1", true, None);
+        if let FeedbackEvent::TaskCompleted { model_source, .. } = &mut laddered {
+            *model_source = ModelChoiceSource::Ladder { rung: 0 };
+        }
+        facade.on_event(&laddered).await.unwrap();
+        assert_eq!(sonnet_confidence(&router), Some((1, 1)));
+
+        // Then T2's verify failure is blamed on T1.
+        let blame = "verify: blocked_by_sibling = T1: 1/1 verify step(s) failed for task `T2`";
+        facade
+            .on_event(&completed("T2", false, Some(blame)))
+            .await
+            .unwrap();
+
+        let recorded = read_adjustments(&adjustments).unwrap();
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        // T0's success stands; T2's failure is a trial of its own.
+        assert_eq!(sonnet_confidence(&router), Some((2, 1)));
     }
 }

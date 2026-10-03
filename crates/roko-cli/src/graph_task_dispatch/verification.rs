@@ -818,42 +818,12 @@ impl GraphTaskDispatcher {
             // Steps an earlier attempt passed that fail now (gap-6dba88).
             let regressed = self.settle_step_regressions(spec, task, &steps, &step_outcomes);
 
-            // ── Post-verify: HoldoutExperiment ──────────────────────────
-            //
-            // This runs after all verify steps complete (or early-terminate)
-            // regardless of pass/fail, matching the Runner-v2 gate completion
-            // callback pattern. Nothing feeds the gate-gaming detector here: a
-            // quality score tied to the verdict cannot show "pass rate up,
-            // quality down", so the paid quality judge on a failure and the
-            // fixed 0.9 on a pass are gone until audits supply the labels.
-            let all_passed = failures.is_empty();
-
-            // P1-04: HoldoutExperiment outcome recording and learning gate.
-            if let Some(holdout) = &self.feedback.holdout_experiment {
-                let holdout_task_key = format!("{}:{}", spec.plan_id, task.id);
-                if let Ok(mut exp) = holdout.try_lock() {
-                    exp.record_outcome(&holdout_task_key, all_passed, 0.0);
-                    if let Some(alert) = exp.check_overfitting() {
-                        tracing::warn!(
-                            train_pass_rate = alert.train_pass_rate,
-                            holdout_pass_rate = alert.holdout_pass_rate,
-                            divergence_pp = alert.divergence_pp,
-                            "P1-04: holdout overfitting detected"
-                        );
-                    }
-                    // Gate learning updates: only Train partition tasks update
-                    // the routing model; holdout tasks are observed but never
-                    // feed back into learned state. This affects the playbook,
-                    // efficiency, and experiment settlement paths above.
-                    let should_update = exp.should_update_learning(&holdout_task_key);
-                    tracing::debug!(
-                        plan_id = %spec.plan_id,
-                        task_id = %task.id,
-                        should_update_learning = should_update,
-                        "P1-04: holdout partition check"
-                    );
-                }
-            }
+            // Nothing feeds the gate-gaming detector here: a quality score
+            // tied to the verdict cannot show "pass rate up, quality down", so
+            // the paid quality judge on a failure and the fixed 0.9 on a pass
+            // are gone until audits supply the labels. The legacy holdout
+            // split is retired from Graph runs too (G31): its learning gate
+            // gated nothing, and S03's arm set replaces it.
 
             if !failures.is_empty() {
                 // Verify steps are deterministic, so a failure is never
@@ -877,15 +847,6 @@ impl GraphTaskDispatcher {
                     attempt = attempt_number,
                     "graph verify steps failed"
                 );
-                // ── W12: Gate failure replan signal ───────────────────────
-                if self.feedback.replan_on_gate_failure {
-                    tracing::info!(
-                        plan_id = %spec.plan_id,
-                        task_id = %task.id,
-                        failed_count = failures.len(),
-                        "gate failure replan enabled; Graph engine will retry via max_retries"
-                    );
-                }
                 // ── error_enrichment: enrich gate failure before retry ───
                 //
                 // Ask a cheap judge model for a two-sentence diagnosis of the
@@ -1023,92 +984,13 @@ impl GraphTaskDispatcher {
                         });
                     }
                 }
-                // ── P2-PLN-2: Post-gate LLM reflection ───────────────────
-                //
-                // When `replan_on_gate_failure` is enabled and a cheap
-                // agent is available, ask the LLM for a one-sentence
-                // reflection explaining the root cause. The lesson is
-                // stored in the PostGateReflectionStore (at
-                // `.roko/learn/post-gate-reflections.json`) so subsequent
-                // retry prompts and playbook extraction see real LLM
-                // analysis instead of the deterministic pattern template. A
-                // frozen run asks for none (decision 2218).
-                if self.feedback.replan_on_gate_failure && !self.learning_frozen() {
-                    if let Some((reflection_path, cheap_agent)) = self
-                        .feedback
-                        .post_gate_reflection_path
-                        .as_ref()
-                        .cloned()
-                        .zip(self.cheap_agent())
-                    {
-                        let raw_for_reflection = failures.join("\n---\n");
-                        let task_desc = spec.title.clone();
-                        let plan_id = spec.plan_id.clone();
-                        let task_id = task.id.clone();
-                        tokio::spawn(async move {
-                            let lesson =
-                                roko_learn::post_gate_reflection::generate_post_gate_reflection(
-                                    &cheap_agent,
-                                    &task_desc,
-                                    "graph-verify",
-                                    &raw_for_reflection,
-                                )
-                                .await;
-                            tracing::info!(
-                                plan_id = %plan_id,
-                                task_id = %task_id,
-                                lesson_chars = lesson.len(),
-                                "post-gate LLM reflection generated"
-                            );
-                            let input = roko_learn::post_gate_reflection::ReflectionInput {
-                                plan_id: Some(plan_id),
-                                task_id: Some(task_id),
-                                episode_id: None,
-                                trigger_gate: "graph-verify".to_string(),
-                                outcome:
-                                    roko_learn::post_gate_reflection::ReflectionGateOutcome::Failed,
-                                failure_pattern_ids: vec![],
-                                pass_evidence: vec![],
-                                proposed_lesson: lesson,
-                            };
-                            let mut store =
-                                roko_learn::post_gate_reflection::PostGateReflectionStore::load(
-                                    &reflection_path,
-                                );
-                            store.observe(
-                                input,
-                                roko_learn::post_gate_reflection::ReflectionPromotionConfig::default(),
-                            );
-                            if let Err(error) = store.save(&reflection_path) {
-                                tracing::warn!(
-                                    %error,
-                                    "post-gate reflection store write failed (non-fatal)"
-                                );
-                            }
-                        });
-                    }
-                }
-                // ── RAG-10/11: Retrieval outcome settlement (gate fail) ──
+                // No post-gate reflection is generated (decision 4108): the
+                // retry already carries the raw gate output and the
+                // diagnosis above, and nothing read the lessons.
+                // ── RAG-10: Retrieval outcome settlement (gate fail) ─────
                 {
                     let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
                     if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
-                        // RAG-11: update experiment store with gate-fail outcome.
-                        if let Some(exp_path) = self.feedback.experiment_store_path.clone() {
-                            // Locked: prompt treatments share the file. The
-                            // store is read and written back whole, so off the
-                            // reactor (gap-5e818f).
-                            let outcome_strategy = strategy.clone();
-                            let _ = tokio::task::spawn_blocking(move || {
-                                roko_learn::prompt_experiment::ExperimentStore::transaction(
-                                    &exp_path,
-                                    |store| {
-                                        store.record_retrieval_outcome(&outcome_strategy, false);
-                                        Ok(())
-                                    },
-                                )
-                            })
-                            .await;
-                        }
                         // RAG-10: write settled record.
                         if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
                             let record =
@@ -1149,27 +1031,10 @@ impl GraphTaskDispatcher {
                 step_count = steps.len(),
                 "all graph verify steps passed"
             );
-            // ── RAG-10/11: Retrieval outcome settlement (gate pass) ───────
+            // ── RAG-10: Retrieval outcome settlement (gate pass) ──────────
             {
                 let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
                 if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
-                    // RAG-11: update experiment store with the passed gate's outcome.
-                    if let Some(exp_path) = self.feedback.experiment_store_path.clone() {
-                        // Locked: prompt treatments share the file. The store
-                        // is read and written back whole, so off the reactor
-                        // (gap-5e818f).
-                        let outcome_strategy = strategy.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            roko_learn::prompt_experiment::ExperimentStore::transaction(
-                                &exp_path,
-                                |store| {
-                                    store.record_retrieval_outcome(&outcome_strategy, true);
-                                    Ok(())
-                                },
-                            )
-                        })
-                        .await;
-                    }
                     // RAG-10: write settled record.
                     if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
                         let record =

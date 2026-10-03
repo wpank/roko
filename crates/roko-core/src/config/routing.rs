@@ -532,6 +532,37 @@ pub struct RoutingConfig {
     /// `model_hint` starts on, by role and tier. On by default.
     #[serde(default)]
     pub ladder: LadderConfig,
+    /// ε of the exploration draw (S02.P1-3, decision 2203): with probability
+    /// ε a route the cascade router decides runs an eligible model drawn
+    /// uniformly instead of its argmax, so every eligible model's logged
+    /// propensity is at least ε/k. A pin (`--model`, a model hint) or a
+    /// ladder rung is never explored. Read through
+    /// [`Self::effective_explore_epsilon`], which caps it at
+    /// [`MAX_EXPLORE_EPSILON`]; 0 turns exploration off.
+    #[serde(default = "default_explore_epsilon")]
+    pub explore_epsilon: f64,
+}
+
+/// Default `[routing] explore_epsilon` (decision 2203, D12).
+pub const DEFAULT_EXPLORE_EPSILON: f64 = 0.05;
+
+/// Hard cap of `[routing] explore_epsilon` (decision 2203, D12).
+pub const MAX_EXPLORE_EPSILON: f64 = 0.10;
+
+impl RoutingConfig {
+    /// `explore_epsilon` within `[0, MAX_EXPLORE_EPSILON]`; NaN reads as 0.
+    #[must_use]
+    pub const fn effective_explore_epsilon(&self) -> f64 {
+        if self.explore_epsilon.is_nan() {
+            0.0
+        } else {
+            self.explore_epsilon.clamp(0.0, MAX_EXPLORE_EPSILON)
+        }
+    }
+}
+
+const fn default_explore_epsilon() -> f64 {
+    DEFAULT_EXPLORE_EPSILON
 }
 
 fn default_routing_mode() -> String {
@@ -577,6 +608,7 @@ impl Default for RoutingConfig {
             fallback_models: Vec::new(),
             exhaustion_cooldown_secs: default_exhaustion_cooldown_secs(),
             ladder: LadderConfig::default(),
+            explore_epsilon: default_explore_epsilon(),
         }
     }
 }
@@ -584,6 +616,19 @@ impl Default for RoutingConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Decision 2203: exploration is on at ε = 0.05 by default, and a
+    /// configured ε is capped at 0.10.
+    #[test]
+    fn explore_epsilon_defaults_and_caps() {
+        let epsilon = RoutingConfig::default().effective_explore_epsilon();
+        assert!((epsilon - DEFAULT_EXPLORE_EPSILON).abs() < f64::EPSILON);
+        let parsed: RoutingConfig = toml::from_str("explore_epsilon = 0.5").expect("parse");
+        let capped = parsed.effective_explore_epsilon();
+        assert!((capped - MAX_EXPLORE_EPSILON).abs() < f64::EPSILON);
+        let off: RoutingConfig = toml::from_str("explore_epsilon = 0.0").expect("parse");
+        assert!(off.effective_explore_epsilon().abs() < f64::EPSILON);
+    }
 
     #[test]
     fn fallback_models_and_exhaustion_cooldown_parse_with_defaults() {

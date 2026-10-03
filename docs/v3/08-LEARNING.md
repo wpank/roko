@@ -1111,9 +1111,9 @@ can reduce prompt size by 30-50% while improving pass rates.
 **Status:** Not wired on Graph runs. Runner-v2's plan revision was deleted
 with it on 2026-09-06 (`6b5da8616`), and `ReplanController`
 (`crates/roko-execution/src/replan_controller.rs`) has no caller. A failed task is
-retried with its gate feedback up to `max_retries`. With
-`learning.replan_on_gate_failure` (on by default) and a cheap model available,
-each failure also gets an LLM reflection.
+retried with its gate feedback up to `max_retries`. No LLM reflection is
+generated after a failure (decision 4108), and `learning.replan_on_gate_failure`,
+which turned one on, was removed (backlog 4110).
 
 ### Loop 5: Skills -> Prompts
 

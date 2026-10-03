@@ -165,18 +165,6 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         ));
     }
 
-    if config.learning.replan_on_gate_failure
-        && config.gates.skip_tests
-        && !config.gates.clippy_enabled
-    {
-        results.push(invariant(
-            7,
-            InvariantSeverity::Warning,
-            "learning.replan_on_gate_failure",
-            "replan_on_gate_failure is enabled while test and clippy gates are disabled",
-        ));
-    }
-
     // The data LLM reads untrusted content, so it stays tool-less, and each
     // of its calls is bounded in time and size (gap-b0d514).
     if let Some(data_llm) = &config.agent.data_llm {

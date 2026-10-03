@@ -206,6 +206,7 @@ and never fails the task, so no verify step runs it. A `judge` rung advises unle
 | `fast_task_model` | String | MODEL_FAST | Model for fast/simple tasks |
 | `standard_task_model` | String | MODEL_FOCUSED | Model for standard tasks |
 | `complex_task_model` | String | MODEL_DEEP | Model for complex tasks |
+| `explore_epsilon` | f64 | 0.05 | Share of the routes the cascade router decides that run an eligible model drawn uniformly instead of its argmax (S02.P1-3, decision 2203), so each eligible model's logged propensity is at least ε/k. Capped at 0.10; 0 turns exploration off. A `--model` pin, a model hint or a ladder rung is never explored |
 
 ---
 
@@ -241,7 +242,8 @@ defaults and `Default` impl agree. Checked at `7c556bc0a` (2026-09-29), most of 
 change nothing: "No effect" marks a key that only the config tooling reads (loading,
 `roko config set`, presets and config views). "No effect on Graph runs" marks a key that
 `roko plan run`, and the plans that `roko run` and `roko serve` start, never read. The replan
-limits `replan_max_per_plan` and `replan_gate_attempts` were removed (see [Removed keys](#removed-keys)).
+keys `replan_on_gate_failure`, `replan_max_per_plan` and `replan_gate_attempts` were removed (see
+[Removed keys](#removed-keys)).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -253,14 +255,13 @@ limits `replan_max_per_plan` and `replan_gate_attempts` were removed (see [Remov
 | `learning_min_occurrences` | usize | 2 | Occurrences before a learned rule is promoted. No effect |
 | `file_intel_max_entries` | usize | 15 | Maximum file-intel entries injected per task. No effect |
 | `warning_max_entries` | usize | 5 | Maximum warning entries injected per task. No effect |
-| `replan_on_gate_failure` | bool | true | Graph runs never revise a plan: a failed task is retried up to its `max_retries`. When true and a cheap model is available, each failed verify also gets an LLM reflection, saved to `.roko/learn/post-gate-reflections.json` |
 | `dream_on_completion` | bool | false | Opt in to dream consolidation on plan completion; otherwise dreams run on demand via `roko knowledge dream run`. No effect on Graph runs: nothing emits the plan-completion event (q-6b7cca) |
 | `use_lookahead_router` | bool | false | Pass the cascade router's pick through `LookaheadRouter`, which may choose a cheaper tier. No effect |
 | `lookahead_threshold` | f64 | 0.7 | Success probability at which the lookahead router accepts a cheaper tier. No effect |
 | `override_learning_dampening` | Option\<f64\> | None | Weight of a manual model override's outcome in router learning. No effect: the router always uses 0.5 (`OVERRIDE_LEARNING_RATE`) |
 | `gate_threshold_flush_interval` | u64 | 10 | Gate observations (a count, not seconds) between writes of `.roko/learn/gate-thresholds.json`; 0 is read as 1. Graph runs write the thresholds once this many observations have built up, before a plan's retry budgets are read, and when the run ends (reg-c7ecf6) |
 | `t0_reflexes` | bool | false | Run the T0 reflex path in Graph task dispatch. Off by default until reflex rules are credited after verify (bug-94151f) |
-| `frozen` | bool | false | Hold learned state fixed (decision 2218): a frozen run reads learned state and writes none, while telemetry stays on. A frozen Graph run registers no learning sinks, sets no playbook-outcome, prompt-experiment, post-gate-reflection or holdout path and saves no router state at its end, and its attempts write no affect, T0 reflex or knowledge-access state. Gate settlement still updates the adaptive thresholds (backlog 2222). `roko plan run --frozen-learning` freezes one run. The run's manifest records `experiment.ablation_flags = ["learning_frozen"]`, and the config fingerprint differs from a live run's. A roko binary older than this key fails to load a config that sets it, since `[learning]` denies unknown fields |
+| `frozen` | bool | false | Hold learned state fixed (decision 2218): a frozen run reads learned state and writes none, while telemetry stays on. A frozen Graph run registers no learning sinks, sets no playbook-outcome or prompt-experiment path and saves no router state at its end, and its attempts write no affect, T0 reflex or knowledge-access state. Gate settlement still updates the adaptive thresholds (backlog 2222). `roko plan run --frozen-learning` freezes one run. The run's manifest records `experiment.ablation_flags = ["learning_frozen"]`, and the config fingerprint differs from a live run's. A roko binary older than this key fails to load a config that sets it, since `[learning]` denies unknown fields |
 
 The `dreams` and `knowledge` fields are the two sub-tables below.
 
@@ -360,6 +361,7 @@ The list is `REMOVED_CONFIG_KEYS` in `crates/roko-core/src/config/loader.rs`.
 | `gates.domain_gates` | No gate ran its commands. Give the plan tasks of that domain their own verify commands (gap-7a3527) |
 | `learning.replan_max_per_plan` | No plan run revises a plan on gate failure, so it limited nothing (gap-7a3527) |
 | `learning.replan_gate_attempts` | As for `replan_max_per_plan` (gap-7a3527) |
+| `learning.replan_on_gate_failure` | No plan run revises a plan on gate failure: a failed task is retried up to its `max_retries`. The post-gate LLM reflection it also turned on was retired, since no retry prompt read it (backlog 4109, 4110) |
 | `[prd]` (the whole section) | The PRD pipeline was removed, `auto_plan` with it: plans come straight from a prompt (`roko run --plan`, `roko plan generate`), so nothing reads the PRD lifecycle settings |
 | `[executor]` (the whole section) | The CLI-only parallel executor it configured never ran in a plan run. `conductor.max_parallel_plans` sets how many plans run at once, and `runner.worktree_per_task` (on by default) runs each task in its own git worktree (gap-666ab3, gap-4ec59f) |
 | `tools.prefer_mcp`, `tools.mcp_timeout_secs` | v1 keys of the CLI-only config that nothing read (bug-d5051e) |

@@ -68,6 +68,7 @@ impl FeedbackSink for EpisodeSink {
             failure_reason,
             settled,
             routing_context,
+            model_source,
             ..
         } = event
         else {
@@ -190,6 +191,13 @@ impl FeedbackSink for EpisodeSink {
         episode.extra.insert(
             super::hindsight::ROUTING_CATEGORY_KEY.into(),
             serde_json::json!(routing_category),
+        );
+        // Whether the routing sink credits the router with this attempt at
+        // all (decision 4111), so a hindsight relabel retracts only credit
+        // that was given.
+        episode.extra.insert(
+            super::hindsight::ROUTER_CREDITED_KEY.into(),
+            serde_json::Value::Bool(super::routing::credits_router(*model_source)),
         );
         episode.extra.insert(
             "cache_hit".into(),

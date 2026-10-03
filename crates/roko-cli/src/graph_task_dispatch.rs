@@ -39,7 +39,6 @@ use roko_graph::cells::{
 use roko_learn::costs_db::CostRecord;
 use roko_learn::oracles::coding::{BuildRecord, CodingOracle, TestRecord};
 use roko_learn::reflex_store::{ReflexObservation, ReflexStore};
-use roko_learn::shadow::ShadowRunner;
 use roko_learn::telemetry::{AttemptKeyed, AttemptOutcome};
 
 use crate::dispatch::{
@@ -113,9 +112,8 @@ use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
 use live_tool_calls::LiveToolCalls;
 use routing_context::{
-    CheapFactoryAgent, arbitrate_cross_cut_routing_bias, assign_retrieval_strategy_arm,
-    build_routing_context, dream_routing_bias, effective_agent_contract, select_cheap_model_key,
-    upstream_outputs,
+    CheapFactoryAgent, arbitrate_cross_cut_routing_bias, build_routing_context, dream_routing_bias,
+    effective_agent_contract, select_cheap_model_key, upstream_outputs,
 };
 use supervision::SupervisedAttempt;
 use tui_forward::forward_live_event_to_tui;
@@ -970,21 +968,6 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // authored: no dream/cross-cut routing advice.
         let skip_enrichment = self.plan_skips_enrichment(spec);
 
-        // ── P2-01: ShadowRunner decision recording ──────────────────────
-        //
-        // Record whether this task would be shadowed. Infrastructure-only:
-        // we record the decision but do not actually spawn a shadow task.
-        if let Some(shadow) = &self.feedback.shadow_runner {
-            let should = shadow.should_shadow();
-            tracing::debug!(
-                plan_id = %spec.plan_id,
-                task_id = %task.id,
-                should_shadow = should,
-                shadow_model = %shadow.config.model_slug,
-                "P2-01: shadow decision recorded (infrastructure-only)"
-            );
-        }
-
         // ── Disk headroom (reg-7cf6f9) ───────────────────────────────────
         //
         // Reserve the space the attempt's worktree is expected to grow by,
@@ -1233,6 +1216,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
+            attempt_key: Some(attempt.key.clone()),
         };
         let prompt_assembly_started = std::time::Instant::now();
         let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
@@ -1244,10 +1228,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
 
-        // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
+        // ── RAG-10: Retrieval outcome telemetry (pre-gate) ───────────────
         //
         // Immediately after prompt assembly we know:
-        //   - which strategy was used (RAG-11 experiment assignment or default)
+        //   - which strategy was used (keyword, the only one retrieval runs)
         //   - how many knowledge entries were retrieved (diagnostics.knowledge_ids)
         //   - the query text (task title + description)
         //   - prompt assembly latency (covers neuro knowledge retrieval)
@@ -1263,17 +1247,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .trim()
             .to_string();
 
-            // RAG-11: assign retrieval strategy via experiment store, or fall
-            // back to the default "keyword" arm (which is what the current
-            // `collect_neuro_knowledge_cached` always runs). The store read is
-            // blocking file I/O, so it runs off the reactor.
-            let strategy = if let Some(exp_path) = self.feedback.experiment_store_path.clone() {
-                tokio::task::spawn_blocking(move || assign_retrieval_strategy_arm(&exp_path))
-                    .await
-                    .unwrap_or_else(|_| roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string())
-            } else {
-                roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string()
-            };
+            // `collect_neuro_knowledge_cached` always retrieves by keyword. The
+            // RAG-11 A/A experiment, which drew a strategy label after the
+            // prompt was built and never applied it, is gone (G72).
+            let strategy = roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string();
 
             // Stash for gate-settlement below.
             self.retrieval_ctx.lock().insert(

@@ -14,8 +14,9 @@
 //!   once and that every learning row joins an attempt.
 //! - `loop_census_routed_task_logs_fallback_decision` runs the same plan and
 //!   checks its route decisions: one per attempt, and routed T4's labelled a
-//!   fallback, since a guard replaced the cascade router's pick. Every
-//!   attempt's prompt items are in the run's exposure log too.
+//!   fallback, since no model can run it and a guard replaced the cascade
+//!   router's pick. Every attempt's prompt items are in the run's exposure
+//!   log too.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -33,7 +34,9 @@ use roko_learn::telemetry::DecisionSource;
 use roko_learn::telemetry::report::{RunRecords, route_report};
 use serde_json::Value;
 
-/// Every learning component of S01 §5.8, in census order.
+/// Every learning component of S01 §5.8, in census order. The legacy
+/// holdout split is not one: it gated nothing, and S03's registry lists it
+/// (L-holdout) as retired (4101).
 const S01_COMPONENTS: &[&str] = &[
     "sink.episode",
     "sink.routing",
@@ -43,7 +46,6 @@ const S01_COMPONENTS: &[&str] = &[
     "sink.section_effect",
     "store.attempt_log",
     "store.prompt_experiment",
-    "store.holdout",
     "store.decision_writer",
     "store.exposure_writer",
     "store.record_access",
@@ -66,12 +68,14 @@ printf '%s\n' '{"type":"result","session_id":"census","model":"claude-sonnet-4-6
 
 /// A workspace whose models all run on [`PROVIDER`]: `census-model` for the
 /// verified tasks, and `census-unverified` for T3 alone, so T3's routing
-/// statistics are its own. `census-model` is the cheaper one, so the helper
-/// calls after a failed verify step (which take the cheapest model) run on
-/// it too. `census-disabled` runs on `census-off`, which `[routing]
-/// disabled_providers` lists: the cascade router may pick it, but no task
-/// runs on it. The ladder is off, so a task without a model hint is the
-/// cascade router's to route.
+/// statistics are its own. `census-disabled` runs on `census-off`, which
+/// `[routing] disabled_providers` lists: the cascade router may pick it, but
+/// no task runs on it. Neither of the others has tool use, so routed T4, an
+/// implementer, has no model it can run on: the router has nothing to mask
+/// its pick down to (S02.P1-2), and its guard falls back to the default.
+/// Without a model that has tool use, no cheap helper model is selected, so
+/// a failed verify step makes no helper call. The ladder is off, so a task
+/// without a model hint is the cascade router's to route.
 fn write_workspace(workdir: &Path) {
     let provider = workdir.join("fake-provider.sh");
     fs::write(&provider, PROVIDER).expect("write provider script");
@@ -96,6 +100,7 @@ slug = "claude-sonnet-4-6"
 context_window = 200000
 cost_input_per_m = 0.1
 cost_output_per_m = 0.1
+supports_tools = false
 
 [models.census-unverified]
 provider = "census-cli"
@@ -103,6 +108,7 @@ slug = "claude-opus-4-1"
 context_window = 200000
 cost_input_per_m = 50.0
 cost_output_per_m = 50.0
+supports_tools = false
 
 [providers.census-off]
 kind = "claude_cli"
@@ -316,8 +322,9 @@ fn jsonl(path: &Path) -> Vec<Value> {
 
 /// The cascade router's starting state for the loop-census run: its static
 /// stage picks `census-disabled-model` for implementers, a model on a
-/// disabled provider, so a guard must replace routed T4's pick. The model
-/// list is the workspace's, as a plan run loads it (sorted slugs).
+/// disabled provider, and no other model can run routed T4, so a guard must
+/// replace T4's pick. The model list is the workspace's, as a plan run loads
+/// it (sorted slugs).
 const SEEDED_ROUTER: &str = r#"{
     "model_slugs": ["census-disabled-model", "claude-opus-4-1", "claude-sonnet-4-6"],
     "role_table": {"implementer": "census-disabled-model"},
@@ -447,7 +454,9 @@ fn loop_census_fixture_settles_one_record_per_attempt() {
     assert_rows_join(&episodes, "/extra/attempt_key", &settled, "episodes.jsonl");
 
     // T3 carries no label, so the router learns nothing from it: its
-    // model has no routing trials (S01 SC3), while T1 and T2 train theirs.
+    // model has no routing trials (S01 SC3). The router learns only from
+    // its own picks (decision 4111): T1 and T2 pin their model with a hint,
+    // and a guard replaced routed T4's pick, so they train it no more.
     let router: Value = serde_json::from_str(
         &fs::read_to_string(roko.join("learn/cascade-router.json"))
             .expect("the run saved the router"),
@@ -458,24 +467,20 @@ fn loop_census_fixture_settles_one_record_per_attempt() {
             .as_u64()
             .unwrap_or(0)
     };
-    assert!(
-        trials("claude-sonnet-4-6") > 0,
-        "T1 and T2 train the router: {router:#}"
-    );
-    for model in ["census-unverified", "claude-opus-4-1"] {
+    for model in ["claude-sonnet-4-6", "census-unverified", "claude-opus-4-1"] {
         assert_eq!(
             trials(model),
             0,
-            "T3's model {model} gained routing trials: {router:#}"
+            "{model} gained routing trials: {router:#}"
         );
     }
 }
 
 /// S01 §7.1 and §7.4: every attempt of the loop-census run leaves one route
 /// decision. T1–T3 pin their models; T4 is routed, and since the cascade
-/// router's pick runs on a disabled provider, a guard falls back to the
-/// default and the row says so, which `route-report` counts as an honest
-/// fallback rather than a masked route.
+/// router's pick runs on a disabled provider and no other model can run T4,
+/// a guard falls back to the default and the row says so, which
+/// `route-report` counts as an honest fallback rather than a masked route.
 #[test]
 fn loop_census_routed_task_logs_fallback_decision() {
     let (_temp, run_dir, log) = run_loop_census();

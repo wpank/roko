@@ -77,8 +77,6 @@ pub mod error;
 pub mod error_enrichment;
 /// Persistent storage for error patterns discovered during plan execution.
 pub mod error_pattern_store;
-/// Event subscriber that fans runtime events into learning subsystems.
-pub mod event_subscriber;
 /// Unified learning events emitted by routing, evaluation, and runtime feedback.
 pub mod events;
 /// Crash-durable prompt-experiment receipt shared across all dispatch surfaces.
@@ -138,8 +136,6 @@ pub mod runtime_feedback;
 pub mod section_effect;
 /// Prompt/context section outcome telemetry for future adaptive policy.
 pub mod section_outcome;
-/// Shadow testing loop (Loop 12) — runs alternative configs alongside production tasks for A/B comparison.
-pub mod shadow;
 pub mod skill_library;
 pub mod task_metric;
 pub mod telemetry;

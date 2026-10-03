@@ -250,6 +250,110 @@ pub fn normalized_cost_and_latency(cost_usd: f64, duration_ms: u64) -> (f64, f64
     )
 }
 
+/// Layer of the per-attempt ε draw of a route the cascade router decides
+/// (S02.P1-3, decision 2203).
+pub const ROUTE_EXPLORE_LAYER: &str = "route.explore";
+
+/// Layer of the second, independent ε draw a route decision logs as
+/// `proposals.aa`, S03's A/A floor.
+pub const ROUTE_EXPLORE_AA_LAYER: &str = "route.explore.aa";
+
+/// An ε-greedy route among the eligible models around the cascade router's
+/// argmax (S02.P1-3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExploredRoute {
+    /// The model the route runs.
+    pub chosen: String,
+    /// Whether the ε draw explored: `chosen` was drawn uniformly among the
+    /// eligible models, not taken as the argmax.
+    pub explored: bool,
+    /// The model a second, independent draw of the same policy chose
+    /// (`proposals.aa`).
+    pub aa: String,
+    /// Each eligible model's probability under the policy, in order.
+    pub propensities: Vec<(String, f64)>,
+}
+
+impl ExploredRoute {
+    /// The probability the policy gave `model`; 0 for one it cannot choose.
+    #[must_use]
+    pub fn propensity(&self, model: &str) -> f64 {
+        self.propensities
+            .iter()
+            .find(|(candidate, _)| candidate == model)
+            .map_or(0.0, |(_, p)| *p)
+    }
+}
+
+/// `epsilon` as a probability: within `[0, 1]`, NaN as 0.
+fn explore_probability(epsilon: f64) -> f64 {
+    if epsilon.is_nan() {
+        0.0
+    } else {
+        epsilon.clamp(0.0, 1.0)
+    }
+}
+
+/// The probability ε-greedy routing gives each of `eligible` (S02.P1-3):
+/// `(1 − ε)·1[argmax] + ε/k` over the `k` eligible models, so they sum to 1
+/// and none is below ε/k, with `argmax` one of them. ε = 0 puts all the
+/// mass on `argmax`.
+#[must_use]
+pub fn route_propensities(eligible: &[String], argmax: &str, epsilon: f64) -> Vec<(String, f64)> {
+    let epsilon = explore_probability(epsilon);
+    let share = epsilon / eligible.len().max(1) as f64;
+    eligible
+        .iter()
+        .map(|model| {
+            let greedy = if model == argmax { 1.0 - epsilon } else { 0.0 };
+            (model.clone(), greedy + share)
+        })
+        .collect()
+}
+
+/// The ε-greedy choice among `eligible` for the unit draw `u` in `[0, 1)`:
+/// `argmax` when `u ≥ ε`, else the eligible model at `⌊u/ε·k⌋`, so each is
+/// drawn with probability ε/k. Returns the model and whether the draw
+/// explored.
+#[must_use]
+pub fn explore_choice(eligible: &[String], argmax: &str, epsilon: f64, u: f64) -> (String, bool) {
+    let epsilon = explore_probability(epsilon);
+    if eligible.is_empty() || u >= epsilon {
+        return (argmax.to_string(), false);
+    }
+    let index = (u / epsilon * eligible.len() as f64) as usize;
+    (eligible[index.min(eligible.len() - 1)].clone(), true)
+}
+
+/// The ε-greedy route of attempt `key` among `eligible` around `argmax`,
+/// one of them (S02.P1-3): drawn on [`ROUTE_EXPLORE_LAYER`] with the
+/// attempt key as the unit, through the one assignment draw
+/// ([`crate::telemetry::assign::draw`]), and its A/A proposal drawn on
+/// [`ROUTE_EXPLORE_AA_LAYER`].
+#[must_use]
+pub fn explore_route(
+    eligible: &[String],
+    argmax: &str,
+    epsilon: f64,
+    run_seed: u64,
+    epoch: &str,
+    key: &crate::telemetry::AttemptKey,
+) -> ExploredRoute {
+    use crate::telemetry::assign::{AssignmentUnit, draw};
+
+    let unit = AssignmentUnit::Attempt.unit_key(key);
+    let u = draw(run_seed, ROUTE_EXPLORE_LAYER, epoch, &unit);
+    let (chosen, explored) = explore_choice(eligible, argmax, epsilon, u);
+    let u_aa = draw(run_seed, ROUTE_EXPLORE_AA_LAYER, epoch, &unit);
+    let (aa, _) = explore_choice(eligible, argmax, epsilon, u_aa);
+    ExploredRoute {
+        chosen,
+        explored,
+        aa,
+        propensities: route_propensities(eligible, argmax, epsilon),
+    }
+}
+
 impl CascadeRouter {
     /// Create a cascade router with the given model slugs.
     ///
@@ -1004,10 +1108,77 @@ impl CascadeRouter {
         latency_registry: Option<&crate::latency::LatencyRegistry>,
         latency_threshold_ms: Option<f64>,
     ) -> CascadeModel {
+        let route = self.health_scored_among(
+            ctx,
+            &self.model_slugs,
+            health,
+            model_providers,
+            latency_registry,
+            latency_threshold_ms,
+        );
+        route.unwrap_or_else(|| {
+            // All providers are circuit-open — route anyway so we don't stall.
+            tracing::warn!("all known providers are circuit-open; routing without health filter");
+            self.route(ctx)
+        })
+    }
+
+    /// [`Self::route_with_health_scored`] over the `eligible` models alone
+    /// (S02.P1-2): the caller masks the models that cannot run the task
+    /// before the health filter and the argmax, so the cascade picks the best
+    /// model that can. When every eligible model's provider is circuit-open,
+    /// it routes among them without the health filter. An empty `eligible`
+    /// routes over every model.
+    pub fn route_with_health_scored_among(
+        &self,
+        ctx: &RoutingContext,
+        eligible: &[String],
+        health: &ProviderHealthRegistry,
+        model_providers: &HashMap<String, String>,
+        latency_registry: Option<&crate::latency::LatencyRegistry>,
+        latency_threshold_ms: Option<f64>,
+    ) -> CascadeModel {
+        if eligible.is_empty() {
+            return self.route_with_health_scored(
+                ctx,
+                health,
+                model_providers,
+                latency_registry,
+                latency_threshold_ms,
+            );
+        }
+        let route = self.health_scored_among(
+            ctx,
+            eligible,
+            health,
+            model_providers,
+            latency_registry,
+            latency_threshold_ms,
+        );
+        route.unwrap_or_else(|| {
+            tracing::warn!(
+                "every eligible model's provider is circuit-open; routing among them without \
+                 health filter"
+            );
+            self.route_with_cfactor_among(ctx, eligible, None, None)
+        })
+    }
+
+    /// The health-scored route among `models`: `Open` providers excluded,
+    /// `HalfOpen` and slow ones demoted. `None` when no provider of `models`
+    /// is available.
+    fn health_scored_among(
+        &self,
+        ctx: &RoutingContext,
+        models: &[String],
+        health: &ProviderHealthRegistry,
+        model_providers: &HashMap<String, String>,
+        latency_registry: Option<&crate::latency::LatencyRegistry>,
+        latency_threshold_ms: Option<f64>,
+    ) -> Option<CascadeModel> {
         // Partition candidates into available (Closed/HalfOpen) and
         // unavailable (Open / hard-down), excluding disabled providers.
-        let available: Vec<String> = self
-            .model_slugs
+        let available: Vec<String> = models
             .iter()
             .filter(|slug| {
                 if self.is_provider_disabled(slug, model_providers) {
@@ -1022,9 +1193,7 @@ impl CascadeRouter {
             .collect();
 
         if available.is_empty() {
-            // All providers are circuit-open — route anyway so we don't stall.
-            tracing::warn!("all known providers are circuit-open; routing without health filter");
-            return self.route(ctx);
+            return None;
         }
 
         // Apply latency-based demotion: collect slugs whose provider p95
@@ -1102,7 +1271,7 @@ impl CascadeRouter {
             .collect();
         route.fallback_chain.extend(extra_fallbacks);
 
-        route
+        Some(route)
     }
 
     /// Remove candidates whose provider is currently unhealthy or explicitly
@@ -3872,6 +4041,108 @@ mod cascade_router_tests {
             !route.primary.slug.is_empty(),
             "fallback route must return a non-empty slug"
         );
+    }
+
+    /// S02.P1-3: the ε-greedy propensities over the eligible models sum to
+    /// 1 and give each at least ε/k, the argmax 1 − ε + ε/k; the draw picks
+    /// each model with those odds; ε = 0 is a point mass on the argmax.
+    #[test]
+    fn route_propensities_sum_to_one_and_respect_epsilon() {
+        use crate::telemetry::AttemptKey;
+
+        let eligible: Vec<String> = ["model-a", "model-b", "model-c", "model-d"]
+            .map(String::from)
+            .to_vec();
+        let argmax = "model-b";
+        let k = eligible.len() as f64;
+        for epsilon in [0.0, 0.05, 0.1, 1.0] {
+            let propensities = route_propensities(&eligible, argmax, epsilon);
+            let total: f64 = propensities.iter().map(|(_, p)| p).sum();
+            assert!(
+                (total - 1.0).abs() < 1e-12,
+                "ε = {epsilon}: p sums to {total}"
+            );
+            for (model, p) in &propensities {
+                assert!(*p >= epsilon / k - 1e-12, "ε = {epsilon}: {model} has {p}");
+                let greedy = if model == argmax { 1.0 - epsilon } else { 0.0 };
+                assert!((p - (greedy + epsilon / k)).abs() < 1e-12, "{model}: {p}");
+            }
+        }
+        let point_mass = route_propensities(&eligible, argmax, 0.0);
+        let mass: Vec<f64> = point_mass.iter().map(|(_, p)| *p).collect();
+        assert_eq!(mass, [0.0, 1.0, 0.0, 0.0]);
+        let never = explore_choice(&eligible, argmax, 0.0, 0.0);
+        assert_eq!(never, (argmax.to_string(), false));
+
+        // Over many attempts the draw explores about ε of the time, and
+        // the argmax runs with its propensity.
+        let epsilon = 0.1;
+        let routes: Vec<ExploredRoute> = (1..=4_000)
+            .map(|attempt| {
+                let key = AttemptKey::new("run-explore", "plan", "task", attempt);
+                explore_route(&eligible, argmax, epsilon, 7, "2026-10-03", &key)
+            })
+            .collect();
+        let explored = routes.iter().filter(|route| route.explored).count() as f64;
+        assert!(
+            (explored / 4_000.0 - epsilon).abs() < 0.02,
+            "{explored} explored"
+        );
+        let on_argmax = routes.iter().filter(|route| route.chosen == argmax).count() as f64;
+        let expected = routes[0].propensity(argmax);
+        assert!(
+            (on_argmax / 4_000.0 - expected).abs() < 0.02,
+            "{on_argmax} on the argmax"
+        );
+        assert!(routes.iter().all(|route| eligible.contains(&route.aa)));
+    }
+
+    /// S02.P1-2: health-scored routing over the caller's eligible models
+    /// picks among them alone, also once every eligible provider is
+    /// circuit-open. An empty eligible set routes over every model.
+    #[test]
+    fn health_scored_routing_stays_among_eligible_models() {
+        use crate::provider_health::ErrorClass;
+
+        let slugs = vec!["claude-sonnet-4-5".into(), "gemini-2.5-flash".into()];
+        let router = CascadeRouter::new(slugs);
+        let ctx = health_routing_ctx();
+        let model_providers = two_provider_map();
+        let health = crate::provider_health::ProviderHealthRegistry::new();
+        let unmasked = router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+        let other = if unmasked.primary.slug == "gemini-2.5-flash" {
+            "claude-sonnet-4-5"
+        } else {
+            "gemini-2.5-flash"
+        };
+        let eligible = vec![other.to_string()];
+        let route = |health: &crate::provider_health::ProviderHealthRegistry| {
+            router.route_with_health_scored_among(
+                &ctx,
+                &eligible,
+                health,
+                &model_providers,
+                None,
+                None,
+            )
+        };
+        assert_eq!(route(&health).primary.slug, other);
+
+        for _ in 0..3 {
+            health.record_failure(&model_providers[other], ErrorClass::ServerError);
+        }
+        assert_eq!(route(&health).primary.slug, other, "an open circuit");
+
+        let all = router.route_with_health_scored_among(
+            &ctx,
+            &[],
+            &health,
+            &model_providers,
+            None,
+            None,
+        );
+        let full = router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+        assert_eq!(all.primary.slug, full.primary.slug);
     }
 
     /// filter_unhealthy returns healthy candidates when available, and falls

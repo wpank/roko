@@ -207,7 +207,7 @@ impl FeedbackService {
 
         std::fs::create_dir_all(&self.data_dir)?;
         // This file is shared with the AgentEfficiencyEvent writers
-        // (event_subscriber etc.). Feedback rows carry an explicit `schema`
+        // (Graph dispatch). Feedback rows carry an explicit `schema`
         // discriminator so readers can classify them instead of silently
         // skipping foreign rows (audit #23).
         let efficiency_path = self.data_dir.join("efficiency.jsonl");

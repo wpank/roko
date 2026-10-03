@@ -103,3 +103,20 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK09 (gap-cc5051), PK10 (gap-f61823).
 - Suggested model: opus.
+
+## Progress
+
+Implemented on `work/gap-b5caf3`; cargo verification deferred to the batch gate.
+
+- 4101: implemented at 936054b93 (also retires L-holdout in `loop_audit/loops.toml` and updates `spec.rs`)
+- 4102: implemented at f1ff7477d
+- 4103: implemented at 49c130886
+- 4104: implemented at 9272d2d17
+- 4105: implemented at ad49cb6a3 (also retires L-rag11 in `loops.toml` and `spec.rs`)
+- 4106: implemented at f563d6265
+- 4107: implemented at 5084b97ba (`contradiction_count: 0` added to 60 `KnowledgeEntry` literals in 15 files)
+- 4109: implemented at b2ae7b181
+- 4110: implemented at 348cb6c3f (v3 docs, `dev.sh` and the example README follow)
+- 4112: implemented at 64af4b22a (episodes record `router_credited`; dispatch-path router tests now pin `--model`; tier-ladder canary and loop census expect no rung or hint credit)
+- 4113: implemented at 13ada5a94 (loop census takes tool use from `census-model` and `census-unverified` so routed T4 stays a fallback)
+- 4114: implemented at 07f79f7cb (maximize mode, 4117, does not exist yet, so ε is not zeroed for it)

@@ -198,9 +198,30 @@ mod tests {
     use super::*;
     use roko_learn::prompt_experiment::{PromptAssignmentState, PromptExperiment, PromptVariant};
 
+    /// Register the RAG-11 retrieval-strategy experiment, as stores written
+    /// before 4105 still hold it.
+    fn register_retrieval_experiment(store: &mut ExperimentStore) {
+        let id = ExperimentStore::RETRIEVAL_STRATEGY_EXPERIMENT_ID;
+        store.register(PromptExperiment::new(
+            id,
+            id,
+            ["keyword", "hdc-only", "hybrid"]
+                .into_iter()
+                .map(|arm| PromptVariant {
+                    id: arm.into(),
+                    name: arm.into(),
+                    section_name: id.into(),
+                    content: arm.into(),
+                    slug: None,
+                    active: true,
+                })
+                .collect(),
+        ));
+    }
+
     fn save_store(path: &Path) {
         let mut store = ExperimentStore::new();
-        store.ensure_retrieval_strategy_experiment();
+        register_retrieval_experiment(&mut store);
         store.register(PromptExperiment::new(
             "constraints-exp",
             "constraints",
@@ -243,7 +264,7 @@ mod tests {
         assert!(context(&path, &key("T1")).is_none(), "no store");
 
         let mut retrieval_only = ExperimentStore::new();
-        retrieval_only.ensure_retrieval_strategy_experiment();
+        register_retrieval_experiment(&mut retrieval_only);
         retrieval_only.save(&path).unwrap();
         assert!(context(&path, &key("T1")).is_none());
 

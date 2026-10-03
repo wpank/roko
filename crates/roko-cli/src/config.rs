@@ -1028,8 +1028,6 @@ impl Source {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct LearningLayer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replan_on_gate_failure: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_playbook_refresh: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_lookahead_router: Option<bool>,
@@ -1044,7 +1042,6 @@ impl LearningLayer {
     #[must_use]
     pub fn from_core_learning(core: &roko_core::config::LearningConfig) -> Self {
         Self {
-            replan_on_gate_failure: Some(core.replan_on_gate_failure),
             auto_playbook_refresh: Some(core.auto_playbook_refresh),
             use_lookahead_router: Some(core.use_lookahead_router),
             lookahead_threshold: Some(core.lookahead_threshold),
@@ -1054,9 +1051,6 @@ impl LearningLayer {
 
     pub fn merge(self, overlay: Self) -> Self {
         Self {
-            replan_on_gate_failure: overlay
-                .replan_on_gate_failure
-                .or(self.replan_on_gate_failure),
             auto_playbook_refresh: overlay.auto_playbook_refresh.or(self.auto_playbook_refresh),
             use_lookahead_router: overlay.use_lookahead_router.or(self.use_lookahead_router),
             lookahead_threshold: overlay.lookahead_threshold.or(self.lookahead_threshold),
@@ -1446,7 +1440,6 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["dreams", "auto_dream"]
         | ["serve", "auto_start"]
         | ["serve", "auth", "enabled"]
-        | ["learning", "replan_on_gate_failure"]
         | ["learning", "auto_playbook_refresh"]
         | ["learning", "use_lookahead_router"]
         | ["runner", "worktree_per_task"] => {

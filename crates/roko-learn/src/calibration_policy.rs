@@ -1,4 +1,5 @@
-//! STATUS: WIRED -- corrections flow through event_subscriber into CascadeRouter.
+//! STATUS: ORPHANED -- its only caller, the learning event subscriber, is
+//! retired (4106); S04's calibrated self-model is its redesign.
 //!
 //! CalibrationPolicy — closes the predict-publish-correct loop (LEARN-09).
 //!

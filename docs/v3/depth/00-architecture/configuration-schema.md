@@ -171,7 +171,6 @@ Per-role overrides (`[agent.roles.<name>]`):
 | `experiment_min_samples` | u32 | `25` | Min samples per experiment variant |
 | `adaptive_thresholds` | bool | `true` | Enable EMA-based gate threshold adaptation |
 | `cascade_router_persistence` | bool | `true` | Persist cascade router state |
-| `replan_on_gate_failure` | bool | `true` | Trigger replanning on gate failure |
 
 ### 2.9 Conductor (`[conductor]`)
 
@@ -385,7 +384,6 @@ auto_extract_skills = true
 episode_retention_days = 30
 adaptive_thresholds = true
 cascade_router_persistence = true
-replan_on_gate_failure = true
 
 [tui]
 refresh_rate_ms = 250

@@ -68,3 +68,8 @@ doc file either.
 
 - This is docs-only; don't change `schema.rs` or `pricing_snapshot.rs` to close this item — only to discover what
   to write.
+
+2026-10-03 (wave-5 follow-up, PK13/gap-9e3134): the same file also has no mention of `stream_usage`
+(`crates/roko-core/src/config/provider.rs:332`, `pub stream_usage: Option<bool>`, part of the per-provider config,
+not `[pricing]`) — a second, separate omission in `01-schema-sections.md`. Document both in the same pass if
+convenient, but they're independent: `[pricing]` is `PricingConfig`; `stream_usage` is a provider-level field.

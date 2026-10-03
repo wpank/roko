@@ -28,7 +28,7 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 - **P2** [gap-4b890c](items/gap-4b890c-pk06-operator-control-and-guards-approval-help.md) PK06 Operator control and guards: --approval help and validate_graph_execution_options describe an approval mode that… (+4 more) · size L · verified 2026-10-02
 - **P2** [gap-a0043b](items/gap-a0043b-pk08-attempt-ledger-roko-toml-s-cheap.md) PK08 Attempt ledger: roko.toml's cheap-model rates match the dated price snapshot (+11 more) · size L · verified 2026-10-02
 
-_13 more open · `goal = "truth"`_
+_16 more open · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -36,7 +36,7 @@ _13 more open · `goal = "truth"`_
 - **P1** [gap-c1f4ac](items/gap-c1f4ac-pk15-defaults-that-apply-one-resolver-for.md) PK15 Defaults that apply: One resolver for [runner] worktree_per_task, and roko run follows it (+4 more) · size L · verified 2026-10-02
 - **P2** [gap-e120a1](items/gap-e120a1-pk24-specs-a-cheap-model-can-execute.md) PK24 Specs a cheap model can execute: Refiner loop against a stub model: additive only, with sources (+3 more) · size M · verified 2026-10-02
 
-_2 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_4 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -52,7 +52,7 @@ _14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a
 - **P2** [gap-894977](items/gap-894977-pk38-loops-re-closed-knowledge-and-playbook.md) PK38 Loops re-closed: Knowledge and playbook withhold arms: a withheld source stays out of the prompt and is… (+5 more) · size L · verified 2026-10-02
 - **P2** [gap-1f4bec](items/gap-1f4bec-pk40-m2-loop-liveness-re-anchor-s03.md) PK40 M2 loop-liveness: Re-anchor S03 §3 and §7 A1 at HEAD: five census rows have moved (+8 more) · size L · verified 2026-10-02
 
-_26 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_27 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -68,7 +68,7 @@ _9 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P1** [gap-d90a93](items/gap-d90a93-no-command-clears-a-persisted-auth-or.md) No command clears a persisted auth or billing provider quarantine; the operator has to hand-edit provider-health.json · size M · verified 2026-10-03
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
 
-_3 more open · `goal = "visibility"`_
+_4 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -76,7 +76,7 @@ _3 more open · `goal = "visibility"`_
 - **P2** [q-6b7cca](items/q-6b7cca-graph-plan-runs-never-emit-plancompleted-wire.md) Graph plan runs never emit PlanCompleted: wire the four plan-completion sinks (the dream sink starts claude) or remove them? [question] · size S · verified 2026-09-29
 - **P2** [gap-c8bfc8](items/gap-c8bfc8-quickreviewer-autofixer-s-zero-context-budget-drops.md) QuickReviewer/AutoFixer's zero context budget drops verify commands and gate feedback, not just cross-plan context · size M · verified 2026-10-03
 
-_1 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+_3 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
 
 ## 10. Tooling, CLI polish and code hygiene
 
@@ -84,7 +84,7 @@ _1 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 - **P2** [gap-425d9e](items/gap-425d9e-pk79-park-and-clean-up-park-the.md) PK79 Park and clean up: Park the chain-family HTTP routes behind the `chain` feature, with one typed 501… (+7 more) · size L · verified 2026-10-02
 - **P3** [gap-7add13](items/gap-7add13-pk80-park-and-clean-up-park-the.md) PK80 Park and clean up: Park the cognitive clock: `CorticalState`, the scheduler types and the theta/delta… (+6 more) · size L · verified 2026-10-02
 
-_12 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_13 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

@@ -55,3 +55,19 @@ Re-verified 2026-09-29: still open. 3d0637232 made Graph checkpoints upgrade-saf
   cleanup, so without the controller the first checklist step would register `run_one_plan`'s terminal state (the
   checkpoint's terminal status and task outcomes); that is part of the scope decision. The anchor moved from the
   controller to `run_one_plan`.
+- 2026-10-03 (wave-5 follow-up, PK78 gap-2339e2): the three top-level `anchors` still resolve
+  (`ProductionPlanTopology` at `topology.rs:83`, `run_one_plan` at `plan_runner.rs:3096`, `resume_checkpoint` at
+  `graph_checkpoint.rs:1818`), and the behavior these Notes describe still holds — but two things drifted after
+  backlog task 9206 ("Drop the six passthrough enricher cells from the `--rich-topology` subgraph," part of
+  `gap-2339e2`, implemented at `e23d01942`, merged `5bb643122`): (1) `ENRICHER_SUFFIXES` and the six passthrough
+  enricher cells 9206 names are now gone from `topology.rs` entirely (9206 added
+  `rich_topology_task_subgraph_has_no_passthrough_enrichers` asserting none remain), which simplifies — but does
+  not resolve — the "passthrough enricher stubs" half of the scope decision above: the *generic* stub-cell
+  mechanism these Notes meant (`plan_runner.rs`'s own "register stub passthrough cells for all topology node
+  types," now around line 3166) is a different, still-present thing from the six *enricher* cells 9206 removed.
+  (2) The specific line citations above (`plan_runner.rs:2512-2525`, `with_allow_test_stubs` at `:2687`,
+  `graph_checkpoint.rs:1833`) have drifted from unrelated growth of these hot files since 2026-10-01:
+  `with_allow_test_stubs` is now at `plan_runner.rs:3336`, the "register stub passthrough cells" comment is now
+  around `plan_runner.rs:3166`, and the `--rich-topology` refusal `bail!` in `resume_checkpoint` is now around
+  `graph_checkpoint.rs:2741-2742` (same message, same behavior, just moved) — re-locate all three before anyone
+  acts on this item.

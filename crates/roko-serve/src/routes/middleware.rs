@@ -1320,6 +1320,11 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         prefix: "/api/providers",
         scope: "write",
     },
+    // Approving or rejecting a staged outbound effect (9133).
+    RouteScopeEntry {
+        prefix: "/api/effects",
+        scope: "write",
+    },
 ];
 
 /// Sentinel scope returned by [`required_scope_for`] when a mutating route is
@@ -3653,6 +3658,8 @@ mod tests {
         // --- /api/relay-tokens (admin) ---
         (Method::POST, "/api/relay-tokens"),
         (Method::DELETE, "/api/relay-tokens/tok-1"),
+        // --- /api/effects (write) ---
+        (Method::POST, "/api/effects/effect-1/decision"),
         // --- /mcp (read; tools/call checks each tool's scope) ---
         (Method::POST, "/mcp"),
     ];

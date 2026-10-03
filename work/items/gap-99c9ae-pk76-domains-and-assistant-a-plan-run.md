@@ -85,3 +85,16 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK74 (gap-ce1d11), PK75 (gap-3c3729).
 - Suggested model: opus.
+
+## Progress
+
+- 9128: implemented at 6265a21d5
+- 9129: implemented at 1fb68cf33
+- 9130: implemented at 18d97557d
+- 9131: implemented at c2156c1d0
+- 9132: implemented at 28b772f6c
+- 9133: implemented at 297d4c8d5
+- 9134: implemented at cd56ccf88
+- 9135: implemented at c6c0f20c8
+
+The Rust tasks were checked statically (verify greps, hand formatting); cargo verification is left to the batch gate. Deviations: 9128 runs plans through run_graph_plan_in_run in its own runtime (no serve-style git init); 9129 makes shell.exec pass its inputs on and gives execute_graph the workspace (serve passes its workdir); 9131 carries the outbound policy as an OutboundEffects governance rule in the task contract, set from [meta] outbound (chat runs: stage), the domain profile, or the ops default; 9135 keeps an accepted scratch directory until 9136 copies changes back, and only the batch dispatch path builds scratch workspaces.

@@ -396,12 +396,15 @@ impl CliRuntime for RokoCliRuntime {
 
     async fn run_trigger_graph(
         &self,
-        _workdir: &Path,
+        workdir: &Path,
         graph: &Path,
         event: &roko_core::trigger::TriggerEvent,
     ) -> anyhow::Result<PlanExecutionResult> {
+        // The graph's cells work in the served workspace, not the server
+        // process's working directory (9129).
         let output =
-            crate::graph_command::execute_graph(graph, &self.state_hub, Some(event), None).await?;
+            crate::graph_command::execute_graph(graph, workdir, &self.state_hub, Some(event), None)
+                .await?;
         Ok(PlanExecutionResult {
             success: output.success,
             output_text: Some(output.summary()),
@@ -411,13 +414,14 @@ impl CliRuntime for RokoCliRuntime {
 
     async fn run_trigger_graph_scoped(
         &self,
-        _workdir: &Path,
+        workdir: &Path,
         graph: &Path,
         event: &roko_core::trigger::TriggerEvent,
         scope: &TriggerExecutionScope,
     ) -> anyhow::Result<PlanExecutionResult> {
         let output = crate::graph_command::execute_graph(
             graph,
+            workdir,
             &self.state_hub,
             Some(event),
             scope.capabilities.as_ref(),
@@ -784,6 +788,44 @@ impl CliRuntime for RokoCliRuntime {
         .await?;
 
         Ok(Some(revision_to_dto(outcome)))
+    }
+
+    async fn list_effects(
+        &self,
+        workdir: &Path,
+        run_id: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(crate::effects_apply::effects_report(workdir, run_id))
+    }
+
+    async fn decide_effect(
+        &self,
+        workdir: &Path,
+        effect_id: &str,
+        decision: roko_serve::runtime::EffectDecisionInput,
+    ) -> Result<serde_json::Value, roko_serve::runtime::EffectDecisionError> {
+        use crate::effects_apply::{DecideError, EffectDecision, McpEffectApplier};
+        use roko_serve::runtime::EffectDecisionError;
+
+        let config = load_effective_roko_config(workdir, &self.repo_registry)
+            .map_err(|error| EffectDecisionError::Failed(format!("{error:#}")))?;
+        let applier = McpEffectApplier::new(workdir.to_path_buf(), config.clone());
+        let decision = EffectDecision {
+            approve: decision.approve,
+            note: decision.note,
+            decided_by: decision.decided_by,
+        };
+        let record =
+            crate::effects_apply::decide_effect(workdir, &config, effect_id, decision, &applier)
+                .await
+                .map_err(|error| match error {
+                    DecideError::NotFound(id) => EffectDecisionError::NotFound(id),
+                    DecideError::AlreadyDecided(id, outcome) => {
+                        EffectDecisionError::AlreadyDecided(id, outcome.to_string())
+                    }
+                    DecideError::Io(error) => EffectDecisionError::Failed(error.to_string()),
+                })?;
+        serde_json::to_value(record).map_err(|error| EffectDecisionError::Failed(error.to_string()))
     }
 }
 
@@ -1769,7 +1811,8 @@ fn plan_estimated_minutes(tasks_file: &crate::task_parser::TasksFile) -> Option<
 ///
 /// Returns the report of the plans that would run when one of them has such
 /// an error, and `None` when the run may start or there is nothing to check.
-fn plan_run_validation(
+/// A graph's `plan.run` node checks its plan with it too (9128).
+pub(crate) fn plan_run_validation(
     workdir: &Path,
     plan_target: &Path,
     only_plans: Option<&[String]>,

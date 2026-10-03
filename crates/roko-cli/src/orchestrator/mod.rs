@@ -9,6 +9,7 @@ pub mod event_log;
 pub mod executor;
 pub mod plan_discovery;
 pub mod replan;
+pub mod scratch;
 pub mod worktree;
 
 pub use dag::{

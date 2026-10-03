@@ -179,6 +179,38 @@ impl RokoLayout {
             .join(format!("{}.json", path_component(task_id)))
     }
 
+    /// `.roko/state/effect-holds/` — outbound-effect tool calls held for a
+    /// person's approval, one directory per run (9131).
+    #[must_use]
+    pub fn effect_holds_dir(&self) -> PathBuf {
+        self.state_dir().join("effect-holds")
+    }
+
+    /// `.roko/state/effect-holds/<run>/<effect>.json` — a tool call of run
+    /// `run_id` that acts on the outside world, held for a person's approval
+    /// instead of run (9131). It exists only while the effect waits.
+    /// Characters outside `[A-Za-z0-9._-]` in either id become `_`.
+    #[must_use]
+    pub fn effect_hold(&self, run_id: &str, effect_id: &str) -> PathBuf {
+        self.effect_holds_dir()
+            .join(path_component(run_id))
+            .join(format!("{}.json", path_component(effect_id)))
+    }
+
+    /// `.roko/scratch/<run>/<task>/<generation>/` — the scratch_dir workspace
+    /// of task `task_id`'s attempts in run `run_id`, a copy of the task's data
+    /// outside git that retries resume in until the task moves on to a fresh
+    /// one, as worktree attempts do (9135). Its manifests sit beside it.
+    /// Characters outside `[A-Za-z0-9._-]` in either id become `_`.
+    #[must_use]
+    pub fn scratch_attempt_dir(&self, run_id: &str, task_id: &str, generation: u32) -> PathBuf {
+        self.root
+            .join("scratch")
+            .join(path_component(run_id))
+            .join(path_component(task_id))
+            .join(generation.to_string())
+    }
+
     /// `.roko/config/` — config.toml, presets.
     #[must_use]
     pub fn config_dir(&self) -> PathBuf {

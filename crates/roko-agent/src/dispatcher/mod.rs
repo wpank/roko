@@ -49,6 +49,7 @@ use crate::safety::provenance_sink::{
     ProvenanceAck, ProvenanceCall, ProvenanceIntent, ProvenanceOutcome, ProvenanceVerdict,
     SafetyProvenanceSink, arguments_digest, result_digest,
 };
+use crate::safety::effects::{EffectHold, OutboundPolicy, is_outbound_effect};
 use crate::safety::{HookDecision, SafetyLayer};
 use crate::tool_immune::{
     check_tool_control, is_untrusted_source, screen_tool_result, validate_tool_call_identity,
@@ -849,7 +850,31 @@ impl ToolDispatcher {
             );
             return ToolResult::err(err);
         };
-        // 4a. Safety provenance: the sink acknowledges the call's intent
+        // 4a. A call that acts on the outside world follows the run's
+        //     outbound policy (9131): `stage` holds it for a person's
+        //     approval instead of running it, and `deny` refuses it.
+        if is_outbound_effect(def) {
+            match self.safety.contract.outbound_policy() {
+                OutboundPolicy::Allow => {}
+                OutboundPolicy::Stage => return self.stage_effect(def, call, ctx),
+                OutboundPolicy::Deny => {
+                    let err = ToolError::PermissionDenied(format!(
+                        "`{}` acts on the outside world, which this run's outbound policy \
+                         denies; it did not run",
+                        call.name
+                    ));
+                    self.emit_audit(
+                        ctx,
+                        call,
+                        "effect",
+                        "denied",
+                        &json!({ "error_kind": tool_error_kind(&err) }),
+                    );
+                    return ToolResult::err(err);
+                }
+            }
+        }
+        // 4b. Safety provenance: the sink acknowledges the call's intent
         //     before its handler can produce an effect, or the call stops
         //     here (gap-ff95f5).
         if let Some(sink) = &self.provenance_sink {
@@ -945,6 +970,50 @@ impl ToolDispatcher {
         // 8. Run every host-visible result through the fixed immune Graph.
         //    Suspicious payloads are withheld before translator/model reuse.
         screen_tool_result(call, def, ctx, result).await
+    }
+
+    /// Hold `call`, a call of `def` that acts on the outside world, for a
+    /// person's approval instead of running it (9131). The hold goes under
+    /// the workspace's `.roko/state/effect-holds/<run>/`, an `effect`
+    /// `staged` audit names it, and the agent learns that the call has not
+    /// run. The arguments stay in the hold alone: they may carry secrets.
+    fn stage_effect(&self, def: &ToolDef, call: &ToolCall, ctx: &ToolContext) -> ToolResult {
+        let hold = EffectHold::propose(def, call, ctx);
+        match hold.write(&ctx.immune_root_path) {
+            Ok(_) => {
+                self.emit_audit(
+                    ctx,
+                    call,
+                    "effect",
+                    "staged",
+                    &json!({ "effect_id": hold.effect_id, "run_id": hold.run_id }),
+                );
+                ToolResult::text(format!(
+                    "staged for approval as {}; it has not run",
+                    hold.effect_id
+                ))
+            }
+            Err(error) => {
+                let error = self.sanitize_audit_label(&error.to_string());
+                tracing::warn!(
+                    tool = %self.sanitize_audit_label(&call.name),
+                    %error,
+                    "an outbound effect could not be held for approval; it does not run"
+                );
+                self.emit_audit(
+                    ctx,
+                    call,
+                    "effect",
+                    "stage_failed",
+                    &json!({ "error": error }),
+                );
+                ToolResult::err(ToolError::PermissionDenied(format!(
+                    "`{}` acts on the outside world and could not be held for approval \
+                     ({error}); it did not run",
+                    call.name
+                )))
+            }
+        }
     }
 
     fn finalize_result_with_limit(&self, result: ToolResult, result_limit: usize) -> ToolResult {
@@ -3720,5 +3789,114 @@ mod tests {
             sample.tsq > 0.0 && sample.schema_compliance > 0.0,
             "{sample:?}"
         );
+    }
+
+    /// 9131: under a `stage` policy a call of a tool that acts on the
+    /// outside world never reaches its handler. Its hold, with the call's
+    /// run, plan, task, attempt and arguments, is written readable by its
+    /// owner alone; an `effect` `staged` audit names it without the
+    /// arguments; and the agent is told that the call is staged and has not
+    /// run. Under `deny` the call is refused, and under `allow` it runs.
+    #[tokio::test]
+    async fn outbound_effect_tool_call_is_held_for_approval() {
+        let mut send = tool(
+            "mail.send",
+            ToolPermission::writes(),
+            ToolConcurrency::Serial,
+        );
+        send.source = ToolSource::Mcp {
+            server: "mail".to_string(),
+        };
+        send.metadata = Some(json!({
+            "mcp_annotations": { "readOnlyHint": false, "destructiveHint": true }
+        }));
+        let registry: Arc<dyn ToolRegistry> = Arc::new(VecToolRegistry::from_tools(vec![send]));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler: Arc<dyn ToolHandler> = Arc::new(FixedResultHandler {
+            name: "mail.send",
+            calls: Arc::clone(&calls),
+            result: ToolResult::text("sent"),
+        });
+        let dispatcher = |policy: OutboundPolicy| {
+            let contract = crate::safety::contract::AgentContract::permissive("assistant")
+                .with_outbound_policy(policy);
+            ToolDispatcher::new(
+                Arc::clone(&registry),
+                resolver_from([("mail.send", Arc::clone(&handler))]),
+            )
+            .with_safety(SafetyLayer::permissive().with_contract(contract))
+        };
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let audit_sink = Arc::new(CollectAuditSink::default());
+        let ctx = ToolContext::testing(workspace.path())
+            .with_audit_sink(audit_sink.clone())
+            .with_correlation(roko_core::tool::CorrelationEnvelope {
+                run_id: "run-1".to_string(),
+                task_id: "T1".to_string(),
+                attempt_id: "run-1:plan-a:T1:2".to_string(),
+                ..roko_core::tool::CorrelationEnvelope::empty()
+            });
+        let arguments = json!({ "to": "ops@example.com", "body": "deploy is done" });
+        let call = || ToolCall::new("c-send", "mail.send", arguments.clone());
+
+        let staged = dispatcher(OutboundPolicy::Stage)
+            .dispatch(call(), &ctx)
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "the handler ran");
+        let text = staged.text_content();
+        let effect_id = text
+            .strip_prefix("staged for approval as ")
+            .and_then(|rest| rest.strip_suffix("; it has not run"))
+            .unwrap_or_else(|| panic!("a staged result: {staged:?}"));
+        let path = workspace
+            .path()
+            .join(".roko/state/effect-holds/run-1")
+            .join(format!("{effect_id}.json"));
+        let hold: EffectHold =
+            serde_json::from_slice(&std::fs::read(&path).expect("the hold")).expect("hold JSON");
+        assert_eq!(
+            (hold.plan_id.as_str(), hold.task_id.as_str(), hold.attempt),
+            ("plan-a", "T1", 2)
+        );
+        assert_eq!(hold.server.as_deref(), Some("mail"));
+        assert_eq!(hold.arguments, arguments);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path)
+                .expect("hold metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let audits = audit_sink.snapshot();
+        let staged_audit = audits
+            .iter()
+            .find(|signal| {
+                signal.tag("phase") == Some("effect") && signal.tag("status") == Some("staged")
+            })
+            .expect("an effect staged audit");
+        let body = serde_json::to_string(&staged_audit.body).expect("audit body");
+        assert!(body.contains(effect_id), "{body}");
+        assert!(!body.contains("deploy is done"), "{body}");
+
+        let denied = dispatcher(OutboundPolicy::Deny)
+            .dispatch(call(), &ctx)
+            .await;
+        assert!(
+            matches!(
+                &denied,
+                ToolResult::Err(ToolError::PermissionDenied(message))
+                    if message.contains("outbound policy")
+            ),
+            "{denied:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let allowed = dispatcher(OutboundPolicy::Allow)
+            .dispatch(call(), &ctx)
+            .await;
+        assert!(allowed.is_ok(), "{allowed:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

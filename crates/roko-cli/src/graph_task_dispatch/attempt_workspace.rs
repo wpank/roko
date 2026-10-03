@@ -9,6 +9,42 @@ use roko_graph::workspace::{
 };
 
 use super::*;
+use crate::orchestrator::scratch::ScratchLease;
+
+/// The scratch_dir workspace of an attempt (9135). When the attempt ends,
+/// however it ends, its result manifest is written; the directory is kept,
+/// as a failed attempt's worktree is, and an accepted one waits there until
+/// its changes are copied back into the workspace (9136).
+pub(super) struct ScratchAttempt {
+    lease: ScratchLease,
+}
+
+impl ScratchAttempt {
+    /// The attempt's working directory.
+    pub(super) fn dir(&self) -> &Path {
+        self.lease.dir()
+    }
+}
+
+impl Drop for ScratchAttempt {
+    fn drop(&mut self) {
+        let dir = self.lease.dir().display().to_string();
+        match self.lease.finish() {
+            Ok(changes) => tracing::info!(
+                scratch = %dir,
+                changed = changes.changed.len(),
+                added = changes.added.len(),
+                removed = changes.removed.len(),
+                "the attempt's scratch workspace is kept with its result manifest"
+            ),
+            Err(error) => tracing::warn!(
+                scratch = %dir,
+                error = %format!("{error:#}"),
+                "the scratch workspace's result manifest was not written"
+            ),
+        }
+    }
+}
 
 impl GraphTaskDispatcher {
     /// Checkout generation of the task `task_key` (`"{plan_id}/{task_id}"`):
@@ -19,6 +55,31 @@ impl GraphTaskDispatcher {
     /// screen rejects it for tampering or for scope, the task moves on to a
     /// fresh checkout of the plan's accepted tip
     /// ([`Self::restart_from_plan_tip`]).
+    /// The scratch_dir workspace of `task`'s attempts in checkout
+    /// generation `generation` (9135): a copy of the data its `files` name,
+    /// under `.roko/scratch/<run>/<task>/<generation>/`, which its retries
+    /// resume in.
+    pub(super) fn lease_scratch(
+        &self,
+        task: &TaskDef,
+        ctx: &CellContext,
+        generation: u32,
+    ) -> Result<ScratchAttempt> {
+        let run_id = self.attempts.run_id(ctx);
+        let dir = roko_fs::RokoLayout::for_project(&self.workdir)
+            .scratch_attempt_dir(run_id, &task.id, generation);
+        match ScratchLease::acquire(&self.workdir, dir, &task.files) {
+            Ok(lease) => Ok(ScratchAttempt { lease }),
+            Err(error) => Err(RokoError::Agent {
+                backend: "scratch-workspace".to_string(),
+                message: format!(
+                    "failed to lease a scratch workspace for task `{}`: {error:#}",
+                    task.id
+                ),
+            }),
+        }
+    }
+
     pub(super) fn worktree_generation(&self, task_key: &str) -> u32 {
         self.worktree_generations
             .lock()

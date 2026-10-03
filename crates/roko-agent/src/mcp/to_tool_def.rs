@@ -17,7 +17,10 @@ use super::client::McpToolDef;
 ///
 /// MCP tools are categorised as [`ToolCategory::Mcp`] and granted
 /// write permissions by default. A `readOnly: true` MCP annotation maps
-/// the tool back down to read-only access.
+/// the tool back down to read-only access. The annotations are kept in
+/// `metadata` (`mcp_annotations`), where
+/// [`is_outbound_effect`](crate::safety::effects::is_outbound_effect) reads
+/// whether a call acts on the outside world (9130).
 #[must_use]
 pub fn mcp_to_tool_def(mcp_tool: &McpToolDef, server_prefix: &str) -> ToolDef {
     let prefixed_name = format!("{server_prefix}.{}", mcp_tool.name);
@@ -39,7 +42,7 @@ pub fn mcp_to_tool_def(mcp_tool: &McpToolDef, server_prefix: &str) -> ToolDef {
     // (readOnlyHint/openWorldHint) via the helper methods on McpToolAnnotations.
     let read_only = annotations.map_or(false, |a| a.is_read_only());
     let open_world = annotations.map_or(false, |a| a.is_open_world());
-    let idempotent = annotations.and_then(|a| a.idempotent).unwrap_or(false);
+    let idempotent = annotations.is_some_and(|a| a.is_idempotent());
 
     ToolDef {
         name: prefixed_name,
@@ -170,6 +173,8 @@ mod tests {
             open_world: Some(true),
             open_world_hint: None,
             idempotent: Some(true),
+            idempotent_hint: None,
+            destructive_hint: None,
             title: Some("Read file".to_string()),
         });
 
@@ -196,6 +201,8 @@ mod tests {
             open_world: None,
             open_world_hint: Some(true),
             idempotent: Some(false),
+            idempotent_hint: None,
+            destructive_hint: None,
             title: None,
         });
 
@@ -223,6 +230,8 @@ mod tests {
             open_world: Some(false),
             open_world_hint: Some(false),
             idempotent: None,
+            idempotent_hint: None,
+            destructive_hint: None,
             title: None,
         });
 

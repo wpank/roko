@@ -26,6 +26,7 @@ mod defi;
 mod deployments;
 mod diagnosis;
 mod dream;
+mod effects;
 mod event_ingest;
 mod extensions;
 pub(crate) mod feeds;
@@ -397,6 +398,7 @@ pub fn build_router(
         .merge(cache::routes())
         .merge(doctor::routes())
         .merge(safety::routes())
+        .merge(effects::routes())
         .merge(affect::routes())
         .merge(shared_runs::auth_routes())
         .merge(webhooks::authenticated_routes())

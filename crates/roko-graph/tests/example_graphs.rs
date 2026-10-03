@@ -82,12 +82,12 @@ fn task_execution_nodes_present() {
     let graph = load_example("task-execution.toml");
     let expected = [
         ("compose_task", "compose"),
-        ("agent_implement", "claude-agent"),
+        ("agent_implement", "agent.task"),
         ("compile_gate", "gate.compile"),
         ("test_gate", "gate.test"),
         ("success_report", "compose"),
         ("retry_compose", "compose"),
-        ("retry_agent", "claude-agent"),
+        ("retry_agent", "agent.task"),
     ];
     for (id, cell_type) in expected {
         let node = graph

@@ -9,7 +9,8 @@ use roko_cli::orchestrator::plan_discovery::{PlanDir, find_plan_dirs};
 use roko_core::AgentRole;
 use roko_core::config::GatesConfig;
 use roko_core::config::routing::LadderConfig;
-use roko_core::config::schema::ModelProfile;
+use roko_core::WorkspaceKind;
+use roko_core::config::schema::{ModelProfile, RokoConfig};
 use roko_core::task::TaskSpeedPriority;
 use roko_gate::AcceptanceContract;
 use serde::Serialize;
@@ -143,6 +144,10 @@ fn validate_plans_dir_impl(
     let tasks_files = collect_tasks_files(dir)?;
     let plan_output_paths = collect_plan_output_paths(&tasks_files);
     let ladder = workdir.map(workspace_ladder);
+    // The `[profiles]` defaults the scratch_dir rule reads (9134).
+    let workspace_config = workdir
+        .and_then(|workdir| roko_core::config::loader::load_config_unified(workdir).ok())
+        .unwrap_or_default();
     let mut plans = Vec::with_capacity(tasks_files.len());
     let mut totals = Totals {
         plans_checked: tasks_files.len(),
@@ -190,6 +195,9 @@ fn validate_plans_dir_impl(
                     plan.diagnostics.extend(diagnostics);
                 }
                 let diagnostics = speed_priority_diagnostics(&tasks_file, &plan.plan_id);
+                plan.diagnostics.extend(diagnostics);
+                let diagnostics =
+                    scratch_dir_diagnostics(&tasks_file, &plan.plan_id, workdir, &workspace_config);
                 plan.diagnostics.extend(diagnostics);
             }
 
@@ -327,6 +335,76 @@ fn speed_priority_diagnostics(
                 task.id
             ),
         })
+        .collect()
+}
+
+/// 9134: a task whose attempts work in a scratch copy of its data
+/// (`workspace = "scratch_dir"`, its own or its domain profile's) names that
+/// data in `files` (PLAN_048), and none of it may be a path git tracks
+/// (PLAN_049): tracked files belong in a git worktree.
+fn scratch_dir_diagnostics(
+    tasks_file: &roko_cli::task_parser::TasksFile,
+    plan_id: &str,
+    workdir: &Path,
+    config: &RokoConfig,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for task in &tasks_file.tasks {
+        if task.workspace_kind(config) != WorkspaceKind::ScratchDir {
+            continue;
+        }
+        let (rule_id, message) = if task.files.is_empty() {
+            (
+                "PLAN_048",
+                format!(
+                    "task '{}' works in a scratch_dir workspace but names no data in `files`",
+                    task.id
+                ),
+            )
+        } else {
+            let tracked = git_tracked(workdir, &task.files);
+            if tracked.is_empty() {
+                continue;
+            }
+            (
+                "PLAN_049",
+                format!(
+                    "task '{}' works in a scratch_dir workspace, but git tracks {}: tracked \
+                     files need a git_worktree workspace",
+                    task.id,
+                    tracked.join(", ")
+                ),
+            )
+        };
+        diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            rule_id: rule_id.to_string(),
+            plan_id: Some(plan_id.to_string()),
+            task_id: Some(task.id.clone()),
+            message,
+        });
+    }
+    diagnostics
+}
+
+/// Those of `paths` that name files git tracks in `workdir`: none when
+/// `workdir` is not a git checkout.
+fn git_tracked(workdir: &Path, paths: &[String]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|path| {
+            std::process::Command::new("git")
+                .args(["ls-files", "--error-unmatch", "--"])
+                .arg(path)
+                .current_dir(workdir)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .cloned()
         .collect()
 }
 

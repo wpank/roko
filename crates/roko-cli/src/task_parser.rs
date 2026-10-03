@@ -16,7 +16,8 @@ use crate::orchestrator::{ReplanStrategy, detect_cycle_nodes};
 use crate::task_accept::TaskAccept;
 use anyhow::{Context as _, Result};
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode, RoleCapabilities};
-use roko_core::{OperatingFrequency, TaskDomain, TaskHints, TaskTier};
+use roko_core::config::schema::RokoConfig;
+use roko_core::{OperatingFrequency, TaskDomain, TaskHints, TaskTier, WorkspaceKind};
 use roko_gate::AcceptanceContract;
 use roko_std::denied_tools_for_role;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -72,6 +73,12 @@ pub struct TaskMeta {
     /// run` sets it in a workspace that no gate can check (bug-1410e8).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_unverified: bool,
+    /// What the plan's agents do with a tool call that acts on the outside
+    /// world (9131): `allow`, `stage` (hold it for a person's approval) or
+    /// `deny`. A chat host's `roko run` sets `stage`. Unset, each task's
+    /// domain decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound: Option<roko_core::tool::OutboundPolicy>,
 }
 
 /// When a plan's verified tasks wait for a person's approval before their
@@ -190,6 +197,20 @@ impl TaskDef {
     #[must_use]
     pub fn effective_domain(&self, config_default: Option<&TaskDomain>) -> Option<TaskDomain> {
         self.domain.clone().or_else(|| config_default.cloned())
+    }
+
+    /// Where the task's attempts work (9134): its own `workspace`, else the
+    /// `workspace` of the `[profiles.<domain>]` entry for its domain under
+    /// `config`, else a git worktree.
+    #[must_use]
+    pub fn workspace_kind(&self, config: &RokoConfig) -> WorkspaceKind {
+        if let Some(kind) = self.hints.workspace {
+            return kind;
+        }
+        self.effective_domain(config.project.default_domain.as_ref())
+            .and_then(|domain| config.domain_profile(&domain))
+            .and_then(|profile| profile.workspace)
+            .unwrap_or_default()
     }
 
     /// Whether the task declares planner-written acceptance tests
@@ -1025,6 +1046,7 @@ pub const TASK_KEYS: &[&str] = &[
     "formulas",
     "imports",
     "research_before_edit",
+    "workspace",
     "parallel_group",
     "exclusive_files",
     "tags",
@@ -1077,6 +1099,7 @@ pub const META_KEYS: &[&str] = &[
     "verify",
     "approval",
     "allow_unverified",
+    "outbound",
     // Read by `plan validate` and the spec-quality score.
     "queue_kind",
     "queue_schema",
@@ -2147,6 +2170,80 @@ fn strip_embedded_code(input: &str) -> String {
 mod tests {
     use super::*;
 
+    /// 9134: `workspace` parses on a task and defaults to `git_worktree`; a
+    /// `[profiles.<domain>]` default applies to a task that names none; and
+    /// plan validation refuses a `scratch_dir` task that names no data in
+    /// `files`.
+    #[test]
+    fn task_workspace_kind_parses_scratch_dir() {
+        let tasks = TasksFile::parse_str(
+            r#"[meta]
+plan = "data"
+
+[[task]]
+id = "T1"
+title = "Clean the export"
+role = "researcher"
+workspace = "scratch_dir"
+files = ["data/export.csv"]
+
+[[task]]
+id = "T2"
+title = "Summarize it"
+role = "researcher"
+domain = "data"
+"#,
+        )
+        .expect("parse");
+        let config = RokoConfig::default();
+        assert_eq!(
+            tasks.tasks[0].hints.workspace,
+            Some(WorkspaceKind::ScratchDir)
+        );
+        assert_eq!(
+            tasks.tasks[0].workspace_kind(&config),
+            WorkspaceKind::ScratchDir
+        );
+        assert_eq!(
+            tasks.tasks[1].workspace_kind(&config),
+            WorkspaceKind::GitWorktree
+        );
+        let written = toml::to_string(&tasks).expect("write tasks.toml");
+        assert!(written.contains("workspace = \"scratch_dir\""), "{written}");
+
+        let mut data = RokoConfig::default();
+        let profile = roko_core::config::schema::DomainProfile {
+            name: "data".to_string(),
+            workspace: Some(WorkspaceKind::ScratchDir),
+            ..Default::default()
+        };
+        data.profiles.insert("data".to_string(), profile);
+        assert_eq!(
+            tasks.tasks[1].workspace_kind(&data),
+            WorkspaceKind::ScratchDir
+        );
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let plan_dir = workspace.path().join("plans").join("data");
+        std::fs::create_dir_all(&plan_dir).expect("plan directory");
+        let unnamed = "[meta]\nplan = \"data\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Clean\"\n\
+                       role = \"researcher\"\nworkspace = \"scratch_dir\"\n";
+        std::fs::write(plan_dir.join("tasks.toml"), unnamed).expect("tasks.toml");
+        let report = crate::plan_validate::validate_plans_dir_with_workdir(
+            &plan_dir,
+            None,
+            Some(workspace.path()),
+        )
+        .expect("validate");
+        let found: Vec<&str> = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .map(|diagnostic| diagnostic.rule_id.as_str())
+            .collect();
+        assert!(found.contains(&"PLAN_048"), "{found:?}");
+    }
+
     #[test]
     fn parse_minimal_tasks_toml() {
         let toml = r#"
@@ -2930,6 +3027,7 @@ depends_on = []
                 verify: Vec::new(),
                 approval: None,
                 allow_unverified: false,
+                outbound: None,
             },
             tasks: Vec::new(),
         };
@@ -3942,6 +4040,7 @@ files = ["README.md"]
             formulas: some(),
             imports: some(),
             research_before_edit: Some(true),
+            workspace: Some(WorkspaceKind::ScratchDir),
             parallel_group: Some("x".into()),
             exclusive_files: Some(false),
             tags: some(),
@@ -4006,6 +4105,7 @@ files = ["README.md"]
             verify: vec![step.clone()],
             approval: Some(ApprovalMode::PerTask),
             allow_unverified: true,
+            outbound: Some(roko_core::tool::OutboundPolicy::Stage),
         };
 
         let task = TaskDef::from(raw.clone());

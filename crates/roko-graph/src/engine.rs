@@ -3263,6 +3263,11 @@ pub fn default_registry() -> CellRegistry {
         ))
     });
 
+    // Operator-authored shell commands (9126): `shell.exec` fails its node on
+    // a non-zero exit, and `verify.command` outputs a pass or fail verdict.
+    registry.register("shell.exec", crate::cells::shell_exec::exec_cell);
+    registry.register("verify.command", crate::cells::shell_exec::verify_cell);
+
     // All typed registrations below use CellDescriptor for side-effect-free
     // edge validation (backlog #271).
     use crate::registry::CellDescriptor;

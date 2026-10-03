@@ -9,8 +9,9 @@
 > `[gates.packs.<domain>]` rungs, or only its own verify steps when the
 > domain has no pack. Only `command` rungs run so far; the other rung
 > kinds (9119) parse, and a required one fails its task.
-> `[profiles.<name>]` (`roko_core::config::DomainProfile`) is parsed,
-> but nothing resolves it at run time yet (9125). The domain plugin
+> `[profiles.<domain>]` (`roko_core::config::DomainProfile`) is the
+> domain pack as data (9125): its `pack`, `tool_profile` and
+> `role_identity` apply to the domain's plan tasks. The domain plugin
 > enum (`DomainPlugin`) and lifecycle manifests exist in
 > `crates/roko-agent/src/lifecycle.rs`. Full profile installation as a
 > single TOML bundle is not yet wired. roko-core's old `DomainProfile`

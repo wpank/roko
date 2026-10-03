@@ -322,6 +322,15 @@ pub struct DomainProfile {
     pub tool_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_config: Option<GateProfileConfig>,
+    /// The `[gates.packs.<name>]` that verifies the tasks of the domain this
+    /// profile is named for, in place of the pack named for the domain
+    /// (9125).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<String>,
+    /// One line that leads the prompt of the domain's tasks, saying who the
+    /// agent is (9125).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_identity: Option<String>,
     /// Forward-compatible profile-local extension fields.
     #[serde(default, flatten)]
     pub extra: HashMap<String, toml::Value>,
@@ -340,6 +349,8 @@ impl DomainProfile {
             max_iterations: child.max_iterations.or(parent.max_iterations),
             tool_profile: child.tool_profile.or(parent.tool_profile),
             gate_config: GateProfileConfig::overlay(parent.gate_config, child.gate_config),
+            pack: child.pack.or(parent.pack),
+            role_identity: child.role_identity.or(parent.role_identity),
             extra,
         }
     }

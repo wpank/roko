@@ -110,6 +110,7 @@ impl GraphTaskDispatcher {
                 retry_key,
                 attempt_number,
                 attempt_key,
+                &dispatch.target.model_slug,
                 progress_tx,
                 unchanged_tree,
                 steps,
@@ -163,6 +164,7 @@ impl GraphTaskDispatcher {
         retry_key: &str,
         attempt_number: u32,
         attempt_key: &str,
+        executor: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
         unchanged_tree: bool,
         step_verdicts: &mut Vec<VerifyStepVerdict>,
@@ -177,7 +179,11 @@ impl GraphTaskDispatcher {
         // A step passed only because what failed in it failed on the plan
         // run's start commit too (gap-161be1).
         let mut preexisting_filtered = false;
-        if !steps.is_empty() {
+        // The pack's rungs of kinds other than `command`, which run once the
+        // steps pass (9122, `pack_rungs`).
+        let kind_rungs = self.kind_rungs(spec, task);
+        let mut kinds = pack_rungs::KindRungs::default();
+        if !steps.is_empty() || !kind_rungs.is_empty() {
             let payload = GatePayload::in_dir(&effective_workdir)
                 .with_label(format!("{}/{}", spec.plan_id, task.id))
                 .with_env_passthrough(self.config.gates.env_passthrough.iter().cloned());
@@ -526,6 +532,21 @@ impl GraphTaskDispatcher {
                 ran_steps.push((step.phase.clone(), verdict));
             }
 
+            if failures.is_empty() && !kind_rungs.is_empty() {
+                kinds = self
+                    .check_kind_rungs(
+                        spec,
+                        task,
+                        attempt_key,
+                        executor,
+                        &kind_rungs,
+                        &effective_workdir,
+                        step_verdicts,
+                    )
+                    .await;
+                failures.append(&mut kinds.failures);
+            }
+
             // A probe of an unchanged tree settles here: nothing auto-fixes
             // the tree for it, and what it found teaches no learner.
             if unchanged_tree {
@@ -534,10 +555,14 @@ impl GraphTaskDispatcher {
                     self.gate_retry_context.clear(&spec.plan_id, &task.id);
                     self.retrieval_ctx.lock().remove(&retry_key);
                     self.forget_diff_base(attempt_key);
-                    return Ok(TaskGateVerdict::Passed);
+                    return Ok(if kinds.leaves_unverified(!steps.is_empty()) {
+                        TaskGateVerdict::Unverified
+                    } else {
+                        TaskGateVerdict::Passed
+                    });
                 }
-                let message =
-                    verify_failure_summary(&spec.title, steps.len(), &failures, &skipped_steps);
+                let total = steps.len() + kind_rungs.len();
+                let message = verify_failure_summary(&spec.title, total, &failures, &skipped_steps);
                 return Err(RokoError::Verify {
                     gate: "graph-verify".to_string(),
                     message,
@@ -831,8 +856,9 @@ impl GraphTaskDispatcher {
                 // `max_retries` and then fails the task. (`gates.max_review_cycles`
                 // may only bound non-deterministic review/judge verdicts, and
                 // the Graph dispatcher gates on none.)
+                let total = steps.len() + kind_rungs.len();
                 let mut summary =
-                    verify_failure_summary(&spec.title, steps.len(), &failures, &skipped_steps);
+                    verify_failure_summary(&spec.title, total, &failures, &skipped_steps);
                 // Lead with the blamed sibling so one-line failure reasons,
                 // such as the episode's, keep it.
                 if let Some(sibling) = &blocked_by_sibling {
@@ -1069,7 +1095,7 @@ impl GraphTaskDispatcher {
         }
 
         self.forget_diff_base(attempt_key);
-        Ok(if steps.is_empty() {
+        Ok(if kinds.leaves_unverified(!steps.is_empty()) {
             TaskGateVerdict::Unverified
         } else if preexisting_filtered {
             TaskGateVerdict::PassedWithPreexistingFailures
@@ -1325,6 +1351,7 @@ impl GraphTaskDispatcher {
             .collect();
         // Each workspace rung's step names the rung and its kind (9120).
         pack_rungs::name_rung_steps(&mut prompt_task.verify, self.task_rungs(spec, task));
+        self.lead_with_role_identity(&mut prompt_task);
         prompt_task
     }
 }
@@ -1373,8 +1400,10 @@ fn attempt_verify_steps<'a>(
         .collect();
     for rung in rungs {
         let command = rung.command.trim();
-        if !task.verify.iter().any(|s| s.command.trim() == command) {
-            steps.push((rung_step_label(&rung.name), pack_rungs::verify_step(rung)));
+        if !task.verify.iter().any(|s| s.command.trim() == command)
+            && let Some(step) = pack_rungs::verify_step(rung)
+        {
+            steps.push((rung_step_label(&rung.name), step));
         }
     }
     steps
@@ -1390,7 +1419,7 @@ pub(super) fn verify_step_label(index: usize, phase: &str) -> String {
 }
 
 /// Stable label for the workspace gate rung `name` (`rung[name]`).
-fn rung_step_label(name: &str) -> String {
+pub(super) fn rung_step_label(name: &str) -> String {
     format!("rung[{name}]")
 }
 

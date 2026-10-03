@@ -238,9 +238,13 @@ pub struct GraphTaskDispatcher {
     /// (`[meta] workspace_rungs`), per plan id, read once from the plan's
     /// `tasks.toml`.
     workspace_rung_plans: parking_lot::Mutex<HashMap<String, bool>>,
-    /// `(plan id, work domain)` pairs whose tasks face no workspace rungs
-    /// for want of a `[gates.packs]` entry, each logged once (`pack_rungs`).
+    /// `(plan id, notice)` pairs about a plan's work domains already logged,
+    /// such as a domain whose tasks face no workspace rungs for want of a
+    /// `[gates.packs]` entry (`pack_rungs`).
     unpacked_domains: parking_lot::Mutex<std::collections::HashSet<(String, String)>>,
+    /// Looks up what a citations rung's artefacts cite, keeping the answers
+    /// for the run (9122, `pack_rungs`).
+    citation_resolver: Arc<dyn roko_gate::CitationResolver>,
     /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt stopped at its turn
     /// cap; the next attempt raises the cap and resumes the partial work.
     turn_cap_retries: parking_lot::Mutex<HashMap<String, TurnCapRetry>>,
@@ -339,6 +343,7 @@ impl GraphTaskDispatcher {
             stopping: tokio_util::sync::CancellationToken::new(),
             workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             unpacked_domains: parking_lot::Mutex::default(),
+            citation_resolver: Arc::new(roko_gate::HttpCitationResolver::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
@@ -700,7 +705,12 @@ impl GraphTaskDispatcher {
     /// reflection calls, which count toward the attempt being verified
     /// ([`HelperAgent`]).
     fn cheap_agent(&self) -> Option<HelperAgent> {
-        let model_key = select_cheap_model_key(&self.config)?;
+        select_cheap_model_key(&self.config).map(|model_key| self.helper_agent(model_key))
+    }
+
+    /// A helper agent wired to `model_key`, as [`Self::cheap_agent`] builds
+    /// one. The judge rung asks one from another model family (9123).
+    fn helper_agent(&self, model_key: String) -> HelperAgent {
         let target = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
             .resolve(&model_key);
         let agent = CheapFactoryAgent {
@@ -714,7 +724,7 @@ impl GraphTaskDispatcher {
                 .max(1)
                 .saturating_mul(1_000),
         };
-        Some(HelperAgent::new(agent, target, self.pricing_snapshot()))
+        HelperAgent::new(agent, target, self.pricing_snapshot())
     }
 
     /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`
@@ -893,7 +903,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // serve tasks that no verify step checks: a task with its own steps,
         // or one the workspace rungs check, must earn its pass from them.
         if let Some(reflex_store) = self.reflex_store.as_ref().filter(|_| {
-            self.config.learning.t0_reflexes && self.verify_steps(spec, &task).is_empty()
+            self.config.learning.t0_reflexes
+                && self.verify_steps(spec, &task).is_empty()
+                && self.kind_rungs(spec, &task).is_empty()
         }) {
             let file_exts: Vec<String> = task
                 .files

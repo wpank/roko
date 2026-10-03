@@ -62,13 +62,15 @@ impl GraphTaskDispatcher {
         let signal = Signal::builder(Kind::Task)
             .body(Body::from_json(&payload).unwrap_or_else(|_| Body::empty()))
             .build();
+        let judge_model = agent.model_slug().to_string();
         let oracle = Arc::new(AgentJudgeOracle::new(Arc::new(agent)));
         let calibration = roko_fs::RokoLayout::for_project(&self.workdir)
             .learn_dir()
             .join("judge-calibration.jsonl");
         let mut gate = LlmJudgeGate::new(oracle, gates.llm_judge_min_score)
             .with_name(JUDGE_GATE)
-            .with_calibration_log(calibration);
+            .with_calibration_log(calibration)
+            .with_calibration_keys(attempt_key, judge_model);
         if gates.llm_judge_blocking {
             gate = gate.blocking();
         }
@@ -130,15 +132,24 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"Added two()."}}'
 printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
 "#;
 
-    /// Dispatch one attempt at a task whose only verify step passes, in a
-    /// git repository, with the LLM judge configured by `judge` and a helper
-    /// model on an OpenAI-compatible mock that scores every call `score`.
-    /// Returns the attempt's result and the requests the helper model saw.
+    /// [`judged_attempt_in`] a fresh temporary directory.
     async fn judged_attempt(
         judge: impl FnOnce(&mut RokoConfig),
         score: &str,
     ) -> (Result<Vec<Signal>>, Vec<serde_json::Value>) {
-        let temp = tempdir().expect("tempdir");
+        judged_attempt_in(&tempdir().expect("tempdir"), judge, score).await
+    }
+
+    /// Dispatch one attempt at a task whose only verify step passes, in a
+    /// git repository at `temp`, with the LLM judge configured by `judge`
+    /// and a helper model on an OpenAI-compatible mock that scores every
+    /// call `score`. Returns the attempt's result and the requests the
+    /// helper model saw.
+    async fn judged_attempt_in(
+        temp: &tempfile::TempDir,
+        judge: impl FnOnce(&mut RokoConfig),
+        score: &str,
+    ) -> (Result<Vec<Signal>>, Vec<serde_json::Value>) {
         commit_repo(
             temp.path(),
             &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")],
@@ -147,7 +158,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         // attempt asks the helper model for.
         let (base_url, requests) = spawn_openai_mock(vec![final_turn(score); 2]);
         let (dispatcher, mut task) = make_test_dispatcher(
-            &temp,
+            temp,
             EDITING_PROVIDER,
             |config| {
                 no_auto_fix(config);
@@ -249,5 +260,29 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         )
         .await;
         result.expect("a passing score keeps the attempt passing");
+    }
+
+    /// 7126: a judged attempt's calibration row names the attempt it judged,
+    /// the helper model that judged it and the rubric, so audit labels can
+    /// score the judge.
+    #[tokio::test]
+    async fn judge_calibration_rows_carry_the_attempt_key() {
+        let temp = tempdir().expect("tempdir");
+        let judge = |config: &mut RokoConfig| config.gates.llm_judge = true;
+        let (result, _) = judged_attempt_in(&temp, judge, "0.9").await;
+        result.expect("the judged attempt passes");
+        let log = temp.path().join(".roko/learn/judge-calibration.jsonl");
+        let rows = roko_gate::judge_calibration::load_calibration_log(&log).expect("the log");
+        let [row] = rows.as_slice() else {
+            panic!("one row per judged attempt: {rows:?}");
+        };
+        let attempt_key = row.attempt_key.as_deref().expect("the attempt key");
+        assert!(
+            attempt_key.ends_with(":stream-plan:T-STREAM:1"),
+            "{attempt_key}"
+        );
+        assert_eq!(row.judge_model.as_deref(), Some("judge-1"));
+        assert_eq!(row.rubric.as_deref(), Some(LlmJudgeGate::RUBRIC));
+        assert!(row.verdict);
     }
 }

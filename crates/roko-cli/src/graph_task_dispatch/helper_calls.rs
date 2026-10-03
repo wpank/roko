@@ -235,6 +235,11 @@ impl HelperAgent {
             calls,
         }
     }
+
+    /// The slug of the model the helper calls.
+    pub(super) fn model_slug(&self) -> &str {
+        &self.model_slug
+    }
 }
 
 impl std::ops::Deref for HelperAgent {

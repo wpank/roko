@@ -1419,6 +1419,99 @@ exit 1
         assert_eq!(efficiency[0]["substituted_from"], planned);
     }
 
+    /// bug-0b7695: an attempt whose planned model refused it (a usage-limit
+    /// provider error) fails over, and its records name the model that
+    /// answered while keeping the one routing planned: the verdict's
+    /// `model_dispatched` beside its `model_requested`, and the episode's
+    /// `successful_model` beside its `initial_model`, so the self-model reads
+    /// the failover as a routing miss. The attempt's cost row, its verdict
+    /// and the plan budget are priced at the answering model's rate, never
+    /// at the planned one's.
+    #[tokio::test]
+    async fn failover_attempt_records_the_model_that_answered() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().join("work");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        session_limit_claude(&claude, &calls);
+        let mut answer = final_turn("fallback finished");
+        answer["model"] = serde_json::json!("api-model-1");
+        let (base_url, _requests) = spawn_openai_mock(vec![answer]);
+        let mut config = failover_config(&claude, &base_url, &["api-model"]);
+        // The planned model is priced far above the one that answers, so a
+        // cost at the planned rate would show.
+        for (model, input, output) in [
+            ("claude-sonnet", 1_000.0, 1_000.0),
+            ("api-model", 2.0, 8.0),
+        ] {
+            let profile = config.models.get_mut(model).expect("configured model");
+            profile.cost_input_per_m = Some(input);
+            profile.cost_output_per_m = Some(output);
+        }
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = GraphTaskDispatcher::new(factory, Arc::clone(&config), workdir.clone())
+            .with_plan_budget(1.0, 0.5, false)
+            .with_feedback(recording_feedback(&workdir));
+        let task = TaskDef {
+            id: "T08".to_string(),
+            title: "Implement with failover".to_string(),
+            model_hint: Some("claude-sonnet-4-6".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        let spec = make_spec(&task);
+        let run = "graph-failover-answered";
+        dispatcher
+            .dispatch(
+                &spec,
+                Vec::new(),
+                &CellContext::new().with_run_id(run.to_string()),
+            )
+            .await
+            .expect("the fallback runs the task");
+        // The answer's 12 input and 3 output tokens, at the answering
+        // model's $2 and $8 a million.
+        let answered_usd = (12.0 * 2.0 + 3.0 * 8.0) / 1_000_000.0;
+        let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+        assert!((spent - answered_usd).abs() < 1e-9, "plan spend {spent}");
+        drop(dispatcher);
+
+        let verdicts = jsonl_rows_where(
+            &workdir.join(".roko/runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let verdict = &verdicts[0];
+        let executed = &verdict["executed"];
+        let planned = executed["model_requested"].as_str().expect("planned model");
+        assert_ne!(planned, "api-model-1", "{executed}");
+        assert_eq!(executed["model_dispatched"], "api-model-1", "{executed}");
+        assert_eq!(executed["provider"], "mock_api", "{executed}");
+        let billed = verdict["cost"]["billed_usd"].as_f64().expect("billed_usd");
+        assert!((billed - answered_usd).abs() < 1e-9, "{verdict}");
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(
+            &workdir.join(".roko/episodes.jsonl"),
+        )
+        .await
+        .expect("episodes");
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].model, "api-model-1");
+        assert_eq!(episodes[0].extra["successful_model"], "api-model-1");
+        assert_eq!(episodes[0].extra["initial_model"], planned);
+
+        // The refused call is accounted on a row of its own.
+        let ran = |row: &serde_json::Value| row["role"] != FAILOVER_REFUSED_ROLE;
+        let costs = jsonl_rows_where(&workdir.join(".roko/learn/costs.jsonl"), 1, ran).await;
+        assert_eq!(costs[0]["model"], "api-model-1");
+        let cost = costs[0]["cost_usd"].as_f64().expect("cost_usd");
+        assert!((cost - answered_usd).abs() < 1e-9, "{}", costs[0]);
+    }
+
     #[tokio::test]
     async fn exhausted_provider_without_usable_fallback_fails_once_with_fix_hint() {
         let temp = tempdir().expect("tempdir");

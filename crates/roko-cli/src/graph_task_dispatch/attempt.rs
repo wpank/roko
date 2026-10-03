@@ -498,6 +498,15 @@ impl AttemptContext {
         self.run.submit(exposure);
     }
 
+    /// Queue the self-model's forecast of the attempt for the run's
+    /// `predictions.jsonl` (S01 §5.6), ahead of its route decision (6128).
+    pub(super) fn record_prediction(
+        &self,
+        prediction: roko_learn::telemetry::records::AttemptPredictionRecord,
+    ) {
+        self.run.submit(prediction);
+    }
+
     /// Queue the content decision the attempt's prompt made at one decision
     /// point, with its chain's arms, for the run's `decisions.jsonl` (S01
     /// P0-9).

@@ -225,6 +225,17 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         ));
     }
 
+    // M3's section (S04 §5): the target and the bound's error rate lie in
+    // (0, 1), and the calibration window needs at least one outcome.
+    for (key, problem) in config.self_model.problems() {
+        results.push(invariant(
+            14,
+            InvariantSeverity::Error,
+            format!("self_model.{key}"),
+            problem,
+        ));
+    }
+
     // 9119: each gate rung has what its kind needs, such as a command for a
     // `command` rung and artefacts for a `citations` one.
     for (key, problem) in config.gates.rung_problems() {

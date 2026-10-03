@@ -77,6 +77,7 @@ mod reflex_credit;
 mod retry_budget;
 mod retry_feedback;
 mod routing_context;
+pub mod self_model;
 mod served_model;
 mod sibling_settle;
 mod step_ratchet;
@@ -1201,6 +1202,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
         };
+        // M3 (6128): the self-model forecasts the attempt before it is routed.
+        self.forecast_attempt(spec, &task, &dispatch_ctx, &attempt);
         let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
             Ok(dispatch_plan) => dispatch_plan,
             Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),

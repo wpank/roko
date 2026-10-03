@@ -23,9 +23,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord,
-    ContentDecisionRecord, ExposureRecord, PlaceboDecisionRecord, RunFile, Stamped,
-    TelemetryRecord, chain_key,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptPredictionRecord,
+    AttemptVerdictRecord, ContentDecisionRecord, ExposureRecord, PlaceboDecisionRecord, RunFile,
+    Stamped, TelemetryRecord, chain_key,
 };
 use crate::error::LearnError;
 use crate::routing_log::RoutingDecisionLog;
@@ -52,6 +52,8 @@ pub enum TelemetryEvent {
     PlaceboDecision(Box<PlaceboDecisionRecord>),
     /// A `roko.exposure/1` line.
     Exposure(Box<ExposureRecord>),
+    /// A `roko.prediction/1` line.
+    Prediction(Box<AttemptPredictionRecord>),
 }
 
 impl From<AttemptOpenRecord> for TelemetryEvent {
@@ -87,6 +89,12 @@ impl From<PlaceboDecisionRecord> for TelemetryEvent {
 impl From<ExposureRecord> for TelemetryEvent {
     fn from(record: ExposureRecord) -> Self {
         Self::Exposure(Box::new(record))
+    }
+}
+
+impl From<AttemptPredictionRecord> for TelemetryEvent {
+    fn from(record: AttemptPredictionRecord) -> Self {
+        Self::Prediction(Box::new(record))
     }
 }
 
@@ -278,6 +286,7 @@ impl Worker {
                 TelemetryEvent::ContentDecision(record) => self.write(&*record),
                 TelemetryEvent::PlaceboDecision(record) => self.write(&*record),
                 TelemetryEvent::Exposure(record) => self.write(&*record),
+                TelemetryEvent::Prediction(record) => self.write(&*record),
             }
         }
     }
@@ -565,5 +574,82 @@ mod tests {
         assert_eq!(resumed.mint(RUN, PLAN, "T2"), key("T2", 3));
         assert_eq!(resumed.mint(RUN, PLAN, "T2"), key("T2", 4));
         assert_eq!(resumed.mint(RUN, PLAN, "T3"), key("T3", 1));
+    }
+
+    /// 6126: a prediction round-trips through serde and lands in `predictions.jsonl` under the
+    /// writer's envelope, once per record id; a reader that knows fewer fields still reads a
+    /// newer line, and S01's `p_true` names read as `p_vs`.
+    #[test]
+    fn prediction_record_round_trips_and_lands_in_predictions_jsonl() {
+        use crate::telemetry::records::{
+            AttemptPredictionRecord, PREDICTION_SCHEMA, PredictionCandidate, PredictionDecision,
+            PredictionPredictor,
+        };
+
+        let predictor = PredictionPredictor {
+            version: "m3-l1-3a1f".to_string(),
+            class: "m3-l1".to_string(),
+            mode: "shadow".to_string(),
+            trained_on_n: 412,
+            features_schema: 1,
+            features_hash: "b3:feed".to_string(),
+        };
+        let candidate = PredictionCandidate {
+            arm: "roko/cerebras/gpt-oss-120b/default/V0".to_string(),
+            p_gate: 0.71,
+            p_fg: 0.06,
+            p_vs: 0.67,
+            p_vs_lcb: 0.58,
+            sd: Some(0.07),
+            cost_q50: 0.012,
+            cost_q90: 0.041,
+            lat_q50_s: 95.0,
+            lat_q90_s: 260.0,
+            p_retry: None,
+        };
+        let decision = PredictionDecision {
+            would_choose: Some(candidate.arm.clone()),
+            default: Some("roko/zai/glm-4.7/default/V0".to_string()),
+            action: "dispatch".to_string(),
+        };
+        let identity = AttemptIdentity::new(&key("T2", 1));
+        let record = AttemptPredictionRecord::new(identity, predictor, vec![candidate], decision)
+            .with_price_snapshot_id("prices-2026-09-28");
+        let id = AttemptPredictionRecord::prediction_id(&key("T2", 1).attempt_key(), "m3-l1-3a1f");
+        assert_eq!(record.prediction_id, id);
+        let text = serde_json::to_string(&record).expect("serialize the prediction");
+        let back: AttemptPredictionRecord = serde_json::from_str(&text).expect("parse it back");
+        assert_eq!(back, record);
+
+        let dir = TempDir::new().expect("tempdir");
+        let config = TelemetryWriterConfig::default();
+        let writer = TelemetryWriter::spawn(dir.path(), config).expect("spawn writer");
+        assert!(writer.submit(open("T2", 1)));
+        assert!(writer.submit(record.clone()));
+        assert!(writer.submit(record.clone()));
+        let stats = writer.close();
+        assert_eq!((stats.written, stats.duplicates), (2, 1));
+        assert_eq!(run_file_lines(&dir, RunFile::Attempts).len(), 1);
+        let lines = run_file_lines(&dir, RunFile::Predictions);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["schema_version"], PREDICTION_SCHEMA);
+        assert_eq!(lines[0]["seq"], 2);
+        assert_eq!(lines[0]["attempt_key"], "gr-7f3c2a91:loop-census:T2:1");
+        assert_eq!(lines[0]["precedes"], "route");
+        let line: Stamped<AttemptPredictionRecord> =
+            serde_json::from_value(lines[0].clone()).expect("parse the prediction line");
+        assert_eq!(line.record, record);
+
+        let mut newer = lines[0].clone();
+        newer["future_field"] = serde_json::json!({ "x": 1 });
+        let candidate = newer["candidates"][0]
+            .as_object_mut()
+            .expect("a candidate object");
+        candidate.insert("p_conformal".to_string(), serde_json::json!(0.5));
+        let p_vs = candidate.remove("p_vs").expect("p_vs");
+        candidate.insert("p_true".to_string(), p_vs);
+        let line: Stamped<AttemptPredictionRecord> =
+            serde_json::from_value(newer).expect("parse a newer line");
+        assert_eq!(line.record, record);
     }
 }

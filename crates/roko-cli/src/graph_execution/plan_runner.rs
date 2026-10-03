@@ -1340,6 +1340,8 @@ async fn run_graph_plan_body(
     graph_feedback.provenance_sinks = Some(provenance_sinks.clone());
     // What the run's attempts teach the section bandit, saved at its end.
     let section_outcomes = graph_feedback.section_outcomes.clone();
+    // The self-model the run's verdicts teach, saved at its end (6129).
+    let self_model = graph_feedback.self_model.clone();
 
     // ── TUI vs inline progress decision ──────────────────────────────
     //
@@ -2135,6 +2137,18 @@ async fn run_graph_plan_body(
         }
     }
 
+    // ── Persist the self-model (S04, 6129) ──────────────────────────
+    //
+    // Save what the run's settled verdicts taught the self-model, atomically,
+    // so the next run, a resumed one included, loads it. A frozen run
+    // registered no outcome sink, so it has nothing to save.
+    if !roko_config.learning.frozen
+        && let Some(runtime) = &self_model
+        && let Err(err) = runtime.save()
+    {
+        tracing::warn!(error = %err, "failed to persist the self-model state (non-fatal)");
+    }
+
     // ── Persist run metrics (backlog #169) ──────────────────────────
     //
     // Collect task counts and cost from the just-completed plan loop and
@@ -2382,6 +2396,10 @@ pub fn build_graph_feedback_context(
     // Persists across the plan run, accumulating build/test observations
     // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
     let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
+    // M3 (S04): the self-model, loaded when `[self_model] mode` is on; its
+    // outcome sink teaches it each settled verdict (6129).
+    let self_model =
+        crate::graph_task_dispatch::self_model::SelfModelRuntime::load(workdir, config);
 
     crate::graph_task_dispatch::GraphFeedbackContext {
         feedback_facade: Some(build_graph_feedback_facade(
@@ -2391,6 +2409,7 @@ pub fn build_graph_feedback_context(
             cascade_journal,
             shared_daimon_state.as_ref(),
             error_patterns,
+            self_model.as_ref(),
         )),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
         costs_path: Some(graph_learn_dir.join("costs.jsonl")),
@@ -2412,6 +2431,7 @@ pub fn build_graph_feedback_context(
         provenance_sinks: None,
         // S02 L9: the section bandit's outcomes, saved when the run ends.
         section_outcomes: learning.then(Arc::default),
+        self_model,
     }
 }
 
@@ -2462,7 +2482,8 @@ fn graph_daimon_state(
 /// journals its observations in `cascade_journal`, when there is one, and the
 /// hindsight sink its retractions of them;
 /// `daimon_state` is the state dispatch modulates, persisted when a plan
-/// completes; `error_patterns` is the store dispatch formats into prompts.
+/// completes; `error_patterns` is the store dispatch formats into prompts;
+/// `self_model` is the run's self-model, which its outcome sink teaches.
 pub fn build_graph_feedback_facade(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
@@ -2470,6 +2491,7 @@ pub fn build_graph_feedback_facade(
     cascade_journal: Option<&Arc<roko_learn::model_call_feedback::ModelCallJournal>>,
     daimon_state: Option<&Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
     error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
+    self_model: Option<&Arc<crate::graph_task_dispatch::self_model::SelfModelRuntime>>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
     // A frozen run (decision 2218) registers no sink. Each learning sink
     // writes learned state: episodes, hindsight, knowledge, error patterns,
@@ -2516,6 +2538,13 @@ pub fn build_graph_feedback_facade(
             routing = routing.with_journal(Arc::clone(journal));
         }
         facade = facade.with_sink(std::sync::Arc::new(routing));
+    }
+    // M3 (S04, 6129): each settled verdict teaches the self-model what it
+    // forecast before routing.
+    if let Some(runtime) = self_model {
+        facade = facade.with_sink(std::sync::Arc::new(
+            crate::runtime_feedback::SelfModelOutcomeSink::new(Arc::clone(runtime)),
+        ));
     }
 
     // ── #143: Dream consolidation trigger on plan completion ────────

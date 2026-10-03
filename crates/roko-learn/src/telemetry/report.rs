@@ -25,10 +25,10 @@ use super::assign::{Arm, Assignment};
 use super::census::{CENSUS_FILE, CensusReport};
 use super::manifest::AttemptTally;
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, ContentDecisionPoint,
-    ContentDecisionRecord, DECISION_SCHEMA, DecisionSource, EXPOSURE_SCHEMA, ExecutedModel,
-    ExposureRecord, PLACEBO_DECISION_POINT, PlaceboDecisionRecord, RunFile, Stamped,
-    VERDICT_SCHEMA,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptPredictionRecord,
+    AttemptVerdictRecord, ContentDecisionPoint, ContentDecisionRecord, DECISION_SCHEMA,
+    DecisionSource, EXPOSURE_SCHEMA, ExecutedModel, ExposureRecord, PLACEBO_DECISION_POINT,
+    PREDICTION_SCHEMA, PlaceboDecisionRecord, RunFile, Stamped, VERDICT_SCHEMA,
 };
 use crate::error::LearnError;
 use crate::loop_audit::arm_set::{
@@ -63,6 +63,8 @@ pub struct RunRecords {
     pub placebo_decisions: Vec<Stamped<PlaceboDecisionRecord>>,
     /// Exposure rows, in file order.
     pub exposures: Vec<Stamped<ExposureRecord>>,
+    /// Self-model prediction rows (S01 §5.6), in file order.
+    pub predictions: Vec<Stamped<AttemptPredictionRecord>>,
     /// The run's wiring census; `None` for a run that has none.
     pub census: Option<CensusReport>,
     /// Lines that are not a valid record of their file, as
@@ -141,6 +143,9 @@ impl RunRecords {
             }
             (RunFile::Exposures, EXPOSURE_SCHEMA) => {
                 serde_json::from_value(value).map(|record| self.exposures.push(record))
+            }
+            (RunFile::Predictions, PREDICTION_SCHEMA) => {
+                serde_json::from_value(value).map(|record| self.predictions.push(record))
             }
             _ => {
                 self.invalid

@@ -52,7 +52,9 @@ use roko_learn::homeostasis::coupling::{AuditBoosts, audit_rate};
 use roko_learn::homeostasis::detect::Baseline;
 use roko_learn::homeostasis::ev::Ev;
 use roko_learn::homeostasis::holdout::HarnessHoldout;
-use roko_learn::homeostasis::ledger::{ControllerRecord, Envelope, ParamChange};
+use roko_learn::homeostasis::ledger::{
+    Actor, ControllerRecord, ControllerRow, Envelope, ParamChange, append, ledger_path,
+};
 use roko_learn::homeostasis::lkg::ThetaLkg;
 use roko_learn::homeostasis::policy::{
     AuditPolicy, DEFAULT_HOLDOUT, ViabilityPolicy, non_m1_fingerprint,
@@ -60,6 +62,7 @@ use roko_learn::homeostasis::policy::{
 use roko_learn::homeostasis::priors::{Calibration, DrivePredictor, M3Prior, PredictedLevels};
 use roko_learn::homeostasis::resolution::{ResolutionFold, TaskResolution};
 use roko_learn::loop_audit::assign::takes_default;
+use roko_learn::loop_audit::{AuditState, LoopAuditor};
 use roko_learn::self_model::{ArmKey, CandidateForecast};
 use roko_learn::telemetry::records::HARNESS_POLICY_DECISION_POINT;
 use roko_learn::telemetry::{
@@ -78,6 +81,11 @@ pub const CONTROLLER_SEED: u64 = 0;
 pub const CONDUCTOR_BASIS: &str = "conductor";
 /// Settled tasks the self-model forecasts for a move's prior.
 pub const PREDICTED_TASKS: usize = 20;
+/// M1's own loop in M2's registry: demoted, it forces M1 to shadow (8128).
+pub const M1_LOOP: &str = "L-M1";
+/// The knowledge loop: B4 may switch the knowledge section on only while M2
+/// holds it live (8128).
+pub const KNOWLEDGE_LOOP: &str = "L-know";
 
 /// Folds a run's settled verdicts into resolutions for M1's controller.
 #[derive(Debug)]
@@ -337,7 +345,24 @@ impl HomeostasisSink {
         {
             tracing::warn!(%error, "M1's committed θ does not restore");
         }
+        // M2 (S06 §4.6.8, 8128): the knowledge section switches on only for
+        // a live loop, and a demoted L-M1 pushes M1 down to shadow.
+        let auditor = LoopAuditor::load(workdir, &config.learning.audit).ok();
+        let state = |loop_id: &str| auditor.as_ref().map(|auditor| auditor.state(loop_id));
+        let knowledge_live = state(KNOWLEDGE_LOOP) == Some(AuditState::Live);
+        controller = controller.with_knowledge_loop_live(knowledge_live);
+        if state(M1_LOOP) == Some(AuditState::Demoted) {
+            let events = controller.set_mode(HomeostasisMode::Shadow);
+            record_m2_mode(&layout, &controller, &events);
+        }
         Some(Self::new(workdir, Some(controller), lkg))
+    }
+
+    /// M1's mode: `on`, or `shadow`, in which nothing it does changes
+    /// dispatch.
+    #[must_use]
+    pub const fn mode(&self) -> HomeostasisMode {
+        self.mode
     }
 
     /// Record the retry budgets of `plan_id`'s tasks: a failed attempt that
@@ -484,6 +509,32 @@ impl HomeostasisSink {
                 "M1 holds: nothing in its box helped; a person decides"
             );
         }
+    }
+}
+
+/// Append `events`, the mode change M2's demotion of L-M1 forced, to the
+/// workspace's controller ledger as rows M2 acted in (8128).
+fn record_m2_mode(layout: &RokoLayout, controller: &Controller, events: &[ControllerEvent]) {
+    let envelope = Envelope {
+        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        run_id: None,
+        policy_version: controller.policy().policy_version,
+        arm: Arm::Learned,
+        seq: controller.state().resolutions,
+    };
+    let records: Vec<ControllerRecord> = events
+        .iter()
+        .filter_map(|event| ControllerRecord::from_event(&envelope, event))
+        .map(|mut record| {
+            if let ControllerRow::Mode { actor, .. } = &mut record.row {
+                *actor = Actor::M2;
+            }
+            record
+        })
+        .collect();
+    tracing::warn!("M2 demoted L-M1: M1 runs in shadow until a person turns it on");
+    if let Err(error) = append(&ledger_path(layout.root()), &records) {
+        tracing::warn!(%error, "M1's forced shadow was not recorded");
     }
 }
 
@@ -732,5 +783,82 @@ ev.latency_p90_s = { hi = 900, inner = 810 }
         assert!((baseline.pass_rate - 0.85).abs() < 1e-9);
         assert!((baseline.usd_per_resolution - 0.06 * 0.85).abs() < 1e-9);
         assert!((baseline.wall_ms - 450_000.0).abs() < 1e-6);
+    }
+
+    /// S06 §4.6.8 (8128): a demoted L-M1 in the loop-audit ledger turns `on`
+    /// into `shadow` at run open, with a `controller.mode` row M2 acted in,
+    /// so attempts run θ₀ and no change M1 proposes is applied.
+    #[tokio::test]
+    async fn demoted_l_m1_forces_shadow() {
+        use roko_learn::loop_audit::ReasonCode;
+        use roko_learn::loop_audit::ledger::{
+            LOOP_AUDIT_SCHEMA, Ledger, LoopAuditRecord, LoopAuditRow, TransitionRow,
+        };
+        use roko_learn::loop_audit::state::Actor as AuditActor;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let policy_path = ViabilityPolicy::path_in(&roko);
+        std::fs::create_dir_all(policy_path.parent().expect("policy dir")).expect("mkdir");
+        std::fs::write(&policy_path, POLICY).expect("write the policy");
+        let learn = roko.join("learn");
+        std::fs::create_dir_all(&learn).expect("the learn dir");
+        let demotion = LoopAuditRecord {
+            schema_version: LOOP_AUDIT_SCHEMA.to_string(),
+            record_id: None,
+            ts: None,
+            loop_id: M1_LOOP.to_string(),
+            harness_sha: None,
+            config_hash: None,
+            audit_epoch: None,
+            run_id: None,
+            row: LoopAuditRow::Transition(TransitionRow {
+                from: AuditState::Live,
+                to: AuditState::Demoted,
+                reason: Some(ReasonCode::Harm),
+                rule: "fixture".to_string(),
+                evidence: "fixture".to_string(),
+                actor: AuditActor::Auditor,
+                repair: None,
+            }),
+        };
+        Ledger::in_learn_dir(&learn)
+            .append(&demotion)
+            .expect("the demotion is logged");
+        let mut config = RokoConfig::default();
+        config.homeostasis.mode = HomeostasisMode::On;
+
+        let sink = HomeostasisSink::for_workdir(temp.path(), &config, None).expect("a sink");
+        assert_eq!(sink.mode(), HomeostasisMode::Shadow);
+        let decision = sink.decide(&AttemptKey::new(RUN, PLAN, "T1", 1), "2026-10-04");
+        assert_eq!(decision.applied, HarnessParams::baseline(&config));
+        // Fifty failed chains: M1 may propose changes, and applies none.
+        let failing: Vec<AttemptVerdictRecord> = (1..=50)
+            .map(|n| verdict(&format!("F{n}"), 1, AttemptOutcome::GateFailed))
+            .collect();
+        let limits = failing
+            .iter()
+            .map(|verdict| (verdict.identity.task_id.clone(), 0));
+        sink.set_retry_limits(PLAN, limits);
+        settle_all(&sink, &failing).await;
+        sink.finish();
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(ledger_path(&roko))
+            .expect("the controller ledger")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a controller row"))
+            .collect();
+        let forced = rows
+            .iter()
+            .find(|row| row["kind"] == "controller.mode")
+            .expect("the forced mode row");
+        assert_eq!(
+            (forced["actor"].as_str(), forced["to"].as_str()),
+            (Some("m2"), Some("shadow"))
+        );
+        let applied = rows
+            .iter()
+            .filter(|row| row["kind"] == "param.change" && row["applied"] == true)
+            .count();
+        assert_eq!(applied, 0, "{rows:?}");
     }
 }

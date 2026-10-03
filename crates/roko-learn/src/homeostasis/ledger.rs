@@ -169,6 +169,8 @@ pub enum Actor {
     Controller,
     /// A person.
     Human,
+    /// M2, the loop auditor: it can push M1 down to shadow, never up (8128).
+    M2,
 }
 
 /// A `param.change`'s predicted drive change.

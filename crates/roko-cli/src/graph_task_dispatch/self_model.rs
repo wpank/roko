@@ -26,7 +26,7 @@ use roko_learn::self_model::gate::{CalibrationGate, CalibrationWindow, GateRepor
 use roko_learn::self_model::model::{MODEL_CLASS, SelfModel, StateLoad};
 use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, RouteAction, expected_cost};
 use roko_learn::self_model::{ArmKey, CandidateForecast, LabelSource, PredictorVersion, Unit};
-use roko_learn::telemetry::AttemptIdentity;
+use roko_learn::telemetry::{AttemptIdentity, AttemptVerdictRecord};
 use roko_learn::telemetry::records::{
     AttemptPredictionRecord, PredictionCandidate, PredictionDecision, PredictionPredictor,
     b3_digest,
@@ -65,6 +65,12 @@ pub struct SelfModelRuntime {
     /// which the chain's retries keep (6130); `None` for a chain it left to the
     /// ladder.
     chain_starts: parking_lot::Mutex<HashMap<String, Option<usize>>>,
+    /// Each chain's candidates and features as its last forecast saw them, for
+    /// the re-forecast after a failure (6131).
+    chain_plans: parking_lot::Mutex<HashMap<String, (Candidates, TaskFeatures)>>,
+    /// Whether the self-model made each chain's last climb (6131), so the next
+    /// attempt's ladder record can say so.
+    early_climbs: parking_lot::Mutex<HashMap<String, bool>>,
 }
 
 /// The units a run settled, by attempt key, oldest first; past [`SETTLED_KEPT`] the oldest go.
@@ -175,6 +181,8 @@ impl SelfModelRuntime {
             window: parking_lot::Mutex::new(window),
             settled: parking_lot::Mutex::new(SettledUnits::default()),
             chain_starts: parking_lot::Mutex::new(HashMap::new()),
+            chain_plans: parking_lot::Mutex::new(HashMap::new()),
+            early_climbs: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -303,6 +311,10 @@ impl SelfModelRuntime {
         let rows = forecasts.iter().map(prediction_candidate).collect();
         let record = AttemptPredictionRecord::new(identity.clone(), predictor, rows, decision)
             .with_price_snapshot_id(model.price_snapshot_id.clone());
+        let plan = (candidates.clone(), features.clone());
+        self.chain_plans
+            .lock()
+            .insert(identity.chain_key.clone(), plan);
         if let Some(&rung) = candidates.rungs.get(candidates.default) {
             self.last_rung
                 .lock()
@@ -352,6 +364,40 @@ impl SelfModelRuntime {
             self.last_rung.lock().insert(chain, rung);
         }
         start
+    }
+
+    /// The self-model's step after an agent-blamed failure on ladder rung `rung` of a chain it
+    /// started (6131): it re-forecasts the chain's rungs knowing the attempt failed, with the
+    /// failure's class, and takes the cheapest step to VS (S04 §4.4), at most `K_MAX` climbs.
+    /// `None` outside active mode, for a chain the ladder started by itself (held out, or never
+    /// the self-model's), and once the breaker has tripped: the two-failure rule stands.
+    fn post_failure_step(
+        &self,
+        chain_key: &str,
+        rung: usize,
+        climbs: u32,
+        retries_left: u32,
+        error_class: Option<String>,
+    ) -> Option<StepAction> {
+        if self.settings.mode != SelfModelMode::Active || self.gate().breaker_tripped {
+            return None;
+        }
+        // Only a chain whose start rung the self-model chose.
+        self.chain_starts.lock().get(chain_key).copied().flatten()?;
+        let (candidates, mut features) = self.chain_plans.lock().get(chain_key).cloned()?;
+        let current = candidates.rungs.iter().position(|&index| index == rung)?;
+        features.attempt = features.attempt.saturating_add(1);
+        features.has_prior_failure = true;
+        features.error_class = error_class;
+        let forecasts = self.model.read().forecast(&features, &candidates.arms);
+        let context = FailureContext {
+            current,
+            climbs,
+            retries_left,
+            spec_score: None,
+            skip_allowed: self.settings.allow_rung_skip,
+        };
+        Some(after_failure(&forecasts, &context, &|_| None))
     }
 
     /// The candidate the policy would choose, and its action's name.
@@ -510,6 +556,53 @@ impl GraphTaskDispatcher {
             runtime.predict(identity, features, &candidates, retries_left);
         attempt.record_prediction(prediction);
         runtime.active_rung(identity, &candidates, would_choose)
+    }
+}
+
+impl GraphTaskDispatcher {
+    /// The self-model's step after `verdict`, an agent-blamed failure on ladder rung `rung`
+    /// after `climbs` climbs (6131); `None` when the self-model does not route the chain.
+    pub(super) fn self_model_step(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        verdict: &AttemptVerdictRecord,
+        rung: usize,
+        climbs: u32,
+    ) -> Option<StepAction> {
+        let runtime = self.feedback.self_model.as_deref()?;
+        let used = self.attempt_in_run(&format!("{}/{}", spec.plan_id, task.id));
+        let retries_left = spec.max_retries.saturating_sub(used);
+        let error_class = verdict
+            .failure_class
+            .as_ref()
+            .and_then(|class| class.rung.clone())
+            .or_else(|| {
+                serde_json::to_value(verdict.outcome)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_string))
+            });
+        let chain = &verdict.identity.chain_key;
+        runtime.post_failure_step(chain, rung, climbs, retries_left, error_class)
+    }
+
+    /// Note whether the self-model made the climb the chain `chain_key` just took (6131).
+    pub(super) fn note_self_model_climb(&self, chain_key: &str, early: bool) {
+        if let Some(runtime) = self.feedback.self_model.as_deref() {
+            runtime
+                .early_climbs
+                .lock()
+                .insert(chain_key.to_string(), early);
+        }
+    }
+
+    /// Whether the self-model made the last climb of the chain `chain_key` (6131).
+    pub(super) fn self_model_climbed(&self, chain_key: &str) -> bool {
+        let Some(runtime) = self.feedback.self_model.as_deref() else {
+            return false;
+        };
+        let climbs = runtime.early_climbs.lock();
+        climbs.get(chain_key).copied().unwrap_or(false)
     }
 }
 
@@ -731,5 +824,174 @@ mod tests {
                 off[task]
             );
         }
+    }
+
+    /// 6131: after one agent-blamed failure of a chain an active self-model started, a
+    /// re-forecast that favours the next rung climbs at once, at most twice (K_max), and the
+    /// next attempt's ladder record names the self-model; a chain the self-model did not start
+    /// keeps the two-failure rule.
+    #[tokio::test]
+    async fn self_model_climbs_early_within_k_max() {
+        use roko_learn::self_model::Label;
+        use roko_learn::telemetry::{
+            AttemptKey, AttemptLadder, AttemptOutcome, CostSource, LadderReason,
+        };
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Active,
+            ..SelfModelConfig::default()
+        };
+        let state = temp.path().join(".roko/learn/self-model/state-v1.json");
+        let fresh = SelfModel::new(&snapshot);
+        let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+        let rungs = [
+            ("cheap", "cheap-model", "claude-haiku-4-5"),
+            ("mid", "mid-model", "glm-4.7"),
+            ("strong", "stream-model", "claude-sonnet-4-6"),
+        ];
+        let configure = move |config: &mut RokoConfig| {
+            no_auto_fix(config);
+            for (_, key, slug) in rungs {
+                config
+                    .models
+                    .insert(key.to_string(), model("stream-cli", slug, None));
+            }
+            config.routing.ladder.rungs = rungs
+                .iter()
+                .map(|&(name, key, _)| LadderRung {
+                    name: name.to_string(),
+                    model: key.to_string(),
+                })
+                .collect();
+        };
+        let feedback = GraphFeedbackContext {
+            self_model: Some(Arc::clone(&runtime)),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, configure, feedback).await;
+        task.id = "T-M3".to_string();
+        task.model_hint = None;
+        let mut spec = make_spec(&task);
+        spec.max_retries = 5;
+
+        // What a retry after a gate failure does on each rung: the cheap rung fails it, the
+        // mid rung passes half of the time, and the strong rung passes it.
+        let retry = TaskFeatures {
+            title: "Fix the parser".to_string(),
+            family: "focused".to_string(),
+            tier: "focused".to_string(),
+            role: "implementer".to_string(),
+            attempt: 2,
+            has_prior_failure: true,
+            error_class: Some("gate_failed".to_string()),
+            ..TaskFeatures::default()
+        };
+        for (slug, cost) in [
+            ("claude-haiku-4-5", 0.01),
+            ("glm-4.7", 0.02),
+            ("claude-sonnet-4-6", 0.02),
+        ] {
+            for index in 0..60_u32 {
+                let passed = match slug {
+                    "claude-haiku-4-5" => false,
+                    "glm-4.7" => index % 2 == 0,
+                    _ => true,
+                };
+                let unit = Unit {
+                    attempt_key: AttemptKey::new("train", "plan", format!("T{index}"), 2),
+                    plan_id: "plan".to_string(),
+                    task_id: format!("T{index}"),
+                    role: "implementer".to_string(),
+                    tier: "focused".to_string(),
+                    family: "focused".to_string(),
+                    arm: ArmKey::roko("stream-cli", slug),
+                    attempt: 2,
+                    prior_failure: true,
+                    failure_class: Some("gate_failed".to_string()),
+                    label: Label {
+                        y_gate: Some(passed),
+                        y_vs: None,
+                        weight: 1.0,
+                        source: LabelSource::GatePassed,
+                    },
+                    api_equiv_usd: Some(cost),
+                    cost_source: CostSource::ProviderUsage,
+                    latency_s: Some(60.0),
+                    failover: false,
+                };
+                runtime.observe(&unit, &retry, 1.0);
+            }
+        }
+
+        // The self-model started T-M3's chain on the cheap rung.
+        let arms = rungs
+            .iter()
+            .map(|&(_, _, slug)| ArmKey::roko("stream-cli", slug))
+            .collect();
+        let candidates = Candidates {
+            arms,
+            rungs: vec![0, 1, 2],
+            default: 0,
+            step: 0,
+            pinned: false,
+        };
+        let first = TaskFeatures {
+            attempt: 1,
+            has_prior_failure: false,
+            error_class: None,
+            ..retry.clone()
+        };
+        let chain = AttemptKey::new(RUN, "stream-plan", "T-M3", 1).chain_key();
+        runtime.chain_starts.lock().insert(chain.clone(), Some(0));
+        let plan = (candidates, first);
+        runtime.chain_plans.lock().insert(chain.clone(), plan);
+
+        let failure = |task: &TaskDef, attempt: u32, rung: &str, index: u32, step: u32| {
+            let key = AttemptKey::new(RUN, "stream-plan", task.id.as_str(), attempt);
+            let identity = AttemptIdentity::new(&key);
+            let outcome = AttemptOutcome::GateFailed;
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.ladder = Some(AttemptLadder {
+                rung: Some(rung.to_string()),
+                index: Some(index),
+                step,
+                reason: LadderReason::SelfModel,
+                exhausted: false,
+                router_pick: None,
+            });
+            SettledAttempt {
+                verdict: Arc::new(verdict),
+                failure_reason: None,
+                reflex_rule: None,
+                live_tool_calls: LiveToolCalls::default(),
+            }
+        };
+
+        // One failure on the cheap rung climbs at once, and so does one on the mid rung.
+        dispatcher.note_ladder_outcome(&spec, &task, &failure(&task, 1, "cheap", 0, 0));
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
+        assert!(dispatcher.self_model_climbed(&chain));
+        dispatcher.note_ladder_outcome(&spec, &task, &failure(&task, 2, "mid", 1, 1));
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 2);
+        // Failures on the strong rung never climb a third time.
+        for attempt in 3..6 {
+            let settled = failure(&task, attempt, "strong", 2, 2);
+            dispatcher.note_ladder_outcome(&spec, &task, &settled);
+        }
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 2);
+
+        // A chain the self-model did not start keeps the two-failure rule.
+        let mut held = task.clone();
+        held.id = "T-HOLD".to_string();
+        let held_spec = make_spec(&held);
+        dispatcher.note_ladder_outcome(&held_spec, &held, &failure(&held, 1, "cheap", 0, 0));
+        assert_eq!(dispatcher.ladder_step(&held_spec, &held), 0);
+        dispatcher.note_ladder_outcome(&held_spec, &held, &failure(&held, 2, "cheap", 0, 0));
+        assert_eq!(dispatcher.ladder_step(&held_spec, &held), 1);
+        let held_chain = AttemptKey::new(RUN, "stream-plan", "T-HOLD", 1).chain_key();
+        assert!(!dispatcher.self_model_climbed(&held_chain));
     }
 }

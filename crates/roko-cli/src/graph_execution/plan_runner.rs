@@ -862,9 +862,7 @@ pub struct GraphPlanRunParams {
     pub worktree_per_task: bool,
     /// Whether `--worktree-per-task` asked for [`Self::worktree_per_task`],
     /// rather than `[runner] worktree_per_task` or its default (gap-4ec59f).
-    /// Per-task worktrees run one plan at a time for now: a run that asked
-    /// for them with `max_parallel_plans` above 1 is refused, and one that
-    /// has them from the config runs its plans one at a time.
+    /// The run says which when it turns isolation on.
     pub worktree_per_task_explicit: bool,
     pub rich_topology: bool,
     /// With `worktree_per_task`: once every plan is delivered into the run's
@@ -1219,29 +1217,13 @@ async fn run_graph_plan_body(
     // How many independent plans may run at once: the per-run override, else
     // `[conductor] max_parallel_plans`. Never written back into the config,
     // which every checkpoint fingerprint includes.
-    let mut max_parallel_plans = max_parallel_plans
+    // Per-task worktrees run plans side by side too (backlog 3104): each
+    // plan's attempts fork from its own branch, and the plans are delivered
+    // into the run's batch branch one at a time, each merged into the tip
+    // the last one left.
+    let max_parallel_plans = max_parallel_plans
         .unwrap_or(roko_config.conductor.max_parallel_plans)
         .max(1);
-    // Per-task worktrees run one plan at a time for now (gap-4ec59f). A run
-    // that asked for them with --worktree-per-task is refused; one that has
-    // them from `[runner] worktree_per_task` runs its plans in turn.
-    if worktree_per_task && max_parallel_plans > 1 && plans.len() > 1 {
-        if worktree_per_task_explicit {
-            anyhow::bail!(
-                "per-task worktrees do not run plans in parallel yet (max_parallel_plans = \
-                 {max_parallel_plans}): run with --max-parallel-plans 1, or replace \
-                 --worktree-per-task with --no-worktree-per-task to run the plans in parallel \
-                 in the shared working tree"
-            );
-        }
-        tracing::warn!(
-            max_parallel_plans,
-            "per-task worktrees do not run plans in parallel yet, so the plans run one at a \
-             time: pass --no-worktree-per-task to run them in parallel in the shared working \
-             tree, or --max-parallel-plans 1 to ask for one at a time"
-        );
-        max_parallel_plans = 1;
-    }
 
     let (plan_budget_ceiling, budget_bypassed) = resolve_budget_ceiling(
         budget_override,
@@ -1520,7 +1502,12 @@ async fn run_graph_plan_body(
             crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
         );
         if !quiet && !json {
-            tracing::info!("per-task worktree isolation enabled (--worktree-per-task)");
+            let asked_by = if worktree_per_task_explicit {
+                "--worktree-per-task"
+            } else {
+                "[runner] worktree_per_task"
+            };
+            tracing::info!(asked_by, "per-task worktree isolation enabled");
         }
         dispatcher_builder = dispatcher_builder
             .with_workspace_provider(provider.clone())
@@ -4496,8 +4483,14 @@ max_retries = 0
         })
         .await
         .expect("run plan set");
-        let lifecycle = hub
-            .subscribe_events_from(0)
+        let lifecycle = plan_lifecycle(&hub);
+        (exit_code, lifecycle, hub)
+    }
+
+    /// The plan starts and ends `hub` saw, in order: `start <plan>` and
+    /// `end <plan> <success>`.
+    fn plan_lifecycle(hub: &crate::state_hub::SharedStateHub) -> Vec<String> {
+        hub.subscribe_events_from(0)
             .replay
             .into_iter()
             .filter_map(|envelope| match envelope.payload {
@@ -4509,8 +4502,7 @@ max_retries = 0
                 }
                 _ => None,
             })
-            .collect();
-        (exit_code, lifecycle, hub)
+            .collect()
     }
 
     #[cfg(unix)]
@@ -7275,44 +7267,62 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         assert!(!repo.join("alpha.txt").exists());
     }
 
-    /// gap-4ec59f: per-task worktrees run one plan at a time for now. Asked
-    /// for with `--worktree-per-task`, they refuse a run that would put two
-    /// plans in parallel before anything starts. From `[runner]
-    /// worktree_per_task`, they run the two plans in turn, the second on the
-    /// first's work.
+    /// backlog 3104: with per-task worktrees and `max_parallel_plans = 2`,
+    /// two independent plans start before either ends, the run succeeds,
+    /// and the run's batch branch holds both plans' work. With one plan at a
+    /// time they keep their order, and the second starts from the first's
+    /// work, so the batch only fast-forwards.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn configured_worktrees_run_parallel_plans_one_at_a_time() {
-        let dir = repo_with_file_plans(&["alpha", "beta"], None);
-        let repo = dir.path();
-        let parallel = |explicit| GraphPlanRunParams {
-            worktree_per_task_explicit: explicit,
-            max_parallel_plans: Some(2),
-            ..worktree_run_params(repo)
-        };
+    async fn worktree_plans_run_side_by_side_and_both_deliver() {
+        for width in [2, 1] {
+            let dir = repo_with_file_plans(&["alpha", "beta"], None);
+            let repo = dir.path();
+            let hub = crate::state_hub::shared_state_hub();
+            let params = GraphPlanRunParams {
+                max_parallel_plans: Some(width),
+                state_hub: Some(hub.clone()),
+                ..worktree_run_params(repo)
+            };
+            let run_id = format!("run-width-{width}");
 
-        let error = run_graph_plan_in_run(parallel(true), Some("run-refused".into()))
-            .await
-            .expect_err("the requested run is refused");
-        assert!(
-            error.to_string().contains("--no-worktree-per-task"),
-            "{error}"
-        );
-        assert_eq!(
-            git_stdout(repo, &["for-each-ref", "refs/heads/roko/batch/"]),
-            "",
-            "the refused run started nothing"
-        );
+            let exit_code = run_graph_plan_in_run(params, Some(run_id.clone()))
+                .await
+                .expect("run the plans");
 
-        let exit_code = run_graph_plan_in_run(parallel(false), Some("run-capped".into()))
-            .await
-            .expect("run the plans");
-
-        assert_eq!(exit_code, EXIT_SUCCESS);
-        // beta started from alpha's work, so the batch only fast-forwarded.
-        assert_eq!(
-            git_stdout(repo, &["rev-parse", "roko/batch/run-capped"]),
-            git_stdout(repo, &["rev-parse", "roko/plan/02-beta"])
-        );
+            assert_eq!(exit_code, EXIT_SUCCESS, "width {width}");
+            let lifecycle = plan_lifecycle(&hub);
+            let batch = format!("roko/batch/{run_id}");
+            let files = git_stdout(repo, &["ls-tree", "--name-only", batch.as_str()]);
+            assert!(
+                files.contains("alpha.txt") && files.contains("beta.txt"),
+                "width {width}: {files}"
+            );
+            if width == 2 {
+                let mut first_two = lifecycle[..2].to_vec();
+                first_two.sort();
+                assert_eq!(
+                    first_two,
+                    ["start 01-alpha", "start 02-beta"],
+                    "both plans start before either ends: {lifecycle:?}"
+                );
+                assert!(lifecycle.contains(&"end 01-alpha true".to_string()));
+                assert!(lifecycle.contains(&"end 02-beta true".to_string()));
+            } else {
+                assert_eq!(
+                    lifecycle,
+                    [
+                        "start 01-alpha",
+                        "end 01-alpha true",
+                        "start 02-beta",
+                        "end 02-beta true"
+                    ]
+                );
+                assert_eq!(
+                    git_stdout(repo, &["rev-parse", batch.as_str()]),
+                    git_stdout(repo, &["rev-parse", "roko/plan/02-beta"])
+                );
+            }
+        }
     }
 
     /// gap-415c54: with `[runner] delete_attempt_branches = true`, a

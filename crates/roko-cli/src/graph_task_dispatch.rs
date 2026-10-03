@@ -1204,7 +1204,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         };
         // M3 (6128): the self-model forecasts the attempt before it is routed.
         self.forecast_attempt(spec, &task, &dispatch_ctx, &attempt);
-        let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
+        // M1's B1 (8124): the attempt's θ may raise the task's start rung.
+        let routed_task = self.routed_task(&task, &attempt);
+        let dispatch_plan = match self.plan_dispatch(spec, &routed_task, &mut dispatch_ctx) {
             Ok(dispatch_plan) => dispatch_plan,
             Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),
         };
@@ -1370,6 +1372,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                         agent_id: &pre_dispatch_agent_id,
                         role: task.role.as_deref().unwrap_or("implementer"),
                     }),
+                    attempt.harness_params(),
                 ),
                 &progress,
                 stall_watch,

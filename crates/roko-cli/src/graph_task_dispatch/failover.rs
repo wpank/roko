@@ -1,11 +1,12 @@
 //! Provider failover: a planned model whose provider cannot take the task hands
 //! it to the next usable candidate within the same attempt.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use parking_lot::Mutex;
 use roko_core::agent::ProviderKind;
+use roko_core::config::harness_params::{HarnessLadders, HarnessParams};
 use roko_learn::provider_failover::{
     FailoverCandidate as DispatchCandidate, format_local_ms, missing_credentials_reason,
     provider_brings_own_tools, same_model_candidates,
@@ -210,6 +211,8 @@ impl GraphTaskDispatcher {
     /// on `progress`, so a call the watchdog cancels is recorded against the
     /// model it ran on (bug-aa2044). Once failover passed a model over, the
     /// attempt's `dashboard` row names the model and provider that run.
+    /// `theta`, the θ the attempt runs, orders the providers failover tries
+    /// (M1's `provider_order`, 8124).
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_bridge_with_failover(
         &self,
@@ -220,6 +223,7 @@ impl GraphTaskDispatcher {
         progress: Option<&super::watchdog::AttemptProgress>,
         ladder: Option<LadderRoute>,
         dashboard: Option<DashboardRow<'_>>,
+        theta: Option<&HarnessParams>,
     ) -> Result<(crate::dispatch_v2::AgentResultDispatch, FailoverChain)> {
         let ladder = ladder.as_ref();
         let pinned = self.cli_model_override.is_some();
@@ -250,7 +254,7 @@ impl GraphTaskDispatcher {
                 }
                 let definitive = refusal.definitive;
                 refusals.push(refusal);
-                match self.failover_model(spec, task_id, &refusals, ladder) {
+                match self.failover_model(spec, task_id, &refusals, ladder, theta) {
                     Ok(next) => {
                         candidate = next;
                         continue;
@@ -377,7 +381,7 @@ impl GraphTaskDispatcher {
             if pinned {
                 return Err(self.no_usable_provider(&refusals, &[], true, None));
             }
-            candidate = self.failover_model(spec, task_id, &refusals, ladder)?;
+            candidate = self.failover_model(spec, task_id, &refusals, ladder, theta)?;
         }
     }
 
@@ -545,11 +549,13 @@ impl GraphTaskDispatcher {
     ///
     /// An attempt the model ladder routed (`ladder`) takes the first group,
     /// then the runnable rungs above its own, and nothing cheaper (decision
-    /// 1119, backlog 1120).
+    /// 1119, backlog 1120). M1's `provider_order` in `theta` then reorders
+    /// the candidates ([`Self::order_by_provider`], 8124).
     fn failover_candidates(
         &self,
         refusals: &[ProviderRefusal],
         ladder: Option<&LadderRoute>,
+        theta: Option<&HarnessParams>,
     ) -> Vec<DispatchCandidate> {
         let first = refusals
             .first()
@@ -568,7 +574,10 @@ impl GraphTaskDispatcher {
         let routing = self.factory.dispatcher().routing_ladder();
         let Some((route, routing)) = ladder.zip(routing) else {
             let first = first.as_ref();
-            return roko_learn::provider_failover::failover_candidates(&self.config, first);
+            let mut candidates =
+                roko_learn::provider_failover::failover_candidates(&self.config, first);
+            self.order_by_provider(&mut candidates, theta);
+            return candidates;
         };
         let mut candidates = first
             .map(|first| same_model_candidates(&self.config, &first))
@@ -579,7 +588,51 @@ impl GraphTaskDispatcher {
                 config: None,
             });
         }
+        self.order_by_provider(&mut candidates, theta);
         candidates
+    }
+
+    /// `candidates` in M1's provider order (B1 `provider_order`, 8124): the
+    /// candidates on providers whose place in `theta`'s order differs from
+    /// their place in `[providers]` trade slots among themselves, in θ's
+    /// order, and every other candidate keeps its slot. θ₀ keeps the config's
+    /// order, so it moves nothing. Nothing is added, so a reorder never adds
+    /// a provider or re-enables a disabled one.
+    fn order_by_provider(
+        &self,
+        candidates: &mut [DispatchCandidate],
+        theta: Option<&HarnessParams>,
+    ) {
+        let Some(theta) = theta else {
+            return;
+        };
+        let providers = HarnessLadders::from_config(&self.config).providers;
+        // Each provider M1 moved, with its place in θ's order.
+        let moved: HashMap<&str, usize> = theta
+            .provider_order
+            .iter()
+            .enumerate()
+            .filter(|&(place, &index)| place != index)
+            .filter_map(|(place, &index)| Some((providers.get(index)?.as_str(), place)))
+            .collect();
+        if moved.is_empty() {
+            return;
+        }
+        let mut slots: Vec<(usize, usize)> = Vec::new();
+        for (slot, candidate) in candidates.iter().enumerate() {
+            let provider = self.resolve_candidate(candidate).provider_id;
+            if let Some(&place) = moved.get(provider.as_str()) {
+                slots.push((slot, place));
+            }
+        }
+        let mut reordered: Vec<(usize, DispatchCandidate)> = slots
+            .iter()
+            .map(|&(slot, place)| (place, candidates[slot].clone()))
+            .collect();
+        reordered.sort_by_key(|&(place, _)| place);
+        for (&(slot, _), (_, candidate)) in slots.iter().zip(reordered) {
+            candidates[slot] = candidate;
+        }
     }
 
     /// The first usable model in [`Self::failover_candidates`], with the
@@ -592,12 +645,13 @@ impl GraphTaskDispatcher {
         task_id: &str,
         refusals: &[ProviderRefusal],
         ladder: Option<&LadderRoute>,
+        theta: Option<&HarnessParams>,
     ) -> Result<DispatchCandidate> {
         let mut skipped = Vec::new();
         let mut only_unguarded = refusals
             .iter()
             .all(|refusal| refusal.class == UNGUARDED_IN_CHECKOUT);
-        for candidate in self.failover_candidates(refusals, ladder) {
+        for candidate in self.failover_candidates(refusals, ladder, theta) {
             if let Some(kind) = self.unguarded_in_checkout(&self.resolve_candidate(&candidate)) {
                 log_unguarded_skip(&spec.plan_id, kind);
                 let why = unguarded_reason(kind);

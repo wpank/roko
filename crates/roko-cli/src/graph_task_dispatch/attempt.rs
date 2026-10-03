@@ -482,10 +482,16 @@ impl AttemptContext {
 
     /// M1's decision for the attempt (S06 T13, 8123): its chain's arm on
     /// the `harness_policy` layer and the θ it runs, queued as the attempt's
-    /// `harness_policy` decision row and stamped on its verdict.
-    fn record_harness_decision(&mut self, sink: &crate::runtime_feedback::HomeostasisSink) {
+    /// `harness_policy` decision row and stamped on its verdict. `pinned`
+    /// says a pin chooses the attempt's model, which B1 leaves alone (8124).
+    fn record_harness_decision(
+        &mut self,
+        sink: &crate::runtime_feedback::HomeostasisSink,
+        pinned: bool,
+    ) {
         let decision = sink.decide(&self.key, &self.run.epoch);
-        self.run.submit(decision.record(self.identity.clone()));
+        self.run
+            .submit(decision.record(self.identity.clone(), pinned));
         self.harness = Some(Arc::new(decision));
     }
 
@@ -495,6 +501,14 @@ impl AttemptContext {
         &self,
     ) -> Option<&roko_core::config::harness_params::HarnessParams> {
         self.harness.as_ref().map(|decision| &decision.applied)
+    }
+
+    /// M1's decision for the attempt, with θ₀ beside the θ it runs; `None`
+    /// without an M1 sink.
+    pub(super) fn harness_decision(
+        &self,
+    ) -> Option<&crate::runtime_feedback::homeostasis::HarnessDecision> {
+        self.harness.as_deref()
     }
 
     /// The arms of the attempt's chain, which its prompt assembly reads to
@@ -622,6 +636,7 @@ impl AttemptContext {
             failure_reason,
             reflex_rule: self.reflex_rule,
             live_tool_calls: self.live_tool_calls,
+            harness: self.harness,
         }
     }
 }
@@ -761,6 +776,9 @@ pub(super) struct SettledAttempt {
     /// The tool calls the attempt's live output showed, which its efficiency
     /// row lists (bug-264c41).
     pub(super) live_tool_calls: LiveToolCalls,
+    /// M1's decision for the attempt, whose θ caps the task's climb after
+    /// it (8124); `None` without an M1 sink.
+    pub(super) harness: Option<Arc<crate::runtime_feedback::homeostasis::HarnessDecision>>,
 }
 
 impl SettledAttempt {
@@ -839,7 +857,7 @@ impl GraphTaskDispatcher {
         attempt.record_placebo_decision();
         // M1 (S06 T13, 8123): the θ the attempt runs, and its decision row.
         if let Some(sink) = self.feedback.homeostasis.as_deref() {
-            attempt.record_harness_decision(sink);
+            attempt.record_harness_decision(sink, self.model_pinned(task));
         }
         attempt
     }
@@ -2135,8 +2153,14 @@ printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_c
             usd_per_resolution: 0.05,
             wall_ms: 300_000.0,
         };
-        let controller =
-            Controller::new(&settings, policy, theta0.clone(), ladders.clone(), baseline, 0);
+        let controller = Controller::new(
+            &settings,
+            policy,
+            theta0.clone(),
+            ladders.clone(),
+            baseline,
+            0,
+        );
         let sink = Arc::new(HomeostasisSink::new(temp.path(), Some(controller), None));
         let feedback = GraphFeedbackContext {
             runs_dir: Some(runs_dir.clone()),
@@ -2159,7 +2183,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_c
         let raised = theta0
             .step(Knob::RetryDelta, Step::Up, &ladders)
             .expect("one more retry");
-        assert_eq!(sink.handle().swap(raised.clone(), "homeostat:ep-0001/ch-0001"), 1);
+        assert_eq!(sink.handle().swap(raised.clone(), "raised"), 1);
         let second = dispatcher.open_attempt(&make_spec(&tasks[1]), &tasks[1], &ctx);
         let third = dispatcher.open_attempt(&make_spec(&tasks[2]), &tasks[2], &ctx);
         for attempt in [first, second, third] {

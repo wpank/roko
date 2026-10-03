@@ -110,9 +110,10 @@ impl HarnessDecision {
         }
     }
 
-    /// The attempt `identity`'s `harness_policy` decision row (A-DEC-H).
+    /// The attempt `identity`'s `harness_policy` decision row (A-DEC-H);
+    /// `pinned` when a pin chooses its model, which B1 leaves alone (8124).
     #[must_use]
-    pub fn record(&self, identity: AttemptIdentity) -> HarnessPolicyDecisionRecord {
+    pub fn record(&self, identity: AttemptIdentity, pinned: bool) -> HarnessPolicyDecisionRecord {
         HarnessPolicyDecisionRecord {
             identity,
             decision_point: HARNESS_POLICY_DECISION_POINT.to_string(),
@@ -125,6 +126,7 @@ impl HarnessDecision {
             default: self.default.clone(),
             differs: self.chosen.params != self.default,
             source: DecisionSource::Control,
+            pinned,
         }
     }
 }
@@ -209,6 +211,15 @@ impl HomeostasisSink {
     #[must_use]
     pub const fn handle(&self) -> &HarnessParamsHandle {
         &self.handle
+    }
+
+    /// This sink with no holdout and no all-off draw, so every chain is on
+    /// the learned arm whatever the day's draws: for tests of what θ does.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn without_holdout(mut self) -> Self {
+        self.holdout = HarnessHoldout { h: 0.0, g: 0.0 };
+        self
     }
 
     /// The digest of the θ a learned-arm attempt runs now: the run

@@ -1277,6 +1277,10 @@ pub struct HarnessPolicyDecisionRecord {
     pub differs: bool,
     /// Who chose: the controller.
     pub source: DecisionSource,
+    /// A pin (`--model`, a `model_hint`, express routing) chose the
+    /// attempt's model, so θ's B1 knobs left it alone (8124).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 /// `roko.decision/1` at the placebo decision point (S03 §4.3, S02 L12): the

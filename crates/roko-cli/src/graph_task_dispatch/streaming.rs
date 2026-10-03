@@ -190,7 +190,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
         };
-        let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
+        // M1's B1 (8124): the attempt's θ may raise the task's start rung.
+        let routed_task = self.routed_task(&task, &attempt);
+        let dispatch_plan = match self.plan_dispatch(spec, &routed_task, &mut dispatch_ctx) {
             Ok(dispatch_plan) => dispatch_plan,
             Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),
         };

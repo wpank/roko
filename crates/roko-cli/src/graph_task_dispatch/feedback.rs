@@ -72,6 +72,12 @@ pub struct GraphFeedbackContext {
     /// routing and learns the attempt's verdict. `None` unless
     /// `[self_model] mode` is on.
     pub self_model: Option<Arc<super::self_model::SelfModelRuntime>>,
+
+    /// M1 (S06, 8122): the sink that folds the run's settled verdicts into
+    /// task resolutions for the ultrastable controller. `None` when
+    /// `[homeostasis] mode` is off, the workspace has no S5 policy, or the
+    /// run is frozen.
+    pub homeostasis: Option<Arc<crate::runtime_feedback::HomeostasisSink>>,
 }
 
 /// What the section bandit learns from one run (S02 L9): the draws of each
@@ -189,11 +195,18 @@ impl Default for GraphFeedbackContext {
             provenance_sinks: None,
             section_outcomes: None,
             self_model: None,
+            homeostasis: None,
         }
     }
 }
 
 impl GraphTaskDispatcher {
+    /// M1's plan-run sink, when the run has one (8122).
+    #[must_use]
+    pub fn homeostasis_sink(&self) -> Option<&Arc<crate::runtime_feedback::HomeostasisSink>> {
+        self.feedback.homeostasis.as_ref()
+    }
+
     /// Emit all feedback events after a task dispatch completes.
     ///
     /// This is the Graph engine equivalent of Runner-v2's post-dispatch

@@ -1342,6 +1342,9 @@ async fn run_graph_plan_body(
     let section_outcomes = graph_feedback.section_outcomes.clone();
     // The self-model the run's verdicts teach, saved at its end (6129).
     let self_model = graph_feedback.self_model.clone();
+    // M1's sink, whose open chains resolve and whose controller state is
+    // saved at the run's end (8122).
+    let homeostasis = graph_feedback.homeostasis.clone();
 
     // ── TUI vs inline progress decision ──────────────────────────────
     //
@@ -2149,6 +2152,14 @@ async fn run_graph_plan_body(
         tracing::warn!(error = %err, "failed to persist the self-model state (non-fatal)");
     }
 
+    // ── M1, the ultrastable controller (S06, 8122) ───────────────────
+    //
+    // The chains still open resolve as they stand, and the controller's state
+    // is saved for the next run.
+    if let Some(sink) = &homeostasis {
+        sink.finish();
+    }
+
     // ── Persist run metrics (backlog #169) ──────────────────────────
     //
     // Collect task counts and cost from the just-completed plan loop and
@@ -2400,6 +2411,14 @@ pub fn build_graph_feedback_context(
     // outcome sink teaches it each settled verdict (6129).
     let self_model =
         crate::graph_task_dispatch::self_model::SelfModelRuntime::load(workdir, config);
+    // M1 (S06, 8122): the ultrastable controller's sink, in shadow by default;
+    // a frozen run writes no controller state or ledger.
+    let homeostasis = if learning {
+        crate::runtime_feedback::HomeostasisSink::for_workdir(workdir, config, self_model.as_ref())
+            .map(Arc::new)
+    } else {
+        None
+    };
 
     crate::graph_task_dispatch::GraphFeedbackContext {
         feedback_facade: Some(build_graph_feedback_facade(
@@ -2410,6 +2429,7 @@ pub fn build_graph_feedback_context(
             shared_daimon_state.as_ref(),
             error_patterns,
             self_model.as_ref(),
+            homeostasis.as_ref(),
         )),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
         costs_path: Some(graph_learn_dir.join("costs.jsonl")),
@@ -2432,6 +2452,7 @@ pub fn build_graph_feedback_context(
         // S02 L9: the section bandit's outcomes, saved when the run ends.
         section_outcomes: learning.then(Arc::default),
         self_model,
+        homeostasis,
     }
 }
 
@@ -2483,7 +2504,8 @@ fn graph_daimon_state(
 /// hindsight sink its retractions of them;
 /// `daimon_state` is the state dispatch modulates, persisted when a plan
 /// completes; `error_patterns` is the store dispatch formats into prompts;
-/// `self_model` is the run's self-model, which its outcome sink teaches.
+/// `self_model` is the run's self-model, which its outcome sink teaches;
+/// `homeostasis` is M1's sink (8122), registered after it.
 pub fn build_graph_feedback_facade(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
@@ -2492,6 +2514,7 @@ pub fn build_graph_feedback_facade(
     daimon_state: Option<&Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
     error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
     self_model: Option<&Arc<crate::graph_task_dispatch::self_model::SelfModelRuntime>>,
+    homeostasis: Option<&Arc<crate::runtime_feedback::HomeostasisSink>>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
     // A frozen run (decision 2218) registers no sink. Each learning sink
     // writes learned state: episodes, hindsight, knowledge, error patterns,
@@ -2545,6 +2568,10 @@ pub fn build_graph_feedback_facade(
         facade = facade.with_sink(std::sync::Arc::new(
             crate::runtime_feedback::SelfModelOutcomeSink::new(Arc::clone(runtime)),
         ));
+    }
+    // M1 (S06, 8122): each settled verdict feeds the ultrastable controller.
+    if let Some(sink) = homeostasis {
+        facade = facade.with_sink(Arc::clone(sink));
     }
 
     // ── #143: Dream consolidation trigger on plan completion ────────
@@ -3181,6 +3208,13 @@ async fn run_one_plan(
         ctx.max_retries
             .unwrap_or_else(|| retry_budgets.max_retries(&plan.id, t))
     });
+    // M1's sink resolves a failed chain at the attempt its budget ends on.
+    if let Some(sink) = ctx.graph_task_dispatcher.homeostasis_sink() {
+        let limits = tasks
+            .iter()
+            .map(|(task_id, info)| (task_id.clone(), info.max_retries));
+        sink.set_retry_limits(&plan.id, limits);
+    }
 
     // An omitted `max_parallel` converts as 1, as it did before it meant "as
     // wide as the DAG allows" (gap-272448): the checkpoint identity hashes

@@ -28,7 +28,10 @@
 //! A queued unit's task inputs wait in [`queue_dir`] until its result is
 //! written; a unit without them is audited from its selection alone. Each
 //! audited Y also feeds the gate-gaming detector ([`GamingWatch`], F1),
-//! whose alert goes to the ledger as `audit.policy_change`.
+//! whose alert goes to the ledger as `audit.policy_change`. After each
+//! result, and once it has drained, the worker closes every window that is
+//! due (`roko_gate::audit::feedback`, 7131): each stratum's estimates, the
+//! strictness ladder's steps and the routing trust estimates.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -36,7 +39,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use roko_core::audit_home::AuditVault;
-use roko_core::audit_types::AuditLabels;
+use roko_core::audit_types::{AuditLabels, VerifyDepth};
 use roko_core::config::GatesConfig;
 use roko_core::config::audit::AuditConfig;
 use roko_gate::attempt_diff::{
@@ -44,6 +47,7 @@ use roko_gate::attempt_diff::{
     scripts_run_by,
 };
 use roko_gate::audit::canary::{CanaryScanner, scan_diff};
+use roko_gate::audit::feedback::close_due_windows;
 use roko_gate::audit::hidden::HiddenStore;
 use roko_gate::audit::ledger::{AuditEvent, AuditLedger, LedgerRecord, records};
 use roko_gate::audit::policy::{EPS_FLOOR, RunKey, select};
@@ -428,6 +432,7 @@ impl Worker {
             }
         }
         self.sweep();
+        self.close_windows();
     }
 
     /// Audit `unit` once, unless the budget binds or another worker holds
@@ -452,6 +457,7 @@ impl Worker {
             let y = audit.labels.y;
             self.record(&unit, audit);
             self.watch_gaming(&unit, y);
+            self.close_windows();
         }
         for extension in ["json", "lock"] {
             let _ = std::fs::remove_file(queue.join(format!("{}.{extension}", unit.sel_id)));
@@ -723,6 +729,22 @@ impl Worker {
         };
         if let Err(error) = self.ledger.append(event) {
             tracing::warn!(%error, "a gate-gaming alert was not logged");
+        }
+    }
+
+    /// Close every window that is due (7131). An active M1 floor applies
+    /// at dispatch, as the higher of it and the ladder's level (7132), so
+    /// the ladder's own floor here is V0.
+    fn close_windows(&mut self) {
+        let closed = close_due_windows(
+            &mut self.ledger,
+            &self.context.vault,
+            &self.context.config,
+            VerifyDepth::V0,
+            chrono::Utc::now(),
+        );
+        if let Err(error) = closed {
+            tracing::warn!(%error, "an audit window was not closed");
         }
     }
 

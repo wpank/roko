@@ -11,7 +11,11 @@
 //! - [`hidden`]: hidden test suites in the vault and their lifecycle
 //!   (S05 §4.4);
 //! - [`canary`]: the scanner that exposes a suite whose canary appears where
-//!   an agent's words go (SC4).
+//!   an agent's words go (SC4);
+//! - [`window`]: window close, each stratum's estimates of false greens,
+//!   gaming and weak oracles (S05 §4.5);
+//! - [`feedback`]: DP3's strictness ladder and the routing trust estimates
+//!   DP4 reads, updated as each window closes (S05 §4.6).
 //!
 //! Plain types other crates read (verify depth, labels, strata, the
 //! `vs.label` row) live in `roko_core::audit_types`, and the vault in
@@ -19,9 +23,11 @@
 
 pub mod canary;
 pub mod estimate;
+pub mod feedback;
 pub mod hidden;
 pub mod ledger;
 pub mod policy;
+pub mod window;
 
 /// Why an audit computation refused its input.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

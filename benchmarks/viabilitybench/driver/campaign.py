@@ -61,15 +61,29 @@ records and no ledger rows. Otherwise the campaign stops: the attempt's records 
 directory to `<results>/<experiment>.abandoned/` (inside the results root, so the ledger still counts its spend) and
 run the campaign again.
 
+**`requires_live`** (3359, S09 §5's example: `L-audit`, `L-gate-depth`, `L-route-trust`). Before a live manifest's
+first dispatch, `check` runs the loop census (`roko learn loops --json`, S03.T15) against this repo's roko binary
+and reads each required loop's status. A loop is LIVE when its census row's audit state is `live` (S03 §4.6's
+`AuditState::Live`: "proven benefit: the learned policy runs, at the live holdout rate") — probation, flagged and
+demoted loops, and a loop missing from the census, are not; `census` (default `census_report`, which shells out
+to the `roko` binary) is injectable so a test can fake the report without one. Any loop not LIVE refuses the
+campaign (`check`'s `problems`, so `--dry-run` exits 2 too) and, for a real run, `cmd_campaign` writes a NOT RUN
+stub naming the loops and the harness sha (S09 §5: "a hypothesis whose loops are not LIVE … is postponed and
+reported NOT RUN") before it raises.
+
 API:
     load(path) -> Manifest                                   # raises CampaignError
     units(manifest, include=()) -> list[Unit]
     check(vb, manifest, *, budget, results_root, include=(), provider_url=None, arm_files=None,
-          secret_fingerprint=None, lock=DEFAULT_LOCK, spec=DEFAULT_SPEC) -> Check
+          secret_fingerprint=None, lock=DEFAULT_LOCK, spec=DEFAULT_SPEC, census=None) -> Check
     requires_lock(experiment_id, manifests=EXPERIMENTS_DIR) -> bool
     lock_refusal(lock=DEFAULT_LOCK, spec=DEFAULT_SPEC) -> str | None      # why the lock does not let a run start
+    census_report(repo=None, roko_bin=None) -> dict                      # roko.loop_census/1, via `roko learn loops`
+    is_loop_live(row: dict) -> bool
+    requires_live_refusal(manifest, *, repo=None, census=None) -> tuple[str | None, str | None, tuple[str, ...]]
+    write_not_run(results_root, manifest, loops, sha) -> Path            # (why, harness_sha, not_live loops)
     cmd_campaign(vb, args) -> int; add_arguments(parser)
-    CampaignError, SCHEMA, ORDERS
+    CampaignError, SCHEMA, ORDERS, LOOPS_SCHEMA, NOT_RUN_SCHEMA, NOT_RUN_FILE
 """
 
 from __future__ import annotations
@@ -107,6 +121,10 @@ DEFAULT_SPEC = layout.REPO_ROOT / "tmp" / "cybernetic-harness" / "specs" / "S09-
 LOCKED_EXPERIMENTS = ("LOG1",)  # S09 SC1: LOG1 never starts without the lock
 LIVE_PREFIX = "E-"  # S09 §5: live experiments are E-<name>(-live), and each runs under the lock
 NEEDS_PROXY = ("provider_fault", "model_swap")  # disturbances the metering proxy applies (disturb.py)
+LOOPS_SCHEMA = "roko.loop_census/1"  # crates/roko-learn/src/loop_audit/census.rs CENSUS_SCHEMA (`roko learn loops`)
+NOT_RUN_SCHEMA = "vb.not_run/1"  # this driver's own stub (3359): vb.metric_record/1 needs run_ids, seeds, commits,
+                                 # price_snapshot_id, ... which do not exist for a hypothesis that never ran
+NOT_RUN_FILE = "not_run.json"  # in <results>/<experiment>/, next to LOG; written by write_not_run (3359)
 
 
 class CampaignError(RuntimeError):
@@ -170,10 +188,13 @@ class Check:
     instances: dict[str, tuple[str, ...]] = field(default_factory=dict)  # block id -> the instances it runs
     problems: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    not_run: tuple[str, ...] = ()  # requires_live loops that are not LIVE (3359); cmd_campaign writes the stub
+    harness_sha: str | None = None  # the loop census's harness sha, once requires_live has been checked
 
     def summary(self) -> dict:
         return {"experiment": self.manifest.id, "manifest": str(self.manifest.path), "order": self.manifest.order,
                 "requires_lock": self.manifest.requires_lock, "requires_live": list(self.manifest.requires_live),
+                "not_run": list(self.not_run), "harness_sha": self.harness_sha,
                 "prereg_id": self.manifest.prereg_id,
                 "runs": sum(self.blocks[unit.block.id].get("runs_per_seed", 0) * len(unit.seeds)
                             for unit in self.units),
@@ -270,12 +291,94 @@ def lock_refusal(lock: Path = DEFAULT_LOCK, spec: Path = DEFAULT_SPEC) -> str | 
     return None
 
 
+def census_report(repo: Path | None = None, roko_bin: Path | str | None = None) -> dict:
+    """The `roko.loop_census/1` report `roko learn loops --json` prints for the binary at `roko_bin` (default:
+    `repo`'s own `target/debug/roko`, the build a live manifest runs under; S03.T15), run from `repo` (default
+    layout.REPO_ROOT). Raises CampaignError if the binary is missing or the command does not print that schema."""
+    repo = Path(repo) if repo else layout.REPO_ROOT
+    binary = Path(roko_bin) if roko_bin else repo / "target" / "debug" / "roko"
+    if not os.access(binary, os.X_OK):
+        raise CampaignError(f"no executable roko binary at {binary} to run the loop census (requires_live); build "
+                            "it, or pass a fake census to check()")
+    try:
+        result = subprocess.run([str(binary), "learn", "loops", "--json"], cwd=repo, capture_output=True,
+                                text=True, timeout=60)
+    except OSError as err:
+        raise CampaignError(f"{binary} learn loops --json: {err}") from None
+    if result.returncode != 0:
+        raise CampaignError(f"{binary} learn loops --json exited {result.returncode}: {result.stderr.strip()}")
+    try:
+        report = json.loads(result.stdout)
+    except ValueError as err:
+        raise CampaignError(f"{binary} learn loops --json did not print JSON: {err}") from None
+    if not isinstance(report, dict) or report.get("schema") != LOOPS_SCHEMA:
+        got = report.get("schema") if isinstance(report, dict) else report
+        raise CampaignError(f"{binary} learn loops --json printed schema {got!r}, not {LOOPS_SCHEMA!r}")
+    return report
+
+
+def is_loop_live(row: dict) -> bool:
+    """Whether a `roko.loop_census/1` row is LIVE: its audit state (crates/roko-learn/src/loop_audit/spec.rs,
+    `AuditState::Live`) is "proven benefit: the learned policy runs, at the live holdout rate". Probation, flagged
+    and demoted loops are not LIVE, and neither is a loop missing from the census."""
+    return bool(row) and row.get("state") == "live"
+
+
+def _not_live_reason(loop_id: str, row: dict) -> str:
+    if not row:
+        return f"{loop_id} (not in the census)"
+    state = row.get("state") or "no audit state yet"
+    reason = row.get("reason")
+    return f"{loop_id} ({state}{f', ' + reason if reason else ''})"
+
+
+def requires_live_refusal(manifest: Manifest, *, repo: Path | None = None,
+                          census: Callable[[], dict] | None = None) -> tuple[str | None, str | None, tuple[str, ...]]:
+    """Why `manifest.requires_live` refuses the campaign, the harness sha the census was read at, and which
+    required loops are not LIVE; all empty/None when the manifest needs no live loop. S09 §5: a live manifest's
+    required loops must be LIVE at the run's harness sha before the first dispatch, or the hypothesis is postponed
+    and reported NOT RUN (`write_not_run`). `census` (default: `census_report` at `repo`) is injectable so a test
+    can fake the roko.loop_census/1 report without a binary."""
+    if not manifest.requires_live:
+        return None, None, ()
+    report = (census or (lambda: census_report(repo)))()
+    sha = report.get("harness_sha")
+    rows = {row.get("loop"): row for row in report.get("rows", []) if isinstance(row, dict)}
+    not_live = tuple(loop_id for loop_id in manifest.requires_live if not is_loop_live(rows.get(loop_id, {})))
+    if not not_live:
+        return None, sha, ()
+    named = "; ".join(_not_live_reason(loop_id, rows.get(loop_id, {})) for loop_id in not_live)
+    return f"requires_live: not LIVE at harness {sha or 'unknown'}: {named}", sha, not_live
+
+
+def write_not_run(results_root: Path, manifest: Manifest, loops: Iterable[str], sha: str | None) -> Path:
+    """Write the NOT RUN stub for a live manifest `requires_live` refused (S09 §5: "a hypothesis whose loops are
+    not LIVE … is postponed and reported NOT RUN"), naming the loops and the harness sha. This is not a
+    `vb.metric_record/1`: most of that schema's required fields (run_ids, seeds, commits, price_snapshot_id, …)
+    describe a run that happened, which this one did not, so forcing placeholders into them would mislead whoever
+    reads it; `NOT_RUN_SCHEMA` is a separate, clearly-labeled shape instead. Returns the path written,
+    `<results_root>/<manifest.id>/not_run.json`."""
+    path = results_root / manifest.id / NOT_RUN_FILE
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stub = {"schema": NOT_RUN_SCHEMA, "status": "not_run", "experiment_id": manifest.id,
+           "manifest": str(manifest.path), "prereg_id": manifest.prereg_id, "harness_sha": sha,
+           "loops_not_live": list(loops), "reported_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    text = json.dumps(stub, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return path
+
+
 def check(vb, manifest: Manifest, *, budget: ledger.Budget, results_root: Path, include: Iterable[str] = (),
           provider_url: str | None = None, arm_files: dict[str, str] | None = None,
           secret_fingerprint: str | None = None, finished: Iterable[str] = (), limit: int | None = None,
-          lock: Path = DEFAULT_LOCK, spec: Path = DEFAULT_SPEC) -> Check:
+          lock: Path = DEFAULT_LOCK, spec: Path = DEFAULT_SPEC, census: Callable[[], dict] | None = None) -> Check:
     """Validate `manifest` against the arms, streams, snapshot, budget and ledger (module docstring). `vb` is the
-    driver module; `finished` names the units already done, whose spend the ledger holds."""
+    driver module; `finished` names the units already done, whose spend the ledger holds. `census` overrides
+    `requires_live_refusal`'s default loop-census call (module docstring, requires_live)."""
     include = set(include)
     unknown = include - {block.id for block in manifest.blocks if block.optional}
     plan_units = units(manifest, include)
@@ -296,8 +399,14 @@ def check(vb, manifest: Manifest, *, budget: ledger.Budget, results_root: Path, 
         else:
             found.notes.append(f"requires_lock: the lock at {lock} is committed and checks clean")
     if manifest.requires_live:
-        found.notes.append(f"requires_live ({', '.join(manifest.requires_live)}): not checked by this driver "
-                           "(3359), so the campaign refuses to run until it is")
+        refusal, sha, not_live = requires_live_refusal(manifest, census=census)
+        found.harness_sha = sha
+        if refusal:
+            found.problems.append(refusal)
+            found.not_run = not_live
+        else:
+            found.notes.append(f"requires_live ({', '.join(manifest.requires_live)}): LIVE at harness "
+                               f"{sha or 'unknown'}")
     try:
         books = ledger.read_books(results_root)
     except ledger.BudgetError as err:
@@ -343,9 +452,9 @@ def cmd_campaign(vb, args: argparse.Namespace) -> int:
         print(json.dumps(found.summary(), indent=2, ensure_ascii=False))
         return 2 if found.problems else 0
     if found.problems:
+        if found.not_run:
+            write_not_run(results_root, manifest, found.not_run, found.harness_sha)
         raise CampaignError("refused before any run: " + "; ".join(found.problems))
-    if manifest.requires_live:
-        raise CampaignError("the manifest requires live loops, which this driver cannot check yet (3359)")
     if fingerprint is None:
         raise CampaignError(f"the secret file cannot be read ({why}), so the campaign cannot keep each instance "
                             "under one secret")

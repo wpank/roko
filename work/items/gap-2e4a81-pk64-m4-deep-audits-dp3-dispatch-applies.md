@@ -59,3 +59,7 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK58 (gap-f0a7ee), PK60 (gap-940e44), PK63 (gap-eb39c1).
 - Suggested model: opus.
+
+## Progress
+
+- 7132: implemented at 3a4655068 (`verify_depth.rs`: depth = max(ladder level held per window, M1's `extra_rungs` floor); V1 A1 audit-only kinds + clippy, V2 A2, V3 B1, V4 B2 and B3 on docs/plan/research; S04's d* not read, as nothing publishes it yet, 6132)

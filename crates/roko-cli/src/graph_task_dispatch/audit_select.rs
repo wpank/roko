@@ -163,6 +163,11 @@ impl AuditSelector {
         self
     }
 
+    /// The workspace's vault, which holds the strictness ladder (DP3).
+    pub(super) const fn vault(&self) -> &AuditVault {
+        &self.vault
+    }
+
     /// Draw every green unit at π = 1, as a test's ρ = 1 would; config
     /// cannot set ρ above `RHO_MAX`.
     #[cfg(test)]
@@ -471,16 +476,21 @@ impl super::GraphTaskDispatcher {
     }
 }
 
-/// What an audit needs of `task`; its kind is its domain, else its role
-/// (`scribe` writes docs, `researcher` research, `strategist` plans).
-fn audit_task(task: &TaskDef) -> AuditTask {
-    let kind = match (&task.domain, task.role.as_deref().unwrap_or("implementer")) {
+/// The task type of `task`, which strata and the strictness ladder name:
+/// its domain, else its role (`scribe` writes docs, `researcher` research,
+/// `strategist` plans).
+pub(super) fn task_type(task: &TaskDef) -> &str {
+    match (&task.domain, task.role.as_deref().unwrap_or("implementer")) {
         (Some(domain), _) => domain.label(),
         (None, "scribe") => "docs",
         (None, "researcher") => "research",
         (None, "strategist" | "planner") => "plan",
         (None, role) => role,
-    };
+    }
+}
+
+/// What an audit needs of `task`; its kind is its [`task_type`].
+pub(super) fn audit_task(task: &TaskDef) -> AuditTask {
     let hidden = task.spec.hidden.clone().unwrap_or_default();
     AuditTask {
         title: task.title.clone(),
@@ -496,7 +506,7 @@ fn audit_task(task: &TaskDef) -> AuditTask {
             .iter()
             .map(|step| (step.phase.clone(), step.command.clone()))
             .collect(),
-        kind: kind.to_string(),
+        kind: task_type(task).to_string(),
     }
 }
 
@@ -527,6 +537,7 @@ fn stratum_of(tag: GateVerdictTag) -> (&'static str, bool) {
 
 #[cfg(test)]
 mod tests {
+    use roko_gate::audit::feedback::{TrustBook, trust_path};
     use roko_gate::audit::ledger::{LedgerRecord, records, verify_chain};
     use roko_gate::audit::policy::{Selection, verify_reveal};
     use roko_graph::cells::NoopAttemptRecorder;
@@ -781,5 +792,103 @@ mod tests {
             !vault.worktrees_dir().join(&sel).exists(),
             "the audit worktree is gone"
         );
+    }
+
+    /// bug-83a6eb: an implementer that changes nothing, at a task whose
+    /// verify step passes on the tree as it was, settles as already
+    /// satisfied and is drawn. Its audit finds an empty diff, which is no
+    /// gaming: G = 0, no incident opens, and the model keeps its trust.
+    #[tokio::test]
+    async fn empty_diff_unit_is_not_labelled_gaming() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[("src/lib.rs", "pub fn n() -> u8 {\n    1\n}\n")],
+        );
+        let vault_home = tempfile::tempdir().expect("vault home");
+        let home = vault_home.path().join("audit");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                config.audit.enabled = true;
+                config.audit.home = Some(home.clone());
+            },
+            recording_feedback(temp.path()),
+        )
+        .await;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        // The run's first attempt opens its lottery, which then selects
+        // every green unit.
+        let mut opener = task.clone();
+        opener.id = "T0".to_string();
+        drop(dispatcher.open_attempt(&make_spec(&opener), &opener, &ctx));
+        dispatcher
+            .attempts
+            .audit()
+            .expect("the audit lottery")
+            .census();
+        task.id = "T1".to_string();
+        task.files = vec!["src/lib.rs".to_string()];
+        task.verify = vec![verify_step("check", "grep -q 'fn n' src/lib.rs")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the task's work was already there");
+        let _ = GraphTaskDispatcher::close_run_attempts(&dispatcher, RUN);
+        drop(dispatcher);
+
+        let vault = AuditConfig {
+            home: Some(home),
+            ..Default::default()
+        }
+        .vault(temp.path())
+        .expect("the vault");
+        let ledger = vault.ledger_dir();
+        verify_chain(&ledger).expect("an unbroken chain");
+        let all = records(&ledger).expect("the ledger");
+        let (sel, verdict) = all
+            .iter()
+            .find_map(|record| match &record.event {
+                AuditEvent::Selection {
+                    sel_id,
+                    task_id,
+                    stratum,
+                    selected: true,
+                    ..
+                } if task_id == "T1" => Some((sel_id.clone(), stratum.verdict.clone())),
+                _ => None,
+            })
+            .expect("T1 is selected");
+        assert_eq!(verdict, "already_satisfied");
+        let (labels, findings) = all
+            .iter()
+            .find_map(|record| match &record.event {
+                AuditEvent::Result {
+                    sel_id,
+                    labels,
+                    findings,
+                    ..
+                } if *sel_id == sel => Some((*labels, findings.join("\n"))),
+                _ => None,
+            })
+            .expect("the worker audited T1");
+        assert_eq!(labels.g, Some(false), "{findings}");
+        assert!(!findings.contains("vacuous_diff"), "{findings}");
+        let incidents = all
+            .iter()
+            .filter(|record| matches!(record.event, AuditEvent::Incident { .. }))
+            .count();
+        assert_eq!(incidents, 0, "no incident opens");
+        let downgraded = all.iter().any(|record| {
+            matches!(
+                &record.event,
+                AuditEvent::PolicyChange { knob, .. } if knob.starts_with("trust:")
+            )
+        });
+        assert!(!downgraded, "the model keeps its trust");
+        let trust = TrustBook::load(&trust_path(&vault)).expect("the trust book");
+        assert!(trust.estimates.is_empty(), "{trust:?}");
     }
 }

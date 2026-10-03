@@ -95,6 +95,10 @@ jobs:
         env:
           SKIP_FRONTEND_BUILD: "1"
         run: cargo check -p roko-cli --features alloy-backend,acp
+      - name: Prove roko-serve builds without chain
+        env:
+          SKIP_FRONTEND_BUILD: "1"
+        run: cargo check -p roko-serve --no-default-features --features hdc
 
   portal:
     name: Portal (types, tests, export)

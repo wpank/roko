@@ -277,8 +277,17 @@ async fn dispatch_job(
     match job.job_type.as_str() {
         "research" => execute_research_job(state, job).await,
         "coding_task" | "coding" => execute_coding_job(state, job).await,
+        #[cfg(feature = "chain")]
         "chain_monitor" => execute_chain_monitor_job(state, job).await,
+        #[cfg(feature = "chain")]
         "chain_analysis" => execute_chain_analysis_job(state, job).await,
+        // Never the generic prompt runner: the job would "succeed" without
+        // running the triage it asked for (9217).
+        #[cfg(not(feature = "chain"))]
+        "chain_monitor" | "chain_analysis" => Err(anyhow::anyhow!(
+            "`{}` jobs are not included in this build: rebuild roko with `--features chain`",
+            job.job_type
+        )),
         _ => {
             // Generic fallback: use description as prompt.
             let prompt = if job.description.is_empty() {
@@ -442,6 +451,7 @@ async fn execute_coding_job(
 }
 
 /// Execute a chain monitor job: run the triage pipeline on synthetic events.
+#[cfg(feature = "chain")]
 async fn execute_chain_monitor_job(
     state: &AppState,
     job: &MarketplaceJob,
@@ -506,6 +516,7 @@ async fn execute_chain_monitor_job(
 }
 
 /// Execute a chain analysis job: one-shot triage analysis.
+#[cfg(feature = "chain")]
 async fn execute_chain_analysis_job(
     _state: &AppState,
     job: &MarketplaceJob,
@@ -1088,6 +1099,36 @@ mod tests {
         assert!(plan_dir.join("tasks.toml").is_file());
         assert!(plan_dir.join("plan.md").is_file());
         assert!(!workdir.path().join(".roko").join("plans").exists());
+    }
+
+    #[cfg(not(feature = "chain"))]
+    #[tokio::test]
+    async fn chain_monitor_job_fails_with_feature_hint_without_chain() {
+        use crate::deploy::create_backend;
+        use crate::runtime::NoOpRuntime;
+        use roko_core::config::schema::RokoConfig;
+
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let deploy = Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let state = AppState::new(
+            workdir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            RokoConfig::default(),
+            deploy,
+        )
+        .expect("AppState::new");
+
+        for job_type in ["chain_monitor", "chain_analysis"] {
+            let job = MarketplaceJob {
+                id: format!("job-{job_type}"),
+                job_type: job_type.into(),
+                ..Default::default()
+            };
+            let error = dispatch_job(&state, &job)
+                .await
+                .expect_err("a chain job must not reach the generic prompt runner");
+            assert!(error.to_string().contains("--features chain"), "{error}");
+        }
     }
 
     #[test]

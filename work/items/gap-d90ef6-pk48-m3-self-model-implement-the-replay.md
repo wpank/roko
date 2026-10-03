@@ -77,3 +77,12 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK40 (gap-1f4bec), PK47 (gap-62e1b9).
 - Suggested model: opus.
+
+## Progress
+
+- 6117: implemented at b2cdf8cd0 (follow-up fix at the commit after b135dc61c); cargo verification deferred to the batch gate.
+- 6118: implemented at 44b9973af; cargo verification deferred to the batch gate.
+- 6119: implemented at a47802ffb; cargo verification deferred to the batch gate.
+- 6120: implemented at dbba57263; cargo verification deferred to the batch gate.
+- 6121: implemented at 433105270 (DR calls S03.T5's AIPW estimator in loop_audit, which has landed); cargo verification deferred to the batch gate.
+- 6122: implemented at b135dc61c; cargo verification deferred to the batch gate.

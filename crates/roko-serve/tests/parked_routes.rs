@@ -1,7 +1,11 @@
 //! Parked route groups answer a typed 501 that names the cargo feature which
-//! builds them, instead of a 404 (9214, 9219).
+//! builds them, instead of a 404 (9214, 9219, 9220).
 
-#![cfg(any(not(feature = "chain"), not(feature = "groups")))]
+#![cfg(any(
+    not(feature = "chain"),
+    not(feature = "groups"),
+    not(feature = "relay")
+))]
 #![allow(clippy::expect_used, clippy::unwrap_used, missing_docs)]
 
 use std::path::PathBuf;
@@ -139,4 +143,26 @@ async fn group_routes_return_501_by_default() {
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {uri}");
         assert_eq!(body["required_feature"], "groups", "{method} {uri}: {body}");
     }
+}
+
+/// The relay proxy, mounted at the server root, is parked in a default build;
+/// the local relay health under `/api` still answers.
+#[cfg(not(feature = "relay"))]
+#[tokio::test]
+async fn relay_routes_return_501_by_default() {
+    let (_dir, router) = test_router();
+    let requests = [
+        (Method::GET, "/relay"),
+        (Method::GET, "/relay/health"),
+        (Method::POST, "/relay/agents"),
+        (Method::GET, "/relay/agents/ws"),
+    ];
+    for (method, uri) in requests {
+        let (status, body) = parked_answer(&router, method.clone(), uri).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {uri}");
+        assert_eq!(body["required_feature"], "relay", "{method} {uri}: {body}");
+    }
+
+    let (status, _body) = parked_answer(&router, Method::GET, "/api/relay/health").await;
+    assert_eq!(status, StatusCode::OK);
 }

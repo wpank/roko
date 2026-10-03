@@ -31,6 +31,8 @@ hdc = ["roko-compose/hdc", "roko-fs/hdc", "roko-serve/hdc"]
 acp = ["dep:roko-acp"]
 # Agent groups in roko serve, parked out of the default build (9219).
 groups = ["roko-serve/groups"]
+# The relay client in roko serve, parked out of the default build (9220).
+relay = ["roko-serve/relay"]
 alloy-backend = [
     "chain",
     "roko-chain/alloy-backend",

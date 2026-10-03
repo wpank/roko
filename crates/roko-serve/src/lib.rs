@@ -69,6 +69,9 @@ pub mod sanitize;
 pub mod scheduler;
 pub mod service_factory;
 pub mod state;
+// The relay bridge that consumes this needs `relay` (9220); the journal and
+// status types also back `GET /api/subscriptions/relay/status`.
+#[cfg_attr(not(feature = "relay"), allow(dead_code))]
 mod subscription_relay;
 mod telemetry_observer;
 pub mod templates;
@@ -471,18 +474,26 @@ impl ServerBuilder {
         }
 
         // Register workspace with relay if configured.
-        let serve_port = self.config.port.unwrap_or(6677);
+        #[cfg(feature = "relay")]
         let _relay_registration = relay::start_workspace_registration(
             self.config.roko_config.relay.clone(),
-            serve_port,
+            self.config.port.unwrap_or(6677),
             Arc::clone(&state.agent_count),
             Arc::clone(&state.relay_health),
         );
+        #[cfg(not(feature = "relay"))]
+        if self.config.roko_config.relay.url.is_some() {
+            warn!(
+                "[relay] url ignored: rebuild roko with `--features relay` to register \
+                 with the relay and bridge feeds to it"
+            );
+        }
 
         // Spawn feed agents publishing to the relay and local event bus.
         let _feed_agents = feed_agents::spawn_all(Arc::clone(&state));
 
         // Bridge feed agents to the relay: registers feeds and forwards ticks.
+        #[cfg(feature = "relay")]
         let _feed_relay_bridge = start_feed_relay_bridge(Arc::clone(&state));
 
         // Register plugin webhook route scopes with the middleware so that
@@ -2896,6 +2907,7 @@ fn publish_chain_watcher_payload(state: &Arc<AppState>, topic: &str, payload: se
 /// Run the supervised relay bridge for both durable subscription consumption
 /// and optional feed publication. The consumer is active whenever a relay URL
 /// is configured; it is intentionally not coupled to `feed_agents.enabled`.
+#[cfg(feature = "relay")]
 fn start_feed_relay_bridge(state: Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
     use roko_agent_server::features::relay_client::{
         MAX_DESIRED_ROOMS, RelayClientConfig, RelayClientStatus, TopicHandler, connect,
@@ -3233,6 +3245,7 @@ fn start_feed_relay_bridge(state: Arc<AppState>) -> Option<tokio::task::JoinHand
     }))
 }
 
+#[cfg(feature = "relay")]
 fn stable_relay_workspace_identity(workdir: &Path) -> String {
     let stable_path = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
     let hash = blake3::hash(stable_path.to_string_lossy().as_bytes())
@@ -3241,14 +3254,17 @@ fn stable_relay_workspace_identity(workdir: &Path) -> String {
     hash[..16].to_string()
 }
 
+#[cfg(feature = "relay")]
 fn relay_consumer_id(workspace_identity: &str) -> String {
     format!("roko-serve-consumer-{workspace_identity}")
 }
 
+#[cfg(feature = "relay")]
 fn relay_publisher_id(workspace_identity: &str) -> String {
     format!("roko-serve-publisher-{workspace_identity}")
 }
 
+#[cfg(feature = "relay")]
 fn relay_initial_retry_delay(attempt: u32) -> std::time::Duration {
     let multiplier = 1u32.checked_shl(attempt.min(7)).unwrap_or(u32::MAX);
     std::time::Duration::from_millis(250)
@@ -3256,6 +3272,7 @@ fn relay_initial_retry_delay(attempt: u32) -> std::time::Duration {
         .min(std::time::Duration::from_secs(30))
 }
 
+#[cfg(feature = "relay")]
 async fn run_feed_relay_publisher(
     state: Arc<AppState>,
     relay_url: String,
@@ -3365,6 +3382,7 @@ async fn run_feed_relay_publisher(
 }
 
 #[cfg(test)]
+#[cfg(feature = "relay")]
 mod subscription_relay_bridge_tests {
     use super::*;
 

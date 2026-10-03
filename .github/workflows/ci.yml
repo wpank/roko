@@ -110,6 +110,7 @@ jobs:
           cargo check -p roko-cli --features chain
           cargo test -p roko-std --features chain chain_tools_have_handlers_when_feature_enabled
           cargo check -p roko-serve --features groups
+          cargo check -p roko-serve --features relay
 
   portal:
     name: Portal (types, tests, export)

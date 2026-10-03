@@ -1202,10 +1202,11 @@ impl AppState {
         let cancel = CancelToken::new();
         let supervisor = Arc::new(ProcessSupervisor::new(cancel.child()));
         let subscriptions = SubscriptionRegistry::load_from_project(&workdir, &roko_config);
+        // Without `relay` no bridge connects, so the status says so (9220).
         let subscription_relay = Arc::new(
             crate::subscription_relay::SubscriptionRelayRuntime::open(
                 &workdir,
-                roko_config.relay.url.is_some(),
+                cfg!(feature = "relay") && roko_config.relay.url.is_some(),
             )
             .context("open relay subscription journal")?,
         );

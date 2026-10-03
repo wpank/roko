@@ -13,7 +13,11 @@ pub(crate) mod auth;
 mod bench;
 #[cfg(feature = "alloy-backend")]
 mod chain;
-#[cfg(any(not(feature = "alloy-backend"), not(feature = "groups")))]
+#[cfg(any(
+    not(feature = "alloy-backend"),
+    not(feature = "groups"),
+    not(feature = "relay")
+))]
 mod chain_disabled;
 pub(crate) mod config;
 mod connectors;
@@ -70,7 +74,9 @@ mod auth_session;
 mod cache;
 mod doctor;
 mod history;
+#[cfg(any(feature = "chain", feature = "relay"))]
 mod proxy_ws;
+#[cfg(feature = "relay")]
 mod relay_proxy;
 #[cfg(feature = "chain")]
 mod rpc_proxy;
@@ -81,6 +87,8 @@ use self::chain_disabled as chain;
 use self::chain_disabled::chain_family_routes;
 #[cfg(not(feature = "groups"))]
 use self::chain_disabled::group_routes;
+#[cfg(not(feature = "relay"))]
+use self::chain_disabled::relay_routes;
 use std::convert::Infallible;
 use std::net::IpAddr;
 use std::num::NonZeroU32;
@@ -461,7 +469,7 @@ pub fn build_router(
     };
 
     let relay = if api_auth.enabled {
-        relay_proxy::routes()
+        relay_routes()
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
                 rbac_middleware::require_route_permission,
@@ -475,7 +483,7 @@ pub fn build_router(
                 middleware::require_api_key,
             ))
     } else {
-        relay_proxy::routes()
+        relay_routes()
     };
 
     // MCP for chat hosts (9114), at the root like the relay: the API's auth
@@ -544,6 +552,13 @@ pub fn build_router(
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
+}
+
+/// The relay proxy, mounted at the server root. A build without `relay`
+/// parks it (9220).
+#[cfg(feature = "relay")]
+fn relay_routes() -> Router<Arc<AppState>> {
+    relay_proxy::routes()
 }
 
 /// Agent groups and their invitations. A build without `groups` parks them
@@ -2245,6 +2260,7 @@ mod tests {
 
     /// With `auth.enabled = false`, relay routes are accessible without a key
     /// (behavior unchanged from before the auth gating).
+    #[cfg(feature = "relay")]
     #[tokio::test]
     async fn relay_requires_auth_skipped_when_disabled() {
         let mut config = RokoConfig::default();
@@ -2276,6 +2292,7 @@ mod tests {
     /// A member-level `agent:write` key may mutate `/relay/*`: RBAC applies
     /// the declared `AgentSpawn` row instead of the `ConfigEdit` catch-all
     /// that only admins hold (bug-928add).
+    #[cfg(feature = "relay")]
     #[tokio::test]
     async fn relay_mutation_uses_declared_agent_spawn_permission() {
         let plaintext = "relay-agent-writer";

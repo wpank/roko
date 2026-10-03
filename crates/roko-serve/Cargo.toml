@@ -32,6 +32,10 @@ hdc = ["dep:roko-primitives", "roko-compose/hdc", "roko-fs/hdc"]
 # Agent groups, membership and pheromone state (GroupRuntime and the
 # /groups and /invitations routes). Parked: plan runs never use them (9219).
 groups = []
+# Relay client side: workspace registration, the subscription and feed
+# relay bridge, and the /relay proxy. Parked: no workspace sets a relay
+# url (9220). The relay health and subscription status types stay compiled.
+relay = []
 # Enables OpenTelemetry Protocol (OTLP) trace/metric export. Configure OTEL_EXPORTER_OTLP_ENDPOINT to use.
 otlp = [
     "dep:opentelemetry",

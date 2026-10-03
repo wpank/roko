@@ -96,3 +96,7 @@ quarantine state is to find and edit `provider-health.json` directly, which noth
 - Pairs with entry (c) of this same report: once auth failures are correctly classified and reported as
   `definitive: true` with a specific reason, this command is what an operator actually uses in response to seeing
   that reason.
+
+## Progress
+
+- 2026-10-03: implemented on `work/gap-d90a93` at d19b0eed1; `roko config providers reset-health [<provider>]` (beside `providers health`, which reads the same file), `ProviderHealthRegistry::clear`, and the 1115 auth hint points at it. Cargo verification deferred to the batch gate.

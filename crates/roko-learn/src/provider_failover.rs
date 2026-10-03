@@ -306,6 +306,8 @@ fn health_hold(registry: &ProviderHealthRegistry, provider_id: &str) -> Option<H
     {
         Some(ErrorClass::Exhausted) => ("provider_exhausted", "out of usage", true),
         Some(ErrorClass::Billing) => ("billing", "billing failure", true),
+        // A login does not fix itself within a run (bug-52c48f).
+        Some(ErrorClass::AuthFailure) => ("auth_failure", "not logged in or key rejected", true),
         _ => (
             "circuit_open",
             "circuit open after repeated failures",
@@ -583,6 +585,26 @@ impl Failover {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug-52c48f: a provider whose last failure was an auth failure is held
+    /// out as such, definitively, like an exhausted or a billing one, and not
+    /// as a circuit that may recover on its own.
+    #[test]
+    fn health_hold_reports_auth_failure_as_definitive() {
+        let registry = ProviderHealthRegistry::new();
+        registry.record_failure("claude_cli", ErrorClass::AuthFailure);
+        let hold = health_hold(&registry, "claude_cli").expect("the provider is held");
+        assert_eq!(hold.class, "auth_failure");
+        assert!(hold.definitive);
+        assert!(hold.until_ms.is_some());
+
+        for _ in 0..3 {
+            registry.record_failure("zai", ErrorClass::ServerError);
+        }
+        let hold = health_hold(&registry, "zai").expect("three failures hold it");
+        assert_eq!(hold.class, "circuit_open");
+        assert!(!hold.definitive);
+    }
 
     /// A config with a refusing `claude_cli` provider, an Anthropic API
     /// provider of the same family, and two OpenAI-compatible providers: one

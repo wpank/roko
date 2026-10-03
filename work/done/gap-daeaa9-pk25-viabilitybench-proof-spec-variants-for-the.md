@@ -2,7 +2,7 @@
 id = "gap-daeaa9"
 kind = "gap"
 title = "PK25 ViabilityBench proof: Spec variants for the 48 H3 instances: precise, vague by D-v1, and the recoverability… (+3 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -10,8 +10,9 @@ rank = 25
 size = "L"
 subsystem = ["benchmarks/viabilitybench/streams"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "823f2cfca"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK25"
 anchors = ["benchmarks/viabilitybench/driver/materialize.py", "benchmarks/viabilitybench/families/f1_pyconv/spec/", "benchmarks/viabilitybench/families/f4_kvtool/spec/"]
 lane = "bench"
@@ -29,6 +30,17 @@ command = "grep -qw 'def test_s_streams_match_s08_compositions' benchmarks/viabi
 
 [[verify]]
 command = "grep -qw 'def test_select_is_reproducible_and_caps_tasks_per_repo' benchmarks/viabilitybench/external/swebench/test_swebench.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/external/swebench/test_swebench.py -k test_select_is_reproducible_and_caps_tasks_per_repo -q"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T06:07:30Z"
+commit = "823f2cfca"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T04:13:07Z"
+forced = false
+evidence = "Gate 7a (work/backlog-batch-7a, merged into main as 823f2cfca): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib over roko-cli, -compose, -core, -gate, -learn and -runtime (8,225 tests; two calibration-gate fixture failures fixed in 1952f3e82), roko-cli bin 429 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass, the parked features' lib tests pass (cognitive-clock 286, cross-cut-functors 556, spc 699, active-inference 1,297), the default roko-cli tree still has no roko-chain or Alloy provider graph and --features chain builds, ViabilityBench suite 652 passed after the gate's path fix; every [[verify]] passes. PK25 4/4; test_materialize.py's family paths anchored on the test file so the verify passes from the repo root (1952f3e82)."
 +++
 
 ## Problem

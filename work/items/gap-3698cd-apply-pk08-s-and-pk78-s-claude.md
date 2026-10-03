@@ -1,7 +1,7 @@
 +++
 id = "gap-3698cd"
 kind = "gap"
-title = "Apply PK08's and PK78's CLAUDE.md rows (the records plan runs write; stale prompt_experiment and watcher count)"
+title = "Apply PK08's, PK78's and PK80's CLAUDE.md rows (the records plan runs write; stale prompt_experiment and watcher count; the parked features)"
 status = "open"
 triage = "verified"
 severity = "p3"
@@ -23,6 +23,9 @@ command = "! grep -q 'Canonical signal log' CLAUDE.md && grep -q 'attempts.jsonl
 
 [[verify]]
 command = "! grep -q 'prompt_experiment: None' CLAUDE.md && ! grep -q '12 watchers' CLAUDE.md"
+
+[[verify]]
+command = "grep -q 'Parked (off the default build)' CLAUDE.md"
 +++
 
 ## Problem
@@ -67,8 +70,8 @@ touch the Goal line.
   CLI-table/docs entries found in the same pass: `roko config` has no row for `[experiments]` (the model A/B
   config section, already in `commands/config_cmd.rs`'s own table elsewhere in CLAUDE.md as "Model A/B
   experiments" but the `[experiments]` TOML section itself isn't documented in the config-schema docs either);
-  `roko plan run --no-holdout` (confirmed missing, see gap-29fe0a: no such flag exists yet, only `holdout_frac =
-  0`, so this specific row should wait until that flag actually ships); and `roko learn patterns` has no CLI-table
+  `roko plan run --no-holdout` (it exists since PK35, decision 4115: it turns on `[experiments] maximize` for the
+  run; gap-29fe0a covers only the spec gate's holdout, which the flag doesn't reach yet); and `roko learn patterns` has no CLI-table
   row despite existing as a real subcommand (`crates/roko-cli/src/commands/learn.rs`).
 
 PK08 (task 2121):
@@ -128,4 +131,67 @@ index 8765adea9..847d203a2 100644
  3. **roko tracks its own work**: the `roko work` CLI (it extends `roko backlog`, per
     `work/README.md`) plus plan-task `closes = [...]` links, so that roko itself maintains the work
     graph.
+```
+
+PK80 (task 9227; added at gate 7a, 2026-10-03). Against CLAUDE.md as committed at 9fe7b177c; the worker's patch put
+the new section inside the Components table, and this one places it after the table:
+
+```diff
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -28,7 +28,7 @@
+ | Runtime services | Shared `RuntimeServices` builder (the service facade for CLI, serve and ACP) | `crates/roko-execution/` |
+ | Process supervision | ProcessSupervisor, event bus, cancellation | `crates/roko-runtime/` |
+ | Execution state | Per-plan Graph checkpoint, activity log and cost state | `.roko/state/graph/<plan>/` (`checkpoint.json`, `activities.jsonl`, `costs.json`) |
+-| Episodes | Per-turn episode records. `hdc_fingerprint` is `HdcVector::from_seed` of the serialized prompt and outcome, i.e. one 64-bit FNV-1a hash expanded into a vector. It identifies exact inputs; it does not measure semantic similarity | `crates/roko-cli/src/runtime_feedback/episodes.rs`, `crates/roko-primitives/src/hdc.rs`, `.roko/episodes.jsonl` |
++| Episodes | Per-turn episode records. `hdc_fingerprint`, written only when `[learning] episode_hdc_fingerprint = true` (off by default), is `HdcVector::from_seed` of the serialized prompt and outcome, i.e. one 64-bit FNV-1a hash expanded into a vector. It identifies exact inputs; it does not measure semantic similarity | `crates/roko-cli/src/runtime_feedback/episodes.rs`, `crates/roko-primitives/src/hdc.rs`, `.roko/episodes.jsonl` |
+ | Learning | Model routing (CascadeRouter), bandits, playbooks, prompt experiments, efficiency events | `crates/roko-learn/`; state in `.roko/learn/` (`cascade-router.json`, `gate-thresholds.json`, `efficiency.jsonl`) |
+ | Knowledge and dreams | Durable knowledge store, distillation, tiers; offline Dream consolidation | `crates/roko-neuro/`, `crates/roko-dreams/` |
+ | Affect | Daimon affect engine and dispatch modulation | `crates/roko-daimon/` |
+@@ -41,8 +41,26 @@
+ | TUI and chat | ratatui dashboard (`roko dashboard`) with a file watcher; `roko chat` REPL | `crates/roko-cli/src/tui/` (`fs_watch.rs`), `crates/roko-cli/src/chat.rs` |
+ | GitHub integration | `roko github status`; `GitHubOps` trait with no-op and live adapters; `[github]` config | `crates/roko-cli/src/commands/github.rs`, `crates/roko-cli/src/github_ops.rs`, `crates/roko-cli/src/github_ops_impl.rs`, `roko.toml` |
+ | Plugins | Plugin manifests, declarative tools, capability policy, dependency resolution | `crates/roko-plugin/` |
+-| Chain primitives | Optional chain client plus local registry, marketplace, arena and DeFi state machines | `crates/roko-chain/` |
++| Chain primitives | Chain client plus local registry, marketplace, arena and DeFi state machines; parked (see below) | `crates/roko-chain/` |
+ | Signal log | Canonical signal log (a legacy `engrams.jsonl` is read only as a fallback) | `.roko/signals.jsonl` (path logic in `crates/roko-fs/src/layout.rs`) |
++
++## Parked (off the default build)
++
++Decision 9201 parked what the plan path never uses behind cargo features that are off by default
++(the conductor stays on). A default `roko` build leaves these out; build with
++`cargo build -p roko-cli --features <feature>` (or `-p <crate>` for a crate feature) to bring one
++back. Line counts are in `benchmarks/park/`.
++
++| Feature | Crates | Brings back |
++|---|---|---|
++| `chain` | roko-cli, roko-serve | roko-chain, the 17 `chain.*` tools, the chain-family routes (501 without it), chain state and feed agents, x402 paid feeds, chain jobs |
++| `alloy-backend` | roko-cli, roko-serve | Real EVM JSON-RPC (implies `chain`) |
++| `groups` | roko-cli, roko-serve | Agent groups and pheromone state, and their routes |
++| `relay` | roko-cli, roko-serve | Relay registration, the subscription and feed relay bridge, the `/relay` proxy |
++| `cognitive-clock` | roko-cli, roko-runtime | The heartbeat clock, `CorticalState`, the theta and delta consumers and sinks, the attention auction, heartbeat probes |
++| `cross-cut-functors` | roko-compose | The cross-cut functors and `CrossCutArbitrator` |
++| `spc` | roko-gate | CUSUM, EWMA and BOCPD detectors, PELT, Hotelling's T-squared |
++| `active-inference` | roko-learn | The expected-free-energy tier selector |
+ 
+ ## Critical rules
+ 
+@@ -291,7 +309,7 @@
+ | roko-learn | `crates/roko-learn/` | Episodes, playbooks, bandits, model routing, experiments, efficiency |
+ | roko-cli | `crates/roko-cli/` | CLI, plan DAG/runner, merge queue, worktree manager, ratatui TUI |
+ | roko-fs | `crates/roko-fs/` | FileSubstrate (JSONL), GC, layout |
+-| roko-std | `crates/roko-std/` | 35 definitions by default (16 executable local + 19 GitHub MCP); 52 with typed optional-chain placeholders; HTTP MCP clients/resolvers retained at runtime |
++| roko-std | `crates/roko-std/` | 35 definitions in a default build (16 executable local + 19 GitHub MCP); 52 with `--features chain` (the 17 chain tools); HTTP MCP clients/resolvers retained at runtime |
+ | roko-execution | `crates/roko-execution/` | RuntimeServices builder, diagnostic service, execution control, feedback settlement |
+ | roko-runtime | `crates/roko-runtime/` | ProcessSupervisor, event bus, cancellation, workflow contract |
+ | roko-primitives | `crates/roko-primitives/` | HDC vectors, tier routing |
+@@ -306,7 +324,7 @@
+ | roko-plugin | `crates/roko-plugin/` | Plugin manifests, executable declarative tools, canonical tier/capability policy, semantic-version/dependency resolution |
+ | roko-graph | `crates/roko-graph/` | Graph engine, DAG cells, topology, cost state |
+ | roko-demo | `crates/roko-demo/` | Demo/example binary for showcasing features |
+-| roko-chain | `crates/roko-chain/` | Optional chain client/runtime primitives plus tested local registry, marketplace, arena, and DeFi state machines. daeji owns node/BFT/precompiles in a separate repo. |
++| roko-chain | `crates/roko-chain/` | Parked (`--features chain`): chain client/runtime primitives plus tested local registry, marketplace, arena, and DeFi state machines. daeji owns node/BFT/precompiles in a separate repo. |
+ 
+ ## Absolute paths
+ 
 ```

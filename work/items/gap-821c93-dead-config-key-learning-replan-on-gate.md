@@ -4,7 +4,7 @@ kind = "gap"
 title = "Dead config key learning.replan_on_gate_failure still written by the demo config, its widget, and the ViabilityBench pinned template"
 status = "open"
 triage = "verified"
-severity = "p3"
+severity = "p1"
 goal = "tooling"
 size = "S"
 subsystem = ["demo/demo-app", "benchmarks/viabilitybench", "roko-core/config"]
@@ -13,11 +13,11 @@ updated = 2026-10-03
 last_verified = 2026-10-03
 source = "wave-5 follow-up reports 2026-10-02 (PK32 gap-b5caf3)"
 discovered_from = "gap-b5caf3 (backlog task 4110)"
-anchors = ["demo/demo-resources/roko.toml", "benchmarks/viabilitybench/driver/testdata/planemit/pinned.roko.toml", "demo/demo-app/src/components/ConfigWidget.tsx"]
+anchors = ["demo/demo-resources/roko.toml", "benchmarks/viabilitybench/driver/testdata/planemit/pinned.roko.toml", "demo/demo-app/src/components/ConfigWidget.tsx", "benchmarks/viabilitybench/driver/planemit.py", "benchmarks/viabilitybench/driver/run_roko_plan.py"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q 'replan_on_gate_failure' demo/demo-resources/roko.toml benchmarks/viabilitybench/driver/testdata/planemit/pinned.roko.toml demo/demo-app/src/components/ConfigWidget.tsx"
+command = "! grep -q 'replan_on_gate_failure' demo/demo-resources/roko.toml benchmarks/viabilitybench/driver/testdata/planemit/pinned.roko.toml demo/demo-app/src/components/ConfigWidget.tsx benchmarks/viabilitybench/driver/planemit.py benchmarks/viabilitybench/driver/run_roko_plan.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_planemit.py -q"
 +++
 
 ## Problem
@@ -78,3 +78,11 @@ either removing the field or explaining it.
   and already shipped (4110).
 - If the ViabilityBench pinned template's hash-check fails after editing it, that is expected and part of the fix:
   re-pin it per `planemit.py`'s own instructions, not a reason to leave the dead key in.
+- 2026-10-03 (coordinator, gate 7a): raised to p1. PK36's shakedown (3314, `driver/test_shakedown.py`), run against
+  a binary built from main, fails all eight scenarios at setup: the driver's emitted config still writes the key
+  (`planemit.py`'s `CONFIG_TEMPLATE`, line 172, and `run_roko_plan.py`, line 225), and `roko plan validate --strict`
+  now refuses the unknown field, so no ViabilityBench Roko arm can run against main. The template is pinned:
+  removing the line means bumping `TEMPLATE_VERSION` (`planemit-3`), updating the pinned `TEMPLATE_SHA256` in
+  `test_planemit.py` and the golden `testdata/planemit/pinned.roko.toml`, and checking the ladder and Claude CLI
+  templates and any pre-registration lock that names these hashes. The key was off (`false`), so removing it
+  doesn't change behaviour.

@@ -2,7 +2,7 @@
 id = "gap-d90ef6"
 kind = "gap"
 title = "PK48 M3 self-model: Implement the replay baselines, including the production model ladder as it runs today (+5 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 48
 size = "L"
 subsystem = ["roko-learn/self_model"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "823f2cfca"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK48"
 anchors = ["crates/roko-learn/src", "crates/roko-learn/tests"]
 lane = "rust-cold"
@@ -35,6 +36,17 @@ command = "grep -rqw 'fn ips_and_dr_cover_the_known_value' crates/roko-learn/src
 
 [[verify]]
 command = "grep -rqw 'fn circuit_breaker_drops_to_shadow_on_worse_than_base_rate' crates/roko-learn/src/self_model/ && cargo test -p roko-learn self_model::gate"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T06:07:26Z"
+commit = "823f2cfca"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T04:13:34Z"
+forced = false
+evidence = "Gate 7a (work/backlog-batch-7a, merged into main as 823f2cfca): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib over roko-cli, -compose, -core, -gate, -learn and -runtime (8,225 tests; two calibration-gate fixture failures fixed in 1952f3e82), roko-cli bin 429 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass, the parked features' lib tests pass (cognitive-clock 286, cross-cut-functors 556, spc 699, active-inference 1,297), the default roko-cli tree still has no roko-chain or Alloy provider graph and --features chain builds, ViabilityBench suite 652 passed after the gate's path fix; every [[verify]] passes. PK48 6/6; the gate's fixture fix spreads each group's passes so the breaker's five-outcome bins stay calibrated (1952f3e82)."
 +++
 
 ## Problem

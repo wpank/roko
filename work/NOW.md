@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 14 anchor gone · 122 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 14 anchor gone · 121 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -40,11 +40,11 @@ _3 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRI
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- **P2** [gap-daeaa9](items/gap-daeaa9-pk25-viabilitybench-proof-spec-variants-for-the.md) PK25 ViabilityBench proof: Spec variants for the 48 H3 instances: precise, vague by D-v1, and the recoverability… (+3 more) · size L · verified 2026-10-02
 - **P1** [gap-2ca903](items/gap-2ca903-pk30-viabilitybench-proof-codex-cli-runner-for.md) PK30 ViabilityBench proof: Codex CLI runner for the fd_codex arm (+7 more) · size L · verified 2026-10-02
 - **P1** [gap-31c0e8](items/gap-31c0e8-pk36-viabilitybench-proof-shakedown-the-roko-arms.md) PK36 ViabilityBench proof: Shakedown: the Roko arms against the live-run defects, offline, before any paid Roko run (+2 more) · size M · verified 2026-10-02
+- **P1** [gap-a42df2](items/gap-a42df2-pk45-viabilitybench-proof-requires-live-refuse-a.md) PK45 ViabilityBench proof: requires_live: refuse a live manifest whose loops are not LIVE at its harness_sha (+1 more) · size S · verified 2026-10-02
 
-_15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -52,7 +52,7 @@ _15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a
 - **P2** [gap-c2b1a3](items/gap-c2b1a3-pk41-loops-re-closed-roko-learn-telemetry.md) PK41 Loops re-closed: `roko learn telemetry check --srm` compares each randomised layer's arm shares with… · size S · verified 2026-10-02
 - **P2** [gap-2b3c1b](items/gap-2b3c1b-pk42-m2-loop-liveness-loop-state-machine.md) PK42 M2 loop-liveness: Loop state machine with the six false-demotion guards (+7 more) · size L · verified 2026-10-02
 
-_24 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_23 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -80,11 +80,11 @@ _4 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 
 ## 10. Tooling, CLI polish and code hygiene
 
-- **P3** [gap-7add13](items/gap-7add13-pk80-park-and-clean-up-park-the.md) PK80 Park and clean up: Park the cognitive clock: `CorticalState`, the scheduler types and the theta/delta… (+6 more) · size L · verified 2026-10-02
+- **P1** [gap-821c93](items/gap-821c93-dead-config-key-learning-replan-on-gate.md) Dead config key learning.replan_on_gate_failure still written by the demo config, its widget, and the ViabilityBench pinned template · size S · verified 2026-10-03
 - **P2** [spec-0b3a32](items/spec-0b3a32-backlog-phase-9-domains-assistant-held-and.md) Backlog Phase 9 — domains, assistant, held and parked work, cleanup, showcase and deploy [spec] · verified 2026-10-02
 - **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
 
-_15 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_14 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

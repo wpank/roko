@@ -2,7 +2,7 @@
 id = "gap-7add13"
 kind = "gap"
 title = "PK80 Park and clean up: Park the cognitive clock: `CorticalState`, the scheduler types and the theta/delta… (+6 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -10,8 +10,9 @@ rank = 80
 size = "L"
 subsystem = ["roko-cli/runtime_feedback"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "823f2cfca"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK80"
 anchors = [".github/workflows/ci.yml", "CLAUDE.md", "crates/roko-cli/Cargo.toml", "crates/roko-cli/src/doctor.rs", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-cli/src/runtime_feedback/plan_completion.rs", "crates/roko-compose/Cargo.toml", "crates/roko-compose/src/auction.rs", "crates/roko-compose/src/lib.rs", "crates/roko-core/src/config/learning.rs", "crates/roko-gate/Cargo.toml", "crates/roko-gate/src/adaptive_threshold.rs", "crates/roko-gate/src/lib.rs", "crates/roko-learn/Cargo.toml", "crates/roko-learn/src/cascade_router.rs", "crates/roko-learn/src/lib.rs", "crates/roko-runtime/src/heartbeat.rs", "crates/roko-runtime/src/lib.rs", "docs/v3/00-INDEX.md"]
 lane = "rust-hot"
@@ -35,6 +36,17 @@ command = "grep -rqw 'fn default_episode_has_no_hdc_fingerprint' crates/roko-cli
 
 [[verify]]
 command = "grep -rqw 'fn disk_report_skips_creation_marker_dir' crates/roko-cli/src/ && cargo test -p roko-cli disk_report_skips_creation_marker_dir"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T06:07:25Z"
+commit = "823f2cfca"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T04:13:35Z"
+forced = false
+evidence = "Gate 7a (work/backlog-batch-7a, merged into main as 823f2cfca): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib over roko-cli, -compose, -core, -gate, -learn and -runtime (8,225 tests; two calibration-gate fixture failures fixed in 1952f3e82), roko-cli bin 429 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass, the parked features' lib tests pass (cognitive-clock 286, cross-cut-functors 556, spc 699, active-inference 1,297), the default roko-cli tree still has no roko-chain or Alloy provider graph and --features chain builds, ViabilityBench suite 652 passed after the gate's path fix; every [[verify]] passes. PK80 7/7; 9227's CLAUDE.md section moved to gap-3698cd; clippy doc fix in 8e088e78d."
 +++
 
 ## Problem

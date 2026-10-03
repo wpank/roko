@@ -506,6 +506,23 @@ pub struct VerifyStepVerdict {
     pub skip_reason: Option<String>,
 }
 
+/// Most scope findings a verdict lists; it counts the rest
+/// ([`AttemptVerdictRecord::scope_findings_omitted`]).
+pub const SCOPE_FINDINGS_LISTED: usize = 50;
+
+/// A path a settled attempt changed outside its task's `files`, as the
+/// pre-verify screen found it (`scope_findings[]`, backlog 1125). Under
+/// `[gates] diff_scope = "record"` it is recorded and does not fail the
+/// attempt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScopeFinding {
+    /// The path, relative to the attempt's working tree.
+    pub path: String,
+    /// The finding's kind, e.g. `outside_scope`.
+    pub kind: String,
+}
+
 /// Unix-millisecond timestamps of one attempt (S01 §4.4); `None` when
 /// unknown, never `0`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -900,6 +917,15 @@ pub struct AttemptVerdictRecord {
     /// Per-rung verify results.
     #[serde(default)]
     pub steps: Vec<VerifyStepVerdict>,
+    /// Paths the attempt changed outside its task's `files`, at most
+    /// [`SCOPE_FINDINGS_LISTED`]; empty when it changed none or the
+    /// pre-verify screen did not diff it (backlog 1125).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_findings: Vec<ScopeFinding>,
+    /// How many more scope findings there were than the verdict lists;
+    /// `None` when it lists them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_findings_omitted: Option<u32>,
     /// Timestamps.
     #[serde(default)]
     pub timing: AttemptTiming,
@@ -962,6 +988,8 @@ impl AttemptVerdictRecord {
             blame,
             learning_label: learning_label_for(outcome, blame),
             steps: Vec::new(),
+            scope_findings: Vec::new(),
+            scope_findings_omitted: None,
             timing: AttemptTiming::default(),
             executed: ExecutedModel::default(),
             usage: AttemptUsage::default(),
@@ -982,6 +1010,15 @@ impl AttemptVerdictRecord {
         let mut record = Self::settle(identity, verdict.into(), false);
         record.gate_verdict = Some(verdict);
         record
+    }
+
+    /// List `findings` as the attempt's scope findings: the first
+    /// [`SCOPE_FINDINGS_LISTED`] of them, and a count of the rest.
+    pub fn set_scope_findings(&mut self, mut findings: Vec<ScopeFinding>) {
+        let omitted = findings.len().saturating_sub(SCOPE_FINDINGS_LISTED);
+        findings.truncate(SCOPE_FINDINGS_LISTED);
+        self.scope_findings = findings;
+        self.scope_findings_omitted = u32::try_from(omitted).ok().filter(|&count| count > 0);
     }
 
     /// The learning label as learners apply it (S01 §4.1): `Some(true)` for
@@ -1769,6 +1806,43 @@ mod tests {
         assert_eq!(json["cost"]["vendor_usd"], serde_json::Value::Null);
         let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, record);
+    }
+
+    /// backlog 1125: a verdict lists at most `SCOPE_FINDINGS_LISTED` scope
+    /// findings and counts the rest; a verdict with none writes neither
+    /// field, and a row from before the fields still parses.
+    #[test]
+    fn scope_findings_are_capped_and_old_rows_still_parse() {
+        let mut record =
+            AttemptVerdictRecord::settle(identity("T3", 1), AttemptOutcome::Passed, true);
+        let findings = (0..SCOPE_FINDINGS_LISTED + 3)
+            .map(|n| ScopeFinding {
+                path: format!("src/f{n}.rs"),
+                kind: "outside_scope".to_string(),
+            })
+            .collect();
+        record.set_scope_findings(findings);
+        assert_eq!(record.scope_findings.len(), SCOPE_FINDINGS_LISTED);
+        assert_eq!(record.scope_findings_omitted, Some(3));
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(json["scope_findings"][0]["path"], "src/f0.rs");
+        assert_eq!(json["scope_findings"][0]["kind"], "outside_scope");
+        assert_eq!(json["scope_findings_omitted"], 3);
+        let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, record);
+
+        let mut json = serde_json::to_value(&record).expect("serialize");
+        let row = json.as_object_mut().expect("a JSON object");
+        row.remove("scope_findings");
+        row.remove("scope_findings_omitted");
+        let old: AttemptVerdictRecord = serde_json::from_value(json).expect("an old row parses");
+        assert!(old.scope_findings.is_empty());
+        assert_eq!(old.scope_findings_omitted, None);
+
+        record.set_scope_findings(Vec::new());
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert!(json.get("scope_findings").is_none(), "{json}");
+        assert!(json.get("scope_findings_omitted").is_none(), "{json}");
     }
 
     #[test]

@@ -1339,12 +1339,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
             ctx.cell_id.as_deref().unwrap_or(&task.id)
         );
         if let Some(tui) = &self.tui_bridge {
-            // Derive a provider label from the planned backend so the dashboard
-            // can display it before the actual dispatch resolves a provider.
-            let planned_provider: String =
-                roko_core::ProviderKind::from(dispatch_plan.model.backend)
-                    .label()
-                    .to_string();
+            // The provider the planned model key resolves to, as dispatch
+            // resolves it (`zai`, `openai`), not its backend family's label,
+            // which named every OpenAI-compatible model `codex_cli`; a model
+            // that does not resolve keeps that label (backlog 1127).
+            let planned_provider =
+                crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
+                    .resolve(&request.model_key)
+                    .provider_id;
             tui.agent_spawned(
                 &pre_dispatch_agent_id,
                 &spec.plan_id,
@@ -1404,6 +1406,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     request,
                     Some(&progress),
                     failover::LadderRoute::of(&task, &dispatch_plan),
+                    Some(failover::DashboardRow {
+                        agent_id: &pre_dispatch_agent_id,
+                        role: task.role.as_deref().unwrap_or("implementer"),
+                    }),
                 ),
                 &progress,
                 stall_watch,
@@ -1663,6 +1669,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .await;
         attempt.verify_ended();
         attempt.record_verify_steps(report.steps);
+        attempt.record_scope_findings(report.scope_findings);
         let verification = report.result;
         // The helper model calls verification made count toward this
         // attempt, the background ones included (bug-62e3f4).
@@ -3231,5 +3238,95 @@ sleep 30
         let is_verdict = |row: &serde_json::Value| row["schema_version"] == "roko.verdict/1";
         let verdicts = jsonl_rows_where(&attempts, 1, is_verdict).await;
         assert_eq!(verdicts[0]["outcome"], "cancelled", "{}", verdicts[0]);
+    }
+
+    /// The agent id, model and provider of each `agent_spawned` event
+    /// published on `events` so far, in order.
+    pub(super) fn spawned_agents(
+        events: &mut tokio::sync::broadcast::Receiver<
+            roko_runtime::event_bus::Envelope<roko_core::DashboardEvent>,
+        >,
+    ) -> Vec<(String, String, String)> {
+        let mut spawned = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if let roko_core::DashboardEvent::AgentSpawned {
+                        agent_id,
+                        model,
+                        provider,
+                        ..
+                    } = envelope.payload
+                    {
+                        spawned.push((agent_id, model, provider));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => return spawned,
+            }
+        }
+    }
+
+    /// backlog 1127: the `agent_spawned` event published before dispatch
+    /// names the provider the planned model is configured on, here the
+    /// OpenAI-compatible `zai`, not its backend family's label (`codex_cli`).
+    #[tokio::test]
+    async fn agent_spawned_names_planned_provider() {
+        let temp = tempdir().expect("tempdir");
+        let (base_url, _requests) = spawn_openai_mock(vec![final_turn("ok"), final_turn("ok")]);
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "glm-model".to_string();
+        config.agent.bare_mode = false;
+        // `PATH` is always set, standing in for an API key.
+        config.providers.insert(
+            "zai".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some(base_url),
+                api_key_env: Some("PATH".to_string()),
+                timeout_ms: Some(15_000),
+                ..ProviderConfig::default()
+            },
+        );
+        config.models.insert(
+            "glm-model".to_string(),
+            ModelProfile {
+                provider: "zai".to_string(),
+                slug: "glm-4.7".to_string(),
+                context_window: 128_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                supports_tools: true,
+                tool_format: "openai_json".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let task = TaskDef {
+            model_hint: Some("glm-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        // Only the event published before the provider call matters here.
+        let _ = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await;
+
+        let spawned = spawned_agents(&mut events);
+        let (_, model, provider) = spawned.first().expect("an agent_spawned event");
+        assert_eq!(provider, "zai", "{spawned:?}");
+        assert_eq!(model, "glm-4.7", "{spawned:?}");
     }
 }

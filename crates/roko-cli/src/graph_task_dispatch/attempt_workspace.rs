@@ -137,6 +137,17 @@ impl GraphTaskDispatcher {
             }
             Some(Err(WorkspaceError::Conflict(reason))) => {
                 self.restart_from_plan_tip(&spec.plan_id, &task.id, "plan-branch conflict");
+                // The next attempt learns what this one conflicted with,
+                // instead of starting blind (backlog 1123).
+                let changed = self.take_changed_files(settled.attempt_key());
+                if let Some(feedback) = conflict_feedback(&reason, &changed) {
+                    self.gate_retry_context.record(
+                        &spec.plan_id,
+                        &task.id,
+                        feedback,
+                        settled.key().attempt.saturating_add(1),
+                    );
+                }
                 Err(RokoError::Verify {
                     gate: "plan-branch".to_string(),
                     message: format!(
@@ -288,6 +299,46 @@ impl GraphTaskDispatcher {
             message,
         })
     }
+}
+
+/// Most changed paths the feedback on a plan-branch conflict lists.
+const CONFLICT_PATHS_LISTED: usize = 20;
+
+/// The next attempt's feedback on a plan-branch conflict (backlog 1123): the
+/// refusal's `reason`, then the paths it names, or else the paths the
+/// attempt changed (`changed`). It stays raw text: lifting out a path that
+/// reads like a failing test would leave the prompt with that line alone.
+fn conflict_feedback(reason: &str, changed: &[String]) -> Option<GateFeedback> {
+    let mut message = format!(
+        "Your previous attempt's work conflicts with the plan's accepted work ({reason}). The \
+         plan branch now includes those changes; start from it and keep them."
+    );
+    if let Some(paths) = conflicted_paths(reason) {
+        message.push_str(&format!("\nConflicting paths: {paths}."));
+    } else if !changed.is_empty() {
+        let shown = changed.len().min(CONFLICT_PATHS_LISTED);
+        let mut listed = changed[..shown].join(", ");
+        let more = changed.len() - shown;
+        if more > 0 {
+            listed.push_str(&format!(" and {more} more"));
+        }
+        message.push_str(&format!("\nYour previous attempt changed: {listed}."));
+    }
+    GateFeedback::from_raw(&message).map(|feedback| GateFeedback {
+        compile_errors: Vec::new(),
+        test_failures: Vec::new(),
+        clippy_warnings: Vec::new(),
+        ..feedback
+    })
+}
+
+/// The paths a plan-branch conflict names, as `WorktreeError::Conflict`
+/// words them (`…; conflicted paths: a.txt, b.txt`); `None` when it names
+/// none.
+fn conflicted_paths(reason: &str) -> Option<&str> {
+    let (_, paths) = reason.split_once("conflicted paths:")?;
+    let paths = paths.trim();
+    (!paths.is_empty()).then_some(paths)
 }
 
 /// How often a held attempt looks for its review decision.
@@ -1020,6 +1071,107 @@ printf '%s\n' '{"type":"result","session_id":"sess-w","model":"claude-sonnet-4-6
             .collect();
         assert_eq!(checkouts, [0, 1], "each retry gets a fresh checkout");
         assert!(git(repo.path(), &["branch", "--list", "roko/plan/*"]).is_empty());
+        // The refusal names no paths, so the next attempt hears which paths
+        // its predecessor changed (backlog 1123).
+        let feedback = dispatcher
+            .gate_retry_context
+            .next_attempt(&spec.plan_id, &task.id, 1)
+            .feedback
+            .expect("the next attempt hears of the conflict");
+        assert!(
+            feedback
+                .raw_output
+                .contains("Your previous attempt changed: feature.txt."),
+            "{feedback:?}"
+        );
+    }
+
+    /// A provider that records each call's prompt as `prompt-<call>` and
+    /// rewrites the one line of `same.txt`; each of the first two calls
+    /// waits for the test to release it (`release-<call>`).
+    const EDITS_SAME_LINE_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/calls"
+cat > "$dir/prompt-$n.part" && mv "$dir/prompt-$n.part" "$dir/prompt-$n"
+if [ "$n" -le 2 ]; then
+  while [ ! -e "$dir/release-$n" ]; do sleep 0.05; done
+fi
+printf 'edit %s\n' "$n" > same.txt
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"edited same.txt"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-c","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// Wait for `path` to appear.
+    async fn appears(path: &Path) {
+        for _ in 0..600 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("{} never appeared", path.display());
+    }
+
+    /// backlog 1123: two sibling tasks edit the same line, both from the
+    /// plan's base. The first lands on the plan branch; the second's work
+    /// conflicts with it, and its next attempt's prompt says so and names
+    /// the conflicting file.
+    #[tokio::test]
+    async fn conflict_retry_prompt_names_the_conflict() {
+        let (repo, worktrees) = repo_with_worktrees();
+        std::fs::write(repo.path().join("same.txt"), "base\n").expect("write same.txt");
+        git(repo.path(), &["add", "same.txt"]);
+        git(repo.path(), &["commit", "-m", "same"]);
+        let provider = worktree_provider(repo.path(), worktrees.path());
+        let (dispatcher, mut first) = make_test_dispatcher_with(
+            &repo,
+            EDITS_SAME_LINE_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_workspace_provider(provider),
+        )
+        .await;
+        first.verify = vec![verify_step("structural", "test -f same.txt")];
+        let mut second = first.clone();
+        second.id = "T-SECOND".to_string();
+        let (first_spec, second_spec) = (make_spec(&first), make_spec(&second));
+
+        // Both siblings have their checkouts before either lands.
+        let first_run = dispatch_in_background(&dispatcher, &first_spec);
+        appears(&repo.path().join("prompt-1")).await;
+        let second_run = dispatch_in_background(&dispatcher, &second_spec);
+        appears(&repo.path().join("prompt-2")).await;
+        std::fs::write(repo.path().join("release-1"), "").expect("release the first");
+        first_run
+            .await
+            .expect("dispatch task")
+            .expect("the first sibling lands");
+        std::fs::write(repo.path().join("release-2"), "").expect("release the second");
+        let error = second_run
+            .await
+            .expect("dispatch task")
+            .expect_err("the second sibling's work conflicts");
+        assert!(
+            matches!(&error, RokoError::Verify { gate, .. } if gate == "plan-branch"),
+            "{error:?}"
+        );
+
+        // Its next attempt starts from the plan branch and is told why.
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&second_spec, Vec::new(), &ctx)
+            .await
+            .expect("the retry lands on top of the first sibling's work");
+        let blind = std::fs::read_to_string(repo.path().join("prompt-2")).expect("first prompt");
+        assert!(!blind.contains("conflicts with the plan's accepted work"));
+        let retry = std::fs::read_to_string(repo.path().join("prompt-3")).expect("retry prompt");
+        assert!(
+            retry.contains("conflicts with the plan's accepted work"),
+            "{retry}"
+        );
+        assert!(retry.contains("Conflicting paths: same.txt."), "{retry}");
     }
 
     /// A provider that writes `feature.txt` and, on its first call only, also
@@ -1083,6 +1235,73 @@ printf '%s\n' '{"type":"result","session_id":"sess-t","model":"claude-sonnet-4-6
         let check = format!("{}:check.sh", accepted.plan_branch);
         assert_eq!(git(repo.path(), &["show", &check]), "test -f feature.txt");
         assert_eq!(dispatcher.worktree_generation(&task_key), 1);
+    }
+
+    /// A provider whose call `n` writes `file-<n>.txt`, and nothing else.
+    const WRITES_OWN_FILE_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/calls"
+printf 'task %s\n' "$n" > "file-$n.txt"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"wrote its own file"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-o","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// backlog 1124: an attempt's diff starts from the commit its checkout
+    /// was made from. Sibling A lands on the plan branch; B's checkout then
+    /// starts from that tip, and B, which changes only its own file, is not
+    /// flagged for A's file, even under `diff_scope = "enforce"` and with
+    /// the base branch named by name (which does not hold A's work).
+    #[tokio::test]
+    async fn outside_scope_ignores_sibling_accepted_commits() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let provider = Arc::new(WorktreeExecutionWorkspaceProvider::new(
+            WorktreeManager::new(WorktreeConfig {
+                repo_root: repo.path().to_path_buf(),
+                base_branch: "main".to_string(),
+                worktrees_root: worktrees.path().to_path_buf(),
+                max_live: None,
+                idle_ttl: std::time::Duration::from_secs(3600),
+            }),
+        ));
+        let (dispatcher, mut first) = make_test_dispatcher_with(
+            &repo,
+            WRITES_OWN_FILE_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                config.gates.diff_scope = roko_core::config::gates::DiffScope::Enforce;
+            },
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_workspace_provider(provider),
+        )
+        .await;
+        let mut second = first.clone();
+        second.id = "T-SECOND".to_string();
+        for (n, task) in [(1, &mut first), (2, &mut second)] {
+            task.files = vec![format!("file-{n}.txt")];
+            task.verify = vec![verify_step("structural", &format!("test -f file-{n}.txt"))];
+        }
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&first), Vec::new(), &ctx)
+            .await
+            .expect("the first sibling lands");
+        let outputs = dispatcher
+            .dispatch(&make_spec(&second), Vec::new(), &ctx)
+            .await
+            .expect("the second sibling is not flagged for the first one's file");
+
+        let accepted = TaskAttempt::from_signals(&outputs)
+            .expect("the output names its attempt")
+            .accepted
+            .expect("the second sibling was accepted");
+        for file in ["file-1.txt", "file-2.txt"] {
+            let landed = format!("{}:{file}", accepted.plan_branch);
+            assert!(!git(repo.path(), &["show", &landed]).is_empty(), "{file}");
+        }
     }
 
     /// reg-7cf6f9: an attempt waits for disk headroom while another attempt

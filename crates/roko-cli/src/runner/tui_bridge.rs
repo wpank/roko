@@ -130,6 +130,11 @@ impl TuiBridge {
     }
 
     /// An agent has been spawned.
+    ///
+    /// Published again for an agent id that is already running, it updates
+    /// that row's model and provider: the dashboard upserts agents by id. A
+    /// Graph attempt does so when failover runs another model than the one
+    /// it was spawned with (backlog 1128).
     pub fn agent_spawned(
         &self,
         agent_id: &str,

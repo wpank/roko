@@ -159,6 +159,14 @@ pub struct WorktreeHandle {
     /// Unix epoch milliseconds of last activity. Updated by
     /// [`WorktreeManager::touch`].
     pub last_active_ms: i64,
+    /// The commit the checkout was made from: for an attempt, its plan's
+    /// accepted tip or the configured base, resolved when the checkout was
+    /// created. An attempt's changes are diffed from it, so work its
+    /// siblings landed before it started is not counted as its own
+    /// (backlog 1124). `None` for a re-attached checkout, whose start is not
+    /// read back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_commit: Option<String>,
 }
 
 /// Exact immutable commit accepted from a completed task attempt.
@@ -727,6 +735,7 @@ impl WorktreeManager {
             branch: branch.to_string(),
             created_at_ms: now_ms,
             last_active_ms: now_ms,
+            base_commit: Some(claim.marker.target_oid.clone()),
         };
 
         let conflict = {
@@ -1590,6 +1599,7 @@ impl WorktreeManager {
             branch,
             created_at_ms: mtime_ms.min(now_ms),
             last_active_ms: now_ms,
+            base_commit: None,
         };
 
         let mut guard = self.active.lock();

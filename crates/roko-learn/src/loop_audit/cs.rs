@@ -52,7 +52,9 @@ impl PlugIn {
         }
     }
 
-    /// λ̇_t for the next value.
+    /// λ̇_t for the next value. `log(t + 1)` is written as S08's toolkit
+    /// writes it, so the two agree to the bit (backlog 5111).
+    #[allow(clippy::imprecise_flops)]
     fn bet(&self) -> f64 {
         (self.log_term / (self.squares * (self.t as f64 + 1.0).ln())).sqrt()
     }

@@ -424,7 +424,7 @@ impl SectionBandit {
             .count();
         let estimate = excluded_wins as f64 / f64::from(SECTION_MONTE_CARLO_DRAWS);
         let p_exclude = estimate.clamp(SECTION_EXCLUSION_FLOOR, arms.exclusion_cap());
-        let excluded = rng.gen::<f64>() < p_exclude;
+        let excluded = rng.r#gen::<f64>() < p_exclude;
         let p_include = 1.0 - p_exclude;
         let propensity = if excluded { p_exclude } else { p_include };
         SectionDecision {

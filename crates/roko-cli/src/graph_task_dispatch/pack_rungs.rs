@@ -392,7 +392,6 @@ fn rubric_criteria(workdir: &Path, rung: &GateRungConfig, task: &TaskDef) -> Vec
         .map(str::to_string)
         .collect()
 }
-}
 
 /// The `[profiles.<label>]` entry a task of work domain `domain` follows,
 /// resolved through its `base` chain, which may end at a built-in profile

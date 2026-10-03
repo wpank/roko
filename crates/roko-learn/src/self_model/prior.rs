@@ -350,7 +350,7 @@ mod tests {
             );
         }
         // I_x(2, 3) = 6x²(1 − x)² + 4x³(1 − x) + x⁴.
-        for x in [0.1, 0.35, 0.6, 0.9] {
+        for x in [0.1_f64, 0.35, 0.6, 0.9] {
             let closed =
                 6.0 * x * x * (1.0 - x) * (1.0 - x) + 4.0 * x.powi(3) * (1.0 - x) + x.powi(4);
             assert!((reg_inc_beta(2.0, 3.0, x) - closed).abs() < 1e-9, "{x}");

@@ -527,14 +527,7 @@ mod tests {
                 vec![],
                 Log,
             ),
-            (
-                "L-bid",
-                retired("4217"),
-                None,
-                R::Degenerate,
-                vec![],
-                Log,
-            ),
+            ("L-bid", retired("4217"), None, R::Degenerate, vec![], Log),
             (
                 "L-know",
                 Lifecycle::Active,

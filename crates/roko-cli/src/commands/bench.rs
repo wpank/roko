@@ -230,7 +230,10 @@ mod tests {
         let cwd = root.path().canonicalize().expect("canonical root");
         assert_eq!(lines[0], cwd.to_str().expect("utf-8 path"));
         let driver = format!("{VB_DIR}/{VB_DRIVER}");
-        assert_eq!(lines[1..], [driver.as_str(), "report", "--experiment", "PILOT-A"]);
+        assert_eq!(
+            lines[1..],
+            [driver.as_str(), "report", "--experiment", "PILOT-A"]
+        );
 
         let missing_venv = run_viability(root.path(), &args, None).expect_err("no venv");
         assert!(

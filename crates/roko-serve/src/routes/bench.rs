@@ -1318,10 +1318,9 @@ async fn archive_workspace(
         .join(dirs.root.file_name()?);
     let destination = workdir.join(&relative);
     let source = dirs.workspace.clone();
-    let copied = tokio::task::spawn_blocking(move || {
-        copy_capped(&source, &destination, ARCHIVE_MAX_BYTES)
-    })
-    .await;
+    let copied =
+        tokio::task::spawn_blocking(move || copy_capped(&source, &destination, ARCHIVE_MAX_BYTES))
+            .await;
     match copied {
         Ok(Ok(())) => Some(relative.to_string_lossy().into_owned()),
         Ok(Err(error)) => {
@@ -1347,8 +1346,7 @@ fn copy_capped(
     let mut total = 0_u64;
     let mut pending = vec![source.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .with_context(|| format!("read {}", dir.display()))?;
+        let entries = std::fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))?;
         for entry in entries {
             let entry = entry?;
             let kind = entry.file_type()?;
@@ -2340,13 +2338,19 @@ mod tests {
                 .join("archives")
                 .join(&run_id)
                 .join(task_dir);
-            let archive = result.archive.as_deref().expect("the workspace is archived");
+            let archive = result
+                .archive
+                .as_deref()
+                .expect("the workspace is archived");
             assert_eq!(PathBuf::from(archive), expected);
             let kept = state.workdir.join(archive);
             let notes = std::fs::read_to_string(kept.join("AGENT_NOTES.md")).expect("agent edit");
             assert_eq!(notes, "edited by the agent\n");
             assert!(kept.join("Cargo.toml").is_file() && kept.join("src").join("lib.rs").is_file());
-            assert!(!kept.join("target").exists(), "the build directory is left out");
+            assert!(
+                !kept.join("target").exists(),
+                "the build directory is left out"
+            );
         }
         // The run's temporary directory is gone: only the archive keeps them.
         let scratch = std::env::temp_dir().join(format!("roko-bench-{run_id}"));
@@ -2357,8 +2361,14 @@ mod tests {
         std::fs::create_dir_all(source.join("src")).expect("source dir");
         std::fs::write(source.join("src").join("lib.rs"), "pub fn f() {}\n").expect("lib.rs");
         let error = copy_capped(&source, &tmp.path().join("small"), 10).expect_err("over the cap");
-        assert!(error.to_string().contains("over the 10-byte cap"), "{error}");
-        assert!(!tmp.path().join("small").exists(), "nothing is copied over the cap");
+        assert!(
+            error.to_string().contains("over the 10-byte cap"),
+            "{error}"
+        );
+        assert!(
+            !tmp.path().join("small").exists(),
+            "nothing is copied over the cap"
+        );
     }
 
     /// 3343: a task is priced at the price snapshot's row for the model that
@@ -2373,7 +2383,9 @@ mod tests {
         };
         let snapshot = PriceSnapshot::builtin().expect("built-in snapshot");
         let served_usd = snapshot.price("gpt-5.4", &tokens).expect("gpt-5.4 row");
-        let requested_usd = snapshot.price("gpt-oss-120b", &tokens).expect("gpt-oss-120b row");
+        let requested_usd = snapshot
+            .price("gpt-oss-120b", &tokens)
+            .expect("gpt-oss-120b row");
         assert!((served_usd.api_equiv_usd - requested_usd.api_equiv_usd).abs() > 1e-6);
         let cases = [
             (Some("gpt-5.4"), "gpt-5.4", served_usd.api_equiv_usd, false),

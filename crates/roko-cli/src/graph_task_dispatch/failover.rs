@@ -1441,10 +1441,8 @@ exit 1
         let mut config = failover_config(&claude, &base_url, &["api-model"]);
         // The planned model is priced far above the one that answers, so a
         // cost at the planned rate would show.
-        for (model, input, output) in [
-            ("claude-sonnet", 1_000.0, 1_000.0),
-            ("api-model", 2.0, 8.0),
-        ] {
+        for (model, input, output) in [("claude-sonnet", 1_000.0, 1_000.0), ("api-model", 2.0, 8.0)]
+        {
             let profile = config.models.get_mut(model).expect("configured model");
             profile.cost_input_per_m = Some(input);
             profile.cost_output_per_m = Some(output);

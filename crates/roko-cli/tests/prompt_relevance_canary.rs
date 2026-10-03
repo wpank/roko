@@ -32,7 +32,9 @@ use std::process::Output;
 
 use common::ScriptedPlanWorkspace;
 use common::scripted_provider::{Call, Script, ScriptedProvider, Turn};
-use roko_learn::error_pattern_store::{ErrorPatternStore, GateFailureObservation, GateFailureSource};
+use roko_learn::error_pattern_store::{
+    ErrorPatternStore, GateFailureObservation, GateFailureSource,
+};
 use roko_learn::playbook::Playbook;
 use serde_json::json;
 
@@ -150,7 +152,10 @@ fn agent() -> Script {
         .task(
             "T02",
             [Turn::reply()
-                .write("docs/notes.md", "# Notes\n\n## Usage\n\nInstall the release.\n")
+                .write(
+                    "docs/notes.md",
+                    "# Notes\n\n## Usage\n\nInstall the release.\n",
+                )
                 .text("Wrote the release notes.\nLesson: none")],
         )
         .task(
@@ -241,7 +246,10 @@ fn seed_learned_state(repo: &Path) {
     let learn = roko.join("learn");
     let playbook_dir = learn.join("playbooks");
     fs::create_dir_all(&playbook_dir).expect("create the playbook directory");
-    let calc = Playbook::new("pb-calc-power", "Implement calc power functions and test them");
+    let calc = Playbook::new(
+        "pb-calc-power",
+        "Implement calc power functions and test them",
+    );
     let mut playbooks = vec![calc];
     for (id, goal) in [
         ("pb-db-index", "Tune the database index cache"),
@@ -321,7 +329,11 @@ fn context(output: &Output) -> String {
 /// Run 1, which must pass: `T01` on its retry, `T02` at once.
 fn run_one(workspace: &ScriptedPlanWorkspace) {
     let output = workspace.run_plan(RUN_ONE, &[]);
-    assert!(output.status.success(), "run 1 failed\n{}", context(&output));
+    assert!(
+        output.status.success(),
+        "run 1 failed\n{}",
+        context(&output)
+    );
 }
 
 /// R2 #8: a task gets no learned section that is not about its topic. `T02`
@@ -382,7 +394,11 @@ fn a_later_task_sees_its_topics_lessons() {
     run_one(&workspace);
     add_plan(&workspace, RUN_TWO, RUN_TWO_TASKS);
     let output = workspace.run_plan(RUN_TWO, &[]);
-    assert!(output.status.success(), "run 2 failed\n{}", context(&output));
+    assert!(
+        output.status.success(),
+        "run 2 failed\n{}",
+        context(&output)
+    );
 
     let cube = provider.calls_for("T03");
     assert_eq!(cube.len(), 1, "T03 passes at once");

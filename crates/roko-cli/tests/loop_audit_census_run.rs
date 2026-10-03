@@ -208,10 +208,7 @@ fn fixture_run_logs_arms_before_plan_and_measures_exposure() {
     let verdicts: Vec<_> = runs.iter().flat_map(|run| &run.verdicts).collect();
     assert_eq!(verdicts.len(), CHAINS, "one settled attempt per chain");
     let decisions: Vec<_> = runs.iter().flat_map(|run| &run.decisions).collect();
-    let content: Vec<_> = runs
-        .iter()
-        .flat_map(|run| &run.content_decisions)
-        .collect();
+    let content: Vec<_> = runs.iter().flat_map(|run| &run.content_decisions).collect();
 
     // The knowledge layer: one draw per chain, near 80/20, and no SRM alarm.
     let knowledge: Vec<_> = content

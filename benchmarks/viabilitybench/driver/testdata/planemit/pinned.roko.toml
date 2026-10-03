@@ -1,4 +1,4 @@
-# Emitted by the ViabilityBench driver (planemit-3) for one benchmark run: one provider, one pinned model, no
+# Emitted by the ViabilityBench driver (planemit-4) for one benchmark run: one provider, one pinned model, no
 # fallbacks and no routing ladder, explicit gate rungs that run only the visible check, the task in the shared
 # working tree, and Roko's learning loops held off.
 config_version = 2
@@ -55,7 +55,6 @@ max_turn_usd = 0.043
 
 [learning]
 auto_playbook_refresh = false
-replan_on_gate_failure = false
 dream_on_completion = false
 
 [learning.dreams]

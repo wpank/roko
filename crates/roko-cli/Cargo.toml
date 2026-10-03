@@ -41,6 +41,10 @@ alloy-backend = [
     "roko-chain/alloy-backend",
     "roko-serve/alloy-backend",
 ]
+# S03 §4.9's "break a loop" fault flags and their read sites (5129): the
+# knowledge, playbook and route readers and the decision-row builders consult
+# them. Off by default, where `faults::active` is a const `None`.
+fault-injection = ["roko-learn/fault-injection"]
 # tui-png: Optional PNG screenshot capture for TUI visual regression testing.
 # Not required for production.
 #

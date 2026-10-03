@@ -112,6 +112,20 @@ mod tests {
     /// The canary's nonce.
     const NONCE: &str = "c-dry1";
 
+    /// The tests that read L-know through the dispatcher take turns: fault
+    /// flags are process-wide.
+    static KNOWLEDGE_READS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A dispatcher with the production prompt sources and no router.
+    fn dispatcher() -> Dispatcher {
+        Dispatcher::new(
+            None,
+            PromptAssembler::new(),
+            WarmPool::new(0),
+            HashSet::new(),
+        )
+    }
+
     /// Every file under `dir`, by path, with its bytes.
     fn files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         let mut files = BTreeMap::new();
@@ -133,16 +147,14 @@ mod tests {
     /// P5 is skipped.
     #[test]
     fn dry_run_canary_reaches_p4_without_learned_writes() {
+        let _turn = KNOWLEDGE_READS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().expect("temp dir");
         let learn = dir.path().join(".roko/learn");
         std::fs::create_dir_all(&learn).expect("the learn dir");
         std::fs::write(learn.join("efficiency.jsonl"), "").expect("a learn file");
-        let dispatcher = Dispatcher::new(
-            None,
-            PromptAssembler::new(),
-            WarmPool::new(0),
-            HashSet::new(),
-        );
+        let dispatcher = dispatcher();
         let mut planner = DispatchPlanner::new(&dispatcher, dir.path());
         let mut writer = KnowledgeCanary::new(dir.path());
         let task = CanaryTask {
@@ -184,5 +196,46 @@ mod tests {
         assert_eq!(probes, expected, "{row:?}");
         assert_eq!(row.first_failure.as_deref(), Some("P6"));
         assert_eq!(files(&learn), before, "the trace left learned state behind");
+    }
+    /// S03 §4.9 (backlog 5129): a CUT flag on L-know empties the knowledge
+    /// reader, so a dry-run plan of the canary task carries no knowledge, and
+    /// clearing the flag restores it.
+    #[cfg(feature = "fault-injection")]
+    #[test]
+    fn injected_cut_empties_knowledge_section() {
+        use roko_learn::loop_audit::faults::{self, FaultActor, FaultKind, FaultSpec};
+
+        let _turn = KNOWLEDGE_READS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dispatcher = dispatcher();
+        let mut writer = KnowledgeCanary::new(dir.path());
+        writer.write(NONCE).expect("write the canary");
+        let task = canary_task(NONCE);
+        let ctx = canary_context(&task, dir.path());
+        let artifact = canary_id(NONCE);
+        let plan = dispatcher.plan(&task, &ctx).expect("a dry-run plan");
+        assert_eq!(plan.prompt.diagnostics.knowledge_ids, [artifact.clone()]);
+
+        faults::enable(FaultActor::Env, dir.path().join("faults.jsonl"));
+        let cut = FaultSpec {
+            loop_id: "L-know".to_string(),
+            kind: FaultKind::Cut,
+            ttl_secs: 60,
+            max_decisions: 10,
+            spend_cap_usd: None,
+        };
+        faults::set(cut).expect("set a CUT flag");
+        let plan = dispatcher.plan(&task, &ctx).expect("a dry-run plan");
+        assert!(plan.prompt.diagnostics.knowledge_ids.is_empty());
+        assert!(!plan.prompt.system_prompt.contains(&artifact));
+
+        assert!(faults::clear("L-know"), "the flag was set");
+        let plan = dispatcher.plan(&task, &ctx).expect("a dry-run plan");
+        assert_eq!(plan.prompt.diagnostics.knowledge_ids, [artifact.clone()]);
+        assert!(plan.prompt.system_prompt.contains(&artifact));
+        faults::disable();
+        writer.cleanup(NONCE);
     }
 }

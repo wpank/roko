@@ -23,6 +23,7 @@ use std::sync::LazyLock;
 use std::time::SystemTime;
 
 use roko_learn::loop_audit::arm_set::ArmSet;
+use roko_learn::loop_audit::faults::{self, FaultKind};
 use roko_learn::routing_log::DecisionState;
 use roko_learn::section_effect::SectionDecision;
 use roko_learn::telemetry::records::{
@@ -294,6 +295,11 @@ pub(super) fn content_audit(
         _ => return None,
     };
     let (arm_set, (assigned_at, decided_at)) = draw;
+    // A fault flag on the loop (S03 §4.9; fault-injection builds only):
+    // UNLOGGED drops the receipt, LABEL_ONLY draws the arm at the decision.
+    let fault = faults::active(loop_id);
+    let label_only = fault == Some(FaultKind::LabelOnly);
+    let assigned_at = if label_only { decided_at } else { assigned_at };
     let withheld = Some(ExcludedReason::WithheldArm);
     let learned = items
         .iter()
@@ -336,7 +342,7 @@ pub(super) fn content_audit(
         }),
         assignment,
         decided_at: Some(decided_at),
-        receipt: Some(receipt),
+        receipt: (fault != Some(FaultKind::Unlogged)).then_some(receipt),
     };
     Some((proposals, audit))
 }

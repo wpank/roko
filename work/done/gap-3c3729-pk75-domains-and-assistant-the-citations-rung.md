@@ -2,7 +2,7 @@
 id = "gap-3c3729"
 kind = "gap"
 title = "PK75 Domains and assistant: The citations rung: resolve every DOI, arXiv id and URL in the artefact (+5 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "features"
@@ -10,8 +10,9 @@ rank = 75
 size = "L"
 subsystem = ["roko-gate"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "059450273"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK75"
 anchors = ["crates/roko-cli/src/commands/graph.rs", "crates/roko-cli/src/graph_task_dispatch/judge_step.rs", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs", "crates/roko-cli/src/lib.rs", "crates/roko-core/src/config/gates.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-gate/Cargo.toml", "crates/roko-gate/src/lib.rs", "crates/roko-gate/src/llm_judge_gate.rs", "crates/roko-graph/src/cells/mod.rs", "crates/roko-graph/src/engine.rs"]
 lane = "rust-cold"
@@ -35,6 +36,17 @@ command = "grep -rqw 'fn shell_exec_cell_runs_command_without_interpolating_payl
 
 [[verify]]
 command = "grep -rqw 'fn graph_run_agent_task_cell_dispatches_a_gated_run' crates/roko-cli/ && cargo test -p roko-cli graph_run_agent_task_cell_dispatches_a_gated_run"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T04:05:56Z"
+commit = "059450273"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T01:27:35Z"
+forced = false
+evidence = "Gate 6b (work/backlog-batch-6b, merged into main as 059450273): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings on the chainless default build, nextest --lib 11,842 passed over 10 crates (roko-acp, -agent, -agent-server, -cli, -core, -gate, -graph, -learn, -runtime, -serve), roko-cli bin 429 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-agent sse_replay + provider_parity and roko-learn legacy_rule_live + loop_audit_cs_reference pass, PK79's CI feature checks pass; every [[verify]] passes. PK75 6/6 (citations, judge and schema rungs; shell.exec, verify.command and agent.task cells). Gate fixed two fixtures in 68af1c4de: the agent.task rung runs a check that can fail (HF2), and the judge model is priced under the plan budget."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-d254a3"
 kind = "gap"
 title = "PK03 Failure paths: A plan-branch conflict tells the next attempt what it conflicted with (+5 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -10,8 +10,9 @@ rank = 3
 size = "L"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "059450273"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK03"
 anchors = ["crates/roko-cli/src/graph_execution/workspaces.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/attempt_workspace.rs", "crates/roko-cli/src/graph_task_dispatch/failover.rs", "crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-cli/src/graph_task_dispatch/watchdog.rs", "crates/roko-cli/src/orchestrator/worktree/mod.rs", "crates/roko-cli/src/runner/tui_bridge.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-learn/src/telemetry/records.rs"]
 lane = "rust-hot"
@@ -38,6 +39,17 @@ command = "grep -rqw 'fn agent_spawned_names_planned_provider' crates/roko-cli/ 
 
 [[verify]]
 command = "grep -rqw 'fn failover_publishes_fallback_slug_to_hub' crates/roko-cli/ && cargo test -p roko-cli failover_publishes_fallback_slug_to_hub"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T04:05:57Z"
+commit = "059450273"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T01:27:37Z"
+forced = false
+evidence = "Gate 6b (work/backlog-batch-6b, merged into main as 059450273): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings on the chainless default build, nextest --lib 11,842 passed over 10 crates (roko-acp, -agent, -agent-server, -cli, -core, -gate, -graph, -learn, -runtime, -serve), roko-cli bin 429 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-agent sse_replay + provider_parity and roko-learn legacy_rule_live + loop_audit_cs_reference pass, PK79's CI feature checks pass; every [[verify]] passes. PK03 6/6. Gate fixes in 68af1c4de: the pre-dispatch agent_spawned row names the resolved slug as the failover row does; the watchdog test opts into allow_unguarded_agents_in_checkout; the conflict-retry provider records its arguments (where the retry feedback travels)."
 +++
 
 ## Problem

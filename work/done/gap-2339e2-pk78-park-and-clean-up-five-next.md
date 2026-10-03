@@ -2,7 +2,7 @@
 id = "gap-2339e2"
 kind = "gap"
 title = "PK78 Park and clean up: Five next-step hints tell users to run the removed `roko develop` (+11 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -10,8 +10,9 @@ rank = 78
 size = "L"
 subsystem = ["docs"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "059450273"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK78"
 anchors = ["CLAUDE.md", "crates/roko-cli/src/commands/backlog.rs", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/commands/setup.rs", "crates/roko-cli/src/commands/util.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/main_tests.rs", "crates/roko-cli/src/orchestrator/merge_queue.rs", "crates/roko-cli/src/orchestrator/mod.rs", "crates/roko-cli/src/orchestrator/runtime_snapshot.rs", "crates/roko-cli/src/resolved_overrides.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/merge.rs", "crates/roko-graph/src/cells/plan_compose.rs", "crates/roko-graph/src/cells/stubs.rs", "crates/roko-graph/src/delivery.rs", "crates/roko-graph/src/engine.rs", "crates/roko-graph/src/lib.rs", "crates/roko-graph/src/topology.rs", "crates/roko-learn/src/cascade/helpers.rs", "crates/roko-learn/src/cascade/tests.rs", "crates/roko-learn/src/cascade_router.rs", "crates/roko-mcp-code/README.md", "crates/roko-serve/src/integrations.rs", "docs/v3/00-INDEX.md", "docs/v3/12-SAFETY.md", "docs/v3/20-GATEWAY.md", "docs/v3/31-SELF-HOSTING.md", "docs/v3/35-ARCHITECTURE.md", "docs/v3/39-ROADMAP.md", "docs/v3/REFERENCES.md", "docs/v3/depth/00-architecture/crate-map-and-dependencies.md", "docs/v3/depth/08-learning/self-improvement-frameworks.md", "docs/v3/depth/19-tools/service-integrations.md", "docs/v3/depth/35-architecture/crate-dependency-graph.md", "docs/v3/depth/39-references/17-process-reward-models.md", "docs/v3/depth/39-references/24-additions-2025-2026.md", "docs/v3/explorer/architecture.md", "docs/v3/explorer/crate-map.md"]
 lane = "rust-hot"
@@ -51,8 +52,16 @@ command = "! grep -rqE '48/48 accepted|45% of otherwise-discarded|Partial-Pass S
 [[verify]]
 command = "! grep -q '### 3.1 Five Replan Strategies' docs/v3/31-SELF-HOSTING.md && ! grep -q 'COMPLETE (E26 12/12)' docs/v3/20-GATEWAY.md"
 
-[[verify]]
-command = "! grep -q 'prompt_experiment: None' CLAUDE.md && ! grep -q '12 watchers' CLAUDE.md"
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T04:12:10Z"
+commit = "5bb643122"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T22:19:33Z"
+forced = false
+evidence = "Merged in gate 5a (5bb643122); every [[verify]] re-run on main at 059450273 (after gate 6b) in the batch worktree passes. Task 9213's CLAUDE.md lines and their verify moved to gap-3698cd, held on the main checkout's uncommitted CLAUDE.md Goal-line edit."
 +++
 
 ## Problem
@@ -122,3 +131,4 @@ Implemented on `work/gap-2339e2`; cargo verification of the Rust tasks (9204-920
 - 9212: implemented at 16afd36ae
 - 9213: implemented at a065d94cb
 - 2026-10-03 (coordinator, gate 5a): every task is merged in 5bb643122 except the CLAUDE.md lines of 9209–9213, left out because the main checkout has an uncommitted CLAUDE.md edit (the Goal line) that isn't the batch's. They're saved as `pk78-claude-md.patch` in the coordinator's scratchpad, beside PK08's, and land once that edit is committed; this item closes then.
+- 2026-10-03 (coordinator, after gate 6b): task 9213's CLAUDE.md lines and their verify moved to gap-3698cd, held until the main checkout's uncommitted CLAUDE.md Goal-line edit is committed, so that the packages waiting on this one can start.

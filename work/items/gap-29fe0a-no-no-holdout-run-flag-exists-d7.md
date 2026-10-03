@@ -71,3 +71,4 @@ one run.
 - Keep `holdout_frac` itself as the config-level default; this adds a per-run override, not a replacement.
 - Related: gap-b5caf3 (done, PK32 — retiring the *legacy* holdout gate that gates nothing) and gap-943046 (open,
   section-bandit withhold arms) are about different holdout-adjacent mechanisms; neither adds this flag.
+- 2026-10-03 (coordinator, gate 6b): PK35 (gap-943046, merged in 059450273) added `roko plan run --no-holdout`, which turns on `[experiments] maximize` for the run (no loop withheld, no route explores; decision 4115; test `no_holdout_flag_sets_maximize_mode`). The plan-load spec gate's 5% gate-off holdout (`spec_gate::apply_holdout`, called by `gate_plans` with `config.holdout_frac`) doesn't read maximize, so a `--no-holdout` run can still hold a task out of the spec gate. What's left: zero that holdout under maximize, and the test this item's verify names.

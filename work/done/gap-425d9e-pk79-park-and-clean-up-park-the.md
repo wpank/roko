@@ -2,7 +2,7 @@
 id = "gap-425d9e"
 kind = "gap"
 title = "PK79 Park and clean up: Park the chain-family HTTP routes behind the `chain` feature, with one typed 501… (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
@@ -10,8 +10,9 @@ rank = 79
 size = "L"
 subsystem = ["workspace/build"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "059450273"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK79"
 anchors = [".github/workflows/ci.yml", "crates/roko-cli/Cargo.toml", "crates/roko-core/src/obs/mod.rs", "crates/roko-runtime/Cargo.toml", "crates/roko-runtime/src/lib.rs", "crates/roko-serve/Cargo.toml", "crates/roko-serve/src/feed_agents/mod.rs", "crates/roko-serve/src/job_runner.rs", "crates/roko-serve/src/lib.rs", "crates/roko-serve/src/routes/chain_disabled.rs", "crates/roko-serve/src/routes/feeds.rs", "crates/roko-serve/src/routes/meta.rs", "crates/roko-serve/src/routes/middleware.rs", "crates/roko-serve/src/routes/mod.rs", "crates/roko-serve/src/state.rs", "crates/roko-serve/src/trigger_runtime.rs", "tools/http_route_inventory.snapshot.json"]
 lane = "rust-cold"
@@ -41,6 +42,17 @@ command = "grep -rqw 'fn relay_routes_return_501_by_default' crates/roko-serve/ 
 
 [[verify]]
 command = "test ! -e crates/roko-core/src/obs/mod.rs && grep -q '^cognitive-clock' crates/roko-runtime/Cargo.toml && grep -B1 'pub mod heartbeat_attention' crates/roko-runtime/src/lib.rs | grep -q 'feature = \"cognitive-clock\"'"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T04:05:53Z"
+commit = "059450273"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T01:27:36Z"
+forced = false
+evidence = "Gate 6b (work/backlog-batch-6b, merged into main as 059450273): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings on the chainless default build, nextest --lib 11,842 passed over 10 crates (roko-acp, -agent, -agent-server, -cli, -core, -gate, -graph, -learn, -runtime, -serve), roko-cli bin 429 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-agent sse_replay + provider_parity and roko-learn legacy_rule_live + loop_audit_cs_reference pass, PK79's CI feature checks pass; every [[verify]] passes. PK79 8/8: the default roko-cli tree has neither roko-chain nor the Alloy provider graph; alloy-backend+acp, roko-serve --no-default-features --features hdc, roko-cli --features chain, roko-std chain handlers, roko-serve groups and relay, roko-runtime cognitive-clock all build, and provider_parity passes with chain + roko-std/chain. Gate fixes for the chainless build in f5de1bd52."
 +++
 
 ## Problem

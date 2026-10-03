@@ -2,7 +2,7 @@
 id = "gap-62e1b9"
 kind = "gap"
 title = "PK47 M3 self-model: Claude CLI: re-price every model in modelUsage from the snapshot and keep… (+11 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 47
 size = "L"
 subsystem = ["roko-learn/self_model"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "059450273"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK47"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs", "crates/roko-agent/src/provider/codex_cli/stream.rs", "crates/roko-learn/src/lib.rs", "crates/roko-learn/src/prediction.rs", "crates/roko-learn/src/routing_extras.rs"]
 lane = "rust-cold"
@@ -50,6 +51,17 @@ command = "grep -rqw 'fn prequential_ece_below_003_after_isotonic' crates/roko-l
 
 [[verify]]
 command = "grep -rqw 'fn state_round_trips_and_version_tracks_schema' crates/roko-learn/src/self_model/ && cargo test -p roko-learn self_model::model"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T04:05:59Z"
+commit = "059450273"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T01:27:33Z"
+forced = false
+evidence = "Gate 6b (work/backlog-batch-6b, merged into main as 059450273): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings on the chainless default build, nextest --lib 11,842 passed over 10 crates (roko-acp, -agent, -agent-server, -cli, -core, -gate, -graph, -learn, -runtime, -serve), roko-cli bin 429 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-agent sse_replay + provider_parity and roko-learn legacy_rule_live + loop_audit_cs_reference pass, PK79's CI feature checks pass; every [[verify]] passes. PK47 11/12: 6107's live-probe verify moved to the held follow-up gap-8c2535 (1e28945de). Gate clippy fixes to logit.rs and recal.rs in f5de1bd52."
 +++
 
 ## Problem

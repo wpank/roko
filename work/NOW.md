@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 16 anchor gone · 124 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 14 anchor gone · 123 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -24,19 +24,19 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- **P2** [gap-d254a3](items/gap-d254a3-pk03-failure-paths-a-plan-branch-conflict.md) PK03 Failure paths: A plan-branch conflict tells the next attempt what it conflicted with (+5 more) · size L · verified 2026-10-02
-- **P2** [gap-a0043b](items/gap-a0043b-pk08-attempt-ledger-roko-toml-s-cheap.md) PK08 Attempt ledger: roko.toml's cheap-model rates match the dated price snapshot (+11 more) · size L · verified 2026-10-02
 - **P2** [bug-dd20bd](items/bug-dd20bd-a-frozen-roko-run-still-appends-a.md) A frozen roko run still appends a workflow_complete episode, because record_workflow_feedback ignores [learning] frozen [bug] · size S · verified 2026-10-03
+- **P2** [spec-65c828](items/spec-65c828-backlog-phase-1-safe-runs.md) Backlog Phase 1 — safe runs [spec] · verified 2026-10-02
+- **P2** [spec-99d417](items/spec-99d417-backlog-phase-2-honest-measurement.md) Backlog Phase 2 — honest measurement [spec] · verified 2026-10-02
 
-_12 more open · `goal = "truth"`_
+_10 more open · on hold: gap-3698cd · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
-- **P2** [gap-997366](items/gap-997366-pk14-defaults-that-apply-a-plan-budget.md) PK14 Defaults that apply: A plan budget without max_turn_usd reserves a share per call, and any wait is logged (+8 more) · size L · verified 2026-10-02
 - **P1** [gap-c1f4ac](items/gap-c1f4ac-pk15-defaults-that-apply-one-resolver-for.md) PK15 Defaults that apply: One resolver for [runner] worktree_per_task, and roko run follows it (+4 more) · size L · verified 2026-10-02
 - **P2** [spec-fef7c5](items/spec-fef7c5-backlog-phase-3-golden-path-proof.md) Backlog Phase 3 — golden-path proof [spec] · verified 2026-10-02
+- **P2** [dec-55532d](items/dec-55532d-confirm-nine-worker-choices-from-waves-3.md) Confirm nine worker choices from waves 3-5 (budget raise transport, failover retries, 24h auth quarantine, frozen allow-list, CLI billing, cold-start knowledge, domain packs, secret scrubbing) [decision] · size S · verified 2026-10-03
 
-_3 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_2 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -44,15 +44,15 @@ _3 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRI
 - **P1** [gap-2ca903](items/gap-2ca903-pk30-viabilitybench-proof-codex-cli-runner-for.md) PK30 ViabilityBench proof: Codex CLI runner for the fd_codex arm (+7 more) · size L · verified 2026-10-02
 - **P1** [gap-31c0e8](items/gap-31c0e8-pk36-viabilitybench-proof-shakedown-the-roko-arms.md) PK36 ViabilityBench proof: Shakedown: the Roko arms against the live-run defects, offline, before any paid Roko run (+2 more) · size M · verified 2026-10-02
 
-_14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-942f88, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- **P2** [gap-943046](items/gap-943046-pk35-loops-re-closed-section-bandit-per.md) PK35 Loops re-closed: Section bandit: per-section posteriors and exclusion probabilities (+7 more) · size L · verified 2026-10-02
 - **P2** [gap-894977](items/gap-894977-pk38-loops-re-closed-knowledge-and-playbook.md) PK38 Loops re-closed: Knowledge and playbook withhold arms: a withheld source stays out of the prompt and is… (+5 more) · size L · verified 2026-10-02
 - **P2** [gap-c2b1a3](items/gap-c2b1a3-pk41-loops-re-closed-roko-learn-telemetry.md) PK41 Loops re-closed: `roko learn telemetry check --srm` compares each randomised layer's arm shares with… · size S · verified 2026-10-02
+- **P2** [gap-2b3c1b](items/gap-2b3c1b-pk42-m2-loop-liveness-loop-state-machine.md) PK42 M2 loop-liveness: Loop state machine with the six false-demotion guards (+7 more) · size L · verified 2026-10-02
 
-_26 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_24 more open · on hold: gap-3d37e8, gap-799698, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -80,19 +80,19 @@ _3 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 
 ## 10. Tooling, CLI polish and code hygiene
 
-- **P3** [gap-2339e2](items/gap-2339e2-pk78-park-and-clean-up-five-next.md) PK78 Park and clean up: Five next-step hints tell users to run the removed `roko develop` (+11 more) · size L · verified 2026-10-02
-- **P2** [gap-425d9e](items/gap-425d9e-pk79-park-and-clean-up-park-the.md) PK79 Park and clean up: Park the chain-family HTTP routes behind the `chain` feature, with one typed 501… (+7 more) · size L · verified 2026-10-02
 - **P3** [gap-7add13](items/gap-7add13-pk80-park-and-clean-up-park-the.md) PK80 Park and clean up: Park the cognitive clock: `CorticalState`, the scheduler types and the theta/delta… (+6 more) · size L · verified 2026-10-02
+- **P2** [spec-0b3a32](items/spec-0b3a32-backlog-phase-9-domains-assistant-held-and.md) Backlog Phase 9 — domains, assistant, held and parked work, cleanup, showcase and deploy [spec] · verified 2026-10-02
+- **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
 
-_13 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_11 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
-- **P2** [gap-3c3729](items/gap-3c3729-pk75-domains-and-assistant-the-citations-rung.md) PK75 Domains and assistant: The citations rung: resolve every DOI, arXiv id and URL in the artefact (+5 more) · size L · verified 2026-10-02
 - **P2** [gap-99c9ae](items/gap-99c9ae-pk76-domains-and-assistant-a-plan-run.md) PK76 Domains and assistant: A plan.run cell: a trigger can run a plan (+7 more) · size L · verified 2026-10-02
 - **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-10-01
+- **P2** [gap-3d5cce](items/gap-3d5cce-provider-f036-actcell-cognitive-loop-llm-dispatch.md) ActCell (cognitive loop LLM dispatch point) is a stub pass-through · verified 2026-10-01
 
-_7 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
+_6 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
 
 ## 12. Hermes and ACP integration
 

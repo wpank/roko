@@ -2,7 +2,7 @@
 id = "gap-a0043b"
 kind = "gap"
 title = "PK08 Attempt ledger: roko.toml's cheap-model rates match the dated price snapshot (+11 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -10,8 +10,9 @@ rank = 8
 size = "L"
 subsystem = ["roko-cli/graph-dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "059450273"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK08"
 anchors = ["CLAUDE.md", "crates/roko-cli/src/commands/dashboard.rs", "crates/roko-cli/src/commands/diagnose.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/commands/show.rs", "crates/roko-cli/src/config.rs", "crates/roko-cli/src/doctor.rs", "crates/roko-cli/src/graph_execution/disk_admission.rs", "crates/roko-cli/src/graph_task_dispatch/budget.rs", "crates/roko-cli/src/runner/persist.rs", "crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/tui/dashboard_model.rs", "crates/roko-core/src/config/budget.rs", "crates/roko-fs/src/layout.rs", "crates/roko-fs/src/lib.rs", "crates/roko-fs/src/log_rotation.rs", "crates/roko-fs/src/observability.rs", "crates/roko-fs/src/tool_metrics_sink.rs", "crates/roko-learn/src/run_metrics.rs", "crates/roko-serve/src/lib.rs", "crates/roko-serve/src/retention.rs", "crates/roko-serve/src/routes/status/gates.rs", "crates/roko-serve/src/telemetry_observer.rs", "roko.toml"]
 lane = "rust-hot"
@@ -38,9 +39,6 @@ command = "! grep -q 'gate-verdicts' crates/roko-serve/src/routes/status/gates.r
 
 [[verify]]
 command = "grep -rqw 'fn gate_history_reads_graph_gate_results' crates/roko-serve/src/ && cargo test -p roko-serve gate_history_reads_graph_gate_results"
-
-[[verify]]
-command = "! grep -q 'Canonical signal log' CLAUDE.md && grep -q 'attempts.jsonl' CLAUDE.md"
 
 [[verify]]
 command = "grep -rln 'run-metrics' crates/roko-cli/src/commands crates/roko-cli/src/tui | grep -q ."
@@ -74,6 +72,17 @@ command = "! grep -rq 'run-ledger' crates/roko-cli/src/runner/persist.rs crates/
 
 [[verify]]
 command = "! grep -rq 'gate_verdicts_path' crates/roko-fs/src/log_rotation.rs"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T04:12:09Z"
+commit = "2724386ea"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-02T19:13:12Z"
+forced = false
+evidence = "Merged in gate 4c (2724386ea); every [[verify]] re-run on main at 059450273 (after gate 6b) in the batch worktree passes. Task 2121's two CLAUDE.md rows and their verify moved to gap-3698cd, held on the main checkout's uncommitted CLAUDE.md Goal-line edit."
 +++
 
 ## Problem
@@ -142,3 +151,4 @@ Implemented on `work/gap-a0043b`; cargo verification deferred to the batch gate.
 - 2127: implemented at 6225096d6
 - 2128: implemented at fa2e992bb (roko-runtime's in-memory `RunLedger` module is kept: gap-5d3b82 anchors on it)
 - 2026-10-03 (coordinator, gate 4c): all twelve tasks are merged in 2724386ea except task 2121's two CLAUDE.md rows. They were left out because the main checkout has an uncommitted CLAUDE.md edit (the Goal line) that isn't the batch's. The rows are saved as a patch in the coordinator's scratchpad (`pk08-claude-md.patch`) and land once that edit is committed; this item closes then.
+- 2026-10-03 (coordinator, after gate 6b): task 2121's CLAUDE.md rows and their verify moved to gap-3698cd, held until the main checkout's uncommitted CLAUDE.md Goal-line edit is committed, so that the packages waiting on this one can start.

@@ -2,7 +2,7 @@
 id = "gap-997366"
 kind = "gap"
 title = "PK14 Defaults that apply: A plan budget without max_turn_usd reserves a share per call, and any wait is logged (+8 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -10,8 +10,9 @@ rank = 14
 size = "L"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "059450273"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK14"
 anchors = ["crates/roko-acp/src/bridge_events/slash_commands.rs", "crates/roko-acp/src/bridge_events/tests.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/dispatch/factory.rs", "crates/roko-cli/src/dispatch/mod.rs", "crates/roko-cli/src/dispatch/model_routing.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-cli/src/graph_checkpoint.rs", "crates/roko-cli/src/graph_execution/delivery.rs", "crates/roko-cli/src/graph_task_dispatch/budget.rs", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/task_parser.rs", "crates/roko-cli/tests/scheduler_canary.rs", "plans/INDEX.md", "plans/add-plan-queue/tasks.toml", "plans/e2e-smoke-test/tasks.toml", "plans/portal-plan-execution/tasks.toml", "plans/portal-programme/01-backend-plan-service/tasks.toml", "plans/portal-programme/02-backend-plan-execution/tasks.toml", "plans/portal-programme/03-backend-live-events/tasks.toml", "plans/portal-programme/03b-backend-workspace-server/tasks.toml", "plans/portal-programme/03c-backend-local-access/tasks.toml", "plans/portal-programme/04-backend-plan-authoring/tasks.toml", "plans/portal-programme/04b-backend-plan-revision/tasks.toml", "plans/portal-programme/05-portal-foundation/tasks.toml", "plans/portal-programme/06-portal-shell/tasks.toml", "plans/portal-programme/07-portal-compose/tasks.toml", "plans/portal-programme/08-portal-run/tasks.toml", "plans/portal-programme/08b-portal-polish/tasks.toml", "plans/portal-programme/08c-portal-live-steps/tasks.toml", "plans/portal-programme/08d-portal-legibility/tasks.toml", "plans/portal-programme/08e-portal-refine/tasks.toml", "plans/portal-programme/08f-final-polish/tasks.toml", "plans/portal-programme/08g-first-run/tasks.toml", "plans/portal-programme/09-acceptance/tasks.toml", "plans/qa-workflow-validation/tasks.toml", "plans/wire-http-plan-execute/tasks.toml", "plans/workspace-doctor-improvements/tasks.toml"]
 lane = "rust-hot"
@@ -56,6 +57,17 @@ command = "grep -rqw 'fn workspace_context_reports_attempt_branch' crates/roko-c
 
 [[verify]]
 command = "grep -rqw 'fn delivery_receipt_records_the_checks_that_ran' crates/roko-cli/ && cargo test -p roko-cli delivery_receipt_records_the_checks_that_ran"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T04:05:55Z"
+commit = "059450273"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T01:27:36Z"
+forced = false
+evidence = "Gate 6b (work/backlog-batch-6b, merged into main as 059450273): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings on the chainless default build, nextest --lib 11,842 passed over 10 crates (roko-acp, -agent, -agent-server, -cli, -core, -gate, -graph, -learn, -runtime, -serve), roko-cli bin 429 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-agent sse_replay + provider_parity and roko-learn legacy_rule_live + loop_audit_cs_reference pass, PK79's CI feature checks pass; every [[verify]] passes. PK14 9/9 (RoutingBias removed from the plan path, 24 plans edited); scheduler_canary_under_a_plan_budget and worktree_plans_run_side_by_side_and_both_deliver pass."
 +++
 
 ## Problem

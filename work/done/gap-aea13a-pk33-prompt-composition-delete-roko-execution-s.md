@@ -32,7 +32,7 @@ command = "! grep -q 'fn load_pheromone_jsonl_context' crates/roko-cli/src/dispa
 command = "! grep -rq 'fn generate_cfactor_context' crates/roko-cli/src/ && ! grep -rq 'cached_cfactor_context' crates/roko-cli/ && grep -rqw 'fn plan_prompt_has_no_collective_calibration_block' crates/roko-cli/src/ && cargo test -p roko-cli --lib plan_prompt_has_no_collective_calibration_block"
 
 [[verify]]
-command = "grep -rqw 'fn dream_advice_ignored_while_dreams_are_held' crates/roko-cli/src/ && grep -rqw 'fn stale_dream_advice_yields_no_routing_bias' crates/roko-cli/src/ && cargo test -p roko-cli --lib dream_advice_ignored_while_dreams_are_held && cargo test -p roko-cli --lib stale_dream_advice_yields_no_routing_bias"
+command = "! grep -rqE 'fn dream_routing_bias|routing_bias:' crates/roko-cli/src/dispatch crates/roko-cli/src/graph_task_dispatch crates/roko-cli/src/graph_task_dispatch.rs"
 
 [[verify]]
 command = "grep -rqw 'fn turn_cap_failure_records_no_error_pattern' crates/roko-cli/src/ && grep -rqw 'fn load_drops_turn_cap_and_timeout_patterns' crates/roko-learn/src/ && cargo test -p roko-cli --lib turn_cap_failure_records_no_error_pattern && cargo test -p roko-learn load_drops_turn_cap_and_timeout_patterns"
@@ -143,3 +143,4 @@ passes. `eaa19b074` hand-formats lines from several tasks to rustfmt defaults.
 - 4214: implemented at badb7911a
 - 4215: implemented at f864016d7
 - 4216: implemented at d79ee8a1a (test follow-up fe88daaf5)
+- 2026-10-03 (coordinator, after gate 6b): task 4207's verify named two tests of the dream routing bias that PK14's 3109 deleted along with RoutingBias itself (decision 3108, gap-997366, merged in 059450273). The verify now checks that the bias is gone from the plan path.

@@ -2,7 +2,7 @@
 id = "gap-943046"
 kind = "gap"
 title = "PK35 Loops re-closed: Section bandit: per-section posteriors and exclusion probabilities (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 35
 size = "L"
 subsystem = ["roko-learn/error-patterns"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "059450273"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK35"
 anchors = ["crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/plan_generate/pipeline.rs", "crates/roko-cli/src/runtime_feedback/error_patterns.rs", "crates/roko-core/src/config/mod.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-learn/src/error_pattern_store.rs", "crates/roko-learn/src/feedback_service.rs", "crates/roko-learn/src/section_effect.rs"]
 lane = "rust-hot"
@@ -41,6 +42,17 @@ command = "grep -rqw 'fn no_holdout_flag_sets_maximize_mode' crates/roko-cli/src
 
 [[verify]]
 command = "grep -rqw 'fn placebo_decisions_have_identical_proposals' crates/roko-cli/src/ && cargo test -p roko-cli placebo_decisions_have_identical_proposals"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T04:05:59Z"
+commit = "059450273"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T01:27:35Z"
+forced = false
+evidence = "Gate 6b (work/backlog-batch-6b, merged into main as 059450273): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings on the chainless default build, nextest --lib 11,842 passed over 10 crates (roko-acp, -agent, -agent-server, -cli, -core, -gate, -graph, -learn, -runtime, -serve), roko-cli bin 429 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-agent sse_replay + provider_parity and roko-learn legacy_rule_live + loop_audit_cs_reference pass, PK79's CI feature checks pass; every [[verify]] passes. PK35 8/8 (section bandit, error-pattern resolution, ArmSet, maximize mode and --no-holdout, placebo rows); the schema tree registers experiments.force_arms (68af1c4de). gap-29fe0a stays open: the plan-load spec gate's holdout ignores maximize."
 +++
 
 ## Problem

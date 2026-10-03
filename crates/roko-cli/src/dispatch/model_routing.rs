@@ -54,6 +54,7 @@ use roko_learn::cascade_router::{CascadeModel, CascadeRouter, ExploredRoute, exp
 use roko_learn::latency::LatencyRegistry;
 use roko_learn::loop_audit::arm_set::ArmSet;
 use roko_learn::loop_audit::assign::{NestedPick, RouteDecision, RouteDraw, route_propensity};
+use roko_learn::loop_audit::faults::{self, FaultKind};
 use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
 use roko_learn::routing_log::{
@@ -744,10 +745,29 @@ impl ModelRouter {
             return (choice, learned);
         }
         let choice = ModelChoice {
-            model: pick,
+            model: self.faulted_pick(router, ctx, pick),
             source: ModelChoiceSource::Router,
         };
         (choice, learned)
+    }
+
+    /// The cascade's `pick` under a fault flag on L-route (S03 §4.9;
+    /// fault-injection builds only): MASK runs the default under the
+    /// router's label, HARMFUL the cheapest eligible model.
+    fn faulted_pick(
+        &self,
+        router: &CascadeRouter,
+        ctx: &RoutingContext,
+        pick: ModelSpec,
+    ) -> ModelSpec {
+        match faults::active(ROUTE_LOOP) {
+            Some(FaultKind::Mask) => ModelSpec::from_slug(&self.default_slug),
+            Some(FaultKind::Harmful) => {
+                let eligible = self.eligible_models(router, ctx);
+                router.cheapest_model_among(&eligible)
+            }
+            _ => pick,
+        }
     }
 
     /// `choice` made ε-greedy (S02.P1-3): when the cascade router decided it,
@@ -989,6 +1009,11 @@ impl ModelRouter {
     /// The cascade router's pick for `ctx`, among the models the provider
     /// guards accept when they accept some ([`Self::eligible_models`]).
     fn cascade_pick(&self, router: &CascadeRouter, ctx: &RoutingContext) -> CascadeModel {
+        // The L-route canary's preference, read inside its canary scope only
+        // (S03 §4.7).
+        if let Some(canary) = router.canary_route() {
+            return canary;
+        }
         // S02.P1-2: the guards mask the models that cannot run before the
         // cascade's argmax, so it picks the best one that can.
         let eligible = self.eligible_models(router, ctx);
@@ -1124,6 +1149,10 @@ pub fn route_audit_fields(
     assigned_at: i64,
     decided_at: i64,
 ) -> AuditFields {
+    // LABEL_ONLY on L-route (S03 §4.9; fault-injection builds only) draws
+    // the arm at the decision, not before it.
+    let label_only = faults::active(ROUTE_LOOP) == Some(FaultKind::LabelOnly);
+    let assigned_at = if label_only { decided_at } else { assigned_at };
     AuditFields {
         loop_id: Some(ROUTE_LOOP.to_string()),
         loop_ids: vec![ROUTE_LOOP.to_string()],

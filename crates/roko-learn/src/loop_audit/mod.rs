@@ -307,6 +307,12 @@ impl LoopAuditor {
         self.standing(loop_id).state
     }
 
+    /// `loop_id`'s audit reason: its latest row's, if any.
+    #[must_use]
+    pub fn reason(&self, loop_id: &str) -> Option<ReasonCode> {
+        self.standing(loop_id).reason
+    }
+
     /// `loop_id`'s latest standing, else probation with no reason.
     fn standing(&self, loop_id: &str) -> Standing {
         self.standings

@@ -195,6 +195,7 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
     let (serve_state, serve_handle) = roko_serve::ServerBuilder::new(server_config)
         .start_background()
         .await?;
+    install_loop_canary(&serve_state, &workdir);
 
     // Start the StateHub IPC server so `roko dashboard` in another terminal
     // can connect to the live event stream.  A bind failure (e.g. socket path
@@ -326,6 +327,14 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
     Ok(EXIT_SUCCESS)
 }
 
+/// Give serve's admin canary route (5133) roko-cli's canary writers and
+/// dry-run planner, which roko-serve cannot reach.
+fn install_loop_canary(state: &roko_serve::state::AppState, workdir: &std::path::Path) {
+    let runner = roko_cli::loop_canary::DryCanaryRunner::new(workdir);
+    // A server is started once, so the runner is never set twice.
+    let _ = state.loop_canary.set(std::sync::Arc::new(runner));
+}
+
 pub(crate) async fn cmd_serve(
     cli: &Cli,
     bind: Option<String>,
@@ -423,6 +432,7 @@ pub(crate) async fn cmd_serve(
 
     if tui {
         let (state, server_handle) = server_builder.start_background().await?;
+        install_loop_canary(&state, &wd);
         // Print portal URL after bind so the user can open the UI before the TUI takes over.
         let portal_base = roko_serve::endpoint::read_endpoint(&wd)
             .map(|ep| ep.url)
@@ -453,6 +463,7 @@ pub(crate) async fn cmd_serve(
     } else {
         // Expand run() inline so the portal line is printed after bind.
         let (state, handle) = server_builder.start_background().await?;
+        install_loop_canary(&state, &wd);
         let portal_base = roko_serve::endpoint::read_endpoint(&wd)
             .map(|ep| ep.url)
             .unwrap_or_else(|| format!("http://{}:{}", serve_bind, serve_port));

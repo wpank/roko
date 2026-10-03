@@ -808,15 +808,6 @@ impl GraphTaskDispatcher {
         if let Some(rejection) = self.unbuilt_rung(spec, task) {
             return Err(rejection);
         }
-        // A task that works in a scratch copy of its data waits for scratch
-        // workspaces (9134, 9135).
-        if task.workspace_kind(&self.config) == roko_core::WorkspaceKind::ScratchDir {
-            return Err(RokoError::Rejected(format!(
-                "task `{}` was not run: it works in a scratch_dir workspace, which plan runs do \
-                 not build yet",
-                task.id
-            )));
-        }
         // The prompt shows every check that will judge the task: its own
         // verify steps, then the workspace rungs it faces.
         let task = &self.prompt_task(spec, task);
@@ -1005,7 +996,19 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // (`open_attempt`).
             attempt: self.worktree_generation(&task_spend_key),
         };
-        let lease = if let Some(provider) = &self.workspace_provider {
+        // A scratch_dir task works in a copy of its data outside git, in
+        // place of a worktree (9135).
+        let scratch = match task.workspace_kind(&self.config) {
+            roko_core::WorkspaceKind::ScratchDir => {
+                Some(self.lease_scratch(&task, ctx, attempt_id.attempt)?)
+            }
+            roko_core::WorkspaceKind::GitWorktree => None,
+        };
+        let provider = self
+            .workspace_provider
+            .as_ref()
+            .filter(|_| scratch.is_none());
+        let lease = if let Some(provider) = provider {
             let lease = provider
                 .acquire(&attempt_id)
                 .await
@@ -1023,10 +1026,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
         } else {
             None
         };
-        // Effective working directory: worktree path if isolated, else shared workdir.
-        let effective_workdir = lease
-            .as_ref()
-            .map_or_else(|| self.workdir.clone(), |l| l.path.clone());
+        // Effective working directory: the scratch workspace or the worktree
+        // when there is one, else the shared workdir.
+        let effective_workdir = match (&scratch, &lease) {
+            (Some(scratch), _) => scratch.dir().to_path_buf(),
+            (None, Some(lease)) => lease.path.clone(),
+            (None, None) => self.workdir.clone(),
+        };
         // A git process killed mid-command (an earlier attempt's agent, a
         // crashed run) leaves `index.lock` behind, and every index-writing git
         // command here then fails: clear a stale one before the agent starts

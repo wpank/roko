@@ -130,7 +130,14 @@ Workspace kinds (9134): a task's attempts work in a git worktree unless the task
 or the profile of its domain, sets `workspace = "scratch_dir"`: a scratch copy of
 the data the task's `files` name, outside git. `roko plan validate` refuses a
 `scratch_dir` task that names no data (PLAN_048) or names a path git tracks
-(PLAN_049).
+(PLAN_049). A `scratch_dir` attempt (9135) works in
+`.roko/scratch/<run>/<task>/<generation>/`: a copy of the files, directories and
+globs its `files` name, cloned copy-on-write where the file system can (never
+hard-linked), with a SHA-256 manifest of the base beside it and, once the attempt
+ends, one of the result. Its agent and verify steps run there, and retries resume
+there. The directory is kept after the attempt: copying an accepted attempt's
+changes back into the workspace is 9136. Only the batch dispatch path builds these
+workspaces; the streaming path refuses a `scratch_dir` task.
 
 `roko effects list | show <id> | approve <id> | reject <id>` decides a held effect
 (9132). An approval replays the call once through a fresh dispatcher over the

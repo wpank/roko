@@ -197,6 +197,20 @@ impl RokoLayout {
             .join(format!("{}.json", path_component(effect_id)))
     }
 
+    /// `.roko/scratch/<run>/<task>/<generation>/` — the scratch_dir workspace
+    /// of task `task_id`'s attempts in run `run_id`, a copy of the task's data
+    /// outside git that retries resume in until the task moves on to a fresh
+    /// one, as worktree attempts do (9135). Its manifests sit beside it.
+    /// Characters outside `[A-Za-z0-9._-]` in either id become `_`.
+    #[must_use]
+    pub fn scratch_attempt_dir(&self, run_id: &str, task_id: &str, generation: u32) -> PathBuf {
+        self.root
+            .join("scratch")
+            .join(path_component(run_id))
+            .join(path_component(task_id))
+            .join(generation.to_string())
+    }
+
     /// `.roko/config/` — config.toml, presets.
     #[must_use]
     pub fn config_dir(&self) -> PathBuf {

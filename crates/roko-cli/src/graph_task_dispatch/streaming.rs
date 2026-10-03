@@ -86,6 +86,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 spec.title
             ))
         })?;
+        // Only the batch dispatch path builds scratch_dir workspaces (9135).
+        if task.workspace_kind(&self.config) == roko_core::WorkspaceKind::ScratchDir {
+            return Err(RokoError::Rejected(format!(
+                "task `{}` was not run: it works in a scratch_dir workspace, which the streaming \
+                 dispatch path does not build",
+                task.id
+            )));
+        }
         let role = task.role.as_deref().unwrap_or("implementer");
         let _in_flight = self.in_flight.register(
             &format!("{}/{}", spec.plan_id, task.id),

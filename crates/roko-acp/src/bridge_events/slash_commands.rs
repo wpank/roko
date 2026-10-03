@@ -120,14 +120,9 @@ pub(crate) async fn run_slash_command(
             vec!["plan".into(), "validate".into(), dir.into()]
         }
         "plan-run" => {
-            let dir = if args.is_empty() { "plans/" } else { args };
-            vec![
-                "plan".into(),
-                "run".into(),
-                dir.into(),
-                "--model".into(),
-                model_key.clone(),
-            ]
+            // No pin to the chat's model: the plan's tasks route by role and
+            // tier through the ladder, and failover stays on (backlog 3106).
+            plan_run_cli_args(args)
         }
 
         // ── Implementation & Execution ──
@@ -1158,6 +1153,22 @@ fn read_dream_status(workdir: &Path) -> String {
         }
     }
     out
+}
+
+/// The `roko` arguments of `/plan-run [dir] [flags]`: `plan run` on `dir`
+/// (`plans/` without one), with the words after it passed on as they are,
+/// so `--model <model>` still pins a model when asked. Nothing pins one
+/// otherwise (backlog 3106).
+pub(crate) fn plan_run_cli_args(args: &str) -> Vec<String> {
+    let mut words = args.split_whitespace().peekable();
+    let dir = words
+        .next_if(|word| !word.starts_with('-'))
+        .unwrap_or("plans/");
+    ["plan", "run", dir]
+        .into_iter()
+        .chain(words)
+        .map(str::to_string)
+        .collect()
 }
 
 /// Maps a Claude tool name to an ACP tool call kind.

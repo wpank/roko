@@ -311,9 +311,8 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// prerequisites have succeeded. Plans that write or build
         /// overlapping parts of the working tree never run at the same time.
         /// Defaults to `[conductor] max_parallel_plans` (1: one plan at a
-        /// time). Per-task worktrees run one plan at a time for now: with
-        /// them from config, the plans run in turn with a warning, and with
-        /// `--worktree-per-task` a run of several plans is refused.
+        /// time). With per-task worktrees, each plan that finishes is
+        /// delivered into the run's batch branch in turn.
         #[arg(
             long,
             value_name = "N",
@@ -1993,6 +1992,17 @@ async fn cmd_plan_dir_status(
                     "branch": delivery.branch,
                     "merge_commit": delivery.merge_commit,
                     "merge_command": merge_command,
+                    // The whole-plan checks the delivery ran (backlog 3111).
+                    "checks": delivery
+                        .checks
+                        .iter()
+                        .map(|check| serde_json::json!({
+                            "command": check.command,
+                            "source": check.source,
+                            "exit_code": check.exit_code,
+                        }))
+                        .collect::<Vec<_>>(),
+                    "check_log": delivery.check_log,
                 })),
                 "tasks": task_entries,
             }))?
@@ -2012,6 +2022,9 @@ async fn cmd_plan_dir_status(
             );
             if let Some(command) = &merge_command {
                 println!("take it with:    {command}");
+            }
+            if let Some(log) = &delivery.check_log {
+                println!("plan check log:  {log}");
             }
         }
         println!();

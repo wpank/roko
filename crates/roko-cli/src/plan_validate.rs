@@ -10,6 +10,7 @@ use roko_core::AgentRole;
 use roko_core::config::GatesConfig;
 use roko_core::config::routing::LadderConfig;
 use roko_core::config::schema::ModelProfile;
+use roko_core::task::TaskSpeedPriority;
 use roko_gate::AcceptanceContract;
 use serde::Serialize;
 use toml::Value;
@@ -188,6 +189,8 @@ fn validate_plans_dir_impl(
                     let diagnostics = ladder_diagnostics(&tasks_file, &plan.plan_id, ladder);
                     plan.diagnostics.extend(diagnostics);
                 }
+                let diagnostics = speed_priority_diagnostics(&tasks_file, &plan.plan_id);
+                plan.diagnostics.extend(diagnostics);
             }
 
             let existing_crates = collect_workspace_package_names(workdir, "crates");
@@ -300,6 +303,31 @@ pub fn drop_unknown_rung(task: &mut toml::Table, ladder: &LadderConfig) -> Optio
         return None;
     }
     task.remove("rung")
+}
+
+/// backlog 3109 (decision 3108): `speed_priority = "latency"` asked the
+/// router for cheaper models through a routing bias that no longer exists,
+/// so a task that sets it gets a PLAN_047 warning that it routes nothing.
+fn speed_priority_diagnostics(
+    tasks_file: &roko_cli::task_parser::TasksFile,
+    plan_id: &str,
+) -> Vec<Diagnostic> {
+    tasks_file
+        .tasks
+        .iter()
+        .filter(|task| task.hints.speed_priority == Some(TaskSpeedPriority::Latency))
+        .map(|task| Diagnostic {
+            severity: Severity::Warning,
+            rule_id: "PLAN_047".to_string(),
+            plan_id: Some(plan_id.to_string()),
+            task_id: Some(task.id.clone()),
+            message: format!(
+                "task '{}' sets speed_priority = \"latency\", which has no effect on routing; \
+                 use `rung` to start it on a cheaper model",
+                task.id
+            ),
+        })
+        .collect()
 }
 
 /// gap-dbf2a6: a `rung` hint must name one of its task's ladder rungs, and a
@@ -2500,6 +2528,51 @@ model_hint = "claude-sonnet-4-6"
             .map(|diag| diag.rule_id)
             .collect();
         assert_eq!(rules, ["PLAN_040"]);
+    }
+
+    /// backlog 3109: a task with `speed_priority = "latency"` gets a PLAN_047
+    /// warning, since no routing bias reads it any more; other priorities and
+    /// tasks without one get none.
+    #[test]
+    fn latency_speed_priority_warns_that_it_routes_nothing() {
+        let tasks = roko_cli::task_parser::TasksFile::parse_str(
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Fast turnaround"
+role = "implementer"
+speed_priority = "latency"
+
+[[task]]
+id = "T2"
+title = "Careful work"
+role = "implementer"
+speed_priority = "accuracy"
+
+[[task]]
+id = "T3"
+title = "No priority"
+role = "implementer"
+"#,
+        )
+        .unwrap();
+
+        let diagnostics = speed_priority_diagnostics(&tasks, "demo");
+        let found: Vec<(&str, Severity, Option<&str>)> = diagnostics
+            .iter()
+            .map(|diag| {
+                (
+                    diag.rule_id.as_str(),
+                    diag.severity,
+                    diag.task_id.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(found, [("PLAN_047", Severity::Warning, Some("T1"))]);
+        assert!(diagnostics[0].message.contains("no effect on routing"));
     }
 
     /// gap-d14a43: `[task.accept]` problems are PLAN_038 errors, a hand copy

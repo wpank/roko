@@ -4466,3 +4466,20 @@ fn bridge_under_load_drains_deferred_requests_in_order() {
     assert_eq!(drained, ["session/new", "session/list"]);
     assert!(sessions.drain_deferred_requests().is_empty());
 }
+
+/// backlog 3106: `/plan-run` no longer pins the chat's model, so the plan's
+/// tasks route through the ladder and keep failover; a `--model` after the
+/// directory still pins one.
+#[test]
+fn plan_run_slash_command_leaves_model_choice_to_the_ladder() {
+    assert_eq!(plan_run_cli_args("plans/x"), ["plan", "run", "plans/x"]);
+    assert_eq!(plan_run_cli_args(""), ["plan", "run", "plans/"]);
+    assert_eq!(
+        plan_run_cli_args("plans/x --model m"),
+        ["plan", "run", "plans/x", "--model", "m"]
+    );
+    assert_eq!(
+        plan_run_cli_args("--model m"),
+        ["plan", "run", "plans/", "--model", "m"]
+    );
+}

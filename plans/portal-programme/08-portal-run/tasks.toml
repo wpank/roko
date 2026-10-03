@@ -68,7 +68,6 @@ command line, and empty input.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = []
@@ -122,7 +121,6 @@ Read src/lib/streamRecord.ts and src/lib/runState.ts first.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = []
@@ -163,7 +161,6 @@ Read src/lib/checks.ts and src/lib/runState.ts first.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T01"]
@@ -211,7 +208,6 @@ workspace.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 20
@@ -269,7 +265,6 @@ active agents than its limit adds 0, unknown limits give null, and an idle run.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = []
@@ -317,7 +312,6 @@ unindexed checks, no declared list, and each focus branch.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = []
@@ -363,7 +357,6 @@ shares summing to 1, zero totals, the rate window, and null with no samples.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = []
@@ -413,7 +406,6 @@ src/components/primitives/StatusGlyph.tsx and src/api/queries.ts first.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 35
@@ -459,7 +451,6 @@ Keep every other Workspace behaviour intact. T10 runs the production build.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 25
@@ -513,7 +504,6 @@ output.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 30

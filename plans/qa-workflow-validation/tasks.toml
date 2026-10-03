@@ -3,7 +3,6 @@ plan = "qa-workflow-validation"
 total = 4
 done = 0
 status = "ready"
-max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 20
 

@@ -3,7 +3,6 @@ plan = "09-acceptance"
 total = 4
 done = 0
 status = "ready"
-max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 160
 
@@ -71,7 +70,6 @@ that belongs to the plan that owns the code.
 status = "ready"
 role = "implementer"
 tier = "mechanical"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 1
 estimated_minutes = 25
@@ -222,7 +220,6 @@ C. Copy every capture, serve.log, browser json and screenshot to
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 1
 estimated_minutes = 60
@@ -306,7 +303,6 @@ This is the user's path exactly: no fixtures, no fake agent, no `ROKO_SPA_DIR`
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 1
 estimated_minutes = 45
@@ -375,7 +371,6 @@ Be accurate rather than tidy: an optimistic entry costs more than an honest one.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 30

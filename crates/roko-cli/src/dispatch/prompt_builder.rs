@@ -183,10 +183,10 @@ impl PromptContext {
     /// Construct a `PromptContext` from runner inputs.
     ///
     /// When `ctx` carries pre-computed `cached_workspace_map` or
-    /// `cached_workspace_context` (non-empty), those values are used
-    /// directly — no filesystem I/O is performed for those fields.  This
-    /// avoids blocking the Tokio reactor on repeated directory walks and
-    /// `git` subprocess spawns.
+    /// `cached_workspace_context` (non-empty), those values are used instead
+    /// of walking the workspace again, which keeps repeated directory walks
+    /// off the Tokio reactor. The workspace context still reads the attempt
+    /// checkout's branch and modified files, two `git` calls (backlog 3110).
     ///
     /// `GraphTaskDispatcher` populates the cache fields via a `OnceLock` so
     /// the work is done at most once per plan run, on the first dispatch.
@@ -235,8 +235,10 @@ impl PromptContext {
         let workspace_context = if skip_enrichment {
             String::new()
         } else if !ctx.cached_workspace_context.is_empty() {
+            // The cache holds the run's crate descriptions; the branch and
+            // modified files are the attempt checkout's own (backlog 3110).
             truncate_to_limit(
-                ctx.cached_workspace_context.clone(),
+                workspace_context_with(&ctx.workdir, &ctx.cached_workspace_context),
                 role_limits.workspace_context,
             )
         } else {
@@ -676,6 +678,14 @@ const GIT_STATUS_LINE_LIMIT: usize = 40;
 /// All git calls are best-effort to avoid hanging on non-git workdirs or slow
 /// NFS mounts.
 fn generate_workspace_context(workdir: &Path) -> String {
+    workspace_context_with(workdir, &crate_context(workdir))
+}
+
+/// The `# Workspace context` block: `workdir`'s own branch and modified
+/// files, then `crates`, the crate descriptions ([`crate_context`]). A run
+/// caches the crate descriptions, which every checkout of it shares; the
+/// branch and changes are each attempt checkout's own (backlog 3110).
+fn workspace_context_with(workdir: &Path, crates: &str) -> String {
     let mut out = String::from("# Workspace context\n");
 
     // ── Git branch ──────────────────────────────────────────────────────
@@ -703,32 +713,40 @@ fn generate_workspace_context(workdir: &Path) -> String {
         }
     }
 
-    // ── Crate descriptions ──────────────────────────────────────────────
-    let crate_descriptions = scan_crate_descriptions(workdir);
-    if !crate_descriptions.is_empty() {
-        out.push_str("\n## Workspace crates\n");
-        for (name, desc) in &crate_descriptions {
-            if desc.is_empty() {
-                out.push_str(&format!("- {name}\n"));
-            } else {
-                out.push_str(&format!("- {name}: {desc}\n"));
-            }
-            if out.len() >= WORKSPACE_CONTEXT_LIMIT {
-                out.truncate(WORKSPACE_CONTEXT_LIMIT);
-                out.push_str("\n[truncated]");
-                return out;
-            }
-        }
-    }
+    out.push_str(crates);
 
     // If we only have the header and nothing else, return empty.
     if out.trim() == "# Workspace context" {
         return String::new();
     }
 
-    if out.len() > WORKSPACE_CONTEXT_LIMIT {
+    if out.len() > WORKSPACE_CONTEXT_LIMIT && !out.ends_with("[truncated]") {
         out.truncate(WORKSPACE_CONTEXT_LIMIT);
         out.push_str("\n[truncated]");
+    }
+    out
+}
+
+/// The `## Workspace crates` part of the workspace context: the names and
+/// descriptions under `workdir/crates`, bounded by
+/// [`WORKSPACE_CONTEXT_LIMIT`]; empty without any.
+fn crate_context(workdir: &Path) -> String {
+    let crate_descriptions = scan_crate_descriptions(workdir);
+    if crate_descriptions.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n## Workspace crates\n");
+    for (name, desc) in &crate_descriptions {
+        if desc.is_empty() {
+            out.push_str(&format!("- {name}\n"));
+        } else {
+            out.push_str(&format!("- {name}: {desc}\n"));
+        }
+        if out.len() >= WORKSPACE_CONTEXT_LIMIT {
+            out.truncate(WORKSPACE_CONTEXT_LIMIT);
+            out.push_str("\n[truncated]");
+            break;
+        }
     }
     out
 }
@@ -801,9 +819,12 @@ pub fn generate_workspace_map_pub(workdir: &Path) -> String {
     generate_workspace_map(workdir)
 }
 
-/// Public adapter — see [`generate_workspace_context`].
+/// Public adapter for the run-scoped cache: the crate descriptions
+/// ([`crate_context`]), the part of [`generate_workspace_context`] every
+/// checkout of a run shares. [`PromptContext::from_task`] adds the attempt
+/// checkout's own branch and modified files to it (backlog 3110).
 pub fn generate_workspace_context_pub(workdir: &Path) -> String {
-    generate_workspace_context(workdir)
+    crate_context(workdir)
 }
 
 /// Structured gate feedback injected into retry prompts.
@@ -3004,7 +3025,6 @@ mod tests {
             prompt_experiment: None,
             gate_feedback: None,
             routing_context: None,
-            routing_bias: None,
             dependency_outputs: Vec::new(),
             error_patterns_context: String::new(),
             cached_workspace_map: String::new(),
@@ -4231,6 +4251,60 @@ covers = ["AC1"]
         // The section is embedded in context_layer, not as a standalone section name.
         // diagnostics.included_sections reflects source sections (knowledge, playbooks).
         // The system_prompt content is what matters here.
+    }
+
+    /// backlog 3110: inside an attempt worktree the prompt's workspace
+    /// context names the attempt's branch and lists none of the operator
+    /// checkout's changes, though the run cached its crate descriptions from
+    /// the operator checkout.
+    #[test]
+    fn workspace_context_reports_attempt_branch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join("crates/demo")).expect("crate dir");
+        std::fs::write(
+            repo.join("crates/demo/Cargo.toml"),
+            "[package]\nname = \"demo\"\ndescription = \"A demo crate\"\n",
+        )
+        .expect("crate manifest");
+        let git = |dir: &Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&repo, &["init", "-q", "-b", "main"]);
+        for (key, value) in [
+            ("user.email", "operator@example.test"),
+            ("user.name", "Operator"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git(&repo, &["config", key, value]);
+        }
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "fixture"]);
+        std::fs::write(repo.join("operator-edit.txt"), "dirty\n").expect("dirty file");
+        let attempt = temp.path().join("attempt");
+        let attempt_path = attempt.to_str().expect("a UTF-8 path");
+        let branch = "roko/attempt/x";
+        git(&repo, &["worktree", "add", "-b", branch, attempt_path]);
+
+        let cached = generate_workspace_context_pub(&repo);
+        assert!(cached.contains("- demo: A demo crate"), "{cached}");
+        assert!(!cached.contains("operator-edit.txt"), "{cached}");
+        let ctx = DispatchContext {
+            workdir: attempt.clone(),
+            cached_workspace_context: cached,
+            ..ctx()
+        };
+        let context = PromptContext::from_task(&task(), &ctx).workspace_context;
+
+        assert!(context.contains("Branch: `roko/attempt/x`"), "{context}");
+        assert!(!context.contains("`main`"), "{context}");
+        assert!(!context.contains("operator-edit.txt"), "{context}");
+        assert!(context.contains("- demo: A demo crate"), "{context}");
     }
 
     #[test]

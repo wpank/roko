@@ -174,7 +174,6 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             prompt_experiment: prompt_experiment.clone(),
             gate_feedback: None,
             routing_context: Some(routing_ctx),
-            routing_bias: None,
             dependency_outputs: upstream_outputs(&input),
             error_patterns_context: self.task_error_patterns(spec, &task).text,
             cached_workspace_map: cached_workspace_map.clone(),

@@ -3,7 +3,6 @@ plan = "01-backend-plan-service"
 total = 10
 done = 0
 status = "ready"
-max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 210
 
@@ -49,7 +48,6 @@ Do not change any existing method signature. Do not remove the existing defaults
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = []
@@ -101,7 +99,6 @@ declared.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T01"]
@@ -157,7 +154,6 @@ be visible to the operator, not silently empty.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = ["T02"]
@@ -211,7 +207,6 @@ clean 404 instead of an error page.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = ["T03"]
@@ -267,7 +262,6 @@ currently absent from the response.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T04"]
@@ -314,7 +308,6 @@ Keep `validate_path_segment` on the id so path traversal is still rejected with 
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T05"]
@@ -352,7 +345,6 @@ Run the compiler and let it tell you what is unused rather than guessing.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T06"]
@@ -390,7 +382,6 @@ Add a unit test in the same file covering both branches using a temporary direct
 status = "ready"
 role = "implementer"
 tier = "mechanical"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
 depends_on = ["T07"]
@@ -433,7 +424,6 @@ router directly.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = ["T08"]
@@ -504,7 +494,6 @@ output.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25

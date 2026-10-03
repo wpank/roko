@@ -99,7 +99,6 @@ Acceptance: accept/runAgain.accept.test.ts (11 tests) → src/lib/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 35
 depends_on = []
@@ -197,7 +196,6 @@ Acceptance: accept/legibility.accept.test.ts (12 tests) → src/styles/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = []
@@ -269,7 +267,6 @@ Acceptance: accept/helpers.accept.test.ts (7 tests) → src/lib/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
 depends_on = []
@@ -337,7 +334,6 @@ Acceptance: accept/notice.accept.test.tsx (6 tests) → src/components/primitive
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = []
@@ -405,7 +401,6 @@ Acceptance: accept/authoring.accept.test.tsx (5 DOM tests) → src/components/st
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T03", "T04"]
@@ -473,7 +468,6 @@ Acceptance: accept/planHeader.accept.test.tsx (6 DOM tests) → src/components/s
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T01", "T04", "T05"]
@@ -547,7 +541,6 @@ Acceptance: accept/rows.accept.test.tsx (9 DOM tests) → src/components/stage/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = ["T01", "T03"]
@@ -619,7 +612,6 @@ Acceptance: accept/band.accept.test.tsx (5 DOM tests) → src/components/run/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
 depends_on = ["T01", "T03"]
@@ -685,7 +677,6 @@ Acceptance: accept/workspaceNotice.accept.test.tsx (2 DOM tests) → src/compone
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
 depends_on = ["T06", "T07", "T08", "T10"]
@@ -743,7 +734,6 @@ src/components/stream/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T01"]
@@ -812,7 +802,6 @@ edit the acceptance copies.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T02", "T09"]

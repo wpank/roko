@@ -53,7 +53,6 @@ dangling, cycle, self-cycle, and a cycle beside independent tasks.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = []
@@ -113,7 +112,6 @@ revision fails, revision untrackable, timeout, transient fetch errors recovered.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = []
@@ -168,7 +166,6 @@ waitingOn, each time kind, and every focusTaskId branch.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1200
 max_retries = 2
 estimated_minutes = 30
@@ -225,7 +222,6 @@ No project-type picker, no template gallery, no wizard.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T02"]
@@ -271,7 +267,6 @@ Create `apps/portal/src/components/stage/WaveStrip.tsx`, the DAG in one row:
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T03"]
@@ -318,7 +313,6 @@ Create `apps/portal/src/components/stage/TaskList.tsx`, the core of the plan vie
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = ["T03"]
@@ -360,7 +354,6 @@ explaining the server lacks the route; it never blocks Run.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
 depends_on = []
@@ -411,7 +404,6 @@ fields a form never showed.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = []
@@ -475,7 +467,6 @@ src/lib/taskRows.ts first.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 40
@@ -529,7 +520,6 @@ run-again. Keep every other Workspace behaviour intact.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 30

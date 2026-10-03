@@ -255,6 +255,15 @@ impl SharedAgentFactory {
         // explore the eligible models (S02.P1-3).
         let epsilon = config.routing.effective_explore_epsilon();
         let dispatcher = dispatcher.with_explore_epsilon(epsilon);
+        // `[agent] default_model`, a `[models.*]` key or a slug resolved as
+        // failover resolves it, is what the router falls back to when nothing
+        // else decides a route (backlog 3107); `MODEL_FOCUSED` without one.
+        let default_model = config.agent.default_model.trim();
+        let dispatcher = if default_model.is_empty() {
+            dispatcher
+        } else {
+            dispatcher.with_default_slug(resolver.resolve(default_model).model_slug)
+        };
 
         Self {
             config,

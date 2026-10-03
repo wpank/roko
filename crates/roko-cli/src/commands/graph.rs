@@ -241,12 +241,11 @@ pub(crate) async fn execute_graph(
         Some(Arc::new(queued) as Arc<dyn TelemetryEventSink>)
     };
 
-    let mut registry = default_registry();
-    // `agent.task` starts a gated agent run in this workspace, on this hub
-    // (9127).
+    // The entry cells, `agent.task` (9127) and `plan.run` (9128), start
+    // their runs in this workspace, on this hub.
     let workdir = std::env::current_dir()
         .map_err(|error| anyhow!("cannot find the graph's workspace: {error}"))?;
-    roko_cli::graph_entry_cells::register_agent_task(&mut registry, workdir, telemetry_hub.clone());
+    let registry = roko_cli::graph_entry_cells::graph_registry(workdir, telemetry_hub.clone());
     let mut engine = GraphEngine::new(graph, registry).with_allow_test_stubs(cfg!(test));
     if let Some(event) = trigger_event {
         engine = engine.with_root_inputs(vec![trigger_input_signal(event)]);

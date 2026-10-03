@@ -1769,7 +1769,8 @@ fn plan_estimated_minutes(tasks_file: &crate::task_parser::TasksFile) -> Option<
 ///
 /// Returns the report of the plans that would run when one of them has such
 /// an error, and `None` when the run may start or there is nothing to check.
-fn plan_run_validation(
+/// A graph's `plan.run` node checks its plan with it too (9128).
+pub(crate) fn plan_run_validation(
     workdir: &Path,
     plan_target: &Path,
     only_plans: Option<&[String]>,

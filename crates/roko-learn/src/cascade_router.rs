@@ -3962,10 +3962,7 @@ impl CascadeRouter {
         if excluded.is_empty() {
             return models.to_vec();
         }
-        let tiers: Vec<ModelTier> = models
-            .iter()
-            .map(|slug| self.tier_for_slug(slug))
-            .collect();
+        let tiers: Vec<ModelTier> = models.iter().map(|slug| self.tier_for_slug(slug)).collect();
         // Each class's most trusted excluded model, and the classes a trusted
         // model keeps.
         let mut spare: HashMap<ModelTier, (&str, f64)> = HashMap::new();
@@ -3988,7 +3985,9 @@ impl CascadeRouter {
                 continue;
             };
             let spared = !covered.contains(tier)
-                && spare.get(tier).is_some_and(|(best, _)| *best == slug.as_str());
+                && spare
+                    .get(tier)
+                    .is_some_and(|(best, _)| *best == slug.as_str());
             let count = trust.excluded.entry(slug.clone()).or_default();
             if !spared {
                 *count += 1;

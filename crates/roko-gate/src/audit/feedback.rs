@@ -581,9 +581,7 @@ mod tests {
             .iter()
             .filter_map(|record| match &record.event {
                 AuditEvent::Estimate {
-                    window,
-                    stratum,
-                    ..
+                    window, stratum, ..
                 } if *window == id => Some(stratum),
                 _ => None,
             })

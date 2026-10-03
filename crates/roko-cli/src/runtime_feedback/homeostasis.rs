@@ -44,16 +44,16 @@ use roko_core::config::schema::RokoConfig;
 use roko_core::task::TaskTier;
 use roko_fs::layout::RokoLayout;
 use roko_learn::homeostasis::controller::{Controller, ControllerEvent};
-use roko_learn::homeostasis::holdout::HarnessHoldout;
 use roko_learn::homeostasis::detect::Baseline;
 use roko_learn::homeostasis::ev::Ev;
+use roko_learn::homeostasis::holdout::HarnessHoldout;
 use roko_learn::homeostasis::ledger::{ControllerRecord, Envelope};
 use roko_learn::homeostasis::lkg::ThetaLkg;
 use roko_learn::homeostasis::policy::{DEFAULT_HOLDOUT, ViabilityPolicy, non_m1_fingerprint};
 use roko_learn::homeostasis::priors::{Calibration, DrivePredictor, M3Prior, PredictedLevels};
 use roko_learn::homeostasis::resolution::{ResolutionFold, TaskResolution};
-use roko_learn::self_model::{ArmKey, CandidateForecast};
 use roko_learn::loop_audit::assign::takes_default;
+use roko_learn::self_model::{ArmKey, CandidateForecast};
 use roko_learn::telemetry::records::HARNESS_POLICY_DECISION_POINT;
 use roko_learn::telemetry::{
     Arm, Assignment, AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord,
@@ -164,7 +164,12 @@ impl HomeostasisSink {
             ),
             None => {
                 let theta0 = HarnessParams::baseline(&RokoConfig::default());
-                (theta0.clone(), theta0, HomeostasisMode::Shadow, DEFAULT_HOLDOUT)
+                (
+                    theta0.clone(),
+                    theta0,
+                    HomeostasisMode::Shadow,
+                    DEFAULT_HOLDOUT,
+                )
             }
         };
         let handle = HarnessParamsHandle::new(theta0.clone());
@@ -272,7 +277,10 @@ impl HomeostasisSink {
             CONTROLLER_SEED,
         );
         if !restart.is_empty() {
-            tracing::info!(events = restart.len(), "M1 resumed: an open episode was abandoned");
+            tracing::info!(
+                events = restart.len(),
+                "M1 resumed: an open episode was abandoned"
+            );
         }
         controller = controller.with_config_fingerprint(non_m1_fingerprint(config));
         if config.homeostasis.m3_prior
@@ -318,7 +326,10 @@ impl HomeostasisSink {
     #[must_use]
     pub fn theta(&self) -> Option<HarnessParams> {
         let state = self.state.lock();
-        state.controller.as_ref().map(|controller| controller.theta().clone())
+        state
+            .controller
+            .as_ref()
+            .map(|controller| controller.theta().clone())
     }
 
     /// The run ended: resolve the chains still open, save the controller's
@@ -430,7 +441,10 @@ impl HomeostasisSink {
             .iter()
             .any(|event| matches!(event, ControllerEvent::Hold { .. }))
         {
-            tracing::warn!(run_id, "M1 holds: nothing in its box helped; a person decides");
+            tracing::warn!(
+                run_id,
+                "M1 holds: nothing in its box helped; a person decides"
+            );
         }
     }
 }
@@ -458,9 +472,7 @@ fn writer<'a>(
 
 /// The run of a chain key, `run:plan:task`.
 fn run_of(chain_key: &str) -> &str {
-    chain_key
-        .split_once(':')
-        .map_or(chain_key, |(run, _)| run)
+    chain_key.split_once(':').map_or(chain_key, |(run, _)| run)
 }
 
 /// The in-control levels the S5 policy's bounds were calibrated from, by
@@ -603,7 +615,9 @@ mod tests {
         for verdict in verdicts {
             let event = FeedbackEvent::AttemptSettled(Arc::new(verdict.clone()));
             assert!(sink.interested(&event));
-            sink.on_event(&event).await.expect("the sink takes the verdict");
+            sink.on_event(&event)
+                .await
+                .expect("the sink takes the verdict");
         }
     }
 

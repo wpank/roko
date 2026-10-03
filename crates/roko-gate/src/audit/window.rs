@@ -353,7 +353,12 @@ impl Window {
         for ((model, harness), units) in &pairs {
             let theta = group_estimate(units)?.theta.estimate;
             if let Some(rate) = theta.theta_hajek {
-                trust.push(TrustEstimate::from_estimate(model, harness, rate, theta.n_eff));
+                trust.push(TrustEstimate::from_estimate(
+                    model,
+                    harness,
+                    rate,
+                    theta.n_eff,
+                ));
             }
         }
         let all: Vec<&WindowUnit> = self.units.iter().collect();

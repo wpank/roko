@@ -212,9 +212,8 @@ impl GraphTaskDispatcher {
                 let capped = self
                     .tier_bounds(task, attempt.harness_decision())
                     .caps(rung);
-                let top = step >= MAX_ESCALATIONS
-                    || capped
-                    || ladder.runnable_above(role, rung) == 0;
+                let top =
+                    step >= MAX_ESCALATIONS || capped || ladder.runnable_above(role, rung) == 0;
                 let task_key = format!("{}/{}", spec.plan_id, task.id);
                 (
                     record,

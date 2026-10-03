@@ -268,10 +268,7 @@ pub(crate) fn status(
             _ => {}
         }
     }
-    report.queued = units(&all)
-        .iter()
-        .filter(|unit| !unit.reported())
-        .count();
+    report.queued = units(&all).iter().filter(|unit| !unit.reported()).count();
     report.judge = judge_against(workdir, &labels);
     if strata {
         report.strata = Some(verdict_strata(&all));
@@ -597,9 +594,7 @@ pub(crate) fn reveal(ledger_dir: &Path, run_id: &str) -> Result<RevealReport> {
         (None, _) => vec![format!("no audit.key_commit for run {run_id}")],
         (Some(_), None) => vec![format!("run {run_id}'s key is not revealed yet")],
         (Some(_), Some(None)) => vec![format!("run {run_id}'s revealed key does not parse")],
-        (Some(committed), Some(Some(key))) => {
-            verify_reveal(&key, run_id, &committed, &selections)
-        }
+        (Some(committed), Some(Some(key))) => verify_reveal(&key, run_id, &committed, &selections),
     };
     Ok(RevealReport {
         run_id: run_id.to_string(),
@@ -648,7 +643,9 @@ pub(crate) fn incidents(vault: &AuditVault) -> Result<IncidentsReport> {
             continue;
         }
         let text = std::fs::read_to_string(&path)?;
-        report.isolation_proposals.extend(serde_json::from_str(&text).ok());
+        report
+            .isolation_proposals
+            .extend(serde_json::from_str(&text).ok());
     }
     Ok(report)
 }
@@ -750,7 +747,10 @@ mod tests {
             .expect("the ledger")
             .filter_map(Result::ok)
             .map(|entry| entry.path())
-            .find(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
             .expect("a day file");
         let text = std::fs::read_to_string(&day).expect("the day file");
         std::fs::write(&day, text.replacen("\"sel-3\"", "\"sel-x\"", 1)).expect("an edit");

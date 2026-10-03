@@ -1285,12 +1285,9 @@ impl GraphTaskDispatcher {
             .iter()
             .map(|(_, step)| crate::task_accept::prompt_command(&step.command).to_string())
             .collect();
-        let selection = self.factory.error_patterns_for_task(
-            &spec.plan_id,
-            &task.id,
-            &commands,
-            limit,
-        );
+        let selection =
+            self.factory
+                .error_patterns_for_task(&spec.plan_id, &task.id, &commands, limit);
         if !selection.keys.is_empty() {
             tracing::debug!(
                 plan_id = %spec.plan_id,

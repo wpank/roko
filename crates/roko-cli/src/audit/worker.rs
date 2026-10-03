@@ -52,8 +52,8 @@ use roko_gate::attempt_diff::{
 };
 use roko_gate::audit::canary::{CanaryScanner, scan_diff};
 use roko_gate::audit::feedback::{TrustBook, close_due_windows, trust_path};
-use roko_gate::audit::incident::{Evidence, Incident, IncidentDraft, IncidentKind, IncidentStore};
 use roko_gate::audit::hidden::HiddenStore;
+use roko_gate::audit::incident::{Evidence, Incident, IncidentDraft, IncidentKind, IncidentStore};
 use roko_gate::audit::ledger::{AuditEvent, AuditLedger, LedgerRecord, records};
 use roko_gate::audit::policy::{EPS_FLOOR, RunKey, select};
 use roko_learn::cascade_router::AUDIT_HARNESS;
@@ -737,7 +737,13 @@ impl Worker {
             tracing::warn!(sel_id = %unit.sel_id, %error, "vs.label not written");
         }
         // DP6: a confirmed false green or gaming finding opens an incident.
-        report_incidents(&self.context.vault, &mut self.ledger, unit, labels, &evidence);
+        report_incidents(
+            &self.context.vault,
+            &mut self.ledger,
+            unit,
+            labels,
+            &evidence,
+        );
     }
 
     /// F1 (7128): count the unit's audited Y in the gate-gaming detector,
@@ -834,7 +840,9 @@ pub(crate) fn evidence_of(
         base_tree: unit.base_tree.clone(),
         result_tree: unit.result_tree.clone(),
         findings: findings.to_vec(),
-        hidden_suite: b1.and_then(|b1| b1["suite_id"].as_str()).map(str::to_string),
+        hidden_suite: b1
+            .and_then(|b1| b1["suite_id"].as_str())
+            .map(str::to_string),
         hidden_failed: b1.and_then(|b1| b1["y"].as_bool()).map(u32::from),
         b3: checks.get("b3").filter(|b3| !b3.is_null()).cloned(),
         note: None,
@@ -1212,9 +1220,7 @@ mod tests {
         let mut checks = Map::new();
         let b1 = json!({ "suite_id": "hs-7f2c", "y": true, "failing": ["two_is_two"] });
         checks.insert("b1".into(), b1);
-        let findings = vec![
-            "test_weakened `tests/a.rs`: an assertion was removed".to_string(),
-        ];
+        let findings = vec!["test_weakened `tests/a.rs`: an assertion was removed".to_string()];
         let labels = AuditLabels {
             y: Some(true),
             g: Some(false),
@@ -1227,7 +1233,10 @@ mod tests {
         let incident = &opened[0];
         assert_eq!(incident.kind, IncidentKind::FalseGreen);
         assert_eq!(incident.status(), IncidentStatus::Open);
-        assert_eq!(incident.evidence.res_id.as_deref(), Some("res-0a1b2c3d4e5f"));
+        assert_eq!(
+            incident.evidence.res_id.as_deref(),
+            Some("res-0a1b2c3d4e5f")
+        );
         assert_eq!(incident.evidence.hidden_failed, Some(1));
         let record = vault
             .incidents_dir()
@@ -1242,7 +1251,10 @@ mod tests {
         let parsed: toml::Value = toml::from_str(&proposal).expect("a TOML task");
         let task = &parsed["task"][0];
         assert_eq!(task["title"].as_str(), Some("audit failed: false_green"));
-        assert_eq!(task["description"].as_str(), Some("audit failed: false_green"));
+        assert_eq!(
+            task["description"].as_str(),
+            Some("audit failed: false_green")
+        );
         assert_eq!(task["files"][0].as_str(), Some("src/lib.rs"));
         for hidden in ["two_is_two", "hs-7f2c", "tests/a.rs"] {
             assert!(!proposal.contains(hidden), "{hidden} in {proposal}");

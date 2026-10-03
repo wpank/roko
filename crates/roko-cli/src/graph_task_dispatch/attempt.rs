@@ -915,7 +915,11 @@ impl GraphTaskDispatcher {
             return 1.0;
         };
         let scale = theta.task_budget_scale;
-        if scale > 0.0 && scale < 1.0 { scale } else { 1.0 }
+        if scale > 0.0 && scale < 1.0 {
+            scale
+        } else {
+            1.0
+        }
     }
 
     /// Close run `run_id`'s attempt log once its plan has finished: wait
@@ -2251,14 +2255,17 @@ printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_c
         let run = RunRecords::load(&runs_dir.join(RUN)).expect("load the run");
         assert!(run.invalid.is_empty(), "{:?}", run.invalid);
         assert_eq!(run.harness_decisions.len(), 3);
-        for (line, (task, version)) in run
-            .harness_decisions
-            .iter()
-            .zip([("H1", 0), ("H2", 1), ("H3", 1)])
+        for (line, (task, version)) in
+            run.harness_decisions
+                .iter()
+                .zip([("H1", 0), ("H2", 1), ("H3", 1)])
         {
             let row = &line.record;
             assert_eq!(row.identity.task_id, task);
-            assert_eq!((row.source, row.mode), (DecisionSource::Control, HomeostasisMode::On));
+            assert_eq!(
+                (row.source, row.mode),
+                (DecisionSource::Control, HomeostasisMode::On)
+            );
             assert_eq!(row.policy_version, version);
             // The arm is the chain's draw on the harness_policy layer.
             let epoch = row
@@ -2271,7 +2278,11 @@ printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_c
             assert_eq!((row.arm, row.assignment.arm), (drawn.arm, drawn.arm));
             // The learned arm runs the controller's θ; the others run θ₀.
             let chosen = if version == 0 { &theta0 } else { &raised };
-            let ran = if takes_default(row.arm) { &theta0 } else { chosen };
+            let ran = if takes_default(row.arm) {
+                &theta0
+            } else {
+                chosen
+            };
             assert_eq!(row.params_digest, ran.params_digest());
             assert_eq!(&row.chosen, chosen);
             assert_eq!(row.default, theta0);
@@ -2284,7 +2295,11 @@ printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_c
                 .expect("a verdict");
             let stamp = verdict.record.harness.as_ref().expect("a harness stamp");
             assert_eq!(
-                (stamp.arm, stamp.policy_version, stamp.params_digest.as_str()),
+                (
+                    stamp.arm,
+                    stamp.policy_version,
+                    stamp.params_digest.as_str()
+                ),
                 (row.arm, version, row.params_digest.as_str())
             );
         }

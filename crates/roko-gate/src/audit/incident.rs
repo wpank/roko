@@ -481,7 +481,11 @@ impl IncidentStore {
 /// kind, its attempt and, for an incident about a model, the model.
 #[must_use]
 pub fn incident_id(kind: IncidentKind, attempt_key: &str, model: &str) -> String {
-    let subject = if attempt_key == "-" { model } else { attempt_key };
+    let subject = if attempt_key == "-" {
+        model
+    } else {
+        attempt_key
+    };
     let digest = Sha256::digest(format!("{}|{subject}", kind.label()).as_bytes());
     format!("inc-{}", &hex(&digest)[..16])
 }
@@ -504,7 +508,12 @@ fn fix_task(incident_id: &str, draft: &IncidentDraft) -> String {
     task.insert("title".into(), toml::Value::String(says.clone()));
     task.insert("description".into(), toml::Value::String(says));
     task.insert("role".into(), toml::Value::String("implementer".into()));
-    let files = draft.files.iter().cloned().map(toml::Value::String).collect();
+    let files = draft
+        .files
+        .iter()
+        .cloned()
+        .map(toml::Value::String)
+        .collect();
     task.insert("files".into(), toml::Value::Array(files));
     let mut root = toml::map::Map::new();
     let tasks = vec![toml::Value::Table(task)];
@@ -559,7 +568,10 @@ mod tests {
             .open_incident(&mut ledger, draft(IncidentKind::WeakOracle, 1))
             .expect("opened");
         assert!(new);
-        assert_eq!(incident.fix_proposal, None, "a weak oracle wants no fix task");
+        assert_eq!(
+            incident.fix_proposal, None,
+            "a weak oracle wants no fix task"
+        );
         let (again, new) = store
             .open_incident(&mut ledger, draft(IncidentKind::WeakOracle, 1))
             .expect("the same incident");

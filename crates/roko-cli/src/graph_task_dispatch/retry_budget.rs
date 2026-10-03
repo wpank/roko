@@ -658,7 +658,9 @@ command = "true"
         use roko_learn::homeostasis::policy::ViabilityPolicy;
 
         use crate::graph_task_dispatch::GraphFeedbackContext;
-        use crate::graph_task_dispatch::tests::{VERIFY_PROVIDER, make_test_dispatcher, no_auto_fix};
+        use crate::graph_task_dispatch::tests::{
+            VERIFY_PROVIDER, make_test_dispatcher, no_auto_fix,
+        };
         use crate::runtime_feedback::HomeostasisSink;
 
         let dir = tempdir().expect("tempdir");

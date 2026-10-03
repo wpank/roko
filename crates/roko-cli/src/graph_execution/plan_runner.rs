@@ -3232,13 +3232,12 @@ async fn run_one_plan(
     }
     // M1 moves the budgets the tasks do not author during the run (B2,
     // 8126); `--max-retries` fixes every budget.
-    let live_budgets = if ctx.max_retries.is_none()
-        && ctx.graph_task_dispatcher.homeostasis_sink().is_some()
-    {
-        Some(Arc::clone(ctx.graph_task_dispatcher).live_retry_budgets(retry_budgets))
-    } else {
-        None
-    };
+    let live_budgets =
+        if ctx.max_retries.is_none() && ctx.graph_task_dispatcher.homeostasis_sink().is_some() {
+            Some(Arc::clone(ctx.graph_task_dispatcher).live_retry_budgets(retry_budgets))
+        } else {
+            None
+        };
 
     // An omitted `max_parallel` converts as 1, as it did before it meant "as
     // wide as the DAG allows" (gap-272448): the checkpoint identity hashes

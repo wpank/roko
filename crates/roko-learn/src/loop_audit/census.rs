@@ -14,7 +14,8 @@
 //! and ι_net (S03 §4.4). Once a loop's learned arm has N_ε opportunities,
 //! the measured verdict decides its reason; before that, its logs and its
 //! declared findings do. Rows written before A-DEC count as
-//! pre-instrumentation.
+//! pre-instrumentation. The audit tick (backlog 5126) reads the same fold
+//! through [`measure_at`], its sequences at the auditor's α/K.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -24,7 +25,10 @@ use serde_json::Value;
 
 use super::arm_set::ArmSet;
 use super::assign::takes_default;
-use super::exposure::{Action, ExposureEstimator, InfluenceEstimator, Opportunity, ReadStatus};
+use super::exposure::{
+    Action, ExposureEstimate, ExposureEstimator, InfluenceEstimate, InfluenceEstimator,
+    Opportunity, ReadStatus,
+};
 use super::ledger::EpsilonFields;
 use super::spec::{AuditState, Lifecycle, LoopSpec, Qualifier, ReasonCode, Registry};
 use super::state::AuditParams;
@@ -134,6 +138,23 @@ pub struct MeasuredLoop {
     pub judged: bool,
     /// The dormant reason ε gives once judged, while it stays below ε_min.
     pub reason: Option<ReasonCode>,
+}
+
+/// One loop's measurement for the state machine (backlog 5126): what the
+/// census prints, the estimates behind it, and the rows the structural
+/// pre-checks read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoopMeasurement {
+    /// What the census prints.
+    pub measured: MeasuredLoop,
+    /// ε and its decomposition, with its confidence sequence.
+    pub exposure: ExposureEstimate,
+    /// ι_net, with its confidence sequence.
+    pub influence: InfluenceEstimate,
+    /// The loop's decision rows with S03's fields, opportunities or not.
+    pub rows: u64,
+    /// Those rows whose arm was assigned at or after the decision.
+    pub ordering_violations: u64,
 }
 
 /// The census of every registered loop, in registry order.
@@ -380,7 +401,26 @@ pub fn read_runs(runs_dir: &Path) -> Vec<RunRecords> {
 /// hint, an override, a ladder rung) is no opportunity.
 #[must_use]
 pub fn measure(runs: &[RunRecords]) -> BTreeMap<String, MeasuredLoop> {
-    let params = AuditParams::default();
+    measure_at(runs, &AuditParams::default())
+        .into_iter()
+        .map(|(loop_id, measurement)| (loop_id, measurement.measured))
+        .collect()
+}
+
+/// What [`measure`] gives, with the estimates behind it for the state
+/// machine (backlog 5126): their sequences at `params`' α/K, and judged
+/// against its N_ε and ε_min.
+#[must_use]
+pub fn measure_at(runs: &[RunRecords], params: &AuditParams) -> BTreeMap<String, LoopMeasurement> {
+    tallies(runs, params.loop_alpha())
+        .into_iter()
+        .map(|(loop_id, tally)| (loop_id, tally.measurement(params)))
+        .collect()
+}
+
+/// Each loop's tally over the decision rows of `runs`, its sequences at
+/// level `alpha`.
+fn tallies(runs: &[RunRecords], alpha: f64) -> BTreeMap<String, Tally> {
     let mut tallies: BTreeMap<String, Tally> = BTreeMap::new();
     for run in runs {
         let executed: HashMap<&str, &ExecutedModel> = run
@@ -391,9 +431,8 @@ pub fn measure(runs: &[RunRecords]) -> BTreeMap<String, MeasuredLoop> {
         for line in &run.decisions {
             let row = &line.record;
             let loop_id = row.audit.loop_id.as_deref().unwrap_or(ROUTE_LOOP);
-            let loop_tally = tally_of(&mut tallies, loop_id, params.alpha);
-            if !row.audit.present() {
-                loop_tally.pre_instrumentation += 1;
+            let loop_tally = tally_of(&mut tallies, loop_id, alpha);
+            if !loop_tally.count(&row.audit) {
                 continue;
             }
             let ran = row
@@ -410,9 +449,8 @@ pub fn measure(runs: &[RunRecords]) -> BTreeMap<String, MeasuredLoop> {
             let Some(loop_id) = loop_id.or_else(|| content_loop(row.decision_point)) else {
                 continue;
             };
-            let loop_tally = tally_of(&mut tallies, loop_id, params.alpha);
-            if !row.audit.present() {
-                loop_tally.pre_instrumentation += 1;
+            let loop_tally = tally_of(&mut tallies, loop_id, alpha);
+            if !loop_tally.count(&row.audit) {
                 continue;
             }
             if let Some(opportunity) = content_opportunity(row) {
@@ -421,9 +459,6 @@ pub fn measure(runs: &[RunRecords]) -> BTreeMap<String, MeasuredLoop> {
         }
     }
     tallies
-        .into_iter()
-        .map(|(loop_id, tally)| (loop_id, tally.finish(&params)))
-        .collect()
 }
 
 /// `loop_id`'s tally in `tallies`, started at level `alpha` when new.
@@ -553,6 +588,18 @@ fn read_status(state: Option<&DecisionState>) -> ReadStatus {
     }
 }
 
+/// Whether S03's fields say the row's arm was assigned at or after its
+/// decision (S03 §4.6's ordering pre-check, `assigned_at ≥ decided_at`).
+fn assigned_late(audit: &AuditFields) -> bool {
+    let assigned_at = audit
+        .assignment
+        .as_ref()
+        .map(|assignment| assignment.assigned_at);
+    assigned_at
+        .zip(audit.decided_at)
+        .is_some_and(|(assigned_at, decided_at)| assigned_at >= decided_at)
+}
+
 /// One loop's opportunities, as the census folds them.
 #[derive(Debug, Clone)]
 struct Tally {
@@ -561,6 +608,8 @@ struct Tally {
     n_learned: u64,
     n_default: u64,
     pre_instrumentation: u64,
+    rows: u64,
+    ordering_violations: u64,
 }
 
 impl Tally {
@@ -571,7 +620,22 @@ impl Tally {
             n_learned: 0,
             n_default: 0,
             pre_instrumentation: 0,
+            rows: 0,
+            ordering_violations: 0,
         }
+    }
+
+    /// Count a decision row by its S03 fields `audit`: a row that has them,
+    /// and whether its arm was assigned late, or a row from before them.
+    /// Returns whether it has them.
+    fn count(&mut self, audit: &AuditFields) -> bool {
+        if !audit.present() {
+            self.pre_instrumentation += 1;
+            return false;
+        }
+        self.rows += 1;
+        self.ordering_violations += u64::from(assigned_late(audit));
+        true
     }
 
     fn push<A: Action>(&mut self, opportunity: &Opportunity<A>) {
@@ -605,6 +669,16 @@ impl Tally {
             reason: judged
                 .then(|| exposure.dormant_reason(params.eps_min))
                 .flatten(),
+        }
+    }
+
+    fn measurement(&self, params: &AuditParams) -> LoopMeasurement {
+        LoopMeasurement {
+            measured: self.finish(params),
+            exposure: self.exposure.estimate(),
+            influence: self.influence.estimate(),
+            rows: self.rows,
+            ordering_violations: self.ordering_violations,
         }
     }
 }

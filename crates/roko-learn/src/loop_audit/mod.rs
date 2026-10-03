@@ -21,7 +21,10 @@
 //!
 //! [`LoopAuditor`] is the facade (S03 §4.1): the registry, each loop's
 //! latest audited state and `[learning.audit]`. At attempt open, S02.P1-14's
-//! `ArmSet` asks it for a loop's layer and the policy the loop executes.
+//! `ArmSet` asks it for a loop's layer and the policy the loop executes. At
+//! each plan run's close, [`LoopAuditor::observe_run`] is the audit tick
+//! (backlog 5126): it evaluates every measured loop and appends the
+//! `loop.health` and `loop.transition` rows.
 
 pub mod arm_set;
 pub mod assign;
@@ -44,14 +47,31 @@ pub use spec::{
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use roko_core::config::learning::{AuditEpoch, LearningAuditConfig};
 
-use self::arm_set::{ArmDraws, MAXIMIZE_CONDITION, NORMAL_CONDITION};
+use self::arm_set::{ArmDraws, MAXIMIZE_CONDITION, NORMAL_CONDITION, PLACEBO_LAYER};
 use self::assign::{EXPLORE_EPSILON, HoldoutSchedule, LoopLayer};
-use self::ledger::{Ledger, LoopAuditRecord, LoopAuditRow};
-use self::state::{AuditParams, ExecutedPolicy, LoopStatus};
+use self::census::{LoopMeasurement, MeasuredLoop};
+use self::exposure::InfluenceEstimate;
+use self::ledger::{
+    BetaFields, HealthRow, IotaFields, LOOP_AUDIT_SCHEMA, Ledger, LoopAuditRecord, LoopAuditRow,
+    TransitionRow,
+};
+use self::state::{
+    AuditParams, Auditor, AuditorSignals, ExecutedPolicy, LoopEvidence, LoopStatus, Structural,
+};
 use crate::telemetry::LayerSpec;
+use crate::telemetry::RunProvenanceManifest;
+use crate::telemetry::records::b3_digest;
+use crate::telemetry::report::{RunRecords, SrmReport, srm_check};
+
+/// A `loop.health` row's kind.
+const HEALTH_KIND: &str = "loop.health";
+/// A `loop.transition` row's kind.
+const TRANSITION_KIND: &str = "loop.transition";
+/// Where an audit tick's health rows come from: the runs' decision rows.
+const MEASURED_EVIDENCE: &str = "measured";
 
 /// The loop auditor's facade (S03 §4.1): the registry, each loop's latest
 /// audited state from the loop-audit ledger, and `[learning.audit]`.
@@ -68,11 +88,109 @@ pub struct LoopAuditor {
     maximize: bool,
 }
 
-/// A loop's latest audited state and its reason.
+/// A loop's latest audited state and its reason, and the dwell its last move
+/// started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Standing {
     state: AuditState,
     reason: Option<ReasonCode>,
+    /// When it last moved (unix seconds): its latest transition row's `ts`.
+    moved_at: Option<i64>,
+    /// Its opportunities then: the `n_opp` of its latest health row before
+    /// that transition row, which an audit tick writes first.
+    moved_opps: u64,
+    /// Its latest health row's `n_opp`.
+    opps: u64,
+}
+
+impl Standing {
+    /// A loop without a row: on probation, and never moved.
+    const NEW: Self = Self {
+        state: AuditState::Probation,
+        reason: None,
+        moved_at: None,
+        moved_opps: 0,
+        opps: 0,
+    };
+}
+
+/// The common fields of an audit tick's rows (S01 §5.10).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RowOrigin {
+    /// The run whose close the tick follows; `None` for a scheduled pass,
+    /// whose rows say `run_id: null`.
+    pub run_id: Option<String>,
+    /// The harness commit.
+    pub harness_sha: Option<String>,
+    /// The config fingerprint.
+    pub config_hash: Option<String>,
+}
+
+impl RowOrigin {
+    /// The origin of the tick after run `run_id` under `runs_dir`: the run,
+    /// with the harness commit and the config hash its manifest records.
+    #[must_use]
+    pub fn of_run(runs_dir: &Path, run_id: &str) -> Self {
+        let manifest = RunProvenanceManifest::load(&runs_dir.join(run_id))
+            .ok()
+            .flatten();
+        let recorded = |value: &str| (!value.is_empty()).then(|| value.to_string());
+        Self {
+            run_id: Some(run_id.to_string()),
+            harness_sha: manifest
+                .as_ref()
+                .and_then(|manifest| recorded(&manifest.harness.sha)),
+            config_hash: manifest
+                .as_ref()
+                .and_then(|manifest| recorded(&manifest.config.hash)),
+        }
+    }
+}
+
+/// One loop's evaluation at an audit tick (S03 §5; backlog 5126).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoopObservation {
+    /// Its `loop.health` row.
+    pub health: LoopAuditRecord,
+    /// The qualifiers its evidence carries, which the row has no field for.
+    pub qualifiers: Vec<Qualifier>,
+    /// Its `loop.transition` row, when it moved.
+    pub transition: Option<LoopAuditRecord>,
+}
+
+impl LoopObservation {
+    /// Its rows in ledger order: the health row, then the transition, whose
+    /// opportunities a reader takes from the health row.
+    pub fn records(&self) -> impl Iterator<Item = &LoopAuditRecord> {
+        std::iter::once(&self.health).chain(self.transition.as_ref())
+    }
+}
+
+/// What the rows of one audit tick share: their origin, epoch and time.
+struct Stamp<'a> {
+    origin: &'a RowOrigin,
+    epoch: String,
+    ts: String,
+}
+
+impl Stamp<'_> {
+    /// A `kind` row of `loop_id`, its id the digest of its kind, loop, run
+    /// and time.
+    fn record(&self, kind: &str, loop_id: &str, row: LoopAuditRow) -> LoopAuditRecord {
+        let run_id = self.origin.run_id.as_deref().unwrap_or_default();
+        let parts = [LOOP_AUDIT_SCHEMA, kind, loop_id, run_id, self.ts.as_str()];
+        LoopAuditRecord {
+            schema_version: LOOP_AUDIT_SCHEMA.to_string(),
+            record_id: Some(b3_digest(parts.join("|").as_bytes())),
+            ts: Some(self.ts.clone()),
+            loop_id: loop_id.to_string(),
+            harness_sha: self.origin.harness_sha.clone(),
+            config_hash: self.origin.config_hash.clone(),
+            audit_epoch: Some(self.epoch.clone()),
+            run_id: Some(self.origin.run_id.clone()),
+            row,
+        }
+    }
 }
 
 impl LoopAuditor {
@@ -98,32 +216,42 @@ impl LoopAuditor {
 
     /// The auditor over `registry` and the ledger rows `records`, in order:
     /// a loop takes the state of its latest health or transition row, and is
-    /// on probation without one. The auditor is broken while any loop's
-    /// latest health row says the placebo moved.
+    /// on probation without one. Its latest transition row starts its dwell:
+    /// the row's time, and the opportunities of the health row before it.
+    /// The auditor is broken while any loop's latest health row has
+    /// `placebo_ok` false.
     #[must_use]
     pub fn from_records(
         registry: Registry,
         config: &LearningAuditConfig,
         records: &[LoopAuditRecord],
     ) -> Self {
-        let mut standings = BTreeMap::new();
+        let mut standings: BTreeMap<LoopId, Standing> = BTreeMap::new();
         let mut placebo_ok = BTreeMap::new();
         for record in records {
-            let standing = match &record.row {
+            let loop_id = record.loop_id.as_str();
+            match &record.row {
                 LoopAuditRow::Health(health) => {
-                    placebo_ok.insert(record.loop_id.as_str(), health.placebo_ok);
-                    Standing {
-                        state: health.state,
-                        reason: health.reason,
-                    }
+                    placebo_ok.insert(loop_id, health.placebo_ok);
+                    let standing = standings
+                        .entry(LoopId::new(loop_id))
+                        .or_insert(Standing::NEW);
+                    standing.state = health.state;
+                    standing.reason = health.reason;
+                    standing.opps = health.n_opp;
                 }
-                LoopAuditRow::Transition(transition) => Standing {
-                    state: transition.to,
-                    reason: transition.reason,
-                },
-                _ => continue,
-            };
-            standings.insert(LoopId::new(record.loop_id.as_str()), standing);
+                LoopAuditRow::Transition(transition) => {
+                    let standing = standings
+                        .entry(LoopId::new(loop_id))
+                        .or_insert(Standing::NEW);
+                    standing.state = transition.to;
+                    standing.reason = transition.reason;
+                    let moved_at = record.ts.as_deref().and_then(unix_seconds);
+                    standing.moved_at = moved_at.or(standing.moved_at);
+                    standing.moved_opps = standing.opps;
+                }
+                _ => {}
+            }
         }
         Self {
             registry,
@@ -184,10 +312,7 @@ impl LoopAuditor {
         self.standings
             .get(&LoopId::new(loop_id))
             .copied()
-            .unwrap_or(Standing {
-                state: AuditState::Probation,
-                reason: None,
-            })
+            .unwrap_or(Standing::NEW)
     }
 
     /// The holdout schedule `[learning.audit] h` sets, with maximize mode.
@@ -312,6 +437,214 @@ impl LoopAuditor {
             ..AuditParams::default()
         }
     }
+
+    /// The audit tick after run `run_id` of the workspace `workdir` closed
+    /// (S03 §5; backlog 5126): [`Self::observe`] every run under
+    /// `.roko/runs` at `now`, and append the rows to the loop-audit ledger
+    /// in order. It writes nothing else.
+    ///
+    /// # Errors
+    ///
+    /// The ledger's write error; the rows before the one that failed are
+    /// appended.
+    pub fn observe_run(
+        &mut self,
+        workdir: &Path,
+        run_id: &str,
+        now: DateTime<Utc>,
+    ) -> std::io::Result<Vec<LoopObservation>> {
+        let layout = roko_fs::RokoLayout::for_project(workdir);
+        let runs_dir = layout.runs_dir();
+        let origin = RowOrigin::of_run(&runs_dir, run_id);
+        let observations = self.observe(&census::read_runs(&runs_dir), &origin, now);
+        let ledger = Ledger::in_learn_dir(&layout.learn_dir());
+        for record in observations.iter().flat_map(LoopObservation::records) {
+            ledger.append(record)?;
+        }
+        Ok(observations)
+    }
+
+    /// Evaluate each loop the decision rows of `runs` measure, at `now`
+    /// (S03 §4.6), and keep the result as its standing.
+    ///
+    /// Every registered loop that is not retired and has decision rows with
+    /// S03's fields gets a `loop.health` row: its opportunities, ε and ι_net
+    /// over all of `runs` at α/K ([`census::measure_at`]), its layer's SRM
+    /// e-value, and the state the state machine leaves it in, with the dwell
+    /// its ledger rows carry across runs. A loop that moves gets a
+    /// `loop.transition` row too. β is not estimated yet, so no loop goes
+    /// live, `null` or `harm` here. An SRM alarm, or an auditor the ledger
+    /// says is broken, freezes every transition, and the health rows say
+    /// `placebo_ok: false`. Nothing here changes what a loop executes.
+    pub fn observe(
+        &mut self,
+        runs: &[RunRecords],
+        origin: &RowOrigin,
+        now: DateTime<Utc>,
+    ) -> Vec<LoopObservation> {
+        let params = self.params();
+        let measured = census::measure_at(runs, &params);
+        let srm = srm_check(runs);
+        let signals = AuditorSignals {
+            srm_alarm: srm.layers.iter().any(|layer| layer.mismatch),
+            ..AuditorSignals::default()
+        };
+        let mut auditor = Auditor::new(params);
+        if self.audit_broken {
+            auditor = auditor.tripped("the loop-audit ledger says the audit is broken");
+        }
+        let stamp = Stamp {
+            origin,
+            epoch: self.epoch(origin.run_id.as_deref().unwrap_or_default(), now),
+            ts: now.to_rfc3339_opts(SecondsFormat::Secs, true),
+        };
+        let mut observations = Vec::new();
+        let mut standings = Vec::new();
+        for spec in self.registry.loops() {
+            let id = spec.id.as_str();
+            let measurement = measured.get(id).filter(|measurement| measurement.rows > 0);
+            let retired = matches!(spec.lifecycle, Lifecycle::Retired { .. });
+            let Some(measurement) = measurement.filter(|_| !retired) else {
+                continue;
+            };
+            let standing = self.standing(id);
+            let evidence = loop_evidence(measurement, &params, now.timestamp());
+            let evaluation = auditor.evaluate(&self.status(spec, standing), &evidence, &signals);
+            let n_opp = measurement.measured.n_opp;
+            let health = HealthRow {
+                state: evaluation.state,
+                reason: evaluation.reason,
+                h: self.layers().h(spec, evaluation.state),
+                n_opp,
+                n_learned: measurement.measured.n_learned,
+                n_default: measurement.measured.n_default,
+                eps: measurement.measured.eps,
+                iota: iota_fields(&measurement.influence),
+                beta: beta_fields(&measurement.measured, &params),
+                srm_evalue: layer_evalue(&srm, spec),
+                placebo_ok: !evaluation.audit_broken,
+                evidence: MEASURED_EVIDENCE.to_string(),
+            };
+            let transition = evaluation.transition.as_ref().map(|moved| {
+                let row = TransitionRow {
+                    from: moved.from,
+                    to: moved.to,
+                    reason: moved.reason,
+                    rule: moved.rule.clone(),
+                    evidence: moved.evidence.clone(),
+                    actor: moved.actor,
+                    repair: None,
+                };
+                stamp.record(TRANSITION_KIND, id, LoopAuditRow::Transition(row))
+            });
+            let mut next = Standing {
+                state: evaluation.state,
+                reason: evaluation.reason,
+                opps: n_opp,
+                ..standing
+            };
+            if let Some(moved) = &evaluation.transition {
+                next.moved_at = Some(moved.at);
+                next.moved_opps = n_opp;
+            }
+            standings.push((spec.id.clone(), next));
+            observations.push(LoopObservation {
+                health: stamp.record(HEALTH_KIND, id, LoopAuditRow::Health(health)),
+                qualifiers: evaluation.qualifiers,
+                transition,
+            });
+        }
+        self.standings.extend(standings);
+        self.audit_broken = auditor.broken().is_some();
+        observations
+    }
+
+    /// `spec`'s standing as the state machine reads it: its state and the
+    /// dwell its last move started, with the switches it is audited under.
+    fn status(&self, spec: &LoopSpec, standing: Standing) -> LoopStatus {
+        LoopStatus {
+            state: standing.state,
+            reason: standing.reason,
+            last_transition_at: standing.moved_at,
+            opportunities_at_transition: standing.moved_opps,
+            enforce: self.config.enforce && spec.enforce && !self.maximize,
+            exempt: spec.exempt || self.config.exempts(spec.id.as_str()),
+            placebo: spec.layer.as_str() == PLACEBO_LAYER,
+        }
+    }
+}
+
+/// The unix seconds of the RFC 3339 time `ts`, if it parses.
+fn unix_seconds(ts: &str) -> Option<i64> {
+    DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|ts| ts.timestamp())
+}
+
+/// What the state machine knows of a loop from its `measurement` at `now`
+/// (unix seconds): the structural pre-checks its rows show (an arm assigned
+/// at or after its decision; N_ε rows and not one opportunity), ε and ι_net.
+/// Rows from before S03's fields add the `pre_instrumentation` qualifier.
+fn loop_evidence(measurement: &LoopMeasurement, params: &AuditParams, now: i64) -> LoopEvidence {
+    let n_opp = measurement.measured.n_opp;
+    let mut qualifiers = Vec::new();
+    if measurement.measured.pre_instrumentation > 0 {
+        qualifiers.push(Qualifier::PreInstrumentation);
+    }
+    LoopEvidence {
+        now,
+        opportunities: n_opp,
+        structural: Structural {
+            ordering_violated: measurement.ordering_violations > 0,
+            no_opportunity: n_opp == 0 && measurement.rows >= params.n_eps,
+            ..Structural::default()
+        },
+        exposure: Some(measurement.exposure.clone()),
+        influence: Some(measurement.influence.clone()),
+        qualifiers,
+        ..LoopEvidence::default()
+    }
+}
+
+/// A health row's ι fields: ι, its A/A floor, ι_net and the lower end of
+/// ι_net's sequence.
+fn iota_fields(influence: &InfluenceEstimate) -> IotaFields {
+    IotaFields {
+        act: influence.iota,
+        aa: influence.aa_floor,
+        net: influence.iota_net,
+        lcb: influence
+            .interval
+            .map_or(influence.iota_net, |(low, _)| low),
+    }
+}
+
+/// A health row's β fields: no estimate yet, and why. Guard 2 comes first:
+/// β waits for ε̂ ≥ ε_min, then for N_β opportunities.
+fn beta_fields(measured: &MeasuredLoop, params: &AuditParams) -> BetaFields {
+    let reason = if measured.eps.est < params.eps_min {
+        "eps_below_min"
+    } else if measured.n_opp < params.n_beta {
+        "n_below_n_beta"
+    } else {
+        "not_estimated"
+    };
+    BetaFields {
+        est: None,
+        lcb: None,
+        ucb: None,
+        reason: Some(reason.to_string()),
+    }
+}
+
+/// The SRM e-value of the layer `spec` draws on; 1, no evidence, when no
+/// unit drew on it.
+fn layer_evalue(srm: &SrmReport, spec: &LoopSpec) -> f64 {
+    let layer = spec.assignment_layer();
+    srm.layers
+        .iter()
+        .find(|checked| checked.layer == layer.as_str())
+        .map_or(1.0, |checked| checked.e_value)
 }
 
 #[cfg(test)]

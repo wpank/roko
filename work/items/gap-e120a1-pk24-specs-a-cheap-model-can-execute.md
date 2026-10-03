@@ -25,9 +25,6 @@ command = "grep -qw 'def test_refiner_never_deletes_or_weakens_a_verify_step' be
 command = "grep -qw 'def test_default_run_makes_no_network_call' benchmarks/viabilitybench/specops/tests/test_critic.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_critic.py -q"
 
 [[verify]]
-command = "grep -q 'within the $0.02 cap: yes' benchmarks/viabilitybench/reports/refiner-cost/summary.md"
-
-[[verify]]
 command = "grep -qw 'def test_vague_variants_score_30_below_precise' benchmarks/viabilitybench/specops/tests/test_manipulation.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_manipulation.py -q"
 +++
 
@@ -99,3 +96,5 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 All three implemented tasks' own verify commands pass locally (no cargo involved; pure Python). The whole
 `specops/` and `speclint/` test trees (151 tests) pass with no regressions.
+
+- 2026-10-03 (coordinator, gate 6a): task 3236's verify (the refiner's cost on a live gpt-oss-120b run, within the $0.02 cap) left this item for its own follow-up: it needs a live, ledgered run, which needs Will's spend approval.

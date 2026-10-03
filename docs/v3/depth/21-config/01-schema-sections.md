@@ -188,9 +188,13 @@ semantics and built-in profiles.
 | `packs` | table of tables (`[gates.packs.<domain>] rungs = [...]`) | none | Verifier packs by task domain label (`code`, `chain`, `research`, `docs` or a custom label). A plan task faces its domain's pack in place of `rungs`; a task of a domain other than `code` with no pack runs only its own verify steps, so it ends unverified rather than run the code ladder |
 
 A rung's `kind` says what it checks. `command`, the default, runs `command` under `sh -c`.
-`citations`, `judge`, `schema`, `receipt` and `confirm` parse and are validated but are not built
-yet: a plan task that must pass one fails before its agent runs, and an advisory or optional one is
-skipped. Loading fails when a rung lacks what its kind needs: a `command` rung a command, a
+`citations` runs once the task's verify steps pass: it looks up every DOI (Crossref, then
+DataCite), arXiv id (DataCite) and http(s) URL (`HEAD`, then `GET`) that the files its `artefacts`
+match cite. One that does not resolve fails the task and is named in the retry feedback; one that
+cannot be looked up (no network, a timeout, a server error, or a URL roko's network policy refuses)
+leaves the task unverified, never passed. Every lookup is listed in the rung's gate output. `judge`,
+`schema`, `receipt` and `confirm` parse and are validated but are not built yet: a plan task that
+must pass one fails before its agent runs, and an advisory or optional one is skipped. Loading fails when a rung lacks what its kind needs: a `command` rung a command, a
 `schema` rung `schema` (a file relative to the task's workspace), and a `citations`, `judge` or
 `schema` rung `artefacts` (globs relative to the task's workspace). `rubric` is a `judge` rung's
 rubric, as text or a file path. A rung with `advisory = true` only advises: its verdict is recorded

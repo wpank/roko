@@ -85,6 +85,8 @@ pub mod audit;
 /// Criterion benchmark regression detection: parse JSON output, compare against baselines.
 pub mod benchmark_gate;
 mod cancel_safe_command;
+/// The citations rung: every DOI, arXiv id and URL an artefact cites resolves (9122).
+pub mod citation_gate;
 pub mod clippy_gate;
 pub mod code_exec;
 pub mod compile;
@@ -150,6 +152,10 @@ pub use adaptive_threshold::{AdaptiveThresholds, RungStats, TOTAL_RUNGS};
 pub use agent_judge::AgentJudgeOracle;
 pub use artifact_store::ArtifactStore;
 pub use benchmark_gate::{BenchmarkComparison, BenchmarkRegressionGate};
+pub use citation_gate::{
+    Citation, CitationResolver, HttpCitationResolver, Resolution, check_citations,
+    extract_citations,
+};
 pub use clippy_gate::ClippyGate;
 pub use code_exec::{
     CodeExecutionBackend, CodeExecutionGate, CodeExecutionOutcome, CodeExecutionPayload,

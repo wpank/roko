@@ -244,6 +244,9 @@ pub struct GraphTaskDispatcher {
     /// `(plan id, work domain)` pairs whose tasks face no workspace rungs
     /// for want of a `[gates.packs]` entry, each logged once (`pack_rungs`).
     unpacked_domains: parking_lot::Mutex<std::collections::HashSet<(String, String)>>,
+    /// Looks up what a citations rung's artefacts cite, keeping the answers
+    /// for the run (9122, `pack_rungs`).
+    citation_resolver: Arc<dyn roko_gate::CitationResolver>,
     /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt stopped at its turn
     /// cap; the next attempt raises the cap and resumes the partial work.
     turn_cap_retries: parking_lot::Mutex<HashMap<String, TurnCapRetry>>,
@@ -343,6 +346,7 @@ impl GraphTaskDispatcher {
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             unpacked_domains: parking_lot::Mutex::default(),
+            citation_resolver: Arc::new(roko_gate::HttpCitationResolver::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
@@ -907,7 +911,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // serve tasks that no verify step checks: a task with its own steps,
         // or one the workspace rungs check, must earn its pass from them.
         if let Some(reflex_store) = self.reflex_store.as_ref().filter(|_| {
-            self.config.learning.t0_reflexes && self.verify_steps(spec, &task).is_empty()
+            self.config.learning.t0_reflexes
+                && self.verify_steps(spec, &task).is_empty()
+                && self.kind_rungs(spec, &task).is_empty()
         }) {
             let file_exts: Vec<String> = task
                 .files

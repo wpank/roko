@@ -139,6 +139,7 @@ pub mod clean;
 /// own `commands` module re-exports them.
 pub mod commands {
     pub mod diagnose;
+    pub mod learn_loops;
 }
 pub mod config;
 pub mod config_cmd;

@@ -1,0 +1,71 @@
+{
+ "confidence_stats": {
+  "claude-sonnet-4-6": {
+   "gemini_code_execution_failures": 0,
+   "gemini_code_execution_successes": 0,
+   "gemini_context_window_gt_200k_requests": 0,
+   "gemini_context_window_le_200k_requests": 0,
+   "gemini_requests": 0,
+   "perplexity_requests": 0,
+   "successes": 155,
+   "total_citations": 0,
+   "total_cost_usd": 0.0,
+   "total_gemini_cached_tokens": 0,
+   "total_gemini_grounding_queries": 0,
+   "total_gemini_thinking_tokens": 0,
+   "total_search_latency_ms": 0,
+   "trials": 168
+  },
+  "gpt-oss-120b": {
+   "gemini_code_execution_failures": 0,
+   "gemini_code_execution_successes": 0,
+   "gemini_context_window_gt_200k_requests": 0,
+   "gemini_context_window_le_200k_requests": 0,
+   "gemini_requests": 0,
+   "perplexity_requests": 0,
+   "successes": 120,
+   "total_citations": 0,
+   "total_cost_usd": 0.0,
+   "total_gemini_cached_tokens": 0,
+   "total_gemini_grounding_queries": 0,
+   "total_gemini_thinking_tokens": 0,
+   "total_search_latency_ms": 0,
+   "trials": 124
+  }
+ },
+ "linucb_state": {
+  "dim": 18,
+  "observations": 1
+ },
+ "model_slugs": [
+  "claude-haiku-4-5",
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+  "gemma-4-31b",
+  "gemma4:26b-a4b-it-q8_0",
+  "glm-5.1",
+  "glm-5v-turbo",
+  "gpt-4o",
+  "gpt-4o-mini",
+  "gpt-5.6-sol",
+  "gpt-oss-120b",
+  "kimi-k2.6",
+  "llama-3.3-70b-versatile",
+  "llama3.2:latest",
+  "o3",
+  "qwen-3.8-27b",
+  "sonar",
+  "sonar-pro"
+ ],
+ "stage_transitions": [
+  {
+   "from": "Confidence",
+   "observations": 200,
+   "timestamp": "2026-09-25T12:28:19.508478Z",
+   "to": "Ucb"
+  }
+ ],
+ "total_observations": 275
+}

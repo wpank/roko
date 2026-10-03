@@ -1479,6 +1479,15 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // results: callers may still have incurred the reported cost.
         self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
         if let Err(error) = budget_reservation.settle(f64::from(dispatch.result.usage.cost_usd)) {
+            // The call ran, but the plan budget could not settle its spend,
+            // so the attempt ends here: its dashboard row says why and
+            // closes, as every other end of an attempt closes it
+            // (bug-f03b0d).
+            if let Some(tui) = &self.tui_bridge {
+                let reason = format!("the plan budget could not settle this call: {error}");
+                tui.agent_output(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0, &reason);
+                tui.agent_completed(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0);
+            }
             let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
             return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
         }
@@ -2715,7 +2724,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         assert_eq!(contexts.marks(), [(0, false), (1, true)]);
     }
 
-    /// Every record file a Graph attempt writes, under `workdir/.roko`.
+    /// Every record file a Graph attempt writes, under `workdir/.roko`:
+    /// `workdir` is the dispatcher's workspace root, never an attempt's own
+    /// worktree, where workspace records do not belong (bug-412a5e).
     pub(super) fn recording_feedback(workdir: &Path) -> GraphFeedbackContext {
         let roko = workdir.join(".roko");
         let facade = crate::runtime_feedback::FeedbackFacade::new().with_sink(Arc::new(

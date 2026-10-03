@@ -2,7 +2,7 @@
 id = "bug-52c48f"
 kind = "bug"
 title = "health_hold treats AuthFailure as a generic open circuit, and serve_runtime.rs records every failure as Unknown"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/provider-failover", "roko-cli/serve-runtime"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "730b43d91"
 source = "wave-4 follow-up reports 2026-10-02 (PK02)"
 discovered_from = "gap-e00238"
 anchors = ["crates/roko-learn/src/provider_failover.rs::health_hold", "crates/roko-cli/src/serve_runtime.rs", "crates/roko-serve/src/service_factory.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn health_hold_reports_auth_failure_as_definitive' crates/roko-learn/ && cargo test -p roko-learn health_hold_reports_auth_failure_as_definitive"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T02:27:42Z"
+commit = "730b43d91"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T01:27:39Z"
+forced = false
+evidence = "Gate 6a (merged into main as 730b43d91, tree identical to work/backlog-batch-6a apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 7,078 passed (roko-agent, roko-cli, roko-learn), roko-cli bin + golden-path canaries + operator_checkout_clean 442/442, hub_ipc 7/7, roko-learn legacy_rule_live + loop_audit_cs_reference; every [[verify]] passes."
 +++
 
 ## Problem

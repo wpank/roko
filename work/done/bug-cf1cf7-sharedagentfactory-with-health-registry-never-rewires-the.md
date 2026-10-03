@@ -2,7 +2,7 @@
 id = "bug-cf1cf7"
 kind = "bug"
 title = "SharedAgentFactory::with_health_registry never rewires the already-built ModelRouter, so routing never sees a persisted registry's open circuits"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/dispatch"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "730b43d91"
 source = "wave-4 follow-up reports 2026-10-02 (PK02)"
 discovered_from = "gap-e00238 (PK02's own package; this wiring gap is a distinct finding, not in its scope)"
 anchors = ["crates/roko-cli/src/dispatch/factory.rs::with_health_registry", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter", "crates/roko-cli/src/graph_execution/plan_runner.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn with_health_registry_rewires_the_router' crates/roko-cli/ && cargo test -p roko-cli with_health_registry_rewires_the_router"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T02:27:41Z"
+commit = "730b43d91"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T01:27:38Z"
+forced = false
+evidence = "Gate 6a (merged into main as 730b43d91, tree identical to work/backlog-batch-6a apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 7,078 passed (roko-agent, roko-cli, roko-learn), roko-cli bin + golden-path canaries + operator_checkout_clean 442/442, hub_ipc 7/7, roko-learn legacy_rule_live + loop_audit_cs_reference; every [[verify]] passes."
 +++
 
 ## Problem

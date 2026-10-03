@@ -100,12 +100,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 59 | 94 | 35 (26) |
+| bench | 60 | 95 | 35 (26) |
 | docs | 18 | 23 | 5 (4) |
 | frontend | 3 | 6 | 3 (3) |
 | none | 344 | 421 | 77 (77) |
 | paper | 61 | 73 | 12 (9) |
-| rust-cold | 188 | 244 | 56 (46) |
-| rust-hot | 141 | 178 | 37 (34) |
+| rust-cold | 190 | 244 | 54 (44) |
+| rust-hot | 145 | 178 | 33 (30) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 21 | 24 | 3 (2) |

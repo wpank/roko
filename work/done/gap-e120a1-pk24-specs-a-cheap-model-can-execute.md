@@ -2,7 +2,7 @@
 id = "gap-e120a1"
 kind = "gap"
 title = "PK24 Specs a cheap model can execute: Refiner loop against a stub model: additive only, with sources (+3 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -10,8 +10,9 @@ rank = 24
 size = "M"
 subsystem = ["benchmarks/viabilitybench/specops"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "730b43d91"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK24"
 anchors = ["benchmarks/viabilitybench/requirements.in", "benchmarks/viabilitybench/speclint/speclint.py"]
 lane = "bench"
@@ -26,6 +27,17 @@ command = "grep -qw 'def test_default_run_makes_no_network_call' benchmarks/viab
 
 [[verify]]
 command = "grep -qw 'def test_vague_variants_score_30_below_precise' benchmarks/viabilitybench/specops/tests/test_manipulation.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_manipulation.py -q"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T02:27:59Z"
+commit = "730b43d91"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T01:27:34Z"
+forced = true
+evidence = "Gate 6a (merged as 730b43d91): the three remaining [[verify]] commands pass in the batch worktree's bench venv with requirements.lock (hypothesis) installed; the main checkout's venv lacks hypothesis, hence --force. 3236's live cost check is its own held item."
 +++
 
 ## Problem

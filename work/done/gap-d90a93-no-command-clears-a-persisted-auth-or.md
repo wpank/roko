@@ -2,7 +2,7 @@
 id = "gap-d90a93"
 kind = "gap"
 title = "No command clears a persisted auth or billing provider quarantine; the operator has to hand-edit provider-health.json"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/provider-health", "roko-cli/commands"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "730b43d91"
 source = "wave-4 follow-up reports 2026-10-02 (PK02)"
 discovered_from = "gap-e00238"
 anchors = ["crates/roko-learn/src/provider_health.rs::ProviderHealthRegistry"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn provider_health_clear_reopens_the_circuit' crates/roko-learn/ && cargo test -p roko-learn provider_health_clear_reopens_the_circuit"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T02:27:40Z"
+commit = "730b43d91"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T01:27:38Z"
+forced = false
+evidence = "Gate 6a (merged into main as 730b43d91, tree identical to work/backlog-batch-6a apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 7,078 passed (roko-agent, roko-cli, roko-learn), roko-cli bin + golden-path canaries + operator_checkout_clean 442/442, hub_ipc 7/7, roko-learn legacy_rule_live + loop_audit_cs_reference; every [[verify]] passes."
 +++
 
 ## Problem

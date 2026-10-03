@@ -2,7 +2,7 @@
 id = "bug-c55f1c"
 kind = "bug"
 title = "A provider-exhaustion refusal is recorded twice: the bridge's classifier, then failover's record_exhaustion"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch", "roko-learn/provider-health"]
 created = 2026-10-03
 updated = 2026-10-03
 last_verified = 2026-10-03
+last_verified_rev = "730b43d91"
 source = "wave-4 follow-up reports 2026-10-02 (PK02)"
 discovered_from = "gap-e00238 (task 1114 fixed the bridge's own internal double-write; this is a third, separate call site)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/failover.rs", "crates/roko-agent/src/model_call_service.rs::provider_error_kind", "crates/roko-learn/src/provider_health.rs::record_exhaustion"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn one_exhaustion_counts_as_one_failure_record' crates/roko-cli/ && cargo test -p roko-cli one_exhaustion_counts_as_one_failure_record"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T02:27:42Z"
+commit = "730b43d91"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T01:27:39Z"
+forced = false
+evidence = "Gate 6a (merged into main as 730b43d91, tree identical to work/backlog-batch-6a apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 7,078 passed (roko-agent, roko-cli, roko-learn), roko-cli bin + golden-path canaries + operator_checkout_clean 442/442, hub_ipc 7/7, roko-learn legacy_rule_live + loop_audit_cs_reference; every [[verify]] passes."
 +++
 
 ## Problem

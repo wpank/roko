@@ -2,7 +2,7 @@
 id = "gap-1f4bec"
 kind = "gap"
 title = "PK40 M2 loop-liveness: Re-anchor S03 §3 and §7 A1 at HEAD: five census rows have moved (+8 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 40
 size = "L"
 subsystem = ["roko-learn/loop_audit"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "730b43d91"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK40"
 anchors = ["crates/roko-cli/src/commands/learn.rs", "tmp/cybernetic-harness/specs/S03-loop-liveness-audit.md"]
 lane = "rust-cold"
@@ -44,6 +45,17 @@ command = "grep -rqw 'fn exposure_decomposes_into_read_reach_honest_receipt' cra
 
 [[verify]]
 command = "grep -rqw 'fn aipw_unbiased_with_misspecified_model' crates/roko-learn/src/loop_audit/ && cargo test -p roko-learn aipw_unbiased_with_misspecified_model && grep -rqw 'fn cuped_reduces_variance_on_synthetic' crates/roko-learn/src/loop_audit/ && cargo test -p roko-learn cuped_reduces_variance_on_synthetic && grep -rqw 'fn increments_within_declared_bounds' crates/roko-learn/src/loop_audit/ && cargo test -p roko-learn increments_within_declared_bounds"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T02:27:44Z"
+commit = "730b43d91"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T01:27:34Z"
+forced = false
+evidence = "Gate 6a (merged into main as 730b43d91, tree identical to work/backlog-batch-6a apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 7,078 passed (roko-agent, roko-cli, roko-learn), roko-cli bin + golden-path canaries + operator_checkout_clean 442/442, hub_ipc 7/7, roko-learn legacy_rule_live + loop_audit_cs_reference; every [[verify]] passes."
 +++
 
 ## Problem

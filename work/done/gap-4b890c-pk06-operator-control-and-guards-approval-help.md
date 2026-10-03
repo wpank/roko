@@ -2,7 +2,7 @@
 id = "gap-4b890c"
 kind = "gap"
 title = "PK06 Operator control and guards: --approval help and validate_graph_execution_options describe an approval mode that… (+4 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -10,8 +10,9 @@ rank = 6
 size = "L"
 subsystem = ["roko-cli/plan"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "730b43d91"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK06"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/inject/transport.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/state_hub_ipc.rs", "docs/v3/30-CONDUCTOR.md"]
 lane = "rust-cold"
@@ -32,6 +33,17 @@ command = "grep -rqw 'fn hub_socket_binds_under_a_long_workspace_path' crates/ro
 
 [[verify]]
 command = "! grep -q 'None of them runs during plan execution' docs/v3/30-CONDUCTOR.md && grep -q 'supervise' docs/v3/30-CONDUCTOR.md"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T02:27:43Z"
+commit = "730b43d91"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T01:27:37Z"
+forced = false
+evidence = "Gate 6a (merged into main as 730b43d91, tree identical to work/backlog-batch-6a apart from work/): cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --lib 7,078 passed (roko-agent, roko-cli, roko-learn), roko-cli bin + golden-path canaries + operator_checkout_clean 442/442, hub_ipc 7/7, roko-learn legacy_rule_live + loop_audit_cs_reference; every [[verify]] passes."
 +++
 
 ## Problem

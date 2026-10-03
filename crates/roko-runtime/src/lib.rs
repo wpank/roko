@@ -34,7 +34,9 @@ pub mod demurrage_consumer;
 pub mod energy;
 pub mod event_bus;
 pub mod heartbeat;
+#[cfg(feature = "cognitive-clock")]
 pub mod heartbeat_attention;
+#[cfg(feature = "cognitive-clock")]
 pub mod heartbeat_probes;
 pub mod http_event_sink;
 pub mod jsonl_logger;

@@ -220,16 +220,18 @@ fn observation(
     ))
 }
 
-/// The command a verify failure's first step line quotes, as in
-/// ``verify[0:test] `cargo test -p app` failed: exit code: 101``, or a
-/// workspace rung's ``rung[clippy] `…` failed: …``.
+/// The command a verify failure's first step line quotes: the line's first
+/// backtick-quoted span, as verification writes it,
+/// ``verify[0:test] (`cargo test -p app`): exit code: 101``, or a pack
+/// rung's ``rung[clippy] (`…`): …``. The older
+/// ``verify[0:test] `cargo test -p app` failed: …`` reads the same.
 fn failing_command(detail: &str) -> Option<&str> {
     detail.lines().find_map(|line| {
         let line = line.trim_start();
         if !(line.starts_with("verify[") || line.starts_with("rung[")) {
             return None;
         }
-        let (_, quoted) = line.split_once(" `")?;
+        let (_, quoted) = line.split_once('`')?;
         let (command, _) = quoted.split_once('`')?;
         (!command.trim().is_empty()).then_some(command)
     })
@@ -297,7 +299,7 @@ mod tests {
         let verify_failure = |title: &str| {
             format!(
                 "verify: 1/1 verify step(s) failed for task `{title}`:\n\n\
-                 verify[0:test] `cargo test -p app` failed: exit code: 101\n\
+                 verify[0:test] (`cargo test -p app`): exit code: 101\n\
                  thread 'greets' panicked at src/lib.rs:4:5"
             )
         };
@@ -329,6 +331,32 @@ mod tests {
         );
         let prompt = store.read().unwrap().format_for_prompt(5);
         assert!(prompt.contains("cargo test -p app"), "{prompt}");
+    }
+
+    /// The failing command is the step line's first quoted span: in the form
+    /// verification writes, ``verify[i:phase] (`cmd`): …``, in a pack rung's
+    /// ``rung[name] (`cmd`): …``, and in the older ``verify[i:phase] `cmd`
+    /// failed: …``. A failure without a step line quotes none.
+    #[test]
+    fn failing_command_reads_the_step_lines_quoted_command() {
+        let cases = [
+            (
+                "1/1 failed:\n\nverify[0:test] (`cargo test -p app`): exit code: 101",
+                "cargo test -p app",
+            ),
+            (
+                "1/1 failed:\n\nrung[clippy] (`cargo clippy -- -D warnings`): failed",
+                "cargo clippy -- -D warnings",
+            ),
+            (
+                "1/1 failed:\n\nverify[0:test] `cargo test -p app` failed: exit code: 101",
+                "cargo test -p app",
+            ),
+        ];
+        for (detail, command) in cases {
+            assert_eq!(failing_command(detail), Some(command), "{detail}");
+        }
+        assert_eq!(failing_command("1/1 failed:\n\nno step line"), None);
     }
 
     /// backlog 4208: a turn-cap stop or a timeout after output fails the
@@ -392,7 +420,7 @@ mod tests {
         for (task_id, crate_name) in [("T1", "app"), ("T2", "web")] {
             let reason = format!(
                 "verify: 1/1 verify step(s) failed for task `{task_id}`:\n\n\
-                 verify[0:test] `cargo test -p {crate_name}` failed: exit code: 101"
+                 verify[0:test] (`cargo test -p {crate_name}`): exit code: 101"
             );
             let failed = completed(task_id, AttemptOutcome::GateFailed, &reason);
             sink.on_event(&failed).await.expect("record the failure");

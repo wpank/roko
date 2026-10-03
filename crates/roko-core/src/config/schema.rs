@@ -203,6 +203,10 @@ pub struct RokoConfig {
     /// RAG retrieval pipeline settings.
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+    /// How runs randomise their learning loops: maximize mode and forced
+    /// arms (`[experiments]`, decision 4115).
+    #[serde(default)]
+    pub experiments: super::experiments::ExperimentsConfig,
 }
 
 /// Composition strategy for allocating prompt token budget across candidate sections.
@@ -495,6 +499,7 @@ impl Default for RokoConfig {
             daimon: DaimonConfig::default(),
             repos: Vec::new(),
             retrieval: RetrievalConfig::default(),
+            experiments: super::experiments::ExperimentsConfig::default(),
         }
     }
 }

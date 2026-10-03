@@ -24,7 +24,8 @@ use super::manifest::AttemptTally;
 use super::records::{
     ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord,
     ContentDecisionRecord, DECISION_SCHEMA, DecisionSource, EXPOSURE_SCHEMA, ExecutedModel,
-    ExposureRecord, RunFile, Stamped, VERDICT_SCHEMA,
+    ExposureRecord, PLACEBO_DECISION_POINT, PlaceboDecisionRecord, RunFile, Stamped,
+    VERDICT_SCHEMA,
 };
 use crate::error::LearnError;
 use crate::routing_log::{ROUTE_DECISION_POINT, RoutingDecisionLog};
@@ -51,6 +52,8 @@ pub struct RunRecords {
     /// Content decision rows (knowledge, playbooks, sections, error
     /// patterns), in file order.
     pub content_decisions: Vec<Stamped<ContentDecisionRecord>>,
+    /// Placebo decision rows (S03 §4.3), one per attempt, in file order.
+    pub placebo_decisions: Vec<Stamped<PlaceboDecisionRecord>>,
     /// Exposure rows, in file order.
     pub exposures: Vec<Stamped<ExposureRecord>>,
     /// The run's wiring census; `None` for a run that has none.
@@ -123,6 +126,9 @@ impl RunRecords {
             (RunFile::Decisions, DECISION_SCHEMA) if is_route_decision(&value) => {
                 serde_json::from_value(value).map(|record| self.decisions.push(record))
             }
+            (RunFile::Decisions, DECISION_SCHEMA) if is_placebo_decision(&value) => {
+                serde_json::from_value(value).map(|record| self.placebo_decisions.push(record))
+            }
             (RunFile::Decisions, DECISION_SCHEMA) => {
                 serde_json::from_value(value).map(|record| self.content_decisions.push(record))
             }
@@ -163,6 +169,11 @@ fn is_route_decision(value: &Value) -> bool {
         .get("decision_point")
         .and_then(Value::as_str)
         .is_none_or(|point| point == ROUTE_DECISION_POINT)
+}
+
+/// Whether a decision row is a placebo row (S03 §4.3).
+fn is_placebo_decision(value: &Value) -> bool {
+    value.get("decision_point").and_then(Value::as_str) == Some(PLACEBO_DECISION_POINT)
 }
 
 /// One run's attempt keys in the logs that predate S01, which gained an
@@ -1091,6 +1102,7 @@ mod tests {
             source: Some(DecisionSource::Default),
             state: None,
             thresholds_digest: None,
+            arm_set: None,
         }
     }
 

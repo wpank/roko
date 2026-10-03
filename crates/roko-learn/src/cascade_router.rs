@@ -2552,6 +2552,7 @@ impl CascadeRouter {
             fallback_reason: None,
             influences: Vec::new(),
             state: None,
+            arm_set: None,
         };
         log.append(&record)?;
         Ok(record)

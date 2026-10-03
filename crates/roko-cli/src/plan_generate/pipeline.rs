@@ -594,6 +594,52 @@ fn plan_task_prompt(
     )
 }
 
+/// The most failure patterns the planner prompt lists.
+const KNOWN_FAILURE_PATTERNS: usize = 5;
+
+/// The planner prompt's "Known failure patterns" block (backlog 4126): up to
+/// [`KNOWN_FAILURE_PATTERNS`] patterns of the workspace's error-pattern store
+/// that recurred, have a verified fix and are about a crate whose
+/// `crates/<name>` path `source` mentions (`ErrorPatternStore::resolved_for`),
+/// with the keys of those patterns. `None` when none applies.
+fn known_failure_patterns(workdir: &Path, source: &str) -> Option<(String, Vec<String>)> {
+    use roko_learn::error_pattern_store::{ERROR_PATTERNS_FILE, ErrorPatternStore};
+    use std::fmt::Write as _;
+
+    let paths: Vec<String> = source
+        .split_whitespace()
+        .filter(|word| word.contains("crates/"))
+        .map(str::to_string)
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+    let learn_dir = workdir.join(".roko").join("learn");
+    let store = ErrorPatternStore::load(&learn_dir.join(ERROR_PATTERNS_FILE));
+    let patterns = store.resolved_for(&paths, KNOWN_FAILURE_PATTERNS);
+    if patterns.is_empty() {
+        return None;
+    }
+    let mut block = String::from(
+        "## Known failure patterns\n\
+         These failures kept recurring in the crates this plan touches, each with the fix a \
+         verified retry recorded. Plan for them: a verify step that catches them, a narrower \
+         task, or the pitfall named in the task description.\n",
+    );
+    for (index, pattern) in patterns.iter().enumerate() {
+        let (digest, seen) = (&pattern.digest, pattern.occurrences);
+        let _ = writeln!(block, "{}. {digest} (seen {seen} times)", index + 1);
+        if let Some(gate) = &pattern.gate {
+            let _ = writeln!(block, "   Verify: {gate}");
+        }
+        if let Some(fix) = &pattern.resolution {
+            let _ = writeln!(block, "   Fix: {fix}");
+        }
+    }
+    let keys = patterns.iter().map(|pattern| pattern.key.clone()).collect();
+    Some((block, keys))
+}
+
 /// The slug of the plan in `plan_dir`: its `meta.plan`, else the directory's
 /// name.
 #[must_use]
@@ -756,6 +802,18 @@ pub async fn generate_plan(request: PlanRequest<'_>) -> Result<(PathBuf, Generat
         if let Some(repo_context) = &repo_context_section {
             extra.push_str("\n\n---\n\n");
             extra.push_str(repo_context);
+        }
+        // What has kept failing in the crates the source touches, and what
+        // fixed it (backlog 4126). Nothing withholds the block yet, so its
+        // pattern ids are logged for a later plan-level arm to measure it.
+        if let Some((patterns, pattern_ids)) = known_failure_patterns(&workdir, &source.content) {
+            tracing::info!(
+                slug,
+                ?pattern_ids,
+                "plan generate: known failure patterns in the planner prompt"
+            );
+            extra.push_str("\n\n---\n\n");
+            extra.push_str(&patterns);
         }
 
         // A planner with a large context window sees the whole source
@@ -2219,6 +2277,52 @@ mod tests {
     fn fallback_returns_none_without_task() {
         let text = "[meta]\nplan = \"x\"\n";
         assert!(extract_toml_content_fallback(text).is_none());
+    }
+
+    /// backlog 4126: the planner prompt lists the recurring failure patterns
+    /// with a verified fix for the crates its source touches. With fixed
+    /// patterns for `crates/a` and `crates/b`, a source touching `crates/a`
+    /// gets only the first; a pattern of `crates/a` seen once, or without a
+    /// fix, stays out, and a source that names no crate gets no block.
+    #[test]
+    fn planner_prompt_lists_resolved_patterns_for_touched_crates() {
+        use roko_learn::error_pattern_store::{
+            ErrorPatternStore, GateFailureObservation, GateFailureSource,
+        };
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut store = ErrorPatternStore::empty();
+        for (key, command, times, fixed) in [
+            ("verify::a", "cargo test -p a", 2, true),
+            ("verify::b", "cargo test -p b", 3, true),
+            ("verify::a-once", "cargo clippy -p a", 1, true),
+            ("verify::a-unfixed", "cargo build -p a", 2, false),
+        ] {
+            for _ in 0..times {
+                store.observe_gate_failure(GateFailureObservation::new(
+                    key,
+                    "plan-x",
+                    Some("T1".to_string()),
+                    command,
+                    "verify",
+                    format!("verify[0:test] `{command}` failed: exit code: 101"),
+                    GateFailureSource::GateClassification,
+                ));
+            }
+            if fixed {
+                store.record_resolution(key, &format!("Fixed `{command}`"), "gr-x:plan-x:T1:2");
+            }
+        }
+        store
+            .save(&temp.path().join(".roko/learn/error-patterns.json"))
+            .expect("save the patterns");
+
+        let source = "Make crates/a/src/lib.rs return a greeting.";
+        let (block, ids) = known_failure_patterns(temp.path(), source).expect("patterns");
+        assert_eq!(ids, ["verify::a"]);
+        assert!(block.contains("Fix: Fixed `cargo test -p a`"), "{block}");
+        assert!(!block.contains("-p b"), "{block}");
+        assert!(known_failure_patterns(temp.path(), "Write a README.").is_none());
     }
 
     #[test]

@@ -1303,6 +1303,45 @@ fn cli_parses_the_worktree_per_task_opt_out() {
     assert!(Cli::try_parse_from(["roko", "plan", "run", "plans", "--promote", "release"]).is_ok());
 }
 
+/// Decision 4115: `roko plan run <dir> --no-holdout` runs in maximize mode
+/// for that run alone; without the flag the run follows roko.toml's
+/// `[experiments] maximize`.
+#[test]
+fn no_holdout_flag_sets_maximize_mode() {
+    use roko_cli::graph_execution::plan_runner::apply_run_switches;
+
+    let cli = Cli::try_parse_from(["roko", "plan", "run", "plans", "--no-holdout"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Plan {
+            cmd: PlanCmd::Run {
+                no_holdout: true,
+                ..
+            }
+        })
+    ));
+    let cli = Cli::try_parse_from(["roko", "plan", "run", "plans"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Plan {
+            cmd: PlanCmd::Run {
+                no_holdout: false,
+                ..
+            }
+        })
+    ));
+
+    // The run's config: maximize with the flag, else as roko.toml says.
+    let maximize = |toml: &str, no_holdout: bool| {
+        let mut config = roko_core::config::schema::RokoConfig::from_toml(toml).unwrap();
+        apply_run_switches(&mut config, false, no_holdout);
+        config.experiments.maximize
+    };
+    assert!(maximize("", true));
+    assert!(!maximize("", false));
+    assert!(maximize("[experiments]\nmaximize = true\n", false));
+}
+
 #[test]
 fn cli_parses_plan_force_resume_flag() {
     let cli = Cli::try_parse_from(["roko", "plan", "run", "plans", "--force-resume"]).unwrap();

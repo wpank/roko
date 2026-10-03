@@ -892,6 +892,7 @@ mod tests {
             fallback_reason: None,
             influences: Vec::new(),
             state: None,
+            arm_set: None,
         };
 
         let probability = selected_probability(&record).expect("probability");
@@ -925,6 +926,7 @@ mod tests {
             fallback_reason: None,
             influences: Vec::new(),
             state: None,
+            arm_set: None,
         };
 
         assert_eq!(fallback_stage_probability(&base), 0.65);
@@ -964,6 +966,7 @@ mod tests {
             fallback_reason: None,
             influences: Vec::new(),
             state: None,
+            arm_set: None,
         };
 
         let tracker = CalibrationTracker::from_routing_logs(&[record]);

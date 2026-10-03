@@ -88,3 +88,16 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK09 (gap-cc5051), PK32 (gap-b5caf3), PK33 (gap-aea13a), PK34 (gap-ac2611).
 - Suggested model: opus.
 - 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. Plan generation moved from `prd.rs` to `crates/roko-cli/src/plan_generate/pipeline.rs` (anchor re-pointed). Hold lifted.
+
+## Progress
+
+Implemented on `work/gap-943046`; cargo verification deferred to the batch gate.
+
+- 4122: implemented at 151072c75 (SectionBandit in section_effect.rs, learn/section-bandit.json under its sibling lock).
+- 4125: implemented at af7deef0d (ErrorPatternSink records a verified retry's fix as resolution/resolved_by; `resolved` stays false per the coordinator note).
+- 4126: implemented at 62b8ca0e6 (planner prompt "Known failure patterns" block; ErrorPatternStore::resolved_for matches crates/<name> paths and cargo -p packages).
+- 4128: implemented at ca6595ff5 (`roko learn patterns --graduate`, thresholds 3 occurrences / 2 plans per decision 4127).
+- 4116: implemented at 4a973be78 (loop_audit::arm_set::ArmSet over LoopLayer + S01 assign).
+- 4117: implemented at 8fee4f95b (open_attempt draws the chain's ArmSet; decision rows carry it as `arm_set`; [experiments] maximize/force_arms; maximize zeroes route epsilon).
+- 4118: implemented at c76e95861 (`roko plan run --no-holdout` via GraphPlanRunParams::no_holdout and apply_run_switches).
+- 4119: implemented at ff23dda50 (PlaceboDecisionRecord written at attempt open; RunRecords.placebo_decisions).

@@ -916,6 +916,10 @@ pub struct GraphPlanRunParams {
     /// --frozen-learning`, decision 2218): the run's config reads
     /// `[learning] frozen = true` whatever `roko.toml` says.
     pub frozen_learning: bool,
+    /// Maximize mode for this run alone (`roko plan run --no-holdout`,
+    /// decision 4115): the run's config reads `[experiments] maximize =
+    /// true`, so no loop is withheld and no route explores.
+    pub no_holdout: bool,
     /// Registry that counts this run's verify verdicts and durations
     /// (`roko_gate_verdicts_total`, `roko_gate_duration_seconds`) beside the
     /// tracing fields: serve passes the one `/metrics` renders (gap-d8c39a).
@@ -1106,6 +1110,7 @@ async fn run_graph_plan_body(
         effort,
         no_cascade,
         frozen_learning,
+        no_holdout,
         metrics,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
@@ -1165,16 +1170,20 @@ async fn run_graph_plan_body(
     if let Some(effort) = effort {
         roko_config.agent.default_effort = effort;
     }
-    // `--frozen-learning` freezes this run alone, before the manifest, the
-    // feedback facade and the dispatcher are built, so every reader sees one
-    // value.
-    if frozen_learning {
-        roko_config.learning.frozen = true;
-    }
+    // `--frozen-learning` and `--no-holdout` apply to this run alone, before
+    // the manifest, the feedback facade and the dispatcher are built, so
+    // every reader sees one value.
+    apply_run_switches(&mut roko_config, frozen_learning, no_holdout);
     if roko_config.learning.frozen {
         tracing::info!(
             "learning is frozen for this run: it reads learned state and writes none \
              (decision 2218)"
+        );
+    }
+    if roko_config.experiments.maximize {
+        tracing::info!(
+            "maximize mode: no learning loop is withheld and no route explores in this run, \
+             though every decision is logged (decision 4115)"
         );
     }
     roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
@@ -2289,6 +2298,24 @@ async fn run_graph_plan_body(
         None if all_succeeded => EXIT_SUCCESS,
         None => EXIT_FAILURE,
     })
+}
+
+/// Apply a run's switches to its config: `frozen_learning`
+/// (`--frozen-learning`, decision 2218) freezes its learning and
+/// `no_holdout` (`--no-holdout`, decision 4115) turns on maximize mode, for
+/// this run alone. Without them the config's own `[learning] frozen` and
+/// `[experiments] maximize` stand.
+pub fn apply_run_switches(
+    config: &mut roko_core::config::schema::RokoConfig,
+    frozen_learning: bool,
+    no_holdout: bool,
+) {
+    if frozen_learning {
+        config.learning.frozen = true;
+    }
+    if no_holdout {
+        config.experiments.maximize = true;
+    }
 }
 
 // ── Learning and feedback wiring ──────────────────────────────────────────
@@ -4279,6 +4306,7 @@ files = ["README.md"]
             effort: None,
             no_cascade: false,
             frozen_learning: false,
+            no_holdout: false,
             metrics: None,
         })
         .await
@@ -4493,6 +4521,7 @@ max_retries = 0
             effort: None,
             no_cascade: false,
             frozen_learning,
+            no_holdout: false,
             metrics: None,
         })
         .await
@@ -7020,6 +7049,7 @@ exec sleep 60
             effort: None,
             no_cascade: false,
             frozen_learning: false,
+            no_holdout: false,
             metrics: None,
         })
         .await
@@ -7204,6 +7234,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             effort: None,
             no_cascade: false,
             frozen_learning: false,
+            no_holdout: false,
             metrics: None,
         }
     }

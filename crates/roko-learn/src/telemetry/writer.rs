@@ -24,7 +24,8 @@ use tokio::sync::mpsc;
 
 use super::records::{
     ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord,
-    ContentDecisionRecord, ExposureRecord, RunFile, Stamped, TelemetryRecord, chain_key,
+    ContentDecisionRecord, ExposureRecord, PlaceboDecisionRecord, RunFile, Stamped,
+    TelemetryRecord, chain_key,
 };
 use crate::error::LearnError;
 use crate::routing_log::RoutingDecisionLog;
@@ -47,6 +48,8 @@ pub enum TelemetryEvent {
     Decision(Box<RoutingDecisionLog>),
     /// A `roko.decision/1` content decision.
     ContentDecision(Box<ContentDecisionRecord>),
+    /// A `roko.decision/1` placebo decision.
+    PlaceboDecision(Box<PlaceboDecisionRecord>),
     /// A `roko.exposure/1` line.
     Exposure(Box<ExposureRecord>),
 }
@@ -72,6 +75,12 @@ impl From<RoutingDecisionLog> for TelemetryEvent {
 impl From<ContentDecisionRecord> for TelemetryEvent {
     fn from(record: ContentDecisionRecord) -> Self {
         Self::ContentDecision(Box::new(record))
+    }
+}
+
+impl From<PlaceboDecisionRecord> for TelemetryEvent {
+    fn from(record: PlaceboDecisionRecord) -> Self {
+        Self::PlaceboDecision(Box::new(record))
     }
 }
 
@@ -267,6 +276,7 @@ impl Worker {
                 TelemetryEvent::Verdict(record) => self.write(&*record),
                 TelemetryEvent::Decision(record) => self.write(&*record),
                 TelemetryEvent::ContentDecision(record) => self.write(&*record),
+                TelemetryEvent::PlaceboDecision(record) => self.write(&*record),
                 TelemetryEvent::Exposure(record) => self.write(&*record),
             }
         }

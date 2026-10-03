@@ -1001,6 +1001,7 @@ fn run_plan_on_local_runtime(
                 effort: None,
                 no_cascade: false,
                 frozen_learning: false,
+                no_holdout: false,
                 metrics,
             },
             run_id,

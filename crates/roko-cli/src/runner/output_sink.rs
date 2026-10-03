@@ -1499,6 +1499,8 @@ pub fn format_dashboard_event(
         | DashboardEvent::CriticalPathEtaUpdated { .. }
         | DashboardEvent::CostAnomaly { .. }
         | DashboardEvent::CrossCutCascade { .. }
+        | DashboardEvent::LoopHealth { .. }
+        | DashboardEvent::LoopTransition { .. }
         | DashboardEvent::SnapshotRebased { .. } => return None,
     };
 

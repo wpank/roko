@@ -451,6 +451,51 @@ pub enum DashboardEvent {
         #[serde(default)]
         source: String,
     },
+    /// M2's health of one learning loop (S03 §5, the `loop.health` row).
+    LoopHealth {
+        /// The loop, e.g. `L-know`.
+        loop_id: String,
+        /// `probation`, `live`, `flagged` or `demoted`.
+        state: String,
+        /// S03 §4.6's reason, e.g. `dormant:unlogged`.
+        #[serde(default)]
+        reason: Option<String>,
+        /// Qualifiers, printed after the reason.
+        #[serde(default)]
+        qualifiers: Vec<String>,
+        /// The loop's holdout rate.
+        h: f64,
+        /// ε̂, when measured.
+        #[serde(default)]
+        eps: Option<f64>,
+        /// ι_net, when measured.
+        #[serde(default)]
+        iota_net: Option<f64>,
+        /// β̂, when judged.
+        #[serde(default)]
+        beta: Option<f64>,
+        /// When the auditor evaluated it (RFC 3339).
+        ts: String,
+    },
+    /// M2 moved a learning loop to another state (S03 §5, the
+    /// `loop.transition` row).
+    LoopTransition {
+        /// The loop, e.g. `L-bid`.
+        loop_id: String,
+        /// The state it left.
+        from: String,
+        /// The state it entered.
+        to: String,
+        /// The new state's reason.
+        #[serde(default)]
+        reason: Option<String>,
+        /// The rule that fired.
+        rule: String,
+        /// `auditor` or `human`.
+        actor: String,
+        /// When it moved (RFC 3339).
+        ts: String,
+    },
     /// An error occurred.
     Error { message: String },
 }
@@ -2415,6 +2460,26 @@ impl DashboardSnapshot {
             // this event only exists to advance the event-bus cursor for
             // SSE/WS consumers.
             DashboardEvent::SnapshotRebased { .. } => {}
+            // S10's Loop Health view reads health from the event stream; the
+            // snapshot keeps no loop state, and logs only the transitions.
+            DashboardEvent::LoopHealth { .. } => {}
+            DashboardEvent::LoopTransition {
+                loop_id,
+                from,
+                to,
+                reason,
+                actor,
+                ..
+            } => {
+                let reason = reason.as_deref().unwrap_or("-");
+                self.push_event_log(
+                    ts,
+                    "loop_transition".to_string(),
+                    String::new(),
+                    String::new(),
+                    format!("{loop_id}: {from} → {to} ({reason}, by the {actor})"),
+                );
+            }
         }
     }
 
@@ -4432,6 +4497,49 @@ fn bootstrap_efficiency_stats(snapshot: &mut DashboardSnapshot, learn_dir: &Path
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// S03 §5: M2's loop events carry the `loop_health` and
+    /// `loop_transition` kinds, round-trip through serde, and a transition
+    /// lands in the snapshot's event log.
+    #[test]
+    fn loop_events_serialize_with_kind() {
+        let health = DashboardEvent::LoopHealth {
+            loop_id: "L-know".into(),
+            state: "flagged".into(),
+            reason: Some("dormant:unlogged".into()),
+            qualifiers: vec!["pre_instrumentation".into()],
+            h: 0.5,
+            eps: Some(0.0),
+            iota_net: Some(0.94),
+            beta: None,
+            ts: "2026-10-03T10:00:00Z".into(),
+        };
+        let transition = DashboardEvent::LoopTransition {
+            loop_id: "L-bid".into(),
+            from: "probation".into(),
+            to: "flagged".into(),
+            reason: Some("dormant:degenerate".into()),
+            rule: "degeneracy: posterior spread 0 over 7 sections".into(),
+            actor: "auditor".into(),
+            ts: "2026-10-03T10:05:00Z".into(),
+        };
+        for (event, kind) in [(&health, "loop_health"), (&transition, "loop_transition")] {
+            let json = serde_json::to_value(event).expect("serialize a loop event");
+            assert_eq!(json["type"], kind);
+            let again: DashboardEvent = serde_json::from_value(json).expect("parse a loop event");
+            assert_eq!(&again, event);
+        }
+
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(&health, 1);
+        snap.apply_with_ts(&transition, 2);
+        let logged: Vec<&str> = snap
+            .event_log
+            .iter()
+            .map(|entry| entry.event_type.as_str())
+            .collect();
+        assert_eq!(logged, ["loop_transition"]);
+    }
 
     /// gap-f59fe9: a task blocked by a failed one never starts. It is listed
     /// with its blocker and title, and counts as neither done nor failed,

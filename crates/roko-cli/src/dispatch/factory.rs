@@ -171,7 +171,6 @@ impl SharedAgentFactory {
         // Apply [prompt] config knobs from roko.toml.
         let prompt_assembler = prompt_assembler
             .with_composition_strategy(config.prompt.composition_strategy)
-            .with_vcg_warmup_observations(config.prompt.vcg_warmup_observations)
             .with_pinned_sections(config.sections.pinned.clone());
         // Default warm-pool capacity: 2 slots per role. Zero-capacity silently
         // discards every pre-spawned agent on insert; using 2 lets the reviewer

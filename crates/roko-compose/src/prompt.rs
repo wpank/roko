@@ -9,11 +9,8 @@ use roko_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::auction::{
-    AffectModulation, AuctionDiagnostics, LearningBidder, VcgAllocation, VcgBid, vcg_allocate,
-};
 use crate::foraging::MultiPatchForager;
-use crate::strategy::{CompositionStrategy, DEFAULT_VCG_WARMUP_OBSERVATIONS};
+use crate::strategy::CompositionStrategy;
 
 /// Estimate token count for a text blob.
 ///
@@ -487,9 +484,6 @@ pub struct CompositionManifest {
     /// without re-running the scorer or guessing a source reference.
     #[serde(default)]
     pub scored_signals: Vec<ScoredSignalMeta>,
-    /// VCG diagnostics when the selected strategy is VCG.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vcg_diagnostics: Option<AuctionDiagnostics>,
     /// Sum of estimated tokens included in the rendered prompt.
     pub total_tokens: usize,
     /// Budget token limit used for selection.
@@ -531,19 +525,6 @@ impl CompositionManifest {
         serde_json::from_str(value).ok()
     }
 
-    /// VCG payments keyed by section id.
-    #[must_use]
-    pub fn vcg_payments(&self) -> Vec<(String, f64)> {
-        self.included
-            .iter()
-            .filter_map(|section| {
-                section
-                    .vcg_payment
-                    .map(|payment| (section.section_id.clone(), payment))
-            })
-            .collect()
-    }
-
     /// Included sections in the shape expected by [`crate::CostAttribution`].
     #[must_use]
     pub fn included_for_cost_attribution(&self) -> Vec<(String, String, AttentionBidder, usize)> {
@@ -578,9 +559,6 @@ pub struct IncludedSectionMeta {
     pub score: f32,
     /// Selection bid value used by the chosen strategy.
     pub bid_value: f32,
-    /// VCG payment when selected by VCG.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vcg_payment: Option<f64>,
     /// Inclusion reason.
     pub reason: String,
 }
@@ -631,14 +609,9 @@ pub struct PromptComposer {
     name: String,
     /// Include section headers (e.g. `--- role ---`) in the output.
     include_headers: bool,
-    /// Budget allocation strategy.
+    /// Budget allocation strategy, as requested; every strategy runs
+    /// density-greedy ([`CompositionStrategy::resolve`]).
     composition_strategy: CompositionStrategy,
-    /// Minimum observations per active bidder before `Auto` activates VCG.
-    vcg_warmup_observations: u32,
-    /// COMP-02: Per-subsystem learning bidders that adjust bids based on
-    /// prior task outcomes. When populated, the composer multiplies each
-    /// candidate's base bid by the bidder's learned section value.
-    learning_bidders: HashMap<AttentionBidder, LearningBidder>,
     /// COMP-03: foraging pre-pass. When set, the composer sets aside the
     /// optional candidates that cannot fit the remaining budget before the
     /// auction. The forager's gain curves are not used yet.
@@ -663,8 +636,6 @@ impl PromptComposer {
             name: "prompt_composer".into(),
             include_headers: true,
             composition_strategy: CompositionStrategy::Auto,
-            vcg_warmup_observations: DEFAULT_VCG_WARMUP_OBSERVATIONS,
-            learning_bidders: HashMap::new(),
             foraging: None,
             hdc_dedup_threshold: 0.0,
         }
@@ -689,96 +660,6 @@ impl PromptComposer {
     pub const fn with_strategy(mut self, strategy: CompositionStrategy) -> Self {
         self.composition_strategy = strategy;
         self
-    }
-
-    /// Configure the `Auto` warmup threshold for VCG activation.
-    #[must_use]
-    pub const fn with_vcg_warmup_observations(mut self, observations: u32) -> Self {
-        self.vcg_warmup_observations = observations;
-        self
-    }
-
-    // ── COMP-02: VCG Learning Bidder integration ─────────────────────
-
-    /// Register a [`LearningBidder`] for a subsystem. During composition,
-    /// the bidder's learned section values are multiplied into the base bid
-    /// density, replacing the prior-only fallback.
-    pub fn register_bidder(&mut self, bidder: AttentionBidder, learning_bidder: LearningBidder) {
-        self.learning_bidders.insert(bidder, learning_bidder);
-    }
-
-    /// Set learning bidders for multiple subsystems at once.
-    #[must_use]
-    pub fn with_learning_bidders(
-        mut self,
-        bidders: HashMap<AttentionBidder, LearningBidder>,
-    ) -> Self {
-        self.learning_bidders = bidders;
-        self
-    }
-
-    /// Update all registered learning bidders after observing a task outcome.
-    ///
-    /// `included_sections`: names of sections that were included in the prompt.
-    /// `gate_passed`: whether the downstream gate passed.
-    pub fn update_bidders(&mut self, included_sections: &[String], gate_passed: bool) {
-        for bidder in self.learning_bidders.values_mut() {
-            for section_name in included_sections {
-                bidder.update(section_name, true, gate_passed);
-            }
-        }
-    }
-
-    /// Update registered bidders from section-level cost attribution.
-    pub fn update_bidders_with_cost(
-        &mut self,
-        section_costs: &[(AttentionBidder, String, bool, bool, f64, usize)],
-    ) {
-        for (
-            bidder_id,
-            section_name,
-            was_included,
-            gate_passed,
-            attributed_cost_usd,
-            estimated_tokens,
-        ) in section_costs
-        {
-            if let Some(bidder) = self.learning_bidders.get_mut(bidder_id) {
-                bidder.update_with_cost(
-                    section_name,
-                    *was_included,
-                    *gate_passed,
-                    *attributed_cost_usd,
-                    *estimated_tokens,
-                );
-            }
-        }
-    }
-
-    /// Borrow the current learning bidders (for persistence).
-    #[must_use]
-    pub fn learning_bidders(&self) -> &HashMap<AttentionBidder, LearningBidder> {
-        &self.learning_bidders
-    }
-
-    fn bidder_observation_counts(
-        &self,
-        candidates: &[AuctionCandidate<'_>],
-    ) -> HashMap<AttentionBidder, u32> {
-        candidates
-            .iter()
-            .map(|candidate| candidate.section.bidder)
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .map(|bidder| {
-                let observations = self
-                    .learning_bidders
-                    .get(&bidder)
-                    .map(LearningBidder::observation_count)
-                    .unwrap_or(0);
-                (bidder, observations)
-            })
-            .collect()
     }
 
     // ── COMP-03: foraging pre-pass ──────────────────────────────────
@@ -885,7 +766,7 @@ impl Compose for PromptComposer {
         let mut token_total = critical_tokens;
         let affect = AuctionAffectState::from_context(ctx);
 
-        // COMP-02: Compute bid density, incorporating learning bidders when available.
+        // Each optional candidate bids its score, at its score's density.
         let mut optional = optional
             .into_iter()
             .map(|(section, source_signal)| {
@@ -893,17 +774,10 @@ impl Compose for PromptComposer {
                     .get(&source_signal.id)
                     .map_or(0.0, |result| result.final_score);
                 let token_cost = section.estimated_tokens().max(1) as f32;
-                // Multiply by the learning bidder's posterior for this section.
-                let learned_multiplier = self
-                    .learning_bidders
-                    .get(&section.bidder)
-                    .map(|bidder| bidder.bid_with_cost(&section.name, 1.0) as f32)
-                    .unwrap_or(1.0);
-                let bid_value = score * learned_multiplier;
                 AuctionCandidate {
                     score,
-                    bid_value,
-                    bid_density: bid_value / token_cost,
+                    bid_value: score,
+                    bid_density: score / token_cost,
                     section,
                     source_signal,
                 }
@@ -926,41 +800,28 @@ impl Compose for PromptComposer {
             Vec::new()
         };
 
-        let bidder_observations = self.bidder_observation_counts(&optional);
-        let selected_strategy = self
-            .composition_strategy
-            .resolve(&bidder_observations, self.vcg_warmup_observations);
-
-        let (allocation, payment_summary, vcg_allocation) =
-            if selected_strategy == CompositionStrategy::Vcg {
-                let (allocation, payment_summary, vcg_allocation) =
-                    select_vcg_candidates(&optional, remaining_tokens, remaining_signals, affect);
-                (allocation, payment_summary, Some(vcg_allocation))
-            } else {
-                optional.sort_by(|a, b| {
-                    b.bid_density
-                        .partial_cmp(&a.bid_density)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| a.section.cache_layer.cmp(&b.section.cache_layer))
-                        .then_with(|| (b.section.priority as u8).cmp(&(a.section.priority as u8)))
-                });
-
-                let allocation = select_optional_candidates(
-                    &optional,
-                    remaining_tokens,
-                    remaining_signals,
-                    affect.as_ref(),
-                    None,
-                );
-                let payment_summary = vcg_payment_summary(
-                    &optional,
-                    &allocation.selected,
-                    remaining_tokens,
-                    remaining_signals,
-                    affect.as_ref(),
-                );
-                (allocation, payment_summary, None)
-            };
+        let selected_strategy = self.composition_strategy.resolve();
+        optional.sort_by(|a, b| {
+            b.bid_density
+                .partial_cmp(&a.bid_density)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.section.cache_layer.cmp(&b.section.cache_layer))
+                .then_with(|| (b.section.priority as u8).cmp(&(a.section.priority as u8)))
+        });
+        let allocation = select_optional_candidates(
+            &optional,
+            remaining_tokens,
+            remaining_signals,
+            affect.as_ref(),
+            None,
+        );
+        let payment_summary = counterfactual_payments(
+            &optional,
+            &allocation.selected,
+            remaining_tokens,
+            remaining_signals,
+            affect.as_ref(),
+        );
 
         for winner in &allocation.selected {
             let candidate = &optional[winner.candidate_index];
@@ -1009,7 +870,6 @@ impl Compose for PromptComposer {
             &optional,
             &set_aside,
             &allocation.selected,
-            vcg_allocation.as_ref(),
             token_total,
             budget.max_tokens,
             &scored_signals,
@@ -1220,7 +1080,9 @@ fn select_optional_candidates(
     allocation
 }
 
-fn vcg_payment_summary(
+/// Each winner's counterfactual payment, for the auction tags: what the
+/// other winners would have bid without it, less what they bid with it.
+fn counterfactual_payments(
     candidates: &[AuctionCandidate<'_>],
     winners: &[SelectedCandidate],
     remaining_tokens: usize,
@@ -1252,71 +1114,6 @@ fn vcg_payment_summary(
     }
 
     summary
-}
-
-fn select_vcg_candidates(
-    candidates: &[AuctionCandidate<'_>],
-    remaining_tokens: usize,
-    remaining_signals: usize,
-    affect: Option<AuctionAffectState>,
-) -> (AuctionAllocation, PaymentSummary, VcgAllocation) {
-    let modulation = affect
-        .map(AuctionAffectState::to_vcg_modulation)
-        .unwrap_or_default();
-    let bids = candidates
-        .iter()
-        .map(|candidate| {
-            let raw_bid = candidate.bid_value.max(0.0) as f64;
-            let valence = section_valence(&candidate.section);
-            VcgBid {
-                bidder: candidate.section.bidder,
-                section_name: candidate.section.stable_section_id(),
-                tokens: candidate.section.estimated_tokens(),
-                raw_bid,
-                adjusted_bid: modulation.adjust_bid(raw_bid, valence),
-                valence,
-            }
-        })
-        .collect::<Vec<_>>();
-    let vcg_allocation = vcg_allocate(bids, remaining_tokens, &modulation);
-
-    let candidate_by_id = candidates
-        .iter()
-        .enumerate()
-        .map(|(index, candidate)| (candidate.section.stable_section_id(), index))
-        .collect::<HashMap<_, _>>();
-    let payment_by_id = vcg_allocation
-        .payments
-        .iter()
-        .cloned()
-        .collect::<HashMap<_, _>>();
-
-    let mut allocation = AuctionAllocation::default();
-    let mut summary = PaymentSummary::default();
-    for winner in vcg_allocation.winners.iter().take(remaining_signals) {
-        let Some(candidate_index) = candidate_by_id.get(&winner.section_name).copied() else {
-            continue;
-        };
-        let adjusted_bid = winner.adjusted_bid as f32;
-        allocation.total_bid += adjusted_bid;
-        allocation.selected.push(SelectedCandidate {
-            candidate_index,
-            adjusted_bid,
-        });
-
-        let payment = payment_by_id
-            .get(&winner.section_name)
-            .copied()
-            .unwrap_or(0.0) as f32;
-        summary.total_payments += payment;
-        if payment > summary.highest_payment_value {
-            summary.highest_payment_value = payment;
-            summary.highest_payment_section =
-                Some(candidates[candidate_index].section.name.clone());
-        }
-    }
-
-    (allocation, summary, vcg_allocation)
 }
 
 fn effective_candidate_bid(
@@ -1457,50 +1254,12 @@ fn bidder_affect_multiplier(section: &PromptSection, affect: Option<&AuctionAffe
     urgency * affect_weight * subsystem_bias
 }
 
-impl AuctionAffectState {
-    fn to_vcg_modulation(self) -> AffectModulation {
-        AffectModulation::from_pad(self.pleasure as f64, self.arousal as f64)
-    }
-}
-
 fn keyword_weight(text: &str, keywords: &[&str]) -> f32 {
     if keywords.iter().any(|keyword| text.contains(keyword)) {
         1.0
     } else {
         0.0
     }
-}
-
-fn section_valence(section: &PromptSection) -> f64 {
-    let text = format!(
-        "{} {}",
-        section.name.to_ascii_lowercase(),
-        section.content.to_ascii_lowercase()
-    );
-    let positive = keyword_weight(
-        &text,
-        &[
-            "success",
-            "passed",
-            "proven",
-            "stable",
-            "known good",
-            "opportunity",
-        ],
-    );
-    let negative = keyword_weight(
-        &text,
-        &[
-            "failure",
-            "failed",
-            "error",
-            "warning",
-            "risk",
-            "regression",
-            "threat",
-        ],
-    );
-    (positive as f64 - negative as f64).clamp(-1.0, 1.0)
 }
 
 fn strategy_tag(strategy: CompositionStrategy) -> &'static str {
@@ -1520,7 +1279,6 @@ fn build_composition_manifest(
     optional: &[AuctionCandidate<'_>],
     set_aside: &[AuctionCandidate<'_>],
     selected: &[SelectedCandidate],
-    vcg_allocation: Option<&VcgAllocation>,
     total_tokens: usize,
     token_budget_limit: Option<usize>,
     scored_signals: &[ScoredSignalMeta],
@@ -1539,16 +1297,6 @@ fn build_composition_manifest(
         .iter()
         .map(|winner| (winner.candidate_index, winner.adjusted_bid))
         .collect::<HashMap<_, _>>();
-    let payment_by_id = vcg_allocation
-        .map(|allocation| {
-            allocation
-                .payments
-                .iter()
-                .cloned()
-                .collect::<HashMap<_, _>>()
-        })
-        .unwrap_or_default();
-
     let included = kept
         .iter()
         .map(|(section, source_signal)| {
@@ -1566,12 +1314,7 @@ fn build_composition_manifest(
                     estimated_tokens: section.estimated_tokens(),
                     score: candidate.score,
                     bid_value,
-                    vcg_payment: payment_by_id.get(&section_id).copied(),
-                    reason: if selected_strategy == CompositionStrategy::Vcg {
-                        "selected_by_vcg".to_string()
-                    } else {
-                        "selected_by_density".to_string()
-                    },
+                    reason: "selected_by_density".to_string(),
                 }
             } else {
                 let score = score_by_signal
@@ -1585,23 +1328,17 @@ fn build_composition_manifest(
                     estimated_tokens: section.estimated_tokens(),
                     score,
                     bid_value: score,
-                    vcg_payment: None,
                     reason: "critical".to_string(),
                 }
             }
         })
         .collect::<Vec<_>>();
 
-    let exclusion_reason = if selected_strategy == CompositionStrategy::Vcg {
-        "excluded_by_vcg"
-    } else {
-        "dropped_by_density_budget"
-    };
     let mut excluded = optional
         .iter()
         .enumerate()
         .filter(|(index, _)| !selected_indices.contains(index))
-        .map(|(_, candidate)| excluded_section_meta(candidate, exclusion_reason))
+        .map(|(_, candidate)| excluded_section_meta(candidate, "dropped_by_density_budget"))
         .collect::<Vec<_>>();
     // Candidates the foraging pre-pass set aside never reached the auction.
     excluded.extend(
@@ -1616,7 +1353,6 @@ fn build_composition_manifest(
         included,
         excluded,
         scored_signals: scored_signals.to_vec(),
-        vcg_diagnostics: vcg_allocation.map(|allocation| allocation.diagnostics.clone()),
         total_tokens,
         token_budget_limit,
     }
@@ -2206,11 +1942,12 @@ mod tests {
         assert_eq!(dropped, [("too_large", "dropped_by_foraging_budget")]);
     }
 
+    /// 4218: the VCG auction is retired. A composer asked for VCG, or left on
+    /// `Auto`, allocates density-greedy, and its manifest says so: every
+    /// kept optional section was selected by density, every cut one dropped
+    /// by the density budget.
     #[test]
-    fn composer_vcg_path_emits_diagnostics_and_payments() {
-        let composer = PromptComposer::new()
-            .without_headers()
-            .with_strategy(CompositionStrategy::Vcg);
+    fn composer_never_selects_vcg() {
         let sections = [
             PromptSection::new("code", "relevant symbol context")
                 .with_priority(SectionPriority::High)
@@ -2222,54 +1959,45 @@ mod tests {
                 .with_bidder(AttentionBidder::Research)
                 .into_signal()
                 .unwrap(),
-            PromptSection::new("large", &"low value ".repeat(80))
+            PromptSection::new("large", "low value ".repeat(80))
                 .with_priority(SectionPriority::Low)
                 .with_bidder(AttentionBidder::Research)
                 .into_signal()
                 .unwrap(),
         ];
+        for requested in [CompositionStrategy::Vcg, CompositionStrategy::Auto] {
+            let composer = PromptComposer::new()
+                .without_headers()
+                .with_strategy(requested);
+            let out = composer
+                .compose(&sections, &Budget::tokens(16), &NoOpScorer, &Context::at(0))
+                .unwrap();
+            let manifest =
+                CompositionManifest::from_tag_value(out.tag(COMPOSITION_MANIFEST_TAG).unwrap())
+                    .expect("manifest parses");
 
-        let out = composer
-            .compose(&sections, &Budget::tokens(16), &NoOpScorer, &Context::at(0))
-            .unwrap();
-        let manifest =
-            CompositionManifest::from_tag_value(out.tag(COMPOSITION_MANIFEST_TAG).unwrap())
-                .expect("manifest parses");
-
-        assert_eq!(manifest.selected_strategy, CompositionStrategy::Vcg);
-        assert!(manifest.vcg_diagnostics.is_some());
-        assert!(manifest.total_tokens <= 16);
-        assert!(
-            manifest
-                .included
-                .iter()
-                .any(|section| section.vcg_payment.is_some())
-        );
-    }
-
-    #[test]
-    fn composer_auto_selects_vcg_when_bidders_are_warm() {
-        let mut bidder = LearningBidder::new(AttentionBidder::TaskContext, 1.0);
-        for _ in 0..10 {
-            bidder.update_with_cost("task", true, true, 0.001, 10);
+            assert_eq!(manifest.requested_strategy, requested);
+            assert_eq!(
+                manifest.selected_strategy,
+                CompositionStrategy::DensityGreedy
+            );
+            assert_eq!(out.tag("composition_strategy"), Some("density_greedy"));
+            assert!(manifest.total_tokens <= 16);
+            assert!(
+                manifest
+                    .included
+                    .iter()
+                    .all(|section| section.reason == "selected_by_density"),
+                "{manifest:?}"
+            );
+            assert!(
+                manifest
+                    .excluded
+                    .iter()
+                    .all(|section| section.reason == "dropped_by_density_budget"),
+                "{manifest:?}"
+            );
         }
-        let composer = PromptComposer::new()
-            .without_headers()
-            .with_learning_bidders(HashMap::from([(AttentionBidder::TaskContext, bidder)]));
-        let sections = [PromptSection::new("task", "implement feature")
-            .with_priority(SectionPriority::High)
-            .with_bidder(AttentionBidder::TaskContext)
-            .into_signal()
-            .unwrap()];
-
-        let out = composer
-            .compose(&sections, &Budget::tokens(16), &NoOpScorer, &Context::at(0))
-            .unwrap();
-        let manifest =
-            CompositionManifest::from_tag_value(out.tag(COMPOSITION_MANIFEST_TAG).unwrap())
-                .expect("manifest parses");
-
-        assert_eq!(manifest.selected_strategy, CompositionStrategy::Vcg);
     }
 
     #[test]

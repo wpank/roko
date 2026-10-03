@@ -17,8 +17,6 @@ pub struct CostAttribution {
     pub sections: Vec<SectionCost>,
     /// Composition strategy selected for the prompt.
     pub strategy: CompositionStrategy,
-    /// VCG payments keyed by stable section id or section name.
-    pub vcg_payments: Vec<(String, f64)>,
 }
 
 /// One section's attributed share of a completed turn.
@@ -49,7 +47,6 @@ impl CostAttribution {
         total_cost_usd: f64,
         included_sections: &[(String, String, AttentionBidder, usize)],
         strategy: CompositionStrategy,
-        vcg_payments: Vec<(String, f64)>,
     ) -> Self {
         let total_estimated = included_sections
             .iter()
@@ -80,7 +77,6 @@ impl CostAttribution {
             total_cost_usd,
             sections,
             strategy,
-            vcg_payments,
         }
     }
 
@@ -132,7 +128,6 @@ mod tests {
                 ),
             ],
             CompositionStrategy::DensityGreedy,
-            Vec::new(),
         );
 
         let total_fraction = attribution
@@ -156,8 +151,7 @@ mod tests {
                 AttentionBidder::TaskContext,
                 100,
             )],
-            CompositionStrategy::Vcg,
-            vec![("prompt:role".into(), 0.2)],
+            CompositionStrategy::DensityGreedy,
         );
 
         attribution.stamp_gate_result(true);
@@ -179,7 +173,6 @@ mod tests {
                 100,
             )],
             CompositionStrategy::DensityGreedy,
-            Vec::new(),
         );
         // Before stamping, effectiveness is None.
         assert!(attribution.cost_effectiveness()[0].1.is_none());
@@ -198,7 +191,6 @@ mod tests {
                 200,
             )],
             CompositionStrategy::DensityGreedy,
-            Vec::new(),
         );
         attribution.stamp_gate_result(false);
         // Failed gate yields zero value / cost = 0.
@@ -208,35 +200,9 @@ mod tests {
 
     #[test]
     fn empty_sections_produce_empty_attribution() {
-        let attribution = CostAttribution::from_turn(
-            "turn-4",
-            0,
-            0.0,
-            &[],
-            CompositionStrategy::Auto,
-            Vec::new(),
-        );
+        let attribution =
+            CostAttribution::from_turn("turn-4", 0, 0.0, &[], CompositionStrategy::Auto);
         assert!(attribution.sections.is_empty());
         assert!(attribution.cost_effectiveness().is_empty());
-    }
-
-    #[test]
-    fn vcg_payments_preserved_in_attribution() {
-        let payments = vec![("sec-a".to_string(), 0.15), ("sec-b".to_string(), 0.08)];
-        let attribution = CostAttribution::from_turn(
-            "turn-5",
-            100,
-            0.01,
-            &[(
-                "sec-a".into(),
-                "section-a".into(),
-                AttentionBidder::TaskContext,
-                100,
-            )],
-            CompositionStrategy::Vcg,
-            payments.clone(),
-        );
-        assert_eq!(attribution.vcg_payments.len(), 2);
-        assert!((attribution.vcg_payments[0].1 - 0.15).abs() < f64::EPSILON);
     }
 }

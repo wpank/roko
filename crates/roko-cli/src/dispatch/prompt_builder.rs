@@ -1664,8 +1664,6 @@ pub struct PromptAssembler {
     sources: Vec<Arc<dyn PromptSectionSource>>,
     /// Requested allocation strategy from `[prompt]` configuration.
     composition_strategy: CompositionStrategy,
-    /// Eligible allocation rounds required before `Auto` selects VCG.
-    vcg_warmup_observations: u32,
     /// Learned section-effectiveness registry for the compose builder.
     ///
     /// When present, the canonical compose path adjusts section priorities
@@ -1692,7 +1690,6 @@ impl PromptAssembler {
                 Arc::new(SectionEffectivenessSource { cache: None }),
             ],
             composition_strategy: CompositionStrategy::Auto,
-            vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: None,
             section_bandit: None,
             pinned_sections: Vec::new(),
@@ -1719,7 +1716,6 @@ impl PromptAssembler {
                 Arc::new(SectionEffectivenessSource { cache: Some(cache) }),
             ],
             composition_strategy: CompositionStrategy::Auto,
-            vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: Some(effectiveness),
             section_bandit: Some(section_bandit),
             pinned_sections: Vec::new(),
@@ -1733,7 +1729,6 @@ impl PromptAssembler {
             token_budget: 8_000,
             sources: Vec::new(),
             composition_strategy: CompositionStrategy::Auto,
-            vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: None,
             section_bandit: None,
             pinned_sections: Vec::new(),
@@ -1746,9 +1741,9 @@ impl PromptAssembler {
         self
     }
 
-    /// Set the composition strategy for VCG/density-greedy budget allocation.
-    /// The selected strategy is passed to the canonical [`PromptComposer`]
-    /// used by [`Self::assemble`].
+    /// Set the requested composition strategy, which the canonical
+    /// [`PromptComposer`] used by [`Self::assemble`] records; every strategy
+    /// allocates density-greedy (4218).
     #[must_use]
     pub fn with_composition_strategy(mut self, strategy: ConfigCompositionStrategy) -> Self {
         self.composition_strategy = match strategy {
@@ -1757,15 +1752,6 @@ impl PromptAssembler {
             ConfigCompositionStrategy::WeightedSum => CompositionStrategy::WeightedSum,
             ConfigCompositionStrategy::Vcg => CompositionStrategy::Vcg,
         };
-        self
-    }
-
-    /// Set the minimum bidder-observation count before VCG allocation activates.
-    /// The threshold is passed to the canonical [`PromptComposer`] used by
-    /// [`Self::assemble`].
-    #[must_use]
-    pub fn with_vcg_warmup_observations(mut self, observations: u32) -> Self {
-        self.vcg_warmup_observations = observations;
         self
     }
 
@@ -1935,7 +1921,6 @@ impl PromptAssembler {
         }
         let composer = PromptComposer::new()
             .with_strategy(self.composition_strategy)
-            .with_vcg_warmup_observations(self.vcg_warmup_observations)
             .with_foraging(default_forager());
         let mut canonical_sections = if let Some(registry) = section_effectiveness.as_ref() {
             spec.build_sections_with_section_effectiveness(registry)
@@ -3302,8 +3287,10 @@ mod tests {
         );
     }
 
+    /// 4218: an explicit `vcg` config still reaches the composer, which runs
+    /// density-greedy, since the VCG auction is retired.
     #[test]
-    fn explicit_vcg_config_reaches_the_canonical_composer() {
+    fn explicit_vcg_config_runs_density_greedy() {
         let assembler =
             PromptAssembler::minimal().with_composition_strategy(ConfigCompositionStrategy::Vcg);
         let pctx = PromptContext::from_task(&task(), &ctx());
@@ -3314,8 +3301,10 @@ mod tests {
             .expect("canonical composition manifest");
 
         assert_eq!(manifest.requested_strategy, CompositionStrategy::Vcg);
-        assert_eq!(manifest.selected_strategy, CompositionStrategy::Vcg);
-        assert!(manifest.vcg_diagnostics.is_some());
+        assert_eq!(
+            manifest.selected_strategy,
+            CompositionStrategy::DensityGreedy
+        );
     }
 
     #[test]

@@ -202,9 +202,10 @@ def test_shakedown_d5_finished_long_answer_is_not_denied(places, tmp_path):
 @shakedown
 def test_shakedown_d6_openai_usage_reaches_roko_costs(places, tmp_path):
     # D6 (PK07 gap-f548c1, R4 #4a): the OpenAI-compatible backend must ask for usage on a streamed call
-    # (`stream_options.include_usage`), and that usage must reach an attempt as a known (non-null) cost.
+    # (`stream_options.include_usage`), and that usage must reach an attempt as a known (non-null) cost. The stub
+    # reads calc/ops.py before it writes it (READ_OPS), so the task completes instead of ending gate-failed.
     arm = fast_arm(tmp_path, ARM)
-    respond = sequence(*WRITE_OPS, DONE)
+    respond = sequence(*READ_OPS, *WRITE_OPS, DONE)
     with StubServer(respond) as stub:
         assert run_vb(places, arm, stub.url) == 0
         streamed = [request for request in stub.requests if request.get("stream")]

@@ -199,7 +199,7 @@ impl Default for AttemptBook {
 /// The loop registry the arm sets are drawn over: the embedded registry,
 /// merged with `workdir`'s override. An unreadable override is logged and
 /// the embedded registry used; `None` only when that fails too.
-fn load_loop_registry(workdir: &Path) -> Option<Registry> {
+pub(super) fn load_loop_registry(workdir: &Path) -> Option<Registry> {
     Registry::load(workdir)
         .inspect_err(|error| {
             tracing::warn!(%error, "loop registry override unreadable; using the embedded one");

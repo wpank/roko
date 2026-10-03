@@ -5182,6 +5182,10 @@ max_retries = 0
                 "store.exposure_writer",
                 "store.record_access",
                 "reader.gate_thresholds",
+                "store.arm_set",
+                "reader.withhold_arms",
+                "store.placebo",
+                "sink.router_source_credit",
             ]
         );
         let attempt_log = census.component("store.attempt_log");
@@ -5584,24 +5588,28 @@ max_retries = 0
 
     /// Decision 2218: a frozen run's dispatcher has no learning sink, and
     /// none of the paths that only write learned state (playbook outcomes,
-    /// prompt treatments). Its telemetry and the state it also reads stay. A
-    /// live run has them all.
+    /// prompt treatments). Its telemetry, the state it also reads, and its
+    /// chains' arm sets and placebo rows stay. A live run has them all.
     #[tokio::test]
     async fn frozen_run_registers_no_learning_sinks() {
-        const LEARNING: [&str; 7] = [
+        const LEARNING: [&str; 8] = [
             "sink.episode",
             "sink.routing",
             "sink.knowledge_ingestion",
             "sink.playbook_outcome",
             "sink.error_pattern",
             "sink.section_effect",
+            "sink.router_source_credit",
             "store.prompt_experiment",
         ];
-        const KEPT: [&str; 4] = [
+        const KEPT: [&str; 7] = [
             "store.attempt_log",
             "store.decision_writer",
             "store.exposure_writer",
             "reader.gate_thresholds",
+            "store.arm_set",
+            "reader.withhold_arms",
+            "store.placebo",
         ];
         let temp = tempfile::tempdir().expect("tempdir");
         let mut config = roko_core::config::schema::RokoConfig::default();

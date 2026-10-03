@@ -101,7 +101,7 @@ pub use operator_stop::OperatorStops;
 pub(crate) use retry_budget::TaskRetryBudgets;
 pub use streaming::streaming_event_channel_capacity;
 pub use supervision::{ConductorStop, ConductorTicker, SUPERVISION_INTERVAL};
-pub use wiring::{WiringComponent, WiringKind, WiringReport};
+pub use wiring::{LoopWiring, WiringComponent, WiringKind, WiringReport};
 
 use attempt::{AttemptBook, SettledAttempt, Settlement, attempt_agent_id, first_token_seen};
 use budget::{

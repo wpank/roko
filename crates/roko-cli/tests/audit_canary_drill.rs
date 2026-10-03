@@ -71,6 +71,8 @@ status = "ready"
 max_parallel = 1
 estimated_total_minutes = 1
 skip_enrichment = true
+# T1 has no verify steps on purpose (it is drawn at π = 1).
+allow_unverified = true
 
 [[task]]
 id = "T1"
@@ -202,8 +204,15 @@ phase_b_rate = 1.0
         .env_remove("XDG_CONFIG_HOME")
         .output()
         .expect("run roko");
+    // T1 has no verify steps, so the run ends unverified (exit 1): an
+    // unverified plan does not succeed, even when it may load.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "the plan runs: {stderr}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("the run's JSON report ({error}): {stderr}"));
+    assert_eq!(
+        report["plan_outcomes"]["drill"], "unverified",
+        "the plan runs to its end: {report}\n{stderr}"
+    );
     let prompts: Vec<String> = provider
         .calls_for("T1")
         .into_iter()

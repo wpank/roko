@@ -149,11 +149,12 @@ pub struct DispatchContext {
     /// Populated once per plan run by `GraphTaskDispatcher` via its
     /// `static_prompt_cache` field.
     pub cached_workspace_map: String,
-    /// Pre-computed workspace context (git state + crate descriptions).
+    /// Pre-computed crate descriptions of the workspace context, the part
+    /// every checkout of a run shares.
     ///
     /// When non-empty, `PromptContext::from_task` uses this value instead of
-    /// calling `generate_workspace_context` (which spawns `git` subprocesses
-    /// and reads Cargo.toml files) on the Tokio reactor thread.
+    /// reading the Cargo.toml files again, and adds the attempt checkout's
+    /// own branch and modified files to it (backlog 3110).
     pub cached_workspace_context: String,
     /// The other plans running in the same working tree now, each with the
     /// areas its tasks write (gap-c09fc7). Empty when the plan runs alone.

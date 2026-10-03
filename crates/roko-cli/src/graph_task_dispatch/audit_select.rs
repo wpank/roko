@@ -44,12 +44,14 @@ use roko_gate::audit::ledger::{AuditEvent, AuditLedger};
 use roko_gate::audit::policy::{
     InclusionParams, RunKey, inclusion_probability, select, workspace_secret,
 };
-use roko_learn::telemetry::records::{AttemptVerdictRecord, GateVerdictTag};
+use roko_learn::telemetry::records::{AttemptOutcome, AttemptVerdictRecord, GateVerdictTag};
 
 use crate::audit::b1::{B1, FactoryAuthor, SuiteAuthor};
 use crate::audit::b2::B2;
 use crate::audit::b3::{B3, Reviewer};
-use crate::audit::worker::{AuditTask, AuditUnit, AuditWorker, PhaseB, WorkerContext, queue_unit};
+use crate::audit::worker::{
+    AuditTask, AuditUnit, AuditWorker, GamingWatch, PhaseB, WorkerContext, queue_unit,
+};
 use crate::task_parser::TaskDef;
 
 /// Every stratum a run reports, in order.
@@ -78,6 +80,8 @@ pub(super) struct AuditSelector {
     gates: GatesConfig,
     /// The phase-B checks each run's worker runs.
     phase_b: PhaseB,
+    /// The workspace's gate-gaming detector (F1), fed every settled attempt.
+    gaming: GamingWatch,
     /// Draw every green unit at π = 1 ([`Self::census`]).
     census: AtomicBool,
 }
@@ -127,6 +131,7 @@ impl AuditSelector {
             },
             ledger: parking_lot::Mutex::new(ledger),
             hidden: HiddenStore::open(&vault).ok(),
+            gaming: GamingWatch::new(&vault),
             trees: parking_lot::Mutex::new(HashMap::new()),
             tasks: parking_lot::Mutex::new(HashMap::new()),
             runs: parking_lot::Mutex::new(HashMap::new()),
@@ -202,6 +207,7 @@ impl AuditSelector {
             run_id: run_id.to_string(),
             run_spend: Arc::clone(spend),
             phase_b: self.phase_b.clone(),
+            gaming: self.gaming.clone(),
         };
         match AuditWorker::start(context) {
             Ok(worker) => Some(worker),
@@ -268,6 +274,18 @@ impl AuditSelector {
         if let Some(output) = output {
             self.scan(output);
         }
+        let model = verdict
+            .executed
+            .model_dispatched
+            .clone()
+            .or_else(|| verdict.executed.model_requested.clone())
+            .unwrap_or_default();
+        // F1: the gaming detector counts every gate verdict.
+        match verdict.outcome {
+            AttemptOutcome::GateFailed => self.gaming.gate(&model, false),
+            _ if verdict.gate_verdict.is_some() => self.gaming.gate(&model, true),
+            _ => {}
+        }
         let mut runs = self.runs.lock();
         let Some(run) = runs.get_mut(&identity.run_id) else {
             return;
@@ -302,12 +320,6 @@ impl AuditSelector {
         {
             self.pin(&sel_id, tree);
         }
-        let model = verdict
-            .executed
-            .model_dispatched
-            .clone()
-            .or_else(|| verdict.executed.model_requested.clone())
-            .unwrap_or_default();
         let task = task.unwrap_or_default();
         let task_type = task.kind.clone();
         let unit = selection.selected.then(|| AuditUnit {

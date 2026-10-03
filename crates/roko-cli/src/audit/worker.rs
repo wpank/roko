@@ -26,7 +26,9 @@
 //!   the next run's worker.
 //!
 //! A queued unit's task inputs wait in [`queue_dir`] until its result is
-//! written; a unit without them is audited from its selection alone.
+//! written; a unit without them is audited from its selection alone. Each
+//! audited Y also feeds the gate-gaming detector ([`GamingWatch`], F1),
+//! whose alert goes to the ledger as `audit.policy_change`.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -45,6 +47,7 @@ use roko_gate::audit::canary::{CanaryScanner, scan_diff};
 use roko_gate::audit::hidden::HiddenStore;
 use roko_gate::audit::ledger::{AuditEvent, AuditLedger, LedgerRecord, records};
 use roko_gate::audit::policy::{EPS_FLOOR, RunKey, select};
+use roko_learn::gate_gaming::{GamingAlert, GateGamingDetector};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
@@ -219,6 +222,45 @@ pub struct WorkerContext {
     pub run_spend: Arc<parking_lot::Mutex<f64>>,
     /// The phase-B checks.
     pub phase_b: PhaseB,
+    /// The workspace's gate-gaming detector.
+    pub gaming: GamingWatch,
+}
+
+/// F1 (S05 §4.5, 7128): the gate-gaming detector over a workspace's
+/// attempts and audits.
+///
+/// Each settled attempt adds its gate verdict at weight 1, and each audited
+/// label adds quality 1 − Y at weight 1/π_i, so a pass rate that climbs
+/// while audited quality falls raises an alert.
+#[derive(Debug, Clone)]
+pub struct GamingWatch {
+    detector: Arc<parking_lot::Mutex<GateGamingDetector>>,
+}
+
+impl GamingWatch {
+    /// A watch whose detector keeps its alerts in `vault`'s incidents.
+    #[must_use]
+    pub fn new(vault: &AuditVault) -> Self {
+        let alerts = vault.incidents_dir().join("gate-gaming-alerts.jsonl");
+        Self {
+            detector: Arc::new(parking_lot::Mutex::new(GateGamingDetector::new(alerts))),
+        }
+    }
+
+    /// Count a settled attempt's gate verdict for `model`.
+    pub fn gate(&self, model: &str, passed: bool) {
+        let mut detector = self.detector.lock();
+        detector.observe_weighted(model, Some(passed), None, 1.0);
+    }
+
+    /// Count an audited unit's label `y` for `model`, drawn at `pi`; returns
+    /// the alert the window then raises.
+    pub fn audited(&self, model: &str, y: bool, pi: f64) -> Option<GamingAlert> {
+        let quality = if y { 0.0 } else { 1.0 };
+        let mut detector = self.detector.lock();
+        detector.observe_weighted(model, None, Some(quality), 1.0 / pi.max(EPS_FLOOR));
+        detector.detect(model)
+    }
 }
 
 /// A run's audit worker, on a thread of its own.
@@ -339,6 +381,8 @@ struct Worker {
     spent_usd: f64,
     /// Whether `audit.budget_exhausted` was logged.
     exhausted: bool,
+    /// Models a gate-gaming alert was logged for.
+    alerted: HashSet<String>,
 }
 
 impl Worker {
@@ -351,6 +395,7 @@ impl Worker {
             seen: HashSet::new(),
             spent_usd: 0.0,
             exhausted: false,
+            alerted: HashSet::new(),
         }
     }
 
@@ -404,7 +449,9 @@ impl Worker {
                 () = cancel.cancelled() => return false,
                 audit = self.audit(&unit, usd_left) => audit,
             };
+            let y = audit.labels.y;
             self.record(&unit, audit);
+            self.watch_gaming(&unit, y);
         }
         for extension in ["json", "lock"] {
             let _ = std::fs::remove_file(queue.join(format!("{}.{extension}", unit.sel_id)));
@@ -653,6 +700,31 @@ impl Worker {
         }
     }
 
+    /// F1 (7128): count the unit's audited Y in the gate-gaming detector,
+    /// and log the first alert it raises for the model as
+    /// `audit.policy_change`.
+    fn watch_gaming(&mut self, unit: &AuditUnit, y: Option<bool>) {
+        let Some(y) = y else {
+            return;
+        };
+        let Some(alert) = self.context.gaming.audited(&unit.model, y, unit.pi) else {
+            return;
+        };
+        if !self.alerted.insert(alert.model_slug.clone()) {
+            return;
+        }
+        tracing::warn!(model = %alert.model_slug, "{}", alert.summary());
+        let event = AuditEvent::PolicyChange {
+            knob: "gaming_alert".to_string(),
+            from: Value::Null,
+            to: serde_json::to_value(&alert).unwrap_or(Value::Null),
+            reason: alert.summary(),
+        };
+        if let Err(error) = self.ledger.append(event) {
+            tracing::warn!(%error, "a gate-gaming alert was not logged");
+        }
+    }
+
     /// Sweep the workspace's episode log, knowledge store and playbooks
     /// for hidden-suite canaries (SC4).
     fn sweep(&mut self) {
@@ -846,4 +918,46 @@ fn lock(queue: &Path, sel_id: &str) -> Option<std::fs::File> {
 fn load_unit(queue: &Path, sel_id: &str) -> Option<AuditUnit> {
     let text = std::fs::read_to_string(queue.join(format!("{sel_id}.json"))).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sixty rounds of one model's attempts: the gate passes every other
+    /// attempt, and from round 30 every one; every third round one green
+    /// unit is audited at π = 0.5, and from round 30 the audits find false
+    /// greens when `gaming`. Returns the alerts raised.
+    fn rounds(watch: &GamingWatch, gaming: bool) -> Vec<GamingAlert> {
+        let mut alerts = Vec::new();
+        for round in 0_u32..60 {
+            let late = round >= 30;
+            watch.gate("model-a", late || round.is_multiple_of(2));
+            if round.is_multiple_of(3) {
+                alerts.extend(watch.audited("model-a", gaming && late, 0.5));
+            }
+        }
+        alerts
+    }
+
+    #[test]
+    fn audited_labels_raise_a_gaming_alert_on_a_planted_stream() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("repo");
+        std::fs::create_dir_all(&workspace).expect("mkdir");
+        let home = temp.path().join("vault");
+        let vault = AuditVault::resolve_with(&workspace, Some(&home), None).expect("a vault");
+
+        // The pass rate climbs while audits find more and more false greens.
+        let alerts = rounds(&GamingWatch::new(&vault), true);
+        let first = alerts.first().expect("a planted stream raises an alert");
+        assert_eq!(first.model_slug, "model-a");
+        assert!(first.pass_rate_delta > 0.15, "{first:?}");
+        assert!(first.quality_delta < -0.10, "{first:?}");
+
+        // The same climb, with audits that keep finding sound work, raises
+        // none.
+        let clean = rounds(&GamingWatch::new(&vault), false);
+        assert!(clean.is_empty(), "{clean:?}");
+    }
 }

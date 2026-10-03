@@ -384,6 +384,7 @@ fn cli_parses_run_flags() {
             share,
             fresh,
             resume_plan,
+            no_holdout: false,
         }) => {
             assert_eq!(prompt, vec!["add".to_string(), "login".to_string()]);
             assert!(plan);

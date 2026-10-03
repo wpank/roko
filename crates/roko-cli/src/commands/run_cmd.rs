@@ -157,6 +157,8 @@ pub(crate) struct RunArgs {
     pub(crate) fresh: bool,
     /// `--resume-plan` (plan directories only).
     pub(crate) resume_plan: Option<PathBuf>,
+    /// `--no-holdout`: maximize mode for this run alone (decision 4115).
+    pub(crate) no_holdout: bool,
 }
 
 /// Main entry point for `roko run`.
@@ -232,6 +234,7 @@ pub(crate) async fn cmd_run(cli: &Cli, args: RunArgs) -> Result<i32> {
             args.max_retries,
             None,
             args.domain.as_deref().and_then(TaskDomain::from_label),
+            args.no_holdout,
         )
         .await;
     }
@@ -435,7 +438,7 @@ async fn run_plan_dir(
         // A one-task run learns as usual (2219: `--frozen-learning` is a
         // `plan run` flag).
         frozen_learning: false,
-        no_holdout: false,
+        no_holdout: args.no_holdout,
         promote: None,
         max_parallel_plans: None,
         fail_fast: false,
@@ -504,6 +507,7 @@ async fn run_one_task(
         domain: args.domain.as_deref().and_then(TaskDomain::from_label),
         max_usd: None,
         origin: roko_serve::runtime::RunOrigin::Cli,
+        no_holdout: args.no_holdout,
     })
     .await;
 
@@ -635,8 +639,15 @@ async fn run_prompt_plan(
         "Step 2/2",
         &format!("Executing plan ({total_tasks} tasks)..."),
     );
-    let code =
-        run_plan_execution(cli, workdir, &generated, args.no_cascade, args.max_retries).await?;
+    let code = run_plan_execution(
+        cli,
+        workdir,
+        &generated,
+        args.no_cascade,
+        args.max_retries,
+        args.no_holdout,
+    )
+    .await?;
     // As after `roko plan run`, the indexes show the run's result.
     if code == EXIT_SUCCESS {
         roko_cli::index::rebuild_all(workdir)?;
@@ -704,6 +715,7 @@ pub(crate) async fn run_plan_execution(
     plans_dir: &Path,
     no_cascade: bool,
     max_retries: Option<u32>,
+    no_holdout: bool,
 ) -> Result<i32> {
     use roko_cli::graph_execution::plan_runner::{
         PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan,
@@ -773,7 +785,7 @@ pub(crate) async fn run_plan_execution(
         effort: cli.effort.map(|effort| effort.to_string()),
         no_cascade,
         frozen_learning: false,
-        no_holdout: false,
+        no_holdout,
         metrics: None,
     })
     .await

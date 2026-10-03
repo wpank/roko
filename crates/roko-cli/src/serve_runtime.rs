@@ -1113,6 +1113,7 @@ fn run_prompt_plan_on_local_runtime(
             domain: options.domain,
             max_usd: options.max_usd,
             origin: options.origin,
+            no_holdout: false,
         })
         .await?;
         let snapshot = state_hub.current_snapshot();

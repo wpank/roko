@@ -335,6 +335,7 @@ fn run(
             domain: config.domain.clone(),
             max_usd: Some(config.max_usd),
             origin: RunOrigin::Cli,
+            no_holdout: false,
         })
         .await?;
         let snapshot = hub.current_snapshot();

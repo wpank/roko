@@ -29,6 +29,7 @@ use parking_lot::Mutex;
 use roko_agent::AgentResult;
 use roko_core::DaimonPolicy;
 use roko_core::OperatingFrequency;
+#[cfg(feature = "active-inference")]
 use roko_core::agent::TaskRequirements;
 use roko_core::agent::{AgentRole, ModelSpec, ModelTier};
 use roko_core::config::schema::RewardWeights;
@@ -38,6 +39,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(feature = "active-inference")]
 use crate::active_inference::{BeliefState, select_tier as select_tier_with_belief};
 use crate::bayesian_confidence::BayesianConfidenceUpdater;
 // Re-export public types from cascade submodules so that
@@ -748,7 +750,9 @@ impl CascadeRouter {
         }
     }
 
-    /// Select a tier using the active-inference belief state.
+    /// Select a tier using the active-inference belief state. Nothing calls
+    /// this, so it is parked behind `active-inference` (9225).
+    #[cfg(feature = "active-inference")]
     #[must_use]
     pub fn select_tier_with_active_inference(
         &self,

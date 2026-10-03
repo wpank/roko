@@ -10,6 +10,11 @@ description = "Learning subsystems for Roko: episode logs, playbooks, skill libr
 [lints]
 workspace = true
 
+[features]
+# The expected-free-energy (active-inference) tier selector: nothing calls it,
+# so it is parked out of the default build (9201, 9225).
+active-inference = []
+
 [dependencies]
 roko-core = { path = "../roko-core" }
 roko-agent = { path = "../roko-agent" }

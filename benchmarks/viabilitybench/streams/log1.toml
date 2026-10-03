@@ -1,0 +1,189 @@
+# LOG1 (S09 §4.3; work item gap-daeaa9, task 3330): compiled by streams/compile.py --seed 1.
+# Billed cells by block: A 960, B 660, C 336, D 120, E 80 (2156 total). Do not hand-edit: regenerate with
+# the same --seed for a byte-identical file.
+schema_version = "vb.log1/1"
+seed = 1
+
+honeypots = [
+  "F8-l1-0022",
+  "F8-l2-0027",
+  "F8-l3-0038",
+  "F8-l4-0128",
+  "F8-l5-0161",
+  "F8-l1-0198",
+  "F8-l2-0274",
+  "F8-l3-0320",
+  "F8-l4-0390",
+  "F8-l5-0493",
+]
+
+[[cell]]
+block = "A"
+arm = "roko_fixed"
+model = "cerebras/gpt-oss-120b"
+stream = "p1_core"
+seeds = [1, 2]
+n_tasks = 120
+n = 240
+
+[[cell]]
+block = "A"
+arm = "roko_fixed"
+model = "zai/glm-4.7"
+stream = "p1_core"
+seeds = [1, 2]
+n_tasks = 120
+n = 240
+
+[[cell]]
+block = "A"
+arm = "roko_fixed"
+model = "moonshot/kimi-k2.6"
+stream = "p1_core"
+seeds = [1, 2]
+n_tasks = 120
+n = 240
+
+[[cell]]
+block = "A"
+arm = "roko_fixed"
+model = "openai/gpt-5.4-mini"
+stream = "p1_core"
+seeds = [1, 2]
+n_tasks = 120
+n = 240
+
+[[cell]]
+block = "B"
+arm = "cheap_direct"
+model = "cerebras/gpt-oss-120b"
+stream = "p1_core"
+seeds = [1, 2, 3]
+n_tasks = 120
+n = 360
+
+[[cell]]
+block = "B"
+arm = "cheap_direct"
+model = "best_cheap"
+stream = "p1_core"
+seeds = [1, 2]
+n_tasks = 120
+n = 240
+
+[[cell]]
+block = "B"
+arm = "cheap_direct"
+model = "cerebras/gpt-oss-120b"
+stream = "p1_pass5"
+seeds = [4, 5]
+n_tasks = 30
+n = 60
+note = "the pass^5 extension; p1_pass5's own reps 1-3 are this row's seeds 1-3 on p1_core"
+
+[[cell]]
+block = "C"
+arm = "roko_fixed"
+model = "cerebras/gpt-oss-120b"
+stream = "p1_h3"
+seeds = [1, 2, 3]
+n_tasks = 48
+n = 144
+variant = "vague"
+
+[[cell]]
+block = "C"
+arm = "roko_fixed"
+model = "cerebras/gpt-oss-120b"
+stream = "p1_h3"
+seeds = [3]
+n_tasks = 48
+n = 48
+variant = "precise"
+note = "reps 1-2 reused from block A's roko_fixed/gpt-oss-120b seeds 1-2 on p1_core"
+
+[[cell]]
+block = "C"
+arm = "roko_fixed"
+model = "cerebras/gpt-oss-120b"
+stream = "p1_h3"
+seeds = [1, 2]
+n_tasks = 48
+n = 96
+variant = "refined"
+
+[[cell]]
+block = "C"
+arm = "roko_fixed"
+model = "zai/glm-4.7"
+stream = "p1_h3"
+seeds = [1]
+n_tasks = 48
+n = 48
+variant = "vague"
+
+[[cell]]
+block = "D"
+arm = "roko_fixed"
+model = "cerebras/gpt-oss-120b"
+stream = "pilot"
+seeds = [1, 2]
+n_tasks = 20
+n = 40
+latent = "v2"
+
+[[cell]]
+block = "D"
+arm = "roko_fixed"
+model = "zai/glm-4.7"
+stream = "pilot"
+seeds = [1, 2]
+n_tasks = 20
+n = 40
+latent = "v2"
+
+[[cell]]
+block = "D"
+arm = "roko_fixed"
+model = "moonshot/kimi-k2.6"
+stream = "pilot"
+seeds = [1, 2]
+n_tasks = 20
+n = 40
+latent = "v2"
+
+[[cell]]
+block = "E"
+arm = "roko_fixed"
+model = "cerebras/gpt-oss-120b"
+stream = "log1_f8_honeypots"
+seeds = [1, 2]
+n_tasks = 10
+n = 20
+
+[[cell]]
+block = "E"
+arm = "roko_fixed"
+model = "zai/glm-4.7"
+stream = "log1_f8_honeypots"
+seeds = [1, 2]
+n_tasks = 10
+n = 20
+
+[[cell]]
+block = "E"
+arm = "roko_fixed"
+model = "moonshot/kimi-k2.6"
+stream = "log1_f8_honeypots"
+seeds = [1, 2]
+n_tasks = 10
+n = 20
+
+[[cell]]
+block = "E"
+arm = "roko_fixed"
+model = "openai/gpt-5.4-mini"
+stream = "log1_f8_honeypots"
+seeds = [1, 2]
+n_tasks = 10
+n = 20

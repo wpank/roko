@@ -78,13 +78,19 @@ def test_the_pass5_subset_has_30_tasks_one_per_family_and_level():
 
 
 def test_the_committed_stream_files_match_compile_py():
-    """The checked-in p1_core.toml, p1_h3.toml and p1_pass5.toml are exactly compile.py's output for
+    """The checked-in p1_core.toml, p1_h3.toml, p1_pass5.toml and log1.toml are exactly compile.py's output for
     DEFAULT_SEED: nobody hand-edited them after compiling (`compile.py --check` makes the same comparison)."""
     documents = compile_mod.compile_streams(compile_mod.DEFAULT_SEED)
     for name, filename in compile_mod.FILES.items():
+        if name == "log1":
+            continue
         path = STREAMS_DIR / filename
         assert path.read_text(encoding="utf-8") == compile_mod.render_toml(documents[name], seed=compile_mod.DEFAULT_SEED), \
             f"{filename} does not match compile.py --seed {compile_mod.DEFAULT_SEED}; regenerate it"
+    log1_path = STREAMS_DIR / compile_mod.FILES["log1"]
+    log1_text = compile_mod.render_log1_toml(compile_mod.compile_log1(compile_mod.DEFAULT_SEED),
+                                             seed=compile_mod.DEFAULT_SEED)
+    assert log1_path.read_text(encoding="utf-8") == log1_text, "log1.toml does not match compile.py; regenerate it"
 
 
 @pytest.mark.parametrize("stream_id", ["p1_core", "p1_h3", "p1_pass5"])
@@ -112,3 +118,57 @@ def test_materialize_is_byte_identical_across_two_runs(tmp_path):
     # The bundle path differs (each run wrote into its own private_dir); the commit and tree it records must not.
     assert results[0].pristine.commit == results[1].pristine.commit
     assert results[0].pristine.tree == results[1].pristine.tree
+
+
+# --- LOG1 (S09 §4.3; task 3330) ------------------------------------------------------------------------------
+
+
+def test_log1_compiler_emits_s09_cell_counts():
+    """The billed blocks' totals match S09 §4.3's table exactly: A 960, B 660, C 336, D 120, E 80 (2,156)."""
+    doc = compile_mod.compile_log1(1)
+    totals: dict[str, int] = {}
+    for cell in doc["cells"]:
+        totals[cell["block"]] = totals.get(cell["block"], 0) + cell["n"]
+    assert totals == {"A": 960, "B": 660, "C": 336, "D": 120, "E": 80}
+    assert sum(totals.values()) == 2156
+    assert len(doc["honeypots"]) == compile_mod.LOG1_N_HONEYPOTS == 10
+    assert len(set(doc["honeypots"])) == 10
+    assert all(knobs.parse_instance_id(instance_id)[0] == "F8" for instance_id in doc["honeypots"])
+
+
+def test_log1_is_reproducible_from_its_seed():
+    first = compile_mod.compile_log1(1)
+    again = compile_mod.compile_log1(1)
+    assert first == again
+    other = compile_mod.compile_log1(2)
+    assert other["honeypots"] != first["honeypots"]
+
+
+def test_log1_block_c_reuses_block_a_precise_reps_one_and_two():
+    """Block C's own `precise` row covers only rep 3; its note names block A's seeds 1-2 as reps 1-2, the same
+    arm and model, so nothing double-runs them (S09 §4.3: "reps 1-2 = block A seeds 1-2 on the same instances")."""
+    doc = compile_mod.compile_log1(1)
+    block_a = [cell for cell in doc["cells"] if cell["block"] == "A" and cell["model"] == compile_mod.LOG1_CHEAP_MODELS[0]]
+    assert len(block_a) == 1 and block_a[0]["seeds"] == [1, 2] and block_a[0]["stream"] == "p1_core"
+    precise_c = [cell for cell in doc["cells"] if cell["block"] == "C" and cell.get("variant") == "precise"]
+    assert len(precise_c) == 1
+    cell = precise_c[0]
+    assert cell["seeds"] == [3] and cell["n"] == 48  # only the 3rd rep is its own row
+    assert cell["arm"] == block_a[0]["arm"] == "roko_fixed" and cell["model"] == block_a[0]["model"]
+    assert "reused from block A" in cell["note"] and "seeds 1-2" in cell["note"]
+    # Block C's P1-H3 instances are a real subset of block A's P1-core instances (equal spec hashes), so "the
+    # same instances" is literally true, not just a naming coincidence.
+    streams = compile_mod.compile_streams(1)
+    assert set(streams["p1_h3"]["stream"]["instances"]) <= set(streams["p1_core"]["stream"]["instances"])
+
+
+def test_log1_toml_round_trips_through_tomllib():
+    import tomllib
+
+    doc = compile_mod.compile_log1(1)
+    text = compile_mod.render_log1_toml(doc, seed=1)
+    parsed = tomllib.loads(text)
+    assert parsed["schema_version"] == doc["schema_version"] and parsed["seed"] == 1
+    assert parsed["honeypots"] == doc["honeypots"]
+    assert len(parsed["cell"]) == len(doc["cells"])
+    assert sum(cell["n"] for cell in parsed["cell"]) == 2156

@@ -28,9 +28,6 @@ command = "grep -rqw 'fn generation_rejects_a_task_over_its_tier_size' crates/ro
 command = "grep -rqw 'fn learn_sizing_reports_pass_rate_by_tier_and_size' crates/roko-cli/ && cargo test -p roko-cli learn_sizing_reports_pass_rate_by_tier_and_size"
 
 [[verify]]
-command = "grep -q 'roko learn sizing' crates/roko-cli/src/plan_policy.rs && grep -rqw 'fn tier_size_limits_match_the_recorded_sizing_report' crates/roko-cli/src/ && cargo test -p roko-cli --lib tier_size_limits_match_the_recorded_sizing_report"
-
-[[verify]]
 command = "grep -rqw 'fn plan_revise_cli_prints_the_plan_diff' crates/roko-cli/ && cargo test -p roko-cli plan_revise_cli_prints_the_plan_diff"
 
 [[verify]]
@@ -113,3 +110,5 @@ done: cargo, vitest and the TypeScript check are deferred to the batch gate. Anc
 - 3231: implemented at aac91158e (plan-load gate in `run_graph_plan_body`; `.roko/runs/<run_id>/spec.jsonl`; the CLI pre-check no longer repeats red-on-base)
 - 3232: implemented at 7cfb542c7 (holdout on the `spec.gate` layer; no `--no-holdout` flag exists yet)
 - 3233: implemented at 1541687d4 (`benchmarks/viabilitybench/specops/`; 16 Python tests pass)
+
+- 2026-10-03 (coordinator, gate 5a): task 3227's verify left this item for its own follow-up: it needs at least 20 verified first tries per bucket from real runs (decision 3203) before the tier size limits can be set from `roko learn sizing`.

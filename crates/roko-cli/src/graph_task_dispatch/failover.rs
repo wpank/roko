@@ -777,10 +777,10 @@ impl GraphTaskDispatcher {
         let key_env = providers
             .get(&refusal.provider_id)
             .and_then(|provider| provider.api_key_env.as_deref());
+        let provider_id = &refusal.provider_id;
         format!(
-            "`{}` rejected its credentials: {}, then delete its entry in \
-             .roko/learn/provider-health.json to use it before its skip ends.",
-            refusal.provider_id,
+            "`{provider_id}` rejected its credentials: {}, then run `roko config providers \
+             reset-health {provider_id}` to use it before its skip ends.",
             credentials_fix(refusal.provider_kind, key_env)
         )
     }
@@ -1502,6 +1502,7 @@ exit 1
         );
         assert!(message.contains("run `claude /login`"), "{message}");
         assert!(message.contains("USER and HOME"), "{message}");
+        assert!(message.contains("reset-health claude_cli"), "{message}");
         assert!(message.contains("Then re-run."), "{message}");
         assert!(!message.contains("wait until"), "{message}");
         assert_eq!(invocations(&calls), 0, "no call reaches the provider");

@@ -267,6 +267,19 @@ impl ProviderHealth {
         self.cooldown_until = Some(until_ms.max(now_ms));
     }
 
+    /// Clear the live circuit state, as an operator does once the cause of a
+    /// quarantine is fixed (a CLI logged in again, a bill paid): the circuit
+    /// closes, the consecutive failures, cooldown and rolling window of
+    /// recent outcomes reset, so the provider routes again and its next
+    /// failure is judged afresh. Its lifetime counts and recent failure
+    /// records stay: they are its history (gap-d90a93).
+    pub fn clear(&mut self) {
+        self.state = CircuitState::Closed;
+        self.consecutive_failures = 0;
+        self.cooldown_until = None;
+        self.recent_outcomes.clear();
+    }
+
     /// P3-09: Record a failure with associated cost attribution.
     ///
     /// Delegates to [`Self::record_failure`] and adds the cost to `wasted_cost_usd`.
@@ -565,6 +578,22 @@ impl ProviderHealthRegistry {
         health.record_exhaustion(unix_ms_now(), until_ms);
         drop(providers);
         self.schedule_persist();
+    }
+
+    /// Clear `provider_id`'s live circuit state ([`ProviderHealth::clear`])
+    /// and schedule a save: the provider routes again at once. Returns its
+    /// health as it was, or `None` for a provider the registry does not
+    /// track. The key is normalized before lookup.
+    pub fn clear(&self, provider_id: &str) -> Option<ProviderHealth> {
+        let key = normalize_provider_key(provider_id);
+        let mut providers = self.providers.lock();
+        let health = providers.get_mut(&key)?;
+        let before = health.clone();
+        health.clear();
+        drop(providers);
+        tracing::info!(provider = %key, "provider health cleared: its circuit is closed");
+        self.schedule_persist();
+        Some(before)
     }
 
     /// Return whether `provider_id` is currently available for routing.
@@ -1960,6 +1989,48 @@ mod tests {
         assert_eq!(h.cooldown_until, Some(86_401_000));
         // Should be unavailable for the entire cooldown.
         assert!(!h.is_available(86_400_999));
+    }
+
+    /// gap-d90a93: clearing a provider an auth failure took out closes its
+    /// circuit at once, so it routes again, and keeps its lifetime counts and
+    /// failure records; the next failure starts a fresh count. A cleared
+    /// registry saves the closed circuit, and clearing an untracked provider
+    /// changes nothing.
+    #[test]
+    fn provider_health_clear_reopens_the_circuit() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("provider-health.json");
+        let registry = ProviderHealthRegistry::load_or_new(&path);
+        registry.record_success("claude-cli");
+        registry.record_failure("claude-cli", ErrorClass::AuthFailure);
+        assert!(!registry.is_available("claude_cli"));
+
+        let before = registry.clear("claude-cli").expect("a tracked provider");
+        assert_eq!(before.state, CircuitState::Open);
+        assert!(registry.is_available("claude_cli"));
+        let cleared = registry.get("claude_cli");
+        assert_eq!(cleared.state, CircuitState::Closed);
+        assert_eq!(cleared.consecutive_failures, 0);
+        assert_eq!(cleared.cooldown_until, None);
+        assert!(cleared.recent_outcomes.is_empty());
+        assert_eq!(cleared.total_requests, 2);
+        assert_eq!(cleared.total_failures, 1);
+        assert_eq!(cleared.failure_window.len(), 1);
+
+        registry.record_failure("claude-cli", ErrorClass::Timeout);
+        assert!(
+            registry.is_available("claude_cli"),
+            "one failure is not three"
+        );
+        assert_eq!(registry.get("claude_cli").consecutive_failures, 1);
+        assert!(registry.clear("cerebras").is_none());
+
+        registry.clear("claude-cli");
+        registry.save(&path).expect("save");
+        drop(registry);
+        let reloaded = ProviderHealthRegistry::load_or_new(&path);
+        assert_eq!(reloaded.get("claude_cli").state, CircuitState::Closed);
+        assert_eq!(reloaded.get("claude_cli").total_failures, 2);
     }
 
     /// backlog 1115: a single auth failure takes the provider out at once,

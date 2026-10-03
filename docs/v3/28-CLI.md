@@ -1497,6 +1497,7 @@ roko config env [--json]
 ```
 roko config providers list [--workdir <path>]
 roko config providers health [--workdir <path>] [--check-credits]
+roko config providers reset-health [<provider>] [--workdir <path>]
 roko config providers test [<provider>] [--all] [--workdir <path>]
 roko config providers available
 roko config providers discover [--workdir <path>]
@@ -1509,6 +1510,7 @@ roko config providers validate [--workdir <path>]
 |---|---|
 | `list` | List configured providers and their connection status. |
 | `health` | Show persisted circuit-breaker health and latency. `--check-credits` verifies API account credits. |
+| `reset-health [<provider>]` | Clear a provider's persisted circuit once its cause is fixed (a CLI logged in again, a bill paid), so runs route to it again; lifetime counts stay. Without a provider, clears every provider held out of routing. |
 | `test [<provider>] [--all]` | Send a minimal request to verify connectivity. |
 | `available` | List all supported provider kinds with required credentials. |
 | `discover` | Scan environment for API keys and report available providers. |
@@ -2190,6 +2192,7 @@ These commands are hidden from `--help` but still accepted for backward compatib
 | Gate failures on every task | Config or code problem | `roko doctor` then check `.roko/learn/gate-thresholds.json` |
 | Run interrupted, want to continue | Normal for long plans | `roko plan run plans/ --resume-plan` |
 | Provider timeout / rate limit | Provider circuit breaker tripped | `roko config providers health` to check, wait and retry |
+| `rejected its credentials` / `billing failure` | A login or billing failure holds the provider out of routing for 24 h | Log in again or fix the bill, then `roko config providers reset-health <provider>` |
 | Unknown model slug | Model not configured | `roko config models list` to see available models |
 | Legacy engine error | `--engine legacy` is removed | Remove `--engine legacy` from your command; graph is default |
 

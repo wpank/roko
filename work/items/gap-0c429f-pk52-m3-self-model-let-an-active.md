@@ -57,3 +57,7 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK49 (gap-7ec3ef).
 - Suggested model: opus.
+
+## Progress
+
+- 6131: implemented at fb7f1b462 (cargo verification deferred to the batch gate)

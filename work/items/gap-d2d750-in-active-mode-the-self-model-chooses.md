@@ -56,3 +56,7 @@ PK43 and PK49 are merged (gate 8c); the shadow hook (6128) and the outcome sink 
 
 - Full spec: `tmp/backlog/2026-10-02-complete-and-wire/6130-in-active-mode-let-the-self-model-choose-the-start-rung.md`.
 - Left PK49's package item at gate 8c (2026-10-03).
+
+## Progress
+
+- 6130: implemented at 09cbdc04a (cargo verification deferred to the batch gate)

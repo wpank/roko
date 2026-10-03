@@ -2,7 +2,7 @@
 id = "gap-940e44"
 kind = "gap"
 title = "PK60 M4 deep audits: Window close: per-stratum estimates of false greens, gaming and weak oracles, and the… (+4 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 60
 size = "L"
 subsystem = ["roko-cli/audit"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "b68e41c37"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK60"
 anchors = ["CLAUDE.md", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs", "crates/roko-cli/src/main.rs", "crates/roko-learn/src/cascade_router.rs"]
 lane = "rust-cold"
@@ -32,6 +33,17 @@ command = "grep -rqw 'fn a_confirmed_false_green_opens_an_incident_with_a_fix_pr
 
 [[verify]]
 command = "grep -qw 'fn audit_reveal_recomputes_every_draw' crates/roko-cli/src/commands/audit.rs && cargo test -p roko-cli --bin roko audit_reveal_recomputes_every_draw"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T20:53:43Z"
+commit = "b68e41c37"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T17:08:31Z"
+forced = false
+evidence = "Gate 9c (work/backlog-batch-9c, merged into main as b68e41c37): nightly fmt check, cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --workspace --lib 15,087 passed, roko-cli bin 438 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn and roko-agent integration tests pass; every [[verify]] passes. PK60 5/5: window close with per-stratum Hajek estimates and the DP3 ladder, audit trust in CascadeRouter, vs.label rows, incidents and fix/isolation proposals, roko audit. Its new ledger records broke the hash chain on full-precision floats (serde_json's default parser is one ulp off); the fix (ff4447d89) enables serde_json's float_roundtrip workspace-wide, with the regression test full_precision_floats_keep_the_chain."
 +++
 
 ## Problem

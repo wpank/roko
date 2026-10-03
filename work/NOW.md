@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 112 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 111 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -48,11 +48,11 @@ _15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-39
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- **P2** [gap-940e44](items/gap-940e44-pk60-m4-deep-audits-window-close-per.md) PK60 M4 deep audits: Window close: per-stratum estimates of false greens, gaming and weak oracles, and the… (+4 more) · size L · verified 2026-10-02
-- **P2** [gap-eb39c1](items/gap-eb39c1-pk63-m1-controller-homeostasissink-one-task-resolution.md) PK63 M1 controller: HomeostasisSink: one task resolution per chain, registered in the Graph feedback facade (+4 more) · size L · verified 2026-10-02
 - **P2** [gap-2e4a81](items/gap-2e4a81-pk64-m4-deep-audits-dp3-dispatch-applies.md) PK64 M4 deep audits: DP3: dispatch applies the verify depth the ladder sets, V0 to V4 (S05 task 12, part 2) · size M · verified 2026-10-02
+- **P3** [gap-4cbd80](items/gap-4cbd80-pk65-m2-loop-liveness-census-measures-l.md) PK65 M2 loop-liveness: Census measures L-M1, L-M3 and L-M4 from their receipts · size S · verified 2026-10-02
+- **P3** [gap-414e56](items/gap-414e56-pk66-m3-self-model-after-a-low.md) PK66 M3 self-model: After a low-confidence pass, request deeper verification from S05's ladder before… (+1 more) · size M · verified 2026-10-02
 
-_24 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_22 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

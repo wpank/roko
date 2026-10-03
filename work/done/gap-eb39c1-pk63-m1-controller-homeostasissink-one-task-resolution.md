@@ -2,7 +2,7 @@
 id = "gap-eb39c1"
 kind = "gap"
 title = "PK63 M1 controller: HomeostasisSink: one task resolution per chain, registered in the Graph feedback facade (+4 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 63
 size = "L"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-03
+last_verified = 2026-10-03
+last_verified_rev = "b68e41c37"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK63"
 anchors = ["crates/roko-cli/src/dispatch/model_routing.rs", "crates/roko-cli/src/graph_task_dispatch/attempt.rs", "crates/roko-cli/src/graph_task_dispatch/failover.rs", "crates/roko-cli/src/graph_task_dispatch/ladder.rs", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs", "crates/roko-cli/src/runtime_feedback/mod.rs", "crates/roko-graph/src/cells/task_executor.rs", "crates/roko-learn/src/telemetry/writer.rs"]
 lane = "rust-hot"
@@ -32,6 +33,17 @@ command = "grep -rqw 'fn b4_b6_b8_knobs_read_per_dispatch' crates/roko-cli/ && c
 
 [[verify]]
 command = "grep -rqw 'fn task_executor_reads_live_retry_budget' crates/roko-graph/ && grep -rqw 'fn retry_delta_never_changes_authored_budget' crates/roko-cli/ && cargo test -p roko-graph task_executor_reads_live_retry_budget && cargo test -p roko-cli retry_delta_never_changes_authored_budget"
+
+[closed]
+at = 2026-10-03
+at_ts = "2026-10-03T20:53:45Z"
+commit = "b68e41c37"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T17:08:32Z"
+forced = false
+evidence = "Gate 9c (work/backlog-batch-9c, merged into main as b68e41c37): nightly fmt check, cargo check --workspace --tests, cargo clippy --workspace -D warnings, nextest --workspace --lib 15,087 passed, roko-cli bin 438 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn and roko-agent integration tests pass; every [[verify]] passes. PK63 5/5: HomeostasisSink and the SelfModelPredictor adapter, harness_policy rows and the verdict's theta stamp, the floor/cap ladder binding (merged with PK52's early climb so a skip also respects the cap, 97305f85c), per-attempt B4/B6/B8 knobs, the live retry budget. Gate fixes 9f955369a and 00e878ba6."
 +++
 
 ## Problem

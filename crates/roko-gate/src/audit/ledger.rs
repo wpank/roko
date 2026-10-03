@@ -28,7 +28,7 @@ use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 
 use roko_core::audit_home::AuditVault;
-use roko_core::audit_types::{AuditLabels, Stratum};
+use roko_core::audit_types::{AuditLabels, Stratum, VsLabel};
 use roko_core::config::fingerprint::canonical_json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -194,6 +194,15 @@ pub enum AuditEvent {
         /// Audits that used it.
         uses: u32,
     },
+    /// An audited attempt's verified-success label (DP5, S05 §5): its
+    /// `vs.label` row, `vs_source` audit.
+    #[serde(rename = "vs.label")]
+    VsLabel {
+        /// S01's attempt key.
+        attempt_key: String,
+        /// The row.
+        row: VsLabel,
+    },
 }
 
 impl AuditEvent {
@@ -211,6 +220,7 @@ impl AuditEvent {
             Self::LeakCanary { .. } => "audit.leak_canary",
             Self::BudgetExhausted { .. } => "audit.budget_exhausted",
             Self::HiddenSuite { .. } => "audit.hidden_suite",
+            Self::VsLabel { .. } => VsLabel::EV,
         }
     }
 
@@ -240,6 +250,7 @@ impl AuditEvent {
             Self::LeakCanary { suite_id, .. } | Self::HiddenSuite { suite_id, .. } => {
                 ("-", suite_id)
             }
+            Self::VsLabel { attempt_key, row } => (attempt_key, &row.run_id),
         }
     }
 }

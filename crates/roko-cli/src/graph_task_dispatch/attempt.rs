@@ -796,8 +796,13 @@ impl GraphTaskDispatcher {
         self.attempts.audit.get_or_init(|| {
             // DP4: the plan routes by the audit trust estimates (7133).
             self.load_audit_trust();
-            AuditSelector::for_config(&self.config.audit, &self.config.gates, &self.workdir)
-                .map(|selector| Arc::new(selector.with_phase_b(self.audit_phase_b())))
+            let selector =
+                AuditSelector::for_config(&self.config.audit, &self.config.gates, &self.workdir)?;
+            // DP5: audited VS labels teach the run's self-model (7134).
+            let learner = self.feedback.self_model.clone();
+            let learner = learner.map(|model| model as Arc<dyn crate::audit::labels::VsLearner>);
+            let selector = selector.with_phase_b(self.audit_phase_b());
+            Some(Arc::new(selector.with_learner(learner)))
         });
         let mut attempt = self.attempts.open(
             self.feedback.runs_dir.as_deref(),

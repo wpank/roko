@@ -31,7 +31,9 @@
 //! whose alert goes to the ledger as `audit.policy_change`. After each
 //! result, and once it has drained, the worker closes every window that is
 //! due (`roko_gate::audit::feedback`, 7131): each stratum's estimates, the
-//! strictness ladder's steps and the routing trust estimates.
+//! strictness ladder's steps and the routing trust estimates. Each result
+//! with a label also writes the attempt's `vs.label` row, which teaches the
+//! run's self-model (DP5, [`super::labels`]).
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -57,6 +59,7 @@ use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::git;
+use super::labels::{AuditReport, VsLearner, record_label, vs_label};
 use super::rerun::{A2Outcome, ServiceContext, checks_for, prepare_build, rerun, target_dir};
 use super::worktree::AuditWorktree;
 
@@ -228,6 +231,8 @@ pub struct WorkerContext {
     pub phase_b: PhaseB,
     /// The workspace's gate-gaming detector.
     pub gaming: GamingWatch,
+    /// The run's self-model, which audited VS labels teach (DP5).
+    pub learner: Option<Arc<dyn VsLearner>>,
 }
 
 /// F1 (S05 §4.5, 7128): the gate-gaming detector over a workspace's
@@ -687,23 +692,44 @@ impl Worker {
         }
     }
 
-    /// Append the audit's `audit.result`, and count its spend.
+    /// Append the audit's `audit.result` and, when it has a label, the
+    /// attempt's `vs.label` row (DP5), and count its spend.
     fn record(&mut self, unit: &AuditUnit, audit: Audit) {
         self.spent_usd += audit.cost_usd;
+        let pi_eff = audit.pi_b.map(|pi_b| unit.pi * pi_b);
+        let labels = audit.labels;
+        let labelled = labels.y.is_some() || labels.g.is_some() || labels.w.is_some();
+        let report = AuditReport {
+            labels,
+            checks: &audit.checks,
+            findings: &audit.findings,
+            pi_eff,
+            cost_usd: audit.cost_usd,
+        };
+        let row = vs_label(unit, &report);
         let id = unit.sel_id.strip_prefix("sel-").unwrap_or(&unit.sel_id);
         let event = AuditEvent::Result {
             sel_id: unit.sel_id.clone(),
             res_id: format!("res-{id}"),
             attempt_key: unit.attempt_key.clone(),
-            labels: audit.labels,
+            labels,
             findings: audit.findings,
             checks: Value::Object(audit.checks),
             cost_usd: Some(audit.cost_usd),
             cpu_secs: Some(audit.secs),
-            pi_eff: audit.pi_b.map(|pi_b| unit.pi * pi_b),
+            pi_eff,
         };
         if let Err(error) = self.ledger.append(event) {
             tracing::warn!(sel_id = %unit.sel_id, %error, "audit.result not written");
+            return;
+        }
+        if !labelled {
+            return;
+        }
+        let learner = self.context.learner.as_deref();
+        let workdir = &self.context.workdir;
+        if let Err(error) = record_label(&mut self.ledger, workdir, &row, learner) {
+            tracing::warn!(sel_id = %unit.sel_id, %error, "vs.label not written");
         }
     }
 

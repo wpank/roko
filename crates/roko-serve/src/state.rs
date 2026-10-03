@@ -701,8 +701,9 @@ impl ListenerSecurity {
     }
 }
 
-/// What runs a loop's canary trace (S03 §4.7) for the admin canary route
-/// (5133): roko-cli's canary writers and dry-run planner, which `roko serve`
+/// What runs a loop's canary trace (S03 §4.7) for the admin canary route (5133).
+///
+/// It is roko-cli's canary writers and dry-run planner, which `roko serve`
 /// injects into [`AppState::loop_canary`], since roko-serve cannot depend on
 /// roko-cli.
 pub trait LoopCanaryRunner: Send + Sync {

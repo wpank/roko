@@ -8,6 +8,8 @@
 //! - [`TaskContextCell`]: assembles task metadata and predecessor state for plan execution.
 //! - [`TaskExecutorCell`]: host-dispatched cell for plan-to-graph converted tasks.
 //! - [`PassthroughCell`]: stub cell that passes input through (placeholder for testing).
+//! - [`ShellExecCell`]: the `shell.exec` and `verify.command` cells, which run an
+//!   operator-authored shell command from a graph (9126).
 //! - **Cognitive loop cells**: 7 typed cells for the cognitive execution cycle.
 
 pub mod agent;
@@ -18,6 +20,7 @@ pub mod graduation;
 pub mod immune;
 pub mod plan_compose;
 pub mod plan_gate;
+pub mod shell_exec;
 pub mod stubs;
 pub mod task_context;
 pub mod task_executor;
@@ -41,6 +44,7 @@ pub use immune::{
 };
 pub use plan_compose::PlanComposeCell;
 pub use plan_gate::PlanGateCell;
+pub use shell_exec::{ShellExecCell, ShellExecMode};
 pub use stubs::PassthroughCell;
 pub use task_context::{TaskContextCell, TaskContextConfig};
 pub use task_executor::{

@@ -645,6 +645,8 @@ all registered in the `CellRegistry` by type name:
 | `AgentCell` | `agent` | -- | Wraps LLM agent dispatch (prompt in, response out) |
 | `TaskExecutorCell` | `plan.task-executor` | -- | Host-dispatched cell for plan tasks; delegates to injected `TaskDispatcher` |
 | `TaskContextCell` | `plan.task-context` | -- | Assembles task metadata and predecessor state |
+| `ShellExecCell` | `shell.exec` | Connect | Runs the node's `command` by `sh -c` (`cwd` inside the workspace, `timeout_secs` 120 by default and at most 3600, `env` names beyond the gate allow-list). Input signals and trigger payloads reach it only as the JSON file `ROKO_CELL_INPUT` names, never inside the command. Outputs a `ProcessExit` signal (exit code, scrubbed stdout and stderr tails, duration); a non-zero exit or a timeout, which kills the process group, is the node's error (9126) |
+| `ShellExecCell` | `verify.command` | Verify | The same command run, but its output is a `GateVerdict` signal that passes on exit 0 and fails otherwise; a failed check is not an error. Both shell cells refuse to start without the `shell` capability (9126) |
 
 ### 6.2 Compose Cells
 

@@ -222,7 +222,7 @@ def _roko_toml(ctx: harness.TaskContext, settings: dict) -> str:
         "[runner]\nworktree_per_task = false\n\n"
         f"[budget]\nmax_plan_usd = {round(usd_cap, 6)}\nmax_task_retry_usd = {round(usd_cap, 6)}\n"
         f"max_turn_usd = {max(round(usd_cap / 10, 6), 1e-06)}\n\n"
-        "[learning]\nauto_playbook_refresh = false\nreplan_on_gate_failure = false\ndream_on_completion = false\n\n"
+        "[learning]\nauto_playbook_refresh = false\ndream_on_completion = false\n\n"
         "[learning.dreams]\ntrigger_on_plan_complete = false\n")
 
 

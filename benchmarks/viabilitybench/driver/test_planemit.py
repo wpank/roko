@@ -78,7 +78,7 @@ def test_ladder_mode_emits_rungs_without_fallbacks(tmp_path):
     assert [rung["command"] for rung in config["gates"]["rungs"]] == [step["command"] for step in task["verify"]] == [
         "python3 -m unittest discover -s tests/visible"]
     assert config["runner"] == {"worktree_per_task": False} and config["budget"]["max_plan_usd"] == 0.6
-    assert config["learning"]["replan_on_gate_failure"] is False and config["conductor"] == {"max_agents": 1}
+    assert config["conductor"] == {"max_agents": 1}
     assert planemit.LADDER_VERSION in emitted.config_text and planemit.LADDER_TEMPLATE_SHA256 != \
         planemit.TEMPLATE_SHA256
     # A start further up the ladder is the arm's choice too.
@@ -90,8 +90,8 @@ def test_pinned_mode_is_byte_identical_to_before_ladder_mode(tmp_path):
     emitted = planemit.emit(pinned_spec(), workspace(tmp_path))
     assert emitted.tasks_text == (GOLDEN / "pinned.tasks.toml").read_text()
     assert emitted.config_text == (GOLDEN / "pinned.roko.toml").read_text()
-    assert planemit.TEMPLATE_VERSION == "planemit-3"
-    assert planemit.TEMPLATE_SHA256 == "7da8ed4b6f1a7dc39d9c957ef48250c2171185d4b703381e10cc510140e7d910"
+    assert planemit.TEMPLATE_VERSION == "planemit-4"
+    assert planemit.TEMPLATE_SHA256 == "24d5db33665a3537449708ff920e53ec0e182d9fd77c411c1feefd1eae4b8007"
 
 
 @pytest.mark.parametrize(("changes", "error"), [

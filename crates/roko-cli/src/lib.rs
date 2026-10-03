@@ -155,6 +155,7 @@ pub mod dispatch;
 pub mod dispatch_v2;
 pub mod doctor;
 pub mod dry_run;
+pub mod effects_apply;
 pub mod episode;
 pub mod event_sources;
 pub mod execution_control;

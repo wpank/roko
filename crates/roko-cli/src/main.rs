@@ -46,6 +46,7 @@ use commands::backlog::BacklogCmd;
 use commands::bench::BenchCmd;
 use commands::cache::CacheCmd;
 use commands::config_cmd::ConfigCmd;
+use commands::effects::EffectsCmd;
 use commands::experiment::{ExperimentCmd, dispatch_experiment};
 use commands::job::JobCmd;
 use commands::knowledge::KnowledgeCmd;
@@ -745,6 +746,17 @@ Examples:
     Safety {
         #[command(subcommand)]
         cmd: SafetyCmd,
+    },
+    /// List the tool calls runs held for approval, and approve or reject one.
+    #[command(after_help = "\
+Examples:
+  roko effects list
+  roko effects show effect-20261003T101500-1a2b3c4d
+  roko effects approve effect-20261003T101500-1a2b3c4d --note \"checked the draft\"
+  roko effects reject effect-20261003T101500-1a2b3c4d --note \"wrong channel\"")]
+    Effects {
+        #[command(subcommand)]
+        cmd: EffectsCmd,
     },
     /// Interactive setup wizard: detect providers, init workspace, verify.
     #[command(after_help = "\
@@ -1952,6 +1964,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         Command::Cache { cmd } => commands::cache::cmd_cache(cli, cmd).await,
         Command::RunIndex { cmd } => commands::run_index::cmd_run_index(cli, cmd).await,
         Command::Safety { cmd } => commands::safety::cmd_safety(cli, cmd).await,
+        Command::Effects { cmd } => commands::effects::cmd_effects(cli, cmd).await,
         Command::Setup {
             workdir,
             yes,

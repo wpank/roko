@@ -125,6 +125,15 @@ else decision 9107's default, `stage` in the `ops` domain and `allow` elsewhere.
 Only in-process tool loops are covered: CLI agents such as Claude Code run their
 own tools.
 
+`roko effects list | show <id> | approve <id> | reject <id>` decides a held effect
+(9132). An approval replays the call once through a fresh dispatcher over the
+workspace's `.mcp.json` servers, behind an `applying` marker (a crash after the
+marker leaves the effect `ambiguous`, never retried), then runs the `receipt` rungs
+of the task's pack with the effect's JSON in the file `ROKO_EFFECT_FILE` names.
+Each decision appends a record (outcome `applied`, `failed`, `ambiguous` or
+`rejected`, the result's scrubbed tail, the receipt verdicts, no arguments) to
+`.roko/state/effects.jsonl`, and the hold is removed.
+
 ```toml
 [gates.packs.deep-research]
 rungs = [{ name = "sources", kind = "citations", artefacts = ["report.md"] }]

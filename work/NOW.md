@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 109 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 113 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -48,11 +48,11 @@ _14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-39
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- **P3** [gap-4cbd80](items/gap-4cbd80-pk65-m2-loop-liveness-census-measures-l.md) PK65 M2 loop-liveness: Census measures L-M1, L-M3 and L-M4 from their receipts · size S · verified 2026-10-02
-- **P3** [gap-414e56](items/gap-414e56-pk66-m3-self-model-after-a-low.md) PK66 M3 self-model: After a low-confidence pass, request deeper verification from S05's ladder before… (+1 more) · size M · verified 2026-10-02
-- **P2** [gap-fa4d4b](items/gap-fa4d4b-pk70-m1-controller-b3-and-b7-publish.md) PK70 M1 controller: B3 and B7: publish verify-depth floors and audit boosts to M4, with automatic audit… · size M · verified 2026-10-02
+- **P2** [gap-099513](items/gap-099513-pk71-m1-controller-force-m1-to-shadow.md) PK71 M1 controller: Force M1 to shadow when M2 demotes L-M1, and allow B4 'on' moves only for live loops (+9 more) · size L · verified 2026-10-02
+- **P2** [gap-309b26](items/gap-309b26-pk72-m1-controller-roko-learn-commits-and.md) PK72 M1 controller: roko learn commits and roko learn rollback for guarded stores · size S · verified 2026-10-02
+- **P2** [gap-1cf555](items/gap-1cf555-a-tripped-loop-audit-state-srm-alarm.md) A tripped loop-audit state (SRM alarm, placebo move) has no clear/acknowledge command · size M · verified 2026-10-03
 
-_28 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_25 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

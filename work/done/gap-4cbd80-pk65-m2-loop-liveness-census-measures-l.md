@@ -2,7 +2,7 @@
 id = "gap-4cbd80"
 kind = "gap"
 title = "PK65 M2 loop-liveness: Census measures L-M1, L-M3 and L-M4 from their receipts"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 65
 size = "S"
 subsystem = ["roko-learn/loop_audit"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "313eea495"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK65"
 anchors = ["crates/roko-learn/src"]
 lane = "rust-cold"
@@ -20,6 +21,17 @@ links = { depends_on = ["gap-c1d920", "gap-7ec3ef", "gap-940e44", "gap-eb39c1", 
 
 [[verify]]
 command = "grep -rqw 'fn census_measures_meta_loops_from_receipts' crates/roko-learn/src/loop_audit/ && cargo test -p roko-learn census_measures_meta_loops_from_receipts"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-03T23:11:20Z"
+commit = "313eea495"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-03T22:15:12Z"
+forced = false
+evidence = "Gate 11a (work/backlog-batch-11a, merged into main as 313eea495): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 4,889 tests over roko-cli and roko-learn, roko-cli bin 438 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass; every [[verify]] passes. PK65 1/1 (5135): the measured census folds L-M1 from harness_policy rows, L-M3 from its route rows with prediction receipts, and L-M4 from audit_trust exclusions."
 +++
 
 ## Problem

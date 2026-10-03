@@ -2,7 +2,7 @@
 id = "gap-fa4d4b"
 kind = "gap"
 title = "PK70 M1 controller: B3 and B7: publish verify-depth floors and audit boosts to M4, with automatic audit…"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 70
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "313eea495"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK70"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs"]
 lane = "rust-cold"
@@ -20,6 +21,17 @@ links = { depends_on = ["gap-f0a7ee", "gap-940e44", "gap-8b67de", "gap-eb39c1", 
 
 [[verify]]
 command = "grep -rqw 'fn audit_coupling_doubles_rate_after_cost_reducing_move' crates/roko-learn/ && grep -rqw 'fn extra_rungs_reach_m4_ladder_as_floor' crates/roko-cli/ && cargo test -p roko-learn audit_coupling_doubles_rate_after_cost_reducing_move && cargo test -p roko-cli extra_rungs_reach_m4_ladder_as_floor"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-03T23:11:21Z"
+commit = "313eea495"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T22:15:14Z"
+forced = false
+evidence = "Gate 11a (work/backlog-batch-11a, merged into main as 313eea495): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 4,889 tests over roko-cli and roko-learn, roko-cli bin 438 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass; every [[verify]] passes. PK70 1/1 (8127): AuditBoosts double a class's audit rate for 20 passes after a cost-reducing M1 change (within S5's bounds, never below rho), the DP1 draw takes the boost, and B3's verify-depth floor reaches DP3 through theta.extra_rungs; the audit worker's window close stays at V0 (coordinator's call: the floor applies at dispatch, so holdout chains aren't raised)."
 +++
 
 ## Problem

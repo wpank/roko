@@ -2,7 +2,7 @@
 id = "gap-414e56"
 kind = "gap"
 title = "PK66 M3 self-model: After a low-confidence pass, request deeper verification from S05's ladder before… (+1 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 66
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "313eea495"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK66"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs"]
 lane = "rust-cold"
@@ -23,6 +24,17 @@ command = "grep -rqw 'fn low_confidence_pass_requests_depth_before_model' crates
 
 [[verify]]
 command = "grep -rqw 'fn refine_spec_action_emits_event_and_keeps_the_ladder_default' crates/roko-cli/src/ && cargo test -p roko-cli refine_spec_action_emits_event_and_keeps_the_ladder_default"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-03T23:11:22Z"
+commit = "313eea495"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-03T22:15:13Z"
+forced = false
+evidence = "Gate 11a (work/backlog-batch-11a, merged into main as 313eea495): cargo check --workspace --tests, nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 4,889 tests over roko-cli and roko-learn, roko-cli bin 438 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), roko-learn integration tests pass; every [[verify]] passes. PK66 2/2: the post-pass step rejects a pass whose false-green risk stays above r_max after the deepest checks and climbs the chain (active mode, self-model chains), DP3 runs at max(level, d*), and refine_spec/abandon publish diagnoses and a spec.refine_requested row."
 +++
 
 ## Problem

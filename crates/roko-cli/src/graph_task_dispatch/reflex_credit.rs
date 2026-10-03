@@ -70,7 +70,8 @@ mod tests {
     use super::*;
     use crate::graph_task_dispatch::tests::{
         VERIFY_PROVIDER, batch_ctx, jsonl_rows_where, make_batch_dispatcher, make_spec,
-        make_test_dispatcher_with, no_auto_fix, recording_feedback, verify_step,
+        make_test_dispatcher_with, no_auto_fix, no_auto_fix_maximize, recording_feedback,
+        verify_step,
     };
 
     /// A failed verify step, as the verify steps report it.
@@ -214,7 +215,8 @@ mod tests {
             temp,
             VERIFY_PROVIDER,
             |config| {
-                no_auto_fix(config);
+                // No arm withholds the entry from the prompt.
+                no_auto_fix_maximize(config);
                 config.learning.frozen = frozen;
             },
             feedback,

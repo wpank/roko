@@ -163,6 +163,10 @@ pub struct DispatchContext {
     /// draw (S02.P1-3). `None` outside Graph dispatch, and then the route
     /// never explores.
     pub attempt_key: Option<roko_learn::telemetry::AttemptKey>,
+    /// The arms of the attempt's chain (S02.P1-14), which prompt assembly
+    /// reads to withhold a loop's content (S02 L7). `None` outside Graph
+    /// dispatch, and then nothing is withheld.
+    pub arm_set: Option<std::sync::Arc<roko_learn::loop_audit::arm_set::ArmSet>>,
 }
 
 // ─── Dispatcher facade ─────────────────────────────────────────────────
@@ -594,6 +598,7 @@ mod tests {
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),
             attempt_key: None,
+            arm_set: None,
         }
     }
 

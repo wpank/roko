@@ -79,3 +79,13 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK09 (gap-cc5051), PK10 (gap-f61823), PK32 (gap-b5caf3), PK33 (gap-aea13a), PK35 (gap-943046).
 - Suggested model: opus.
+
+## Progress
+
+- 4120: implemented at d1fea5585 (cargo verification deferred to the batch gate). L-know and L-play withhold arms keep a withheld source's section out of the prompt; its items are logged `withheld_arm` and its ids are not credited.
+- 4121: blocked: decision 4115 approves no L-err withhold arm (L-err stays observe-only), so `withheld_error_patterns_leave_the_prompt` is not written and this item's second `[[verify]]` cannot pass; drop that entry or close 4121 won't-fix.
+- 4123: implemented at 796af57f1 (cargo verification deferred to the batch gate). PINNED_SECTIONS / DROPPABLE_SECTIONS with a const disjointness check, `[sections] pinned`, per-section bandit draws on L-sec's learned arm, `bandit_excluded` items and section_decisions, sections decision rows with p = 1 - p_ex. Graph tests that need learned content in the prompt now run in maximize mode (arm sets draw on the UTC day).
+- 4124: implemented at afbab062f (cargo verification deferred to the batch gate). SectionOutcomes on the feedback context (None when frozen), settled in emit_feedback, folded into `.roko/learn/section-bandit.json` under its lock at run end; `sink.section_effect` wired, EXPECTED_MISSING empty.
+- 4129: implemented at 8cd3972da (cargo verification deferred to the batch gate). RAG-10 writes, `retrieval_ctx` and `retrieval_outcomes_path` removed; the TUI and serve readers keep the historical file.
+- 4131: implemented at 80abfe778 and a9a495a15 (cargo verification deferred to the batch gate). Census adds store.arm_set, reader.withhold_arms, store.placebo, sink.router_source_credit and a live/observe_only/retired state per registry loop; the fixture shows the section and playbook joins. Not shown: "a verified pass reinforces the included knowledge" (the fixture has no knowledge store).
+- gap-29fe0a: implemented at a0da86af0 (cargo verification deferred to the batch gate). Maximize mode zeroes the spec gate's holdout_frac (plan-load gate and plan run's pre-check); test `no_holdout_flag_draws_no_holdout_attempts`.

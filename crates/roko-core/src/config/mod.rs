@@ -34,6 +34,7 @@ pub mod provider;
 pub mod retrieval;
 pub mod routing;
 pub mod schema;
+pub mod sections;
 pub mod serve;
 pub mod spec_quality;
 pub mod subscriptions;

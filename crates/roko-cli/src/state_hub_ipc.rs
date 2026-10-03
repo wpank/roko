@@ -248,10 +248,10 @@ mod unix {
         }
         let meta =
             std::fs::symlink_metadata(dir).with_context(|| format!("inspect {}", dir.display()))?;
+        // No permission bits for the group or for others.
+        let shared_bits = meta.mode() & 0o077;
         anyhow::ensure!(
-            meta.is_dir()
-                && meta.uid() == rustix::process::geteuid().as_raw()
-                && meta.mode() & 0o077 == 0,
+            meta.is_dir() && meta.uid() == rustix::process::geteuid().as_raw() && shared_bits == 0,
             "{} is not a private directory of this user",
             dir.display()
         );

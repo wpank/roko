@@ -7,7 +7,9 @@
 //! `census.json`, and [`LegacyRows::load`] finds the run's attempt keys in
 //! the logs that predate S01 (`learn/efficiency.jsonl`, `learn/costs.jsonl`,
 //! `episodes.jsonl`). [`check`] validates one run; [`route_report`] counts
-//! routing outcomes per decision source over any number of runs.
+//! routing outcomes per decision source over any number of runs; and
+//! [`srm_check`] tests each randomised layer's arm split against its logged
+//! propensities (S02 SC3).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
@@ -19,15 +21,20 @@ use roko_fs::layout::RokoLayout;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::assign::{Arm, Assignment};
 use super::census::{CENSUS_FILE, CensusReport};
 use super::manifest::AttemptTally;
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, ContentDecisionPoint,
     ContentDecisionRecord, DECISION_SCHEMA, DecisionSource, EXPOSURE_SCHEMA, ExecutedModel,
     ExposureRecord, PLACEBO_DECISION_POINT, PlaceboDecisionRecord, RunFile, Stamped,
     VERDICT_SCHEMA,
 };
 use crate::error::LearnError;
+use crate::loop_audit::arm_set::{
+    ArmSet, FORCED_CONDITION, MAXIMIZE_CONDITION, NORMAL_CONDITION, PLACEBO_LAYER,
+};
+use crate::loop_audit::cs::SrmEvalue;
 use crate::routing_log::{ROUTE_DECISION_POINT, RoutingDecisionLog};
 
 /// The source [`route_report`] files an attempt under when no route
@@ -721,11 +728,358 @@ fn undated(model: &str) -> &str {
     }
 }
 
+// ── srm ───────────────────────────────────────────────────────────────
+
+/// α of the sample-ratio-mismatch check (S02 SC3).
+pub const SRM_ALPHA: f64 = 0.001;
+/// Units a layer needs before S02 SC3 judges it.
+pub const SRM_MIN_UNITS: usize = 200;
+/// The arms an assignment can realise, in the order the e-value counts
+/// them. [`Arm::Explore`] is S02's ε draw inside the route decision, never
+/// an assignment's arm.
+pub const SRM_ARMS: [Arm; 3] = [Arm::Learned, Arm::Default, Arm::GlobalOff];
+/// How far a logged propensity may sit from the one its h and g give.
+const PROPENSITY_TOLERANCE: f64 = 1e-9;
+/// A unit that took [`Arm::Explore`].
+const EXPLORE_ARM: &str = "took the explore arm, which no assignment draws";
+/// A unit that took an arm of probability 0.
+const NO_CHANCE: &str = "took an arm their h and g give no chance";
+/// A unit whose logged propensity is not its arm's probability.
+const WRONG_PROPENSITY: &str = "log a propensity their h and g do not give";
+/// A unit whose rows carry two different draws.
+const REDRAWN: &str = "carry another draw in a later row: a retry redrew";
+
+/// One arm of a layer in the sample-ratio check.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SrmArm {
+    /// The arm.
+    pub arm: Arm,
+    /// Units that took it.
+    pub units: usize,
+    /// Its mean probability over the layer's units, from their logged h and
+    /// g.
+    pub expected: f64,
+    /// Its share of the layer's units.
+    pub realised: f64,
+}
+
+/// One randomised layer's sample-ratio check (S02 SC3).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SrmLayer {
+    /// The layer, e.g. `knowledge`.
+    pub layer: String,
+    /// Units counted, once each: chains, for a per-chain layer.
+    pub units: usize,
+    /// Each arm, in [`SRM_ARMS`] order.
+    pub arms: Vec<SrmArm>,
+    /// The sequential multinomial SRM e-value (S03 §4.5) of the units' arms
+    /// against their logged propensities, capped at `f64::MAX`.
+    pub e_value: f64,
+    /// Whether the e-value reached 1/[`SRM_ALPHA`], or a unit took an arm
+    /// its h and g give no chance.
+    pub mismatch: bool,
+    /// Whether the layer has the [`SRM_MIN_UNITS`] units S02 SC3 asks for.
+    /// The e-value is valid at any count, so a mismatch fails either way.
+    pub enough_units: bool,
+    /// Units whose rows break the assignment's rules, one line per rule.
+    pub problems: Vec<String>,
+}
+
+/// What `roko learn telemetry check --srm` prints.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct SrmReport {
+    /// The runs read.
+    pub runs: Vec<String>,
+    /// α of the check ([`SRM_ALPHA`]).
+    pub alpha: f64,
+    /// One entry per layer, by layer name.
+    pub layers: Vec<SrmLayer>,
+    /// Chains left out, by condition: `maximize` withholds nothing and
+    /// `forced` pins arms, so neither draws as its h and g say.
+    pub excluded: BTreeMap<String, usize>,
+    /// Decision rows that carry no arms: rows written before S02.P1-14, or
+    /// outside an attempt.
+    pub unassigned: usize,
+    /// Rows with arms whose attempt key does not parse, as `run: "key"`.
+    pub unreadable: Vec<String>,
+}
+
+impl SrmReport {
+    /// Every failure: a layer whose arms do not split as logged, a row that
+    /// breaks the assignment's rules, arms without a readable attempt key.
+    /// Empty when the check passes.
+    #[must_use]
+    pub fn failures(&self) -> Vec<String> {
+        let mut failures = Vec::new();
+        for layer in &self.layers {
+            if layer.mismatch {
+                failures.push(format!(
+                    "{}: sample-ratio mismatch over {} unit(s) (e-value {:.3e})",
+                    layer.layer, layer.units, layer.e_value
+                ));
+            }
+            for problem in &layer.problems {
+                failures.push(format!("{}: {problem}", layer.layer));
+            }
+        }
+        for row in &self.unreadable {
+            failures.push(format!("arms without a readable attempt key: {row}"));
+        }
+        failures
+    }
+
+    /// Whether every layer splits as logged.
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.failures().is_empty()
+    }
+}
+
+/// Check that every randomised layer of `runs` splits its units across
+/// arms as their logged propensities say (S02 SC3, S02.P1-16), with S03's
+/// sequential multinomial e-value at [`SRM_ALPHA`].
+///
+/// Every decision row of an attempt carries its chain's arm set. A layer's
+/// units are the chains with a decision row at the layer's own decision
+/// point: the content rows whose `decision_point` names the layer
+/// (`knowledge`, `playbooks`, `sections`, ...) and the placebo rows for
+/// `placebo`. A layer that records no decisions of its own (`global`, the
+/// all-off draw, and `prompt_variant`) counts every chain whose rows carry
+/// arms. Each unit counts once, however many of its attempts wrote rows,
+/// with its first draw; a unit whose rows carry another draw is a problem,
+/// since a retry must keep its chain's arms. Chains in the `maximize` and
+/// `forced` conditions are left out; a placebo row takes its chain's
+/// condition from the run's other rows.
+#[must_use]
+pub fn srm_check(runs: &[RunRecords]) -> SrmReport {
+    let mut tally = SrmTally::default();
+    for run in runs {
+        tally.read(run);
+    }
+    let layers = tally
+        .draws
+        .iter()
+        .map(|(layer, draws)| srm_layer(layer, draws, tally.redrawn.get(layer)))
+        .collect();
+    SrmReport {
+        runs: runs.iter().map(|run| run.run_id.clone()).collect(),
+        alpha: SRM_ALPHA,
+        layers,
+        excluded: tally
+            .excluded
+            .into_iter()
+            .map(|(condition, chains)| (condition, chains.len()))
+            .collect(),
+        unassigned: tally.unassigned,
+        unreadable: tally.unreadable,
+    }
+}
+
+/// The draws [`srm_check`] gathers from its runs' decision rows.
+#[derive(Default)]
+struct SrmTally {
+    /// Each unit's first draw, by layer and unit key.
+    draws: BTreeMap<String, BTreeMap<String, Assignment>>,
+    /// Units whose rows carry another draw, by layer.
+    redrawn: BTreeMap<String, BTreeSet<String>>,
+    /// Chains left out, by condition.
+    excluded: BTreeMap<String, BTreeSet<String>>,
+    /// Decision rows without arms.
+    unassigned: usize,
+    /// Rows with arms whose attempt key does not parse.
+    unreadable: Vec<String>,
+}
+
+impl SrmTally {
+    /// Gather the draws of `run`'s decision rows: route and content rows
+    /// carry their chain's whole arm set, placebo rows the placebo's draw.
+    fn read(&mut self, run: &RunRecords) {
+        let mut rows: Vec<(&str, &ArmSet, Option<&str>)> = Vec::new();
+        for line in &run.decisions {
+            match &line.record.arm_set {
+                Some(arms) => {
+                    let key = line.record.attempt_key.as_deref().unwrap_or_default();
+                    rows.push((key, arms, None));
+                }
+                None => self.unassigned += 1,
+            }
+        }
+        for line in &run.content_decisions {
+            let record = &line.record;
+            match &record.arm_set {
+                Some(arms) => {
+                    let point = record.decision_point.as_str();
+                    rows.push((record.identity.attempt_key.as_str(), arms, Some(point)));
+                }
+                None => self.unassigned += 1,
+            }
+        }
+        // A run draws every chain's arms in one mode, so a placebo row whose
+        // chain wrote no other row takes the condition the run's arms share.
+        let conditions: HashMap<&str, &str> = rows
+            .iter()
+            .map(|&(_, arms, _)| (arms.chain_key.as_str(), arms.condition_id.as_str()))
+            .collect();
+        let shared: BTreeSet<&str> = conditions.values().copied().collect();
+        let run_condition = match shared.first() {
+            Some(condition) if shared.len() == 1 => *condition,
+            _ => NORMAL_CONDITION,
+        };
+        for (key, arms, point) in rows {
+            if self.leaves_out(&arms.condition_id, &arms.chain_key) {
+                continue;
+            }
+            let Some(key) = AttemptKey::parse(key) else {
+                self.unreadable.push(format!("{}: {key:?}", run.run_id));
+                continue;
+            };
+            for assignment in arms.arms.values() {
+                let layer = assignment.layer.as_str();
+                // A layer with decision rows of its own counts only those.
+                if point == Some(layer) || !has_decision_point(layer) {
+                    self.observe(&key, assignment);
+                }
+            }
+        }
+        for line in &run.placebo_decisions {
+            let record = &line.record;
+            let chain = record.identity.chain_key.as_str();
+            let condition = conditions.get(chain).copied().unwrap_or(run_condition);
+            if self.leaves_out(condition, chain) {
+                continue;
+            }
+            let key = &record.identity.attempt_key;
+            match AttemptKey::parse(key) {
+                Some(key) => self.observe(&key, &record.assignment),
+                None => self.unreadable.push(format!("{}: {key:?}", run.run_id)),
+            }
+        }
+    }
+
+    /// Whether `condition` leaves `chain` out of the check; a chain left out
+    /// is counted under its condition.
+    fn leaves_out(&mut self, condition: &str, chain: &str) -> bool {
+        let left_out = condition == MAXIMIZE_CONDITION || condition == FORCED_CONDITION;
+        if left_out {
+            self.excluded
+                .entry(condition.to_string())
+                .or_default()
+                .insert(chain.to_string());
+        }
+        left_out
+    }
+
+    /// Count `assignment`, the draw of `key`'s unit on its layer, unless the
+    /// unit has a draw already; a different one is a redraw.
+    fn observe(&mut self, key: &AttemptKey, assignment: &Assignment) {
+        let unit = assignment.unit.unit_key(key);
+        let layer = self.draws.entry(assignment.layer.clone()).or_default();
+        let first = layer
+            .entry(unit.clone())
+            .or_insert_with(|| assignment.clone());
+        if *first != *assignment {
+            self.redrawn
+                .entry(assignment.layer.clone())
+                .or_default()
+                .insert(unit);
+        }
+    }
+}
+
+/// Whether `layer` records decisions in rows of its own: the placebo, and
+/// each content decision point (`knowledge`, `playbooks`, `sections`, ...).
+fn has_decision_point(layer: &str) -> bool {
+    let point = serde_json::from_value::<ContentDecisionPoint>(Value::from(layer));
+    layer == PLACEBO_LAYER || point.is_ok()
+}
+
+/// Units that broke each assignment rule: how many, and the first.
+type Problems = BTreeMap<&'static str, (usize, String)>;
+
+/// Note `unit` under `rule`.
+fn note(problems: &mut Problems, rule: &'static str, unit: &str) {
+    let entry = problems.entry(rule).or_default();
+    if entry.0 == 0 {
+        entry.1 = unit.to_string();
+    }
+    entry.0 += 1;
+}
+
+/// P(learned), P(default) and P(all-off) under a draw's h and g (S01 §4.6),
+/// in [`SRM_ARMS`] order.
+fn arm_probabilities(assignment: &Assignment) -> [f64; 3] {
+    let (h, g) = (assignment.h, assignment.g);
+    [(1.0 - g) * (1.0 - h), (1.0 - g) * h, g]
+}
+
+/// The check of `layer` over its units' first draws; the `redrawn` units
+/// carry another draw too.
+fn srm_layer(
+    layer: &str,
+    draws: &BTreeMap<String, Assignment>,
+    redrawn: Option<&BTreeSet<String>>,
+) -> SrmLayer {
+    let mut srm = SrmEvalue::new(SRM_ARMS.len());
+    let mut counts = [0_usize; SRM_ARMS.len()];
+    let mut probability_sums = [0.0_f64; SRM_ARMS.len()];
+    let mut problems = Problems::new();
+    let mut impossible = false;
+    for (unit, assignment) in draws {
+        let Some(index) = SRM_ARMS.iter().position(|arm| *arm == assignment.arm) else {
+            note(&mut problems, EXPLORE_ARM, unit);
+            continue;
+        };
+        let probabilities = arm_probabilities(assignment);
+        if probabilities[index] <= 0.0 {
+            impossible = true;
+            note(&mut problems, NO_CHANCE, unit);
+        } else if (assignment.propensity - probabilities[index]).abs() > PROPENSITY_TOLERANCE {
+            let (logged, given) = (assignment.propensity, probabilities[index]);
+            let example = format!("{unit} logs {logged:.4}, h and g give {given:.4}");
+            note(&mut problems, WRONG_PROPENSITY, &example);
+        }
+        srm.push(index, &probabilities);
+        counts[index] += 1;
+        for (sum, probability) in probability_sums.iter_mut().zip(probabilities) {
+            *sum += probability;
+        }
+    }
+    for unit in redrawn.into_iter().flatten() {
+        note(&mut problems, REDRAWN, unit);
+    }
+    let units: usize = counts.iter().sum();
+    let whole = units.max(1) as f64;
+    let arms = SRM_ARMS
+        .into_iter()
+        .enumerate()
+        .map(|(index, arm)| SrmArm {
+            arm,
+            units: counts[index],
+            expected: probability_sums[index] / whole,
+            realised: counts[index] as f64 / whole,
+        })
+        .collect();
+    let problems = problems
+        .into_iter()
+        .map(|(rule, (count, first))| format!("{count} unit(s) {rule}, e.g. {first}"))
+        .collect();
+    SrmLayer {
+        layer: layer.to_string(),
+        units,
+        arms,
+        e_value: srm.e_value().min(f64::MAX),
+        mismatch: impossible || srm.rejects(SRM_ALPHA),
+        enough_units: units >= SRM_MIN_UNITS,
+        problems,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::telemetry::assign::AssignmentUnit;
     use crate::telemetry::census::CensusComponent;
     use crate::telemetry::records::{
         AttemptIdentity, AttemptOutcome, ContentCandidate, ContentDecisionPoint, CostSource,
@@ -1201,5 +1555,248 @@ mod tests {
             "{invalid}"
         );
         assert_eq!(run.content_decisions.len(), 1);
+    }
+
+    /// A chain's draw on `layer` at h, with g = 0: the default arm when
+    /// `default`, else the learned arm, at its propensity.
+    fn chain_draw(layer: &str, h: f64, default: bool) -> Assignment {
+        let (arm, propensity, u) = if default {
+            (Arm::Default, h, h / 2.0)
+        } else {
+            (Arm::Learned, 1.0 - h, (1.0 + h) / 2.0)
+        };
+        Assignment {
+            unit: AssignmentUnit::Chain,
+            layer: layer.to_string(),
+            salt_id: format!("{layer}@2026-10-03"),
+            u,
+            h,
+            g: 0.0,
+            arm,
+            propensity,
+        }
+    }
+
+    /// The arms of chain `chain_key`.
+    fn arm_set(chain_key: &str, draws: &[Assignment], condition: &str) -> ArmSet {
+        ArmSet {
+            chain_key: chain_key.to_string(),
+            arms: draws
+                .iter()
+                .map(|draw| (draw.layer.clone(), draw.clone()))
+                .collect(),
+            condition_id: condition.to_string(),
+        }
+    }
+
+    /// `record` as a line of its run file.
+    fn stamped<T: TelemetryRecord>(record: T) -> Stamped<T> {
+        Stamped {
+            schema_version: T::SCHEMA.to_string(),
+            record_id: record.record_id(),
+            seq: 1,
+            ts: "2026-10-03T09:00:00Z".to_string(),
+            record,
+        }
+    }
+
+    /// The knowledge row of attempt `task`:`attempt`, carrying its chain's
+    /// `draws` in `condition`.
+    fn knowledge_row(
+        task: &str,
+        attempt: u32,
+        draws: &[Assignment],
+        condition: &str,
+    ) -> Stamped<ContentDecisionRecord> {
+        let mut record = knowledge_decision(task, attempt);
+        record.arm_set = Some(arm_set(&record.identity.chain_key, draws, condition));
+        stamped(record)
+    }
+
+    /// A run with no rows yet.
+    fn empty_run() -> RunRecords {
+        RunRecords {
+            run_id: RUN.to_string(),
+            ..RunRecords::default()
+        }
+    }
+
+    /// S02 SC3 (backlog 4130): 1,000 chains whose knowledge draw at h = 0.5
+    /// splits 50/50 pass, each counted once however many attempts it
+    /// wrote; a 60/40 split is a sample-ratio mismatch.
+    #[test]
+    fn srm_check_flags_a_skewed_layer() {
+        // The first `defaults` of 1,000 chains take the default arm. Each
+        // chain writes a row on its first attempt and on a retry, which
+        // keeps the chain's draw.
+        let stream = |defaults: usize| {
+            let mut run = empty_run();
+            for index in 0..1000 {
+                let draw = chain_draw("knowledge", 0.5, index < defaults);
+                let task = format!("T{index}");
+                for attempt in 1..=2 {
+                    let row = knowledge_row(&task, attempt, &[draw.clone()], NORMAL_CONDITION);
+                    run.content_decisions.push(row);
+                }
+            }
+            run
+        };
+
+        let even = srm_check(&[stream(500)]);
+        assert_eq!(even.failures(), Vec::<String>::new());
+        assert_eq!(even.layers.len(), 1, "{:?}", even.layers);
+        let layer = &even.layers[0];
+        assert_eq!((layer.layer.as_str(), layer.units), ("knowledge", 1000));
+        assert!(layer.enough_units && !layer.mismatch, "{layer:?}");
+        assert!(layer.e_value < 1.0, "{layer:?}");
+        let arms: Vec<(Arm, usize, f64, f64)> = layer
+            .arms
+            .iter()
+            .map(|arm| (arm.arm, arm.units, arm.expected, arm.realised))
+            .collect();
+        let split = [
+            (Arm::Learned, 500, 0.5, 0.5),
+            (Arm::Default, 500, 0.5, 0.5),
+            (Arm::GlobalOff, 0, 0.0, 0.0),
+        ];
+        assert_eq!(arms, split);
+
+        let skewed = srm_check(&[stream(400)]);
+        let layer = &skewed.layers[0];
+        assert_eq!((layer.units, layer.arms[0].units), (1000, 600));
+        assert!(layer.mismatch, "{layer:?}");
+        assert!(layer.e_value >= 1.0 / SRM_ALPHA, "{layer:?}");
+        let failures = skewed.failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].starts_with("knowledge: sample-ratio mismatch over 1000 unit(s)"),
+            "{failures:?}"
+        );
+    }
+
+    /// Each layer counts at its own decision point: knowledge rows for
+    /// `knowledge`, placebo rows for `placebo`, and every row with arms for
+    /// the all-off draw, which has none. Maximize and forced chains are
+    /// left out, and a placebo row takes its chain's condition.
+    #[test]
+    fn srm_check_reads_each_layer_at_its_decision_point() {
+        let mut global = chain_draw("global", 0.0, false);
+        global.g = 0.05;
+        global.propensity = 0.95;
+        let mut run = empty_run();
+        // T0-T3 write a knowledge row each, with a playbooks draw that no
+        // playbooks row backs; T0 and T1 write placebo rows too.
+        for index in 0..4 {
+            let task = format!("T{index}");
+            let draws = [
+                global.clone(),
+                chain_draw("knowledge", 0.5, index % 2 == 0),
+                chain_draw("playbooks", 0.5, false),
+            ];
+            let row = knowledge_row(&task, 1, &draws, NORMAL_CONDITION);
+            run.content_decisions.push(row);
+            if index < 2 {
+                let draw = chain_draw(PLACEBO_LAYER, 0.5, false);
+                let row = PlaceboDecisionRecord::new(identity(&task, 1), draw);
+                run.placebo_decisions.push(stamped(row));
+            }
+        }
+        // T4 writes a route row alone, which counts for the all-off draw.
+        let mut route = decision("T4", 1, DecisionSource::Router, "gpt-oss-120b");
+        let draws = [global.clone(), chain_draw("knowledge", 0.5, true)];
+        let arms = arm_set(&identity("T4", 1).chain_key, &draws, NORMAL_CONDITION);
+        route.arm_set = Some(arms);
+        run.decisions.push(stamped(route));
+        // T5 runs in maximize mode and T6 with a forced arm: both are left
+        // out, and so is T5's placebo row.
+        let maximize = [chain_draw("knowledge", 0.0, false)];
+        let row = knowledge_row("T5", 1, &maximize, MAXIMIZE_CONDITION);
+        run.content_decisions.push(row);
+        let draw = chain_draw(PLACEBO_LAYER, 0.0, false);
+        let row = PlaceboDecisionRecord::new(identity("T5", 1), draw);
+        run.placebo_decisions.push(stamped(row));
+        let mut forced = chain_draw("knowledge", 0.5, true);
+        forced.propensity = 1.0;
+        let row = knowledge_row("T6", 1, &[forced], FORCED_CONDITION);
+        run.content_decisions.push(row);
+        // T7's row predates arm sets.
+        let row = stamped(knowledge_decision("T7", 1));
+        run.content_decisions.push(row);
+
+        let report = srm_check(&[run]);
+        assert_eq!(report.failures(), Vec::<String>::new());
+        let units: Vec<(&str, usize)> = report
+            .layers
+            .iter()
+            .map(|layer| (layer.layer.as_str(), layer.units))
+            .collect();
+        assert_eq!(units, [("global", 5), ("knowledge", 4), ("placebo", 2)]);
+        let knowledge = &report.layers[1];
+        assert_eq!((knowledge.arms[0].units, knowledge.arms[1].units), (2, 2));
+        assert!(!knowledge.enough_units, "{knowledge:?}");
+        let excluded: Vec<(&str, usize)> = report
+            .excluded
+            .iter()
+            .map(|(condition, chains)| (condition.as_str(), *chains))
+            .collect();
+        assert_eq!(excluded, [(FORCED_CONDITION, 1), (MAXIMIZE_CONDITION, 1)]);
+        assert_eq!(report.unassigned, 1);
+    }
+
+    /// A retry that redraws, a propensity its h and g do not give, an arm
+    /// they give no chance, and arms without a readable attempt key all
+    /// fail the check.
+    #[test]
+    fn srm_check_flags_redraws_and_impossible_arms() {
+        let mut run = empty_run();
+        // T0's retry draws another arm.
+        for (attempt, default) in [(1, false), (2, true)] {
+            let draw = chain_draw("knowledge", 0.5, default);
+            let row = knowledge_row("T0", attempt, &[draw], NORMAL_CONDITION);
+            run.content_decisions.push(row);
+        }
+        // T1 takes the default arm at h = 0; T2 logs propensity 1 at h = 0.5.
+        let impossible = chain_draw("knowledge", 0.0, true);
+        let row = knowledge_row("T1", 1, &[impossible], NORMAL_CONDITION);
+        run.content_decisions.push(row);
+        let mut mislogged = chain_draw("knowledge", 0.5, false);
+        mislogged.propensity = 1.0;
+        let row = knowledge_row("T2", 1, &[mislogged], NORMAL_CONDITION);
+        run.content_decisions.push(row);
+        // T3's placebo row names no readable attempt.
+        let draw = chain_draw(PLACEBO_LAYER, 0.5, false);
+        let mut placebo = PlaceboDecisionRecord::new(identity("T3", 1), draw);
+        placebo.identity.attempt_key = "not-an-attempt-key".to_string();
+        run.placebo_decisions.push(stamped(placebo));
+
+        let report = srm_check(&[run]);
+        assert_eq!(report.layers.len(), 1, "{:?}", report.layers);
+        let layer = &report.layers[0];
+        assert_eq!((layer.layer.as_str(), layer.units), ("knowledge", 3));
+        assert!(
+            layer.mismatch,
+            "an arm with no chance is a mismatch: {layer:?}"
+        );
+        let key = |task: &str| identity(task, 1).chain_key;
+        let line = |rule: &str, example: &str| format!("1 unit(s) {rule}, e.g. {example}");
+        let mislogged = format!("{} logs 1.0000, h and g give 0.5000", key("T2"));
+        let problems = [
+            line(REDRAWN, &key("T0")),
+            line(WRONG_PROPENSITY, &mislogged),
+            line(NO_CHANCE, &key("T1")),
+        ];
+        assert_eq!(layer.problems, problems);
+        let unreadable = format!("{RUN}: \"not-an-attempt-key\"");
+        assert_eq!(report.unreadable, [unreadable]);
+        let failures = report.failures();
+        assert_eq!(failures.len(), 5, "{failures:?}");
+        assert!(
+            failures[0].starts_with("knowledge: sample-ratio mismatch over 3 unit(s)"),
+            "{failures:?}"
+        );
+        assert!(
+            failures[4].starts_with("arms without a readable attempt key"),
+            "{failures:?}"
+        );
     }
 }

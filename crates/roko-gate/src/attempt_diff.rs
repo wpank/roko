@@ -11,6 +11,8 @@
 //! - **edited checks**: a script the task's verify steps run, a
 //!   `tasks.toml`, CI config, a test snapshot, test-runner config, or the
 //!   `[gates]` table of `roko.toml`, unless the task's `files` name the path;
+//!   and a file a workspace rung checks artefacts against (a `schema` rung's
+//!   schema, a `judge` rung's rubric), unless they name that very file;
 //! - **edited pinned acceptance tests**: anything under a plan's `accept/`,
 //!   a `[task.accept]` source, or its `dest` holding other text than the
 //!   pinned test, whatever `files` says;
@@ -113,6 +115,11 @@ pub struct AttemptDiffPolicy {
     /// Directories of planner-written acceptance tests, such as the plan's
     /// `accept/`: any change under them counts.
     pub accept_dirs: Vec<String>,
+    /// Files the workspace's rungs check artefacts against, such as a
+    /// `schema` rung's schema (`GatesConfig::rung_files`, bug-d5d55f).
+    /// Editing one is tampering unless the task's `files` name that very
+    /// file, not just its directory: a task meant to write it.
+    pub rung_files: Vec<String>,
 }
 
 impl AttemptDiffPolicy {
@@ -126,6 +133,26 @@ impl AttemptDiffPolicy {
             || has_extension(path, "rs")
             || file_name(path) == "roko.toml"
             || self.pinned_tests.iter().any(|pinned| pinned.dest == path)
+    }
+
+    /// The rung file of [`Self::rung_files`] that `path` or `old_path` is,
+    /// unless the task's `files` name that file itself.
+    fn edited_rung_file(&self, path: &str, old_path: &str) -> Option<&str> {
+        self.rung_files
+            .iter()
+            .map(String::as_str)
+            .map(named_path)
+            .filter(|file| !file.is_empty())
+            .find(|file| *file == path || *file == old_path)
+            .filter(|file| !self.names_exactly(file))
+    }
+
+    /// Whether one of the task's `files` is `path` itself, not a directory
+    /// or a glob holding it.
+    fn names_exactly(&self, path: &str) -> bool {
+        self.task_files
+            .iter()
+            .any(|named| named_path(named) == path)
     }
 
     /// Whether the task's `files` name `path`.
@@ -160,6 +187,9 @@ pub enum DiffFindingKind {
     /// Gate configuration was edited: `roko.toml`'s `[gates]`, CI config, a
     /// test snapshot, or test-runner config.
     GateConfigEdited,
+    /// A file a workspace rung checks artefacts against, such as a `schema`
+    /// rung's schema, was edited (bug-d5d55f).
+    RungFileEdited,
     /// A path the task's `files` do not name was changed.
     OutsideScope,
     /// Product code gained a line that sniffs the test run (audit-only).
@@ -203,6 +233,7 @@ impl DiffFindingKind {
             Self::TasksTomlEdited => "tasks_toml_edited",
             Self::AcceptEdited => "accept_edited",
             Self::GateConfigEdited => "gate_config_edited",
+            Self::RungFileEdited => "rung_file_edited",
             Self::OutsideScope => "outside_scope",
             Self::TestDetection => "test_detection",
             Self::SuccessString => "success_string",
@@ -334,6 +365,15 @@ pub fn check_attempt_diff(
                     "a test file was left with only blank lines and comments",
                 ));
             }
+        }
+
+        // A rung's schema or rubric is the check's, not the task's.
+        if let Some(file) = policy.edited_rung_file(path, old_path) {
+            findings.push(DiffFinding::new(
+                Kind::RungFileEdited,
+                file,
+                "a file a workspace rung checks the task's artefacts against was edited",
+            ));
         }
 
         let declared = policy.declares(path) || policy.declares(old_path);
@@ -822,9 +862,7 @@ fn file_name(path: &str) -> &str {
 /// Whether the `files` entry `declared` covers `path`: the same path, a
 /// directory above it, or a glob (`*`, `**`, `?`) matching it.
 fn covers(declared: &str, path: &str) -> bool {
-    let declared = declared.trim();
-    let declared = declared.strip_prefix("./").unwrap_or(declared);
-    let declared = declared.trim_end_matches('/');
+    let declared = named_path(declared);
     if declared.is_empty() {
         return false;
     }
@@ -835,6 +873,14 @@ fn covers(declared: &str, path: &str) -> bool {
         || path
             .strip_prefix(declared)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// The path a `files` entry or a rung file names: trimmed, without a
+/// leading `./` or a trailing `/`.
+fn named_path(entry: &str) -> &str {
+    let entry = entry.trim();
+    let entry = entry.strip_prefix("./").unwrap_or(entry);
+    entry.trim_end_matches('/')
 }
 
 /// Match `path` against a glob: `*` within one path component, `**` across
@@ -898,6 +944,7 @@ mod tests {
                 text: Some(RUST_TEST.to_string()),
             }],
             accept_dirs: vec!["plans/p/accept".to_string()],
+            rung_files: vec!["schemas/report.schema".to_string()],
         };
         let weakened = RUST_TEST.replace("    assert!(add(0, 0) == 0);\n", "");
         let ignored = RUST_TEST.replace("#[test]\n", "#[test]\n#[ignore]\n");
@@ -1028,6 +1075,11 @@ mod tests {
                 "snapshots/cli__help.snap",
             ),
             (
+                change(ChangeKind::Modified, "schemas/report.schema", None, None),
+                DiffFindingKind::RungFileEdited,
+                "schemas/report.schema",
+            ),
+            (
                 change(ChangeKind::Modified, "README.md", None, None),
                 DiffFindingKind::OutsideScope,
                 "README.md",
@@ -1050,6 +1102,54 @@ mod tests {
         }
     }
 
+    /// bug-d5d55f: an attempt that loosens the schema its `schema` rung
+    /// checks artefacts against, in the same diff as the artefact, tampers
+    /// with that check, even when the task's files name the directory that
+    /// holds both. Only a task whose files name the schema file itself may
+    /// write it.
+    #[test]
+    fn schema_file_edited_in_the_same_diff_is_tamper() {
+        let gates = roko_core::config::GatesConfig {
+            custom_rungs: vec![roko_core::config::GateRungConfig {
+                name: "report".to_string(),
+                kind: roko_core::config::schema::RungKind::Schema,
+                artefacts: vec!["reports/*.json".to_string()],
+                schema: Some("./reports/report.schema".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let changes = [
+            change(ChangeKind::Added, "reports/q3.json", None, Some("{}\n")),
+            change(
+                ChangeKind::Modified,
+                "reports/report.schema",
+                Some("{\"required\": [\"title\"]}\n"),
+                Some("{}\n"),
+            ),
+        ];
+        let tampering = |task_files: &[&str]| -> Vec<DiffFinding> {
+            let policy = AttemptDiffPolicy {
+                task_files: task_files.iter().map(ToString::to_string).collect(),
+                rung_files: gates.rung_files(),
+                ..AttemptDiffPolicy::default()
+            };
+            check_attempt_diff(&changes, &policy)
+                .into_iter()
+                .filter(|finding| finding.kind.is_tamper())
+                .collect()
+        };
+        let scopes: [&[&str]; 3] = [&["reports/"], &["reports/*.json"], &[]];
+        for files in scopes {
+            let findings = tampering(files);
+            assert_eq!(findings.len(), 1, "{files:?}: {findings:?}");
+            assert_eq!(findings[0].kind, DiffFindingKind::RungFileEdited);
+            assert_eq!(findings[0].path, "reports/report.schema");
+        }
+        let writes_it = tampering(&["reports/q3.json", "reports/report.schema"]);
+        assert!(writes_it.is_empty(), "{writes_it:?}");
+    }
+
     #[test]
     fn legitimate_changes_find_nothing() {
         let policy = AttemptDiffPolicy {
@@ -1065,6 +1165,7 @@ mod tests {
                 text: Some(RUST_TEST.to_string()),
             }],
             accept_dirs: Vec::new(),
+            rung_files: Vec::new(),
         };
         let more = RUST_TEST.replace(
             "}\n",

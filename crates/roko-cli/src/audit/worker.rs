@@ -535,7 +535,8 @@ impl Worker {
         };
         let repo = self.context.workdir.clone();
         // Phase A: A1, the canary scan of the added lines, and A2.
-        let (findings, g, changed) = match a1(&repo, &unit.task, base, result) {
+        let checked = a1(&repo, &unit.task, &self.context.gates, base, result);
+        let (findings, g, changed) = match checked {
             Ok(found) => (found.findings, Some(found.gaming), found.changed),
             Err(error) => {
                 checks.insert("a1".into(), json!({ "error": error.to_string() }));
@@ -757,9 +758,15 @@ struct A1 {
 }
 
 /// A1 over `base..result` in `repo`: the inline screen's diff checks, by
-/// the task's `files` and verify scripts, and the audit-only kinds. A scope
-/// finding is reported, but it is not gaming.
-fn a1(repo: &Path, task: &AuditTask, base: &str, result: &str) -> anyhow::Result<A1> {
+/// the task's `files` and verify scripts and the rung files of `gates`, and
+/// the audit-only kinds. A scope finding is reported, but it is not gaming.
+fn a1(
+    repo: &Path,
+    task: &AuditTask,
+    gates: &GatesConfig,
+    base: &str,
+    result: &str,
+) -> anyhow::Result<A1> {
     let changes = tree_changes(repo, base, result)?;
     let policy = AttemptDiffPolicy {
         task_files: task.files.clone(),
@@ -768,6 +775,7 @@ fn a1(repo: &Path, task: &AuditTask, base: &str, result: &str) -> anyhow::Result
             .iter()
             .flat_map(|(_, command)| scripts_run_by(command))
             .collect(),
+        rung_files: gates.rung_files(),
         ..AttemptDiffPolicy::default()
     };
     let mut findings = check_attempt_diff(&changes, &policy);

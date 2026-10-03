@@ -529,6 +529,9 @@ impl GraphTaskDispatcher {
                 .iter()
                 .map(|dir| tree_path(&dir.join("accept")))
                 .collect(),
+            // Every rung's schema or rubric file, whichever pack runs it: an
+            // attempt that loosens one passes its own check (bug-d5d55f).
+            rung_files: self.config.gates.rung_files(),
         }
     }
 }
@@ -1145,6 +1148,57 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
         assert_eq!(gate, "pre_verify:tamper");
         assert!(
             message.contains("verify_script_edited `scripts/lint.sh`"),
+            "{message}"
+        );
+    }
+
+    /// bug-d5d55f: a schema rung reads its schema from the tree the attempt
+    /// changes, so an attempt that loosens the schema beside the artefact it
+    /// checks is tampering, stopped before its verify steps run, even though
+    /// the task's files name the directory that holds both.
+    #[tokio::test]
+    async fn loosening_a_schema_rung_s_schema_is_tampering() {
+        let temp = tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[(
+                "reports/report.schema",
+                "{\"type\": \"object\", \"required\": [\"title\"]}\n",
+            )],
+        );
+        let tamper = provider(
+            "printf '{}\\n' > reports/q3.json\n\
+             printf '{}\\n' > reports/report.schema",
+            "done",
+            10,
+        );
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            &tamper,
+            |config| {
+                no_auto_fix(config);
+                config.gates.custom_rungs = vec![roko_core::config::GateRungConfig {
+                    name: "report".to_string(),
+                    kind: roko_core::config::schema::RungKind::Schema,
+                    artefacts: vec!["reports/*.json".to_string()],
+                    schema: Some("reports/report.schema".to_string()),
+                    ..Default::default()
+                }];
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let marker = temp.path().join("verify-ran");
+        task.files = vec!["reports/".to_string()];
+        task.verify = vec![verify_step(
+            "structural",
+            &format!("touch {}", marker.display()),
+        )];
+
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:tamper");
+        assert!(
+            message.contains("rung_file_edited `reports/report.schema`"),
             "{message}"
         );
     }

@@ -48,7 +48,7 @@ COPY --from=portal /app/apps/portal/out ./apps/portal/out
 # Fail instead of embedding the fallback page (crates/roko-serve/build.rs).
 ENV ROKO_REQUIRE_EMBEDDED_UI=1
 
-RUN cargo build --release -p roko-cli --bin roko --features alloy-backend,acp \
+RUN cargo build --release -p roko-cli --bin roko --features alloy-backend,acp,fault-injection \
     && cargo build --release -p mirage-rs --bin mirage-rs --features "binary,roko" \
     && cargo build --release -p agent-relay --bin agent-relay \
     && strip target/release/roko target/release/mirage-rs target/release/agent-relay \

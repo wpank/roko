@@ -8,13 +8,15 @@
 //! category, so a prompt holds the artifact only when a reader put it there.
 //!
 //! `plan()` writes no learned state: it reads the stores, routes and
-//! assembles. P5, a capped live call, needs a provider and is not offered
+//! assembles, inside a fault [`dry_run`](faults::dry_run), so a flag of any
+//! kind reaches it. P5, a capped live call, needs a provider and is not offered
 //! here: `execute_capped` keeps the trait's `None`, so the driver skips it and
 //! every canary runs dry.
 
 use std::path::{Path, PathBuf};
 
 use roko_learn::loop_audit::canary::{CanaryTask, DryRunPlanner, PlanProbe};
+use roko_learn::loop_audit::faults;
 
 use super::{DispatchContext, Dispatcher, ModelChoiceSource};
 use crate::loop_canary::{canary_id, canary_task};
@@ -48,9 +50,7 @@ impl DryRunPlanner for DispatchPlanner<'_> {
     fn plan(&mut self, task: &CanaryTask, _dry_run: bool) -> Result<PlanProbe, String> {
         let canary = canary_task(&task.nonce);
         let ctx = canary_context(&canary, &self.workdir);
-        let plan = self
-            .dispatcher
-            .plan(&canary, &ctx)
+        let plan = faults::dry_run(|| self.dispatcher.plan(&canary, &ctx))
             .map_err(|error| format!("dispatch could not plan the canary: {error}"))?;
         let artifact = canary_id(&task.nonce);
         let prompt = &plan.prompt;
@@ -203,7 +203,7 @@ mod tests {
     #[cfg(feature = "fault-injection")]
     #[test]
     fn injected_cut_empties_knowledge_section() {
-        use roko_learn::loop_audit::faults::{self, FaultActor, FaultKind, FaultSpec};
+        use roko_learn::loop_audit::faults::{FaultActor, FaultKind, FaultSpec};
 
         let _turn = KNOWLEDGE_READS
             .lock()
@@ -215,8 +215,8 @@ mod tests {
         let task = canary_task(NONCE);
         let ctx = canary_context(&task, dir.path());
         let artifact = canary_id(NONCE);
-        let plan = dispatcher.plan(&task, &ctx).expect("a dry-run plan");
-        assert_eq!(plan.prompt.diagnostics.knowledge_ids, [artifact.clone()]);
+        let plan = || faults::dry_run(|| dispatcher.plan(&task, &ctx)).expect("a dry-run plan");
+        assert_eq!(plan().prompt.diagnostics.knowledge_ids, [artifact.clone()]);
 
         faults::enable(FaultActor::Env, dir.path().join("faults.jsonl"));
         let cut = FaultSpec {
@@ -227,14 +227,17 @@ mod tests {
             spend_cap_usd: None,
         };
         faults::set(cut).expect("set a CUT flag");
-        let plan = dispatcher.plan(&task, &ctx).expect("a dry-run plan");
-        assert!(plan.prompt.diagnostics.knowledge_ids.is_empty());
-        assert!(!plan.prompt.system_prompt.contains(&artifact));
+        // A live plan does not see a dry-run kind (decision 5101 §9.10).
+        let live = dispatcher.plan(&task, &ctx).expect("a live plan");
+        assert_eq!(live.prompt.diagnostics.knowledge_ids, [artifact.clone()]);
+        let cut = plan();
+        assert!(cut.prompt.diagnostics.knowledge_ids.is_empty());
+        assert!(!cut.prompt.system_prompt.contains(&artifact));
 
         assert!(faults::clear("L-know"), "the flag was set");
-        let plan = dispatcher.plan(&task, &ctx).expect("a dry-run plan");
-        assert_eq!(plan.prompt.diagnostics.knowledge_ids, [artifact.clone()]);
-        assert!(plan.prompt.system_prompt.contains(&artifact));
+        let restored = plan();
+        assert_eq!(restored.prompt.diagnostics.knowledge_ids, [artifact.clone()]);
+        assert!(restored.prompt.system_prompt.contains(&artifact));
         faults::disable();
         writer.cleanup(NONCE);
     }

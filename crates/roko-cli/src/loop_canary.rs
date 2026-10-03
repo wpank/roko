@@ -25,15 +25,21 @@
 //! the one preference a canary could set and restore exactly, applies to
 //! every task of a role and is read only at cold start.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use roko_fs::RokoLayout;
-use roko_learn::loop_audit::canary::CanaryWriter;
+use roko_learn::loop_audit::canary::{CanaryTarget, CanaryTask, CanaryWriter, run_canary};
+use roko_learn::loop_audit::faults;
+use roko_learn::loop_audit::ledger::{CanaryRow, Ledger};
 use roko_learn::playbook::{Playbook, PlaybookStore};
 use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeStore, ReinforcementSignal};
 
-use crate::dispatch::prompt_builder::cached_reader_ids;
+use crate::dispatch::Dispatcher;
+use crate::dispatch::dry_run_planner::DispatchPlanner;
+use crate::dispatch::prompt_builder::{PromptAssembler, cached_reader_ids};
 use crate::dispatch::prompt_cache::PromptCache;
+use crate::dispatch::warm_pool::WarmPool;
 use crate::task_parser::TaskDef;
 
 /// The knowledge canary entry's `source`.
@@ -298,6 +304,75 @@ impl CanaryWriter for PlaybookCanary {
             tracing::warn!(%id, %error, "the playbook canary's playbook was not removed");
         }
         self.snapshot = None;
+    }
+}
+
+/// A fresh canary nonce, `c-` and eight hex digits.
+fn fresh_nonce() -> String {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    format!("c-{}", &id[..8])
+}
+
+/// Runs a loop's dry canary trace in a workspace (S03 §4.7): the loop's
+/// writer here, the production prompt sources through [`DispatchPlanner`],
+/// and a `loop.canary` row in the loop-audit ledger. `roko serve` gives it
+/// to the admin canary route (5133), and `roko learn loops canary` runs it
+/// (5134). A dry trace runs no attempt, so P6 finds no decision row and is
+/// its first failure at best.
+#[derive(Debug, Clone)]
+pub struct DryCanaryRunner {
+    workdir: PathBuf,
+}
+
+impl DryCanaryRunner {
+    /// A runner for the workspace `workdir`.
+    #[must_use]
+    pub fn new(workdir: &Path) -> Self {
+        Self {
+            workdir: workdir.to_path_buf(),
+        }
+    }
+
+    /// Trace `loop_id`'s canary under a fresh nonce, dry, and append its row
+    /// to the loop-audit ledger; the row.
+    ///
+    /// # Errors
+    ///
+    /// A loop with no writer here (L-know and L-play have one), or a ledger
+    /// that could not be appended.
+    pub fn trace(&self, loop_id: &str) -> Result<CanaryRow, String> {
+        let mut writer: Box<dyn CanaryWriter> = match loop_id {
+            "L-know" => Box::new(KnowledgeCanary::new(&self.workdir)),
+            "L-play" => Box::new(PlaybookCanary::new(&self.workdir)),
+            _ => return Err(format!("{loop_id} has no canary writer; L-know and L-play do")),
+        };
+        let nonce = fresh_nonce();
+        let task = CanaryTask {
+            loop_id: loop_id.to_string(),
+            category: canary_category(&nonce),
+            nonce,
+            target: CanaryTarget::Prompt,
+        };
+        let dispatcher = Dispatcher::new(
+            None,
+            PromptAssembler::new(),
+            WarmPool::new(0),
+            HashSet::new(),
+        );
+        let mut planner = DispatchPlanner::new(&dispatcher, &self.workdir);
+        let layout = RokoLayout::for_project(&self.workdir);
+        let run_dir = layout.runs_dir().join(format!("canary-{}", task.nonce));
+        let ledger = Ledger::in_learn_dir(&layout.learn_dir());
+        // Every probe reads inside a fault dry run, so a flag of any kind
+        // reaches the reader it breaks (decision 5101 §9.10).
+        faults::dry_run(|| run_canary(&mut *writer, &mut planner, &run_dir, &task, true, &ledger))
+            .map_err(|error| format!("the canary's row was not written: {error}"))
+    }
+}
+
+impl roko_serve::state::LoopCanaryRunner for DryCanaryRunner {
+    fn run(&self, loop_id: &str) -> Result<CanaryRow, String> {
+        self.trace(loop_id)
     }
 }
 

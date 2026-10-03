@@ -2537,6 +2537,9 @@ mod tests {
             ("/api/config/reload", "admin"),
             ("/api/relay-tokens", "admin"),
             ("/api/relay-tokens/tok-1", "admin"),
+            ("/api/learn/loops/L-know/canary", "admin"),
+            ("/api/learn/loops/L-know/fault", "admin"),
+            ("/api/showcase/m2/loops/L-know/break", "admin"),
             // agent:write
             ("/api/agents/register", "agent:write"),
             ("/api/agents/create", "agent:write"),

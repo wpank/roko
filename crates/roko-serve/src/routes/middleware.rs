@@ -1143,6 +1143,16 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         prefix: "/api/api-keys",
         scope: "admin",
     },
+    // The loop audit's canary and fault routes, and the showcase's "break a
+    // loop" (S03 §5; 5133). Their reads stay `read`.
+    RouteScopeEntry {
+        prefix: "/api/learn/loops",
+        scope: "admin",
+    },
+    RouteScopeEntry {
+        prefix: "/api/showcase/m2/loops",
+        scope: "admin",
+    },
     RouteScopeEntry {
         prefix: "/api/agent-tokens",
         scope: "admin",

@@ -13,18 +13,34 @@
 //! These routes only read. Plan runs append the ledger at each run's close
 //! (5126), and their `LoopHealth` and `LoopTransition` events reach
 //! `/api/events` through StateHub like every other dashboard event.
+//!
+//! The admin routes (5133) need a caller with the admin or owner scope, and
+//! refuse anyone else with a 403:
+//! - `POST /api/learn/loops/{id}/canary`: a dry canary trace through the
+//!   runner `roko serve` injects ([`AppState::loop_canary`]); 503 without one.
+//! - `POST /api/learn/loops/{id}/fault {kind, ttl_s, max_decisions}` and the
+//!   showcase's `POST /api/showcase/m2/loops/{id}/break {action}` (`sever_read`
+//!   = CUT, `freeze_state` = STALE, `randomize` = DEGENERATE; decision 5101
+//!   §9.9), in fault-injection builds only: they set a flag in serve's
+//!   process, with its ground truth in `.roko/learn/serve-faults.jsonl`. A
+//!   dry-run kind reaches only dry runs, such as the canary route's; HARMFUL
+//!   reaches live runs under its spend cap (decision 5101 §9.10). A flag
+//!   lives at most 1800 s (422).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::{Path as UrlPath, Query, State};
+use axum::http::StatusCode;
+use axum::{Extension, Json, Router};
 use roko_core::config::learning::LearningAuditConfig;
 use roko_fs::RokoLayout;
 use roko_learn::loop_audit::census::read_runs;
+#[cfg(feature = "fault-injection")]
+use roko_learn::loop_audit::faults::{self, FaultActor, FaultError, FaultKind, FaultSpec};
 use roko_learn::loop_audit::ledger::{
-    HealthRow, Ledger, LoopAuditRecord, LoopAuditRow, latest_health,
+    CanaryRow, HealthRow, Ledger, LoopAuditRecord, LoopAuditRow, latest_health,
 };
 use roko_learn::loop_audit::{Lifecycle, LoopAuditor, LoopSpec, ReasonCode, Registry};
 use roko_learn::telemetry::ContentDecisionPoint;
@@ -32,6 +48,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::error::ApiError;
+use crate::routes::middleware::AuthContext;
 use crate::state::AppState;
 
 /// The most decision rows `/learn/loops/{id}/decisions` returns.
@@ -235,6 +252,197 @@ fn decisions_of(workdir: &Path, loop_id: &str, limit: usize) -> Vec<Value> {
     rows.into_iter().take(limit).map(|(_, row)| row).collect()
 }
 
+/// The admin routes' check: a caller with the admin or owner scope. Anyone
+/// else, and any caller while serve auth is off, is refused with a 403.
+fn require_admin(auth: Option<&Extension<AuthContext>>) -> Result<(), ApiError> {
+    let admin = auth.is_some_and(|auth| matches!(auth.scope.as_str(), "admin" | "owner"));
+    if admin {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("the loop audit's canary and fault routes are admin-only"))
+    }
+}
+
+/// `POST /api/learn/loops/{id}/canary` (admin): trace the loop's canary,
+/// dry, through the runner `roko serve` injected; its `loop.canary` row.
+pub(super) async fn loop_canary(
+    State(state): State<Arc<AppState>>,
+    auth: Option<Extension<AuthContext>>,
+    UrlPath(id): UrlPath<String>,
+) -> Result<Json<CanaryRow>, ApiError> {
+    require_admin(auth.as_ref())?;
+    let Some(runner) = state.loop_canary.get().cloned() else {
+        return Err(ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "canary_unavailable".to_string(),
+            message: "this server has no canary runner; `roko serve` sets one".to_string(),
+            details: None,
+        });
+    };
+    let row = tokio::task::spawn_blocking(move || runner.run(&id))
+        .await
+        .map_err(|error| ApiError::internal(format!("canary trace failed: {error}")))?
+        .map_err(ApiError::unprocessable_entity)?;
+    Ok(Json(row))
+}
+
+/// The fault routes, in fault-injection builds: `POST
+/// /api/learn/loops/{id}/fault` and the showcase's `…/break`.
+#[cfg(feature = "fault-injection")]
+pub(super) fn fault_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/learn/loops/{id}/fault", axum::routing::post(loop_fault))
+        .route("/showcase/m2/loops/{id}/break", axum::routing::post(loop_break))
+}
+
+/// No fault routes: this build has no fault flags.
+#[cfg(not(feature = "fault-injection"))]
+pub(super) fn fault_routes() -> Router<Arc<AppState>> {
+    Router::new()
+}
+
+/// The ground truth of the flags serve's admin routes set, under the learn
+/// directory.
+#[cfg(feature = "fault-injection")]
+const SERVE_FAULTS_FILE: &str = "serve-faults.jsonl";
+
+/// What `POST /api/learn/loops/{id}/fault` asks for.
+#[cfg(feature = "fault-injection")]
+#[derive(Debug, Deserialize)]
+pub(super) struct FaultRequest {
+    /// How to break the loop, e.g. `cut`.
+    kind: FaultKind,
+    /// The flag's life, 1 to 1800 s.
+    ttl_s: u64,
+    /// The decisions it may affect, at least 1.
+    max_decisions: u64,
+    /// HARMFUL's spend cap, at most $1.50.
+    #[serde(default)]
+    spend_cap_usd: Option<f64>,
+}
+
+/// `POST /api/learn/loops/{id}/fault` (admin, fault-injection builds): set
+/// a fault flag on the loop.
+#[cfg(feature = "fault-injection")]
+pub(super) async fn loop_fault(
+    State(state): State<Arc<AppState>>,
+    auth: Option<Extension<AuthContext>>,
+    UrlPath(id): UrlPath<String>,
+    Json(request): Json<FaultRequest>,
+) -> Result<Json<Value>, ApiError> {
+    require_admin(auth.as_ref())?;
+    set_fault(&state, &id, request).await
+}
+
+/// The showcase's "break a loop" actions (decision 5101 §9.9).
+#[cfg(feature = "fault-injection")]
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BreakAction {
+    /// Cut the loop's reader: CUT.
+    SeverRead,
+    /// Pin the reader to an old state version: STALE.
+    FreezeState,
+    /// Rank the same whatever the task: DEGENERATE.
+    Randomize,
+}
+
+/// What `POST /api/showcase/m2/loops/{id}/break` asks for.
+#[cfg(feature = "fault-injection")]
+#[derive(Debug, Deserialize)]
+pub(super) struct BreakRequest {
+    /// How to break the loop.
+    action: BreakAction,
+    /// The flag's life; ten minutes unless stated.
+    #[serde(default = "default_break_ttl")]
+    ttl_s: u64,
+    /// The decisions it may affect; a hundred unless stated.
+    #[serde(default = "default_break_decisions")]
+    max_decisions: u64,
+}
+
+/// A showcase break's life, in seconds.
+#[cfg(feature = "fault-injection")]
+const fn default_break_ttl() -> u64 {
+    600
+}
+
+/// A showcase break's decision budget.
+#[cfg(feature = "fault-injection")]
+const fn default_break_decisions() -> u64 {
+    100
+}
+
+/// `POST /api/showcase/m2/loops/{id}/break` (admin, fault-injection builds):
+/// the showcase's names for the fault route's dry-run kinds.
+#[cfg(feature = "fault-injection")]
+pub(super) async fn loop_break(
+    State(state): State<Arc<AppState>>,
+    auth: Option<Extension<AuthContext>>,
+    UrlPath(id): UrlPath<String>,
+    Json(request): Json<BreakRequest>,
+) -> Result<Json<Value>, ApiError> {
+    require_admin(auth.as_ref())?;
+    let kind = match request.action {
+        BreakAction::SeverRead => FaultKind::Cut,
+        BreakAction::FreezeState => FaultKind::Stale,
+        BreakAction::Randomize => FaultKind::Degenerate,
+    };
+    let fault = FaultRequest {
+        kind,
+        ttl_s: request.ttl_s,
+        max_decisions: request.max_decisions,
+        spend_cap_usd: None,
+    };
+    set_fault(&state, &id, fault).await
+}
+
+/// Set `request`'s flag on the registered loop `loop_id` in this process,
+/// with its ground truth in [`SERVE_FAULTS_FILE`].
+#[cfg(feature = "fault-injection")]
+async fn set_fault(
+    state: &AppState,
+    loop_id: &str,
+    request: FaultRequest,
+) -> Result<Json<Value>, ApiError> {
+    let ttl_s = request.ttl_s;
+    if ttl_s == 0 || ttl_s > faults::MAX_TTL_SECS {
+        let most = faults::MAX_TTL_SECS;
+        let message = format!("a fault flag lives 1 to {most} s, not {ttl_s} s");
+        return Err(ApiError::unprocessable_entity(message));
+    }
+    Audit::load(state).await?.spec(loop_id)?;
+    let learn_dir = RokoLayout::for_project(&state.workdir).learn_dir();
+    faults::enable(FaultActor::Admin, learn_dir.join(SERVE_FAULTS_FILE));
+    let spec = FaultSpec {
+        loop_id: loop_id.to_string(),
+        kind: request.kind,
+        ttl_secs: ttl_s,
+        max_decisions: request.max_decisions,
+        spend_cap_usd: request.spend_cap_usd,
+    };
+    let fault_id = faults::set(spec).map_err(fault_error)?;
+    Ok(Json(json!({
+        "fault_id": fault_id,
+        "loop_id": loop_id,
+        "kind": request.kind,
+        "ttl_s": ttl_s,
+        "max_decisions": request.max_decisions,
+    })))
+}
+
+/// The status a flag that could not be set answers with.
+#[cfg(feature = "fault-injection")]
+fn fault_error(error: FaultError) -> ApiError {
+    match error {
+        FaultError::Busy(_) => ApiError::conflict(error.to_string()),
+        FaultError::Disabled | FaultError::GroundTruth(_) => ApiError::internal(error.to_string()),
+        FaultError::Ttl(_) | FaultError::NoDecisions | FaultError::SpendCap(_) => {
+            ApiError::unprocessable_entity(error.to_string())
+        }
+    }
+}
+
 /// The loop a content decision point's rows belong to without a loop id.
 const fn content_loop(point: ContentDecisionPoint) -> Option<&'static str> {
     match point {
@@ -384,5 +592,96 @@ mod tests {
         let (status, decisions) = get(&state, "/api/learn/loops/L-know/decisions?limit=5").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(decisions, json!([]));
+    }
+    /// A caller with `scope`.
+    fn caller(scope: &str) -> Option<Extension<AuthContext>> {
+        Some(Extension(AuthContext {
+            method: crate::routes::middleware::AuthMethod::ApiKey,
+            scope: scope.to_string(),
+            user_id: None,
+        }))
+    }
+
+    /// The status of a handler's error, if it failed.
+    fn refused<T>(result: Result<T, ApiError>) -> Option<StatusCode> {
+        result.err().map(|error| error.status)
+    }
+
+    /// A canary runner that returns a passing trace of P1 alone.
+    struct OneProbe;
+
+    impl crate::state::LoopCanaryRunner for OneProbe {
+        fn run(&self, _loop_id: &str) -> Result<CanaryRow, String> {
+            Ok(CanaryRow {
+                nonce: "c-1".to_string(),
+                dry_run: true,
+                first_failure: None,
+                probes: Vec::new(),
+                cost_usd: 0.0,
+            })
+        }
+    }
+
+    /// S03 §5 (backlog 5133): the canary route refuses a caller without the
+    /// admin scope (403), answers 503 until `roko serve` injects a runner,
+    /// and then returns the runner's trace.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loop_canary_route_needs_an_admin_and_a_runner() {
+        let (_dir, state) = state();
+        let id = || UrlPath("L-know".to_string());
+        let read = loop_canary(State(Arc::clone(&state)), caller("read"), id()).await;
+        assert_eq!(refused(read), Some(StatusCode::FORBIDDEN));
+        let nobody = loop_canary(State(Arc::clone(&state)), None, id()).await;
+        assert_eq!(refused(nobody), Some(StatusCode::FORBIDDEN));
+        let bare = loop_canary(State(Arc::clone(&state)), caller("admin"), id()).await;
+        assert_eq!(refused(bare), Some(StatusCode::SERVICE_UNAVAILABLE));
+
+        let runner: Arc<dyn crate::state::LoopCanaryRunner> = Arc::new(OneProbe);
+        assert!(state.loop_canary.set(runner).is_ok());
+        let traced = loop_canary(State(Arc::clone(&state)), caller("owner"), id()).await;
+        let row = traced.expect("a trace").0;
+        assert_eq!((row.nonce.as_str(), row.first_failure), ("c-1", None));
+    }
+
+    /// S03 §5 and decision 5101 (backlog 5133): the fault route refuses a
+    /// caller without the admin scope (403) and a flag that would live past
+    /// 1800 s (422). An admin's flag is set, and a second one on the same
+    /// loop is a conflict until the first is cleared; the showcase's break
+    /// names the dry-run kinds.
+    #[cfg(feature = "fault-injection")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loop_fault_route_rejects_non_admin_and_long_ttl() {
+        let (_dir, state) = state();
+        let id = || UrlPath("L-know".to_string());
+        let request = |ttl_s| {
+            Json(FaultRequest {
+                kind: FaultKind::Cut,
+                ttl_s,
+                max_decisions: 10,
+                spend_cap_usd: None,
+            })
+        };
+        let fault = |auth, ttl_s| loop_fault(State(Arc::clone(&state)), auth, id(), request(ttl_s));
+
+        assert_eq!(refused(fault(None, 60).await), Some(StatusCode::FORBIDDEN));
+        assert_eq!(refused(fault(caller("read"), 60).await), Some(StatusCode::FORBIDDEN));
+        let long = fault(caller("admin"), 3_600).await;
+        assert_eq!(refused(long), Some(StatusCode::UNPROCESSABLE_ENTITY));
+
+        let set = fault(caller("admin"), 60).await.expect("an admin's flag").0;
+        assert_eq!((set["loop_id"].as_str(), set["kind"].as_str()), (Some("L-know"), Some("cut")));
+        assert_eq!(refused(fault(caller("admin"), 60).await), Some(StatusCode::CONFLICT));
+        assert!(faults::clear("L-know"), "the flag was set");
+
+        let freeze = Json(BreakRequest {
+            action: BreakAction::FreezeState,
+            ttl_s: default_break_ttl(),
+            max_decisions: default_break_decisions(),
+        });
+        let broken = loop_break(State(Arc::clone(&state)), caller("admin"), id(), freeze).await;
+        let broken = broken.expect("a showcase break").0;
+        assert_eq!(broken["kind"], "stale");
+        assert!(faults::clear("L-know"), "the break was set");
+        faults::disable();
     }
 }

@@ -337,6 +337,7 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
+    #[cfg(feature = "chain")]
     use roko_chain::x402::{PaymentAuthorization, PaymentRequest};
     use roko_core::config::schema::RokoConfig;
     use roko_core::feed::{PaymentProtocol, PricingTier};
@@ -385,6 +386,7 @@ mod tests {
         assert_eq!(payload.total, 0);
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn feed_catalog_contains_only_reduced_generic_agents() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -511,6 +513,7 @@ mod tests {
         assert_eq!(fetched.agent_id, "agent-1");
     }
 
+    #[cfg(feature = "chain")]
     #[tokio::test]
     async fn paid_feed_payment_cell_challenges_invalid_requests_and_accepts_sufficient_value() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -610,6 +613,81 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(paid.status(), StatusCode::OK);
+    }
+
+    #[cfg(not(feature = "chain"))]
+    #[tokio::test]
+    async fn paid_feed_is_refused_without_chain_feature() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
+        let state = test_state(dir.path().to_path_buf());
+        let feed = |name: &str, access, pricing| FeedInfo {
+            id: String::new(),
+            cell_id: String::new(),
+            name: name.into(),
+            kind: FeedKind::Derived,
+            access,
+            agent_id: "provider-7".into(),
+            description: String::new(),
+            schema: None,
+            pricing,
+            created_at: Utc::now(),
+        };
+        let pricing = FeedPricingConfig {
+            tier: PricingTier::Standard,
+            per_request_cost: 2.25,
+            session_pricing: None,
+            protocol: PaymentProtocol::X402,
+        };
+        let paid_id = state
+            .feeds
+            .write()
+            .await
+            .register(feed("paid-signals", FeedAccess::Paid, Some(pricing)));
+        let free_id = state
+            .feeds
+            .write()
+            .await
+            .register(feed("free-signals", FeedAccess::Public, None));
+        let app = routes().with_state(state);
+
+        // No x402 check exists in this build, so no authorization unlocks the feed.
+        let generous = r#"{"from":"subscriber-4","to":"provider-7","value":1000000}"#;
+        for authorization in [None, Some("not-json"), Some(generous)] {
+            let mut request = Request::builder()
+                .method("GET")
+                .uri(format!("/feeds/{paid_id}"));
+            if let Some(value) = authorization {
+                request = request.header("x-payment-authorization", value);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).expect("request"))
+                .await
+                .expect("response");
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_IMPLEMENTED,
+                "{authorization:?}"
+            );
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let body: Value = serde_json::from_slice(&body).expect("JSON refusal");
+            assert_eq!(body["required_feature"], "chain");
+        }
+
+        let free = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/feeds/{free_id}"))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(free.status(), StatusCode::OK);
     }
 
     #[tokio::test]

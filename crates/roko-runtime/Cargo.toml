@@ -12,6 +12,11 @@ description = "Shared async runtime primitives for Bardo: typed event bus, proce
 [lints]
 workspace = true
 
+[features]
+# The heartbeat attention auction and heartbeat probes: nothing calls them,
+# so they are parked out of the default build (9201, 9221).
+cognitive-clock = []
+
 [dependencies]
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "process", "macros", "rt"] }

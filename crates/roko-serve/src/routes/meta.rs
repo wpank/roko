@@ -36,7 +36,8 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use super::arenas::{ArenaAcceptanceEvidence, verify_acceptance_in_registry};
+#[cfg(feature = "chain")]
+use super::arenas::verify_acceptance_in_registry;
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::routes::middleware::AuthContext;
@@ -44,6 +45,10 @@ use crate::state::AppState;
 
 const META_SCHEMA_VERSION: u32 = 2;
 const VALIDATION_LEASE_SECS: u64 = 300;
+/// Why activation fails closed in a build without `chain` (9214).
+#[cfg(not(feature = "chain"))]
+const ARENAS_PARKED: &str = "meta-agent activation needs R03 arena evidence, which this build \
+                             leaves out: rebuild roko with `--features chain`";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Durable lifecycle state for a generated agent.
@@ -55,6 +60,20 @@ pub(crate) enum MetaAgentState {
     Active,
     Deactivated,
     Rejected,
+}
+
+/// Immutable R03 evidence consumed by meta-agent activation.
+///
+/// Kept here, with the records that persist it, so records still load in a
+/// build without `chain`, where arenas are parked (9214).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ArenaAcceptanceEvidence {
+    pub(crate) arena_id: [u8; 32],
+    pub(crate) attempt_id: [u8; 32],
+    pub(crate) evidence_hash: [u8; 32],
+    pub(crate) subject_output_hash: [u8; 32],
+    pub(crate) scorer_principal: String,
+    pub(crate) observed_at_block: u64,
 }
 
 /// One durable lineage node.
@@ -808,18 +827,53 @@ async fn validate_proposal(
             .await
             .map_err(|error| error.to_string())?
     };
-    let acceptance = state
+    let acceptance = verify_arena_acceptance(
+        state,
+        arena_id,
+        attempt_id,
+        output_hash,
+        evidence_hash,
+        &proposal.owner_principal,
+    )
+    .await?;
+    Ok((safety, acceptance))
+}
+
+/// The arena's check of an activation's R03 evidence.
+#[cfg(feature = "chain")]
+async fn verify_arena_acceptance(
+    state: &AppState,
+    arena_id: [u8; 32],
+    attempt_id: [u8; 32],
+    output_hash: [u8; 32],
+    evidence_hash: [u8; 32],
+    owner_principal: &str,
+) -> Result<ArenaAcceptanceEvidence, String> {
+    state
         .arenas
         .verify_acceptance(
             arena_id,
             attempt_id,
             output_hash,
             evidence_hash,
-            &proposal.owner_principal,
+            owner_principal,
         )
         .await
-        .map_err(|error| error.message)?;
-    Ok((safety, acceptance))
+        .map_err(|error| error.message)
+}
+
+/// Without `chain` there is no arena to check the evidence, so activation
+/// fails closed (9214).
+#[cfg(not(feature = "chain"))]
+async fn verify_arena_acceptance(
+    _state: &AppState,
+    _arena_id: [u8; 32],
+    _attempt_id: [u8; 32],
+    _output_hash: [u8; 32],
+    _evidence_hash: [u8; 32],
+    _owner_principal: &str,
+) -> Result<ArenaAcceptanceEvidence, String> {
+    Err(ARENAS_PARKED.to_string())
 }
 
 fn validate_root_grant(proposal: &MetaAgentRecord, observed_at: u64) -> Result<(), String> {
@@ -1128,6 +1182,12 @@ fn reconcile_durable_acceptance_receipts(
     if records.is_empty() {
         return Ok(());
     }
+    verify_durable_receipts(workdir, &records)
+}
+
+/// Check each terminal record's receipt against the durable arena state.
+#[cfg(feature = "chain")]
+fn verify_durable_receipts(workdir: &FsPath, records: &[&MetaAgentRecord]) -> Result<(), String> {
     let arena_path = workdir.join(".roko").join("chain").join("arena-state.json");
     let registry = roko_chain::arena::ArenaRegistry::open(&arena_path)
         .map_err(|error| format!("open durable arena receipts: {error}"))?;
@@ -1160,6 +1220,17 @@ fn reconcile_durable_acceptance_receipts(
         }
     }
     Ok(())
+}
+
+/// Without `chain` no arena state exists to check a receipt against, so a
+/// store with terminal records fails closed (9214).
+#[cfg(not(feature = "chain"))]
+fn verify_durable_receipts(_workdir: &FsPath, records: &[&MetaAgentRecord]) -> Result<(), String> {
+    Err(format!(
+        "{} terminal meta-agent(s) hold arena receipts that only a build with `--features chain` \
+         can check",
+        records.len()
+    ))
 }
 
 fn persist_store(path: &FsPath, store: &MetaStore) -> std::io::Result<()> {
@@ -1528,6 +1599,7 @@ mod tests {
         AgentCoreManifest, CustomPluginConfig, DeploymentMode, DomainPlugin,
     };
     use roko_agent::safety::SpawnAuthority;
+    #[cfg(feature = "chain")]
     use roko_chain::arena::{
         AggregationRule, Arena, ArenaCategory, ArenaRegistry, ArenaState, AttemptSettlement,
         BinaryCriterion, GroundTruthSource, ScoringEvidence, ScoringFunction, TaskSource,
@@ -1732,6 +1804,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "chain")]
     #[test]
     fn restart_reconciles_terminal_receipts_with_durable_arena_state() {
         let dir = tempdir().expect("tempdir");
@@ -1837,6 +1910,34 @@ mod tests {
             MetaAgentRuntime::open(dir.path())
                 .ensure_available()
                 .is_err()
+        );
+    }
+
+    #[cfg(not(feature = "chain"))]
+    #[test]
+    fn terminal_receipts_fail_closed_on_restart_without_chain() {
+        let dir = tempdir().expect("tempdir");
+        let mut item = record("receipt-bound");
+        activate(&mut item, [2; 32]);
+        let meta_path = dir
+            .path()
+            .join(".roko")
+            .join("agents")
+            .join("meta-lineage.json");
+        let store = MetaStore {
+            records: BTreeMap::from([(item.id.clone(), item)]),
+        };
+        persist_store(&meta_path, &store).expect("persist terminal meta state");
+
+        let error = MetaAgentRuntime::open(dir.path())
+            .ensure_available()
+            .expect_err("no arena state can check the receipt");
+        let details = error.details.expect("startup reason");
+        assert!(
+            details["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("--features chain")),
+            "{details}"
         );
     }
 

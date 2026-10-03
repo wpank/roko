@@ -5,12 +5,15 @@ use std::sync::{Arc, OnceLock};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, UPGRADE};
+#[cfg(feature = "chain")]
+use axum::http::HeaderValue;
 use axum::http::{HeaderMap, Method, Request};
-use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderName, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use chrono::Utc;
+#[cfg(feature = "chain")]
 use roko_chain::x402::{PaymentAuthorization, PaymentRequest};
 use roko_core::config::{ApiKeyEntry, ServeAuthConfig};
 use roko_core::feed::{FeedAccess, FeedInfo};
@@ -52,6 +55,7 @@ pub const X_PAYMENT_REQUEST: &str = "x-payment-request";
 /// Public and private feeds bypass the payment cell. Signature verification is
 /// deliberately deferred to the chain settlement layer; this boundary checks
 /// only JSON shape and that the authorized value covers the advertised price.
+/// A build without `chain` has no x402 check and refuses every priced feed.
 // Axum handlers consume `Response` directly on denial; boxing it here would only move the
 // allocation and complicate every caller without reducing the HTTP response itself.
 #[allow(clippy::result_large_err)]
@@ -75,7 +79,17 @@ pub fn require_payment(feed: &FeedInfo, headers: &HeaderMap) -> Result<(), Respo
     if required_amount == 0 {
         return Ok(());
     }
+    check_payment(feed, headers, required_amount)
+}
 
+/// Challenge for, or accept, an x402 authorization of `required_amount`.
+#[cfg(feature = "chain")]
+#[allow(clippy::result_large_err)]
+fn check_payment(
+    feed: &FeedInfo,
+    headers: &HeaderMap,
+    required_amount: u128,
+) -> Result<(), Response> {
     let now = u64::try_from(Utc::now().timestamp()).unwrap_or(0);
     let challenge = PaymentRequest {
         recipient: feed.agent_id.clone(),
@@ -97,6 +111,20 @@ pub fn require_payment(feed: &FeedInfo, headers: &HeaderMap) -> Result<(), Respo
     }
 }
 
+/// Without `chain` there is no x402 check, so a priced feed is refused
+/// rather than served for free (9215).
+#[cfg(not(feature = "chain"))]
+#[allow(clippy::result_large_err)]
+fn check_payment(
+    _feed: &FeedInfo,
+    _headers: &HeaderMap,
+    _required_amount: u128,
+) -> Result<(), Response> {
+    let refusal = super::chain_disabled::parked("paid feed access", "chain");
+    Err(refusal.into_response())
+}
+
+#[cfg(feature = "chain")]
 fn payment_required(challenge: PaymentRequest) -> Response {
     let challenge_header = serde_json::to_string(&challenge)
         .ok()

@@ -44,6 +44,7 @@ use crate::dispatch::SubscriptionRegistry;
 use crate::event_bus::EventBus;
 use crate::runtime::CliRuntime;
 use crate::runtime::RunResult;
+#[cfg(feature = "chain")]
 use roko_chain::ChainClient;
 #[cfg(feature = "alloy-backend")]
 use roko_chain::alloy_impl::{AlloyChainClient, AlloyChainWallet};
@@ -801,6 +802,7 @@ pub struct AppState {
     /// Monotonic agent lifecycle observations committed before Lens delivery.
     pub agent_lifecycle: crate::agent_lifecycle::AgentLifecycleStore,
     /// Optional backend-neutral client used by registries and arenas.
+    #[cfg(feature = "chain")]
     pub chain_client: Option<Arc<dyn ChainClient>>,
     /// Optional concrete Alloy client for provider-specific routes/watchers.
     #[cfg(feature = "alloy-backend")]
@@ -809,8 +811,10 @@ pub struct AppState {
     #[cfg(feature = "alloy-backend")]
     pub chain_wallet: Option<Arc<AlloyChainWallet>>,
     /// Restart-safe local registry lifecycle plus optional read-only chain indexer.
+    #[cfg(feature = "chain")]
     pub(crate) registries: crate::routes::registries::RegistryRuntime,
     /// Restart-safe authorized arena lifecycle and external settlement service.
+    #[cfg(feature = "chain")]
     pub(crate) arenas: crate::routes::arenas::ArenaRuntime,
     /// Restart-safe bounded meta-agent lineage and activation service.
     pub(crate) meta_agents: crate::routes::meta::MetaAgentRuntime,
@@ -868,6 +872,7 @@ pub struct AppState {
     pub feed_agent_catalog: RwLock<FeedAgentCatalog>,
 
     /// Shared chain watcher state exposed via REST and SSE.
+    #[cfg(feature = "chain")]
     pub chain: Arc<roko_chain::chain_state::ChainState>,
 
     /// Runtime feed instances started at serve-time and queryable via
@@ -876,6 +881,7 @@ pub struct AppState {
     /// Routes runtime feed output into the existing universal Pulse Bus.
     pub feed_bus_bridge: FeedBusBridge<roko_runtime::pulse_bus::PulseBus>,
     /// Persistent multi-agent group coordination runtime.
+    #[cfg(feature = "groups")]
     pub groups: crate::group_runtime::GroupRuntime,
 
     /// Optional shared secret that workers must present as the
@@ -1196,10 +1202,11 @@ impl AppState {
         let cancel = CancelToken::new();
         let supervisor = Arc::new(ProcessSupervisor::new(cancel.child()));
         let subscriptions = SubscriptionRegistry::load_from_project(&workdir, &roko_config);
+        // Without `relay` no bridge connects, so the status says so (9220).
         let subscription_relay = Arc::new(
             crate::subscription_relay::SubscriptionRelayRuntime::open(
                 &workdir,
-                roko_config.relay.url.is_some(),
+                cfg!(feature = "relay") && roko_config.relay.url.is_some(),
             )
             .context("open relay subscription journal")?,
         );
@@ -1221,20 +1228,21 @@ impl AppState {
             .as_ref()
             .map(|client| Arc::clone(client) as Arc<dyn ChainClient>);
         #[cfg(not(feature = "alloy-backend"))]
-        let chain_client: Option<Arc<dyn ChainClient>> = {
-            if roko_config.chain.enabled && roko_config.chain.rpc_url.is_some() {
-                tracing::warn!(
-                    "[chain] RPC configuration ignored: rebuild roko with \
-                     `--features alloy-backend` to enable real chain access"
-                );
-            }
-            None
-        };
+        if roko_config.chain.enabled && roko_config.chain.rpc_url.is_some() {
+            tracing::warn!(
+                "[chain] RPC configuration ignored: rebuild roko with \
+                 `--features alloy-backend` to enable real chain access"
+            );
+        }
+        #[cfg(all(feature = "chain", not(feature = "alloy-backend")))]
+        let chain_client: Option<Arc<dyn ChainClient>> = None;
+        #[cfg(feature = "chain")]
         let registries = crate::routes::registries::RegistryRuntime::open(
             &workdir,
             &roko_config,
             chain_client.clone(),
         );
+        #[cfg(feature = "chain")]
         let arenas = crate::routes::arenas::ArenaRuntime::open(&workdir);
         let meta_agents = crate::routes::meta::MetaAgentRuntime::open(&workdir);
         let http_client = reqwest::Client::builder()
@@ -1374,6 +1382,7 @@ impl AppState {
         );
         let pulse_bus = Arc::new(roko_runtime::pulse_bus::PulseBus::new(16_384));
         let feed_bus_bridge = FeedBusBridge::new(Arc::clone(&pulse_bus));
+        #[cfg(feature = "groups")]
         let groups = crate::group_runtime::GroupRuntime::open(&workdir, &roko_config.groups)
             .map_err(|error| anyhow::anyhow!("open group runtime: {error}"))?;
         let jwks_providers = crate::jwks::jwks_providers_for(&roko_config.serve.auth);
@@ -1451,12 +1460,15 @@ impl AppState {
             aggregator_cache: RwLock::new(HashMap::new()),
             heartbeats: RwLock::new(VecDeque::new()),
             agent_lifecycle,
+            #[cfg(feature = "chain")]
             chain_client,
             #[cfg(feature = "alloy-backend")]
             alloy_chain_client,
             #[cfg(feature = "alloy-backend")]
             chain_wallet,
+            #[cfg(feature = "chain")]
             registries,
+            #[cfg(feature = "chain")]
             arenas,
             meta_agents,
             agent_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -1484,9 +1496,11 @@ impl AppState {
                 .filter(|s| !s.is_empty())
                 .or_else(|| roko_config.relay.url.clone()),
             feed_agent_catalog: RwLock::new(FeedAgentCatalog::default()),
+            #[cfg(feature = "chain")]
             chain: Arc::new(roko_chain::chain_state::ChainState::default()),
             runtime_feeds,
             feed_bus_bridge,
+            #[cfg(feature = "groups")]
             groups,
             worker_callback_token: std::env::var("ROKO_WORKER_CALLBACK_TOKEN")
                 .ok()

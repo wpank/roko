@@ -117,6 +117,15 @@ impl ErrorClass {
             _ => Self::Unknown,
         }
     }
+
+    /// The class of a failure from its text, as the shared failure
+    /// classifier (`roko_agent::provider::error_classify`) names it, for a
+    /// caller that has only the text (bug-52c48f).
+    #[must_use]
+    pub fn from_failure_text(text: &str) -> Self {
+        let lower = text.to_ascii_lowercase();
+        Self::from_kind(roko_agent::provider::error_classify::classify_failure_text(&lower))
+    }
 }
 
 /// Cooldown for an [`ErrorClass::Exhausted`] failure whose reset time is
@@ -2014,6 +2023,21 @@ mod tests {
         assert_eq!(h.cooldown_until, Some(86_401_000));
         // Should be unavailable for the entire cooldown.
         assert!(!h.is_available(86_400_999));
+    }
+
+    /// bug-52c48f: a failure's text names its class through the shared
+    /// classifier, so a caller with only the text records an auth failure as
+    /// one, not as unknown.
+    #[test]
+    fn error_class_from_failure_text_uses_the_shared_classifier() {
+        for (text, class) in [
+            ("Not logged in", ErrorClass::AuthFailure),
+            ("429 Too Many Requests", ErrorClass::RateLimit),
+            ("503 service unavailable", ErrorClass::ServerError),
+            ("something odd", ErrorClass::Unknown),
+        ] {
+            assert_eq!(ErrorClass::from_failure_text(text), class, "{text}");
+        }
     }
 
     /// gap-d90a93: clearing a provider an auth failure took out closes its

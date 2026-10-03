@@ -1447,11 +1447,14 @@ pub(crate) async fn dispatch_bench_prompt(
             }
             Err(error) => error,
         };
-        match failover.after_refusal(&health, &candidate, &format!("{error:#}")) {
+        let failure = format!("{error:#}");
+        match failover.after_refusal(&health, &candidate, &failure) {
             Ok(Some(next)) => candidate = next,
             Ok(None) => {
+                // The shared classifier names the failure, an auth failure
+                // included, rather than recording it as unknown (bug-52c48f).
                 if let Some(provider) = provider_id_for_model(&call_config, &model) {
-                    health.record_failure(&provider, ErrorClass::Unknown);
+                    health.record_failure(&provider, ErrorClass::from_failure_text(&failure));
                 }
                 return Err(error).context("ModelCallService bench dispatch failed");
             }

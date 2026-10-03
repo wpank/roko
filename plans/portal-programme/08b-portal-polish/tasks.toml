@@ -76,7 +76,6 @@ tests to pass, re-runs an existing .ts suite, and runs tsc and the orphan check.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = []
@@ -190,7 +189,6 @@ src/lib/runState.accept.test.ts.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = []
@@ -273,7 +271,6 @@ src/lib/planSet.accept.test.ts.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T02"]
@@ -351,7 +348,6 @@ src/components/stage/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T01", "T02"]
@@ -429,7 +425,6 @@ src/lib/useNow.accept.test.tsx.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 10
 depends_on = ["T01"]
@@ -496,7 +491,6 @@ Acceptance: accept/statusLine.accept.test.ts (11 tests) → src/lib/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
 depends_on = []
@@ -569,7 +563,6 @@ src/styles/styles.accept.test.ts.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = []
@@ -627,7 +620,6 @@ Acceptance: accept/planRows.wait.accept.test.ts (8 tests) → src/lib/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
 depends_on = ["T03"]
@@ -705,7 +697,6 @@ Acceptance: accept/rail.accept.test.tsx (11 DOM tests) → src/components/rail/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T01", "T08"]
@@ -797,7 +788,6 @@ Acceptance: accept/shell.accept.test.tsx (11 DOM tests) → src/components/shell
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = ["T01", "T02", "T05"]
@@ -888,7 +878,6 @@ Acceptance: accept/RunBand.accept.test.tsx (9 DOM tests) → src/components/run/
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T01", "T02", "T05"]
@@ -967,7 +956,6 @@ src/components/stage/; the missing-route test from T04 must keep passing.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 35
 depends_on = ["T01", "T03", "T04", "T05", "T06"]
@@ -1048,7 +1036,6 @@ src/components/stream/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T01", "T03"]
@@ -1111,7 +1098,6 @@ Acceptance: accept/TaskList.accept.test.tsx (4 DOM tests) → src/components/sta
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 10
 depends_on = ["T01", "T02"]
@@ -1165,7 +1151,6 @@ Run again are free once a run has finished; the rail clock ticks between events.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T09", "T10", "T11", "T12", "T13", "T14"]
@@ -1221,7 +1206,6 @@ edit the acceptance copies.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T07", "T15"]

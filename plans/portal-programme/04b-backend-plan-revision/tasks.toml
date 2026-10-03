@@ -3,7 +3,6 @@ plan = "04b-backend-plan-revision"
 total = 6
 done = 0
 status = "ready"
-max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 145
 
@@ -68,7 +67,6 @@ Unit tests for `apply_revision_output`, with canned agent output:
 status = "ready"
 role = "implementer"
 tier = "architectural"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 35
@@ -115,7 +113,6 @@ workspace's configured models.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 20
@@ -167,7 +164,6 @@ Register `POST /api/plans/{id}/revise` in `crates/roko-serve/src/routes/plans.rs
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -212,7 +208,6 @@ Add `crates/roko-serve/tests/plan_revision.rs`, modelled on
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -260,7 +255,6 @@ Run the acceptance check and record the result in
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
@@ -306,7 +300,6 @@ feedback, not the run's failures; one retry on rejection.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
 depends_on = ["T05"]

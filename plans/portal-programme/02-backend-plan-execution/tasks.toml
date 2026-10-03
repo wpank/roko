@@ -3,7 +3,6 @@ plan = "02-backend-plan-execution"
 total = 9
 done = 0
 status = "ready"
-max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 190
 
@@ -65,7 +64,6 @@ into the library — it is written against the binary's namespace with `use crat
 status = "ready"
 role = "implementer"
 tier = "architectural"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
@@ -125,7 +123,6 @@ and say so in the task output.
 status = "ready"
 role = "implementer"
 tier = "architectural"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 45
@@ -184,7 +181,6 @@ in the task output rather than silently leaving it.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = ["T02"]
@@ -234,7 +230,6 @@ flat-file lookup.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T03"]
@@ -280,7 +275,6 @@ its plan directory instead of the specific plan's directory.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T04"]
@@ -321,7 +315,6 @@ status handler.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T05"]
@@ -361,7 +354,6 @@ output any field the bridge drops, since the portal cannot recover a dropped fie
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T06"]
@@ -407,7 +399,6 @@ T03.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = ["T07"]
@@ -481,7 +472,6 @@ output.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25

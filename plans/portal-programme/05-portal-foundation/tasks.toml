@@ -3,7 +3,6 @@ plan = "05-portal-foundation"
 total = 14
 done = 0
 status = "ready"
-max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 345
 
@@ -62,7 +61,6 @@ Run all three verify commands before finishing.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1200
 max_retries = 2
 estimated_minutes = 20
@@ -129,7 +127,6 @@ on its own; remove it before type checking, as the gate does.
 status = "ready"
 role = "implementer"
 tier = "mechanical"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 10
 depends_on = ["T01"]
@@ -200,7 +197,6 @@ Keep src/app/providers.tsx: it mounts the event stream. The type check must pass
 status = "ready"
 role = "implementer"
 tier = "mechanical"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T02"]
@@ -268,7 +264,6 @@ Remaining runtime dependencies: next, react, react-dom, zustand,
 status = "ready"
 role = "implementer"
 tier = "mechanical"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1500
 max_retries = 2
 estimated_minutes = 15
@@ -374,7 +369,6 @@ naming the Rust sources.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T04"]
@@ -452,7 +446,6 @@ merging; tool pairing and orphan results; dividers; the glyph families.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
 depends_on = ["T05"]
@@ -579,7 +572,6 @@ test (compare a JSON copy before and after applyEvent).
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 50
@@ -684,7 +676,6 @@ reopening.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 40
 depends_on = ["T07"]
@@ -748,7 +739,6 @@ The whole unit suite, the type check and the static export must pass.
 status = "ready"
 role = "implementer"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 35
@@ -832,7 +822,6 @@ Nothing else: no polling intervals, no optimistic updates.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T09"]
@@ -885,7 +874,6 @@ variables; invent no colours. Define:
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 timeout_secs = 1200
 max_retries = 2
 estimated_minutes = 15
@@ -936,7 +924,6 @@ Remove formatter functions nothing will use: `formatRelativeTime`,
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
 depends_on = ["T11"]
@@ -989,7 +976,6 @@ the same state twice, with different glyphs, in different widgets).
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T12"]
@@ -1058,7 +1044,6 @@ string or the phrase "no data".
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T13"]

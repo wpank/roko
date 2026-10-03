@@ -73,7 +73,6 @@ Acceptance: accept/liveDecode.accept.test.ts (8 tests) → src/lib/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
 depends_on = []
@@ -138,7 +137,6 @@ Acceptance: accept/liveBlocks.accept.test.ts (10 tests) → src/lib/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T01"]
@@ -207,7 +205,6 @@ Acceptance: accept/liveFold.accept.test.ts (11 tests) → src/lib/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T01"]
@@ -272,7 +269,6 @@ src/components/stream/.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T02", "T03"]
@@ -326,7 +322,6 @@ edit the acceptance copies.
 status = "ready"
 role = "implementer"
 tier = "focused"
-model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
 depends_on = ["T04"]

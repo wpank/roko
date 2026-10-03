@@ -281,7 +281,7 @@ pub struct RecoveryRow {
     pub episode_id: String,
     /// The EV the episode regulated.
     pub ev: Ev,
-    /// Resolutions from detection until D stays 0; `null` if it never does.
+    /// Resolutions from the onset until D stays 0; `null` if it never does.
     pub settling_resolutions: Option<u32>,
     /// Spend over those resolutions.
     pub settling_usd: Option<f64>,

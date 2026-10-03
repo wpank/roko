@@ -42,6 +42,7 @@ use roko_cli::auth;
 use agent_serve::AgentCmd;
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use commands::audit::AuditCmd;
 use commands::backlog::BacklogCmd;
 use commands::bench::BenchCmd;
 use commands::cache::CacheCmd;
@@ -763,6 +764,20 @@ Examples:
     Effects {
         #[command(subcommand)]
         cmd: EffectsCmd,
+    },
+    /// What M4's random deep audits found, read-only: window estimates, the
+    /// strictness ladder, routing trust, a lottery replay, a run's draws
+    /// recomputed from its revealed key, and incidents.
+    #[command(after_help = "\
+Examples:
+  roko audit status
+  roko audit status --strata
+  roko audit replay --runs 1000
+  roko audit reveal graph-run-20261003T101500
+  roko audit incidents")]
+    Audit {
+        #[command(subcommand)]
+        cmd: AuditCmd,
     },
     /// Interactive setup wizard: detect providers, init workspace, verify.
     #[command(after_help = "\
@@ -1973,6 +1988,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         Command::RunIndex { cmd } => commands::run_index::cmd_run_index(cli, cmd).await,
         Command::Safety { cmd } => commands::safety::cmd_safety(cli, cmd).await,
         Command::Effects { cmd } => commands::effects::cmd_effects(cli, cmd).await,
+        Command::Audit { cmd } => commands::audit::cmd_audit(cli, cmd),
         Command::Setup {
             workdir,
             yes,

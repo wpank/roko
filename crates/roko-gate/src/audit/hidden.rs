@@ -453,7 +453,8 @@ fn log(
     Ok(())
 }
 
-fn private_dir(dir: &Path) -> std::io::Result<()> {
+/// Create `dir` and its parents, mode 0700.
+pub(super) fn private_dir(dir: &Path) -> std::io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -461,7 +462,8 @@ fn private_dir(dir: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Write `bytes` to `path`, mode 0600, and sync it.
+pub(super) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);

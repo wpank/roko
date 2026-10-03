@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod attempts;
+pub mod audit;
 pub mod auth;
 pub mod backlog;
 pub mod bench;

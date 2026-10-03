@@ -831,6 +831,24 @@ impl GraphTaskDispatcher {
                 let judged = self.judge_attempt(spec, task, attempt_key, &effective_workdir);
                 failures.extend(judged.await);
             }
+            // DP3 (7132): then the checks of the attempt's verify depth, its
+            // task type's ladder level or M1's floor when that is higher.
+            let mut depth_checks = 0;
+            if failures.is_empty() {
+                let deepened = self
+                    .deepen_verification(
+                        spec,
+                        task,
+                        attempt_key,
+                        &effective_workdir,
+                        executor,
+                        theta,
+                        step_verdicts,
+                    )
+                    .await?;
+                depth_checks = deepened.checks;
+                failures.extend(deepened.failure);
+            }
 
             self.publish_verify_run(spec, task, &effective_workdir, &ran_steps);
 
@@ -877,7 +895,7 @@ impl GraphTaskDispatcher {
                 // `max_retries` and then fails the task. (`gates.max_review_cycles`
                 // may only bound non-deterministic review/judge verdicts, and
                 // the Graph dispatcher gates on none.)
-                let total = steps.len() + kind_rungs.len();
+                let total = steps.len() + kind_rungs.len() + depth_checks;
                 let mut summary =
                     verify_failure_summary(&spec.title, total, &failures, &skipped_steps);
                 // Lead with the blamed sibling so one-line failure reasons,
@@ -1078,7 +1096,7 @@ impl GraphTaskDispatcher {
     /// cancellation its verify ends in at `at` (bug-3a3968). A step waits for
     /// siblings editing what it reads and for the compile lock, and behind
     /// another process's long build either wait can outlast the run's drain.
-    async fn unless_stopped<T>(
+    pub(super) async fn unless_stopped<T>(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
@@ -1095,7 +1113,7 @@ impl GraphTaskDispatcher {
 
 /// The cancellation `task`'s verify ends in at `at`, a step or the auto-fix,
 /// when its plan run stops it (bug-82cbef).
-fn verify_cancelled(spec: &TaskExecutionSpec, task: &TaskDef, at: &str) -> RokoError {
+pub(super) fn verify_cancelled(spec: &TaskExecutionSpec, task: &TaskDef, at: &str) -> RokoError {
     RokoError::cancelled(format!(
         "the plan run stopped during the verify of {}/{} at {at}",
         spec.plan_id, task.id

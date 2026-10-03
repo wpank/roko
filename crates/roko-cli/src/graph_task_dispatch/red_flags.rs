@@ -46,8 +46,7 @@ use std::path::Component;
 use roko_agent::safety::{SafetyLayer, SafetyViolation, ViolationSeverity, ViolationType, scrub};
 use roko_core::config::gates::DiffScope;
 use roko_gate::attempt_diff::{
-    AttemptChange, AttemptDiffPolicy, ChangeKind, DiffFinding, PinnedTest, check_attempt_diff,
-    scripts_run_by,
+    AttemptDiffPolicy, DiffFinding, PinnedTest, check_attempt_diff, scripts_run_by,
 };
 use roko_gate::{DiffPayload, analyze_diff};
 use roko_learn::telemetry::ScopeFinding;
@@ -421,26 +420,11 @@ impl GraphTaskDispatcher {
         diff: &AttemptDiff,
     ) -> (Option<Rejection>, Vec<DiffFinding>) {
         let policy = self.attempt_diff_policy(spec, task, workdir);
-        let mut changes = Vec::with_capacity(diff.changes.len());
-        for changed in &diff.changes {
-            let kind = match changed.status {
-                'A' | 'C' => ChangeKind::Added,
-                'D' => ChangeKind::Deleted,
-                'R' => ChangeKind::Renamed,
-                _ => ChangeKind::Modified,
-            };
-            let mut change = AttemptChange::new(kind, changed.path.clone());
-            change.old_path.clone_from(&changed.old_path);
-            if policy.needs_text(&change.path) || policy.needs_text(change.old_path()) {
-                if let Some(blob) = &changed.old_blob {
-                    change.before = diff.blob_text(blob).await;
-                }
-                if let Some(blob) = &changed.new_blob {
-                    change.after = diff.blob_text(blob).await;
-                }
-            }
-            changes.push(change);
-        }
+        let changes = diff
+            .attempt_changes(|change| {
+                policy.needs_text(&change.path) || policy.needs_text(change.old_path())
+            })
+            .await;
         let (tamper, scope): (Vec<DiffFinding>, Vec<DiffFinding>) =
             check_attempt_diff(&changes, &policy)
                 .into_iter()
@@ -566,7 +550,7 @@ impl GraphTaskDispatcher {
 }
 
 /// Findings, one per line, at most [`LISTED_FINDINGS`] of them.
-fn finding_list(findings: &[DiffFinding]) -> String {
+pub(super) fn finding_list(findings: &[DiffFinding]) -> String {
     let mut lines: Vec<String> = findings
         .iter()
         .take(LISTED_FINDINGS)

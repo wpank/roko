@@ -163,6 +163,11 @@ impl AuditSelector {
         self
     }
 
+    /// The workspace's vault, which holds the strictness ladder (DP3).
+    pub(super) const fn vault(&self) -> &AuditVault {
+        &self.vault
+    }
+
     /// Draw every green unit at π = 1, as a test's ρ = 1 would; config
     /// cannot set ρ above `RHO_MAX`.
     #[cfg(test)]
@@ -471,16 +476,21 @@ impl super::GraphTaskDispatcher {
     }
 }
 
-/// What an audit needs of `task`; its kind is its domain, else its role
-/// (`scribe` writes docs, `researcher` research, `strategist` plans).
-fn audit_task(task: &TaskDef) -> AuditTask {
-    let kind = match (&task.domain, task.role.as_deref().unwrap_or("implementer")) {
+/// The task type of `task`, which strata and the strictness ladder name:
+/// its domain, else its role (`scribe` writes docs, `researcher` research,
+/// `strategist` plans).
+pub(super) fn task_type(task: &TaskDef) -> &str {
+    match (&task.domain, task.role.as_deref().unwrap_or("implementer")) {
         (Some(domain), _) => domain.label(),
         (None, "scribe") => "docs",
         (None, "researcher") => "research",
         (None, "strategist" | "planner") => "plan",
         (None, role) => role,
-    };
+    }
+}
+
+/// What an audit needs of `task`; its kind is its [`task_type`].
+pub(super) fn audit_task(task: &TaskDef) -> AuditTask {
     let hidden = task.spec.hidden.clone().unwrap_or_default();
     AuditTask {
         title: task.title.clone(),
@@ -496,7 +506,7 @@ fn audit_task(task: &TaskDef) -> AuditTask {
             .iter()
             .map(|step| (step.phase.clone(), step.command.clone()))
             .collect(),
-        kind: kind.to_string(),
+        kind: task_type(task).to_string(),
     }
 }
 

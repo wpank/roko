@@ -17,6 +17,7 @@
 
 use std::process::Stdio;
 
+use roko_gate::attempt_diff::{AttemptChange, ChangeKind};
 use tokio::io::AsyncReadExt as _;
 
 use super::sibling_settle::{WriterMark, declares};
@@ -334,6 +335,35 @@ impl AttemptDiff {
             return None;
         }
         String::from_utf8(bytes).ok()
+    }
+
+    /// The changes as the attempt diff check reads them (S05 A1), with each
+    /// side's text when `wants_text` asks for it and it is readable.
+    pub(super) async fn attempt_changes(
+        &self,
+        wants_text: impl Fn(&AttemptChange) -> bool,
+    ) -> Vec<AttemptChange> {
+        let mut changes = Vec::with_capacity(self.changes.len());
+        for changed in &self.changes {
+            let kind = match changed.status {
+                'A' | 'C' => ChangeKind::Added,
+                'D' => ChangeKind::Deleted,
+                'R' => ChangeKind::Renamed,
+                _ => ChangeKind::Modified,
+            };
+            let mut change = AttemptChange::new(kind, changed.path.clone());
+            change.old_path.clone_from(&changed.old_path);
+            if wants_text(&change) {
+                if let Some(blob) = &changed.old_blob {
+                    change.before = self.blob_text(blob).await;
+                }
+                if let Some(blob) = &changed.new_blob {
+                    change.after = self.blob_text(blob).await;
+                }
+            }
+            changes.push(change);
+        }
+        changes
     }
 }
 

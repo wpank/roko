@@ -1063,7 +1063,7 @@ fn is_roko_state(path: &str) -> bool {
 
 /// The audit worktree of `result` at `path`, any stale one there removed
 /// first, with the visible tests the attempt changed restored from `base`.
-fn open_worktree(
+pub(crate) fn open_worktree(
     repo: &Path,
     path: &Path,
     base: &str,
@@ -1092,8 +1092,8 @@ fn phase_b_drawn(secret: &[u8], unit: &AuditUnit, result: &str, pi_b: f64) -> bo
 }
 
 /// The audit's labels (S05 §4.3): Y from A2 and B1, G from A1, W from B2.
-/// B3's Y and G count only on a docs, plan or research task, where it is
-/// the only check; elsewhere they set nothing a mechanical check did not.
+/// B3's Y and G count only where [`b3_counts`]; elsewhere they set nothing
+/// a mechanical check did not.
 pub(super) fn combine(
     phase_a: AuditLabels,
     b1: AuditLabels,
@@ -1101,7 +1101,7 @@ pub(super) fn combine(
     b3: AuditLabels,
     kind: &str,
 ) -> AuditLabels {
-    let (b3_y, b3_g) = if REVIEW_ONLY_KINDS.contains(&kind) {
+    let (b3_y, b3_g) = if b3_counts(kind) {
         (b3.y, b3.g)
     } else {
         (None, None)
@@ -1111,6 +1111,12 @@ pub(super) fn combine(
         g: either(&[phase_a.g, b3_g]),
         w: b2.w,
     }
+}
+
+/// Whether B3's labels count on a task of `kind`: only on a docs, plan or
+/// research task, where it is the only check (S05 §4.3).
+pub(crate) fn b3_counts(kind: &str) -> bool {
+    REVIEW_ONLY_KINDS.contains(&kind)
 }
 
 /// `Some(true)` when a label is 1, else `Some(false)` when one is 0, else

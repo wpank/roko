@@ -117,6 +117,36 @@ def test_percentile_and_bca_agree_closely_on_a_symmetric_statistic():
     assert abs(percentile.high - bca.high) < 0.05
 
 
+def test_p_value_is_the_level_at_which_the_interval_reaches_the_null():
+    """3338: Holm reads p-values, the envelope reads bounds; they must agree. For the planted 0.15 difference and a
+    cost ratio, at every alpha the (1 - alpha) interval's bound clears the null exactly when p <= alpha, away from the
+    interpolation between order statistics, for percentile and BCa alike."""
+    rng = Random(5)
+    ratio_rows = [_row("F1", level, task_num, seed, "A", 0.0) | {"cost": round(rng.uniform(0.05, 0.4), 3),
+                                                                 "vs": 1.0 if rng.random() < 0.6 else 0.0}
+                  for level in (1, 2, 3) for task_num in range(10) for seed in range(3)]
+    checked = set()
+    for rows, statistic, nulls, alternative in ((_planted_rows(gap=0.15, seed=4), _diff, (-0.1, -0.05), "greater"),
+                                                (ratio_rows, _ratio, (0.6, 0.7), "less")):
+        for method in ("percentile", "bca"):
+            base = bootstrap.paired_bootstrap(rows, statistic, b=2000, seed=3, method=method)
+            for alpha in (0.001, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4):
+                bound = bootstrap.paired_bootstrap(rows, statistic, b=2000, seed=3, method=method, alpha=alpha)
+                for null in nulls:
+                    p = bootstrap.p_value(base, null, alternative)
+                    if abs(p - alpha) < 0.004:
+                        continue  # within the order statistics' interpolation
+                    passes = bound.low >= null if alternative == "greater" else bound.high <= null
+                    assert passes == (p <= alpha), (method, alternative, null, alpha, p, bound.low, bound.high)
+                    checked.add(passes)
+    assert checked == {True, False}  # both sides of the rule were exercised
+    percentile = bootstrap.paired_bootstrap(_planted_rows(gap=0.15, seed=4), _diff, b=1000, seed=2)
+    share = sum(1 for value in percentile.replicates if value < 0.05) / 1000
+    assert bootstrap.p_value(percentile, 0.05, "greater") == min(1.0, 2 * max(share, 1 / 2000))
+    with pytest.raises(bootstrap.BootstrapError):
+        bootstrap.p_value(percentile, 0.05, "two-sided")
+
+
 def test_rejects_no_rows():
     with pytest.raises(bootstrap.BootstrapError):
         bootstrap.paired_bootstrap([], _diff)

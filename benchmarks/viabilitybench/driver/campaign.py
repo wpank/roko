@@ -6,7 +6,7 @@
 
 **The manifest** (`vb.experiment/1`, `schema/experiment.schema.json`) is a TOML file in `experiments/`: the
 experiment id every run gets (`vb run --experiment`), an optional `prereg_id`, `requires_lock` and `requires_live`
-(which 3341 and 3359 enforce; until then a manifest that sets either is refused before it runs), an `order`, and its
+(3359 enforces `requires_live`; until then a manifest that sets it is refused before it runs), an `order`, and its
 blocks. A block is one cell of the experiment: a stream, an arm file's name in `arms/`, a model, seeds (`vb run`'s
 `--seeds` form), a budget line and, optionally, a disturbance spec, an instance subset of the stream, the secret
 file's fingerprint its instances are audited under, `max_cost_usd` (the most the block may spend, which a network
@@ -38,6 +38,12 @@ orders each day's units by a keyed shuffle of the manifest id, the order's seed 
 The dry run prints the experiment, its units in order and, per block, its runs, planned spend and worst case, and
 per line and cap what is held, planned and left, as JSON. It exits 2 when anything is refused.
 
+**The pre-registration lock** (S09 SC1, 3341). An experiment runs only under the lock when its manifest says
+`requires_lock`, when it is LOG1, or when it is a live experiment (S09 §5: an id starting `E-`); `requires_lock`
+says which, from those rules and the manifests in `experiments/`. Such a campaign, and each `vb run` of such an
+experiment, is refused unless the lock (`--lock`, default `experiments/prereg.lock.json`) exists, is committed and
+checks clean against S09 (`--prereg-spec`) and the tree it pins (`analysis/lock.py`'s `require`).
+
 **Running** (without `--dry-run`). Each unit runs `vb.py run` as a process of its own, with the operator's
 environment, so its own checks and its restart into an allowlisted environment work as when typed by hand. A network
 unit needs `--allow-network` on the campaign, and gets `--allow-network` and its `--max-cost-usd`. An offline
@@ -59,7 +65,9 @@ API:
     load(path) -> Manifest                                   # raises CampaignError
     units(manifest, include=()) -> list[Unit]
     check(vb, manifest, *, budget, results_root, include=(), provider_url=None, arm_files=None,
-          secret_fingerprint=None) -> Check
+          secret_fingerprint=None, lock=DEFAULT_LOCK, spec=DEFAULT_SPEC) -> Check
+    requires_lock(experiment_id, manifests=EXPERIMENTS_DIR) -> bool
+    lock_refusal(lock=DEFAULT_LOCK, spec=DEFAULT_SPEC) -> str | None      # why the lock does not let a run start
     cmd_campaign(vb, args) -> int; add_arguments(parser)
     CampaignError, SCHEMA, ORDERS
 """
@@ -69,6 +77,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -92,6 +101,11 @@ BLOCK_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 LOG = "campaign.jsonl"  # in <results>/<experiment>/
 STREAMS = ".campaign"  # <results>/<experiment>/.campaign/: derived stream files, which `vb report` skips
 ABANDONED = ".abandoned"  # <results>/<experiment>.abandoned/: where a stopped unit's run directory goes
+EXPERIMENTS_DIR = layout.VB_ROOT / "experiments"
+DEFAULT_LOCK = EXPERIMENTS_DIR / "prereg.lock.json"  # S09 E4
+DEFAULT_SPEC = layout.REPO_ROOT / "tmp" / "cybernetic-harness" / "specs" / "S09-experiments.md"  # untracked, MAIN only
+LOCKED_EXPERIMENTS = ("LOG1",)  # S09 SC1: LOG1 never starts without the lock
+LIVE_PREFIX = "E-"  # S09 §5: live experiments are E-<name>(-live), and each runs under the lock
 NEEDS_PROXY = ("provider_fault", "model_swap")  # disturbances the metering proxy applies (disturb.py)
 
 
@@ -229,9 +243,37 @@ def units(manifest: Manifest, include: Iterable[str] = ()) -> list[Unit]:
         f"{manifest.id}/{manifest.order_seed}/{day}/{unit.key}"))]
 
 
+def requires_lock(experiment_id: str, manifests: Path = EXPERIMENTS_DIR) -> bool:
+    """Whether `experiment_id` runs only under the pre-registration lock (module docstring)."""
+    if experiment_id in LOCKED_EXPERIMENTS or experiment_id.startswith(LIVE_PREFIX):
+        return True
+    for path in sorted(Path(manifests).glob("*.toml")):
+        try:
+            manifest = load(path)
+        except CampaignError:
+            continue  # budget.toml and the like are not manifests
+        if manifest.id == experiment_id and manifest.requires_lock:
+            return True
+    return False
+
+
+def lock_refusal(lock: Path = DEFAULT_LOCK, spec: Path = DEFAULT_SPEC) -> str | None:
+    """Why the lock at `lock` does not let a locked experiment start (missing, uncommitted or drifted), or None."""
+    analysis = str(layout.VB_ROOT / "analysis")
+    if analysis not in sys.path:
+        sys.path.append(analysis)  # after the driver's own modules: analysis/lock.py and what it imports
+    prereg = importlib.import_module("lock")
+    try:
+        prereg.require(lock, spec)
+    except prereg.LockError as err:
+        return str(err)
+    return None
+
+
 def check(vb, manifest: Manifest, *, budget: ledger.Budget, results_root: Path, include: Iterable[str] = (),
           provider_url: str | None = None, arm_files: dict[str, str] | None = None,
-          secret_fingerprint: str | None = None, finished: Iterable[str] = (), limit: int | None = None) -> Check:
+          secret_fingerprint: str | None = None, finished: Iterable[str] = (), limit: int | None = None,
+          lock: Path = DEFAULT_LOCK, spec: Path = DEFAULT_SPEC) -> Check:
     """Validate `manifest` against the arms, streams, snapshot, budget and ledger (module docstring). `vb` is the
     driver module; `finished` names the units already done, whose spend the ledger holds."""
     include = set(include)
@@ -247,9 +289,12 @@ def check(vb, manifest: Manifest, *, budget: ledger.Budget, results_root: Path, 
         found.problems.append("--arm-file swaps an arm's file for a rehearsal, so it needs a loopback --provider-url")
     if limit is not None and (not provider_url or limit < 1):
         found.problems.append("--limit cuts a rehearsal's streams, so it needs a loopback --provider-url and N >= 1")
-    if manifest.requires_lock:
-        found.notes.append("requires_lock: the pre-registration lock is not checked by this driver (3341), so the "
-                           "campaign refuses to run until it is")
+    if manifest.requires_lock or requires_lock(manifest.id):
+        refusal = lock_refusal(lock, spec)
+        if refusal:
+            found.problems.append(f"requires_lock: {refusal}")
+        else:
+            found.notes.append(f"requires_lock: the lock at {lock} is committed and checks clean")
     if manifest.requires_live:
         found.notes.append(f"requires_live ({', '.join(manifest.requires_live)}): not checked by this driver "
                            "(3359), so the campaign refuses to run until it is")
@@ -291,7 +336,7 @@ def cmd_campaign(vb, args: argparse.Namespace) -> int:
     finished = {event["unit"] for event in events if event["event"] == "finish" and event.get("exit") == 0}
     found = check(vb, manifest, budget=budget, results_root=results_root, include=args.include or (),
                   provider_url=args.provider_url, arm_files=arm_files, secret_fingerprint=fingerprint,
-                  finished=finished, limit=args.limit)
+                  finished=finished, limit=args.limit, lock=args.lock, spec=args.prereg_spec)
     if fingerprint is None:
         found.notes.append(f"secret: not checked ({why})")
     if args.dry_run:
@@ -299,9 +344,8 @@ def cmd_campaign(vb, args: argparse.Namespace) -> int:
         return 2 if found.problems else 0
     if found.problems:
         raise CampaignError("refused before any run: " + "; ".join(found.problems))
-    if manifest.requires_lock or manifest.requires_live:
-        raise CampaignError("the manifest requires the pre-registration lock or live loops, which this driver cannot "
-                            "check yet (3341, 3359)")
+    if manifest.requires_live:
+        raise CampaignError("the manifest requires live loops, which this driver cannot check yet (3359)")
     if fingerprint is None:
         raise CampaignError(f"the secret file cannot be read ({why}), so the campaign cannot keep each instance "
                             "under one secret")
@@ -346,6 +390,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--results", type=Path, help="passed to every unit's vb run")
     parser.add_argument("--work", type=Path, help="passed to every unit's vb run")
     parser.add_argument("--transcripts", action="store_true", help="passed to every unit's vb run")
+    parser.add_argument("--lock", type=Path, default=DEFAULT_LOCK, help="the pre-registration lock a locked "
+                        "experiment needs (default: experiments/prereg.lock.json); passed to every unit's vb run")
+    parser.add_argument("--prereg-spec", type=Path, default=DEFAULT_SPEC, help="S09, which the lock pins (default: "
+                        "the untracked spec in tmp/); passed to every unit's vb run")
 
 
 class _Unavailable(Exception):
@@ -509,7 +557,8 @@ def _run_unit(vb, args: argparse.Namespace, manifest: Manifest, found: Check, un
     if not plan["network"] and (plan["proxied"] or set(plan.get("disturbances", ())) & set(NEEDS_PROXY)):
         argv.append("--proxy")  # a rehearsal meets the metering proxy wherever the real run would
     for flag, value in (("--secret-file", args.secret_file), ("--key-file", args.key_file),
-                        ("--results", results_root), ("--work", args.work)):
+                        ("--results", results_root), ("--work", args.work), ("--lock", args.lock),
+                        ("--prereg-spec", args.prereg_spec)):
         if value is not None:
             argv += [flag, str(value)]
     if args.transcripts:

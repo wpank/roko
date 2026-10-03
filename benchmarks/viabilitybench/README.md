@@ -22,7 +22,9 @@ what has run, is tracked in `work/items/` under epic `spec-567e52`.
   `~/vb-work`). Each pilot's small summary bundle (records, metrics, ledger and report page; no transcripts or
   archives) is committed under `reports/`.
 - **Stdlib-only Python 3.11 or newer** for everything the benchmark runs: families, verifiers, driver and
-  analysis. pytest is a dev-only dependency, pinned in `requirements.lock`.
+  analysis. pytest is a dev-only dependency, pinned in `requirements.lock`. The one exception (decision 3336): the
+  secondary analyses under `analysis/models/` (the GLMM, 2PL IRT and ICC) use numpy and scipy, pinned in
+  `requirements-analysis.lock`. Nothing else imports them, so every primary analysis stays stdlib-only.
 - **One price source.** Costs come from `config/prices/<date>.toml`, never from `roko.toml`'s per-model rates
   (its gpt-oss-120b rates are wrong) and never from a fallback rate.
 - **No provider calls in tests.** Tests run offline against fixtures and stub servers.
@@ -52,6 +54,12 @@ benchmarks/viabilitybench/
   driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
   analysis/{metrics, passk, report}.py                      # vb report
   analysis/gates.py                                         # gate pages: G0's go/no-go (go-no-go.md, g0.json)
+  analysis/{bootstrap, cs, mcnemar, cuped}.py               # S09 §4.1's toolkit: bootstrap, sequences, McNemar, CUPED
+  analysis/{envelope, holm}.py                              # H1's envelope (E*) and graphical Holm over the primaries
+  analysis/simulate.py                                      # synthetic campaigns: coverage, FWER, anytime coverage
+  analysis/replay.py                                        # replay IO: run records and S01 copies, in one order
+  analysis/{lock, blind}.py                                 # the pre-registration lock, and blinded arm labels
+  analysis/models/{glmm, irt}.py                            # the secondaries on numpy and scipy (decision 3336)
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
   manifest.json  order-<seed>.json  records.jsonl  ledger.jsonl  reservations.jsonl  errors.jsonl  metrics.json
@@ -60,8 +68,7 @@ $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
 
 Tests sit beside the code they test (`test_*.py`), plus `tests/test_plan_slice.py`, and `driver/testdata/` holds a
 toy family. The prices live in `config/prices/2026-09-28.toml` (§5.6). S08 §5.1 plans more than this tree holds: the
-families F2, F3 and F5–F8, `external/swebench/`, the other streams and arms, and
-`analysis/{bootstrap, cs, cuped, irt, replay}.py`.
+families F2, F3 and F5–F8, `external/swebench/`, and the other streams and arms.
 
 ## The driver
 
@@ -164,6 +171,11 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   without `--dry-run` it runs one `vb run` per unit in the manifest's order (`as_listed`, or S09's
   `daily_interleave`), logs them in `<experiment>/campaign.jsonl`, and on a rerun goes on after the last finished
   unit. Its module docstring has the rules.
+- **The pre-registration lock** (`analysis/lock.py`, S09 SC1, §5). `lock.py build` writes
+  `experiments/prereg.lock.json` from S09, the analysis code, the streams and the price snapshot, and `lock.py
+  --check` recomputes every hash. LOG1, every live `E-` experiment and every manifest with `requires_lock` start,
+  through `vb run` or `vb campaign`, only when the lock is committed and checks clean; taking it is task 3345.
+  `analysis/blind.py` labels arms with a salted HMAC and unblinds them only under that lock.
 - **Gate G0** (`analysis/gates.py G0 --experiment PILOT-A --experiment PILOT-B ...`, S09 §4.7). It computes every
   G0 check from the pilot's runs and the evidence files it is given (the verifier-CI JSON, `vb ledger reconcile
   --json` per provider, the hand-filled SC2 spot check, a synthetic runaway's run), with its value, threshold and run
@@ -261,3 +273,12 @@ dependencies with hashes. To change them, edit `requirements.in` and regenerate 
 ```bash
 uv pip compile requirements.in --generate-hashes --universal --python-version 3.11 -o requirements.lock
 ```
+
+The secondary models' tests (`analysis/models/test_models.py`) need the analysis stack too, and skip without it:
+
+```bash
+benchmarks/viabilitybench/.venv/bin/python -m pip install --require-hashes -r benchmarks/viabilitybench/requirements-analysis.lock
+uv pip compile requirements-analysis.in --generate-hashes --universal --python-version 3.11 -o requirements-analysis.lock
+```
+
+The second line regenerates that lock from this directory after `requirements-analysis.in` changes.

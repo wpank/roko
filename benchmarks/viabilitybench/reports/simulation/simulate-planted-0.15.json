@@ -1,0 +1,125 @@
+{
+  "schema_version": "vb.simulation/1",
+  "planted": 0.15,
+  "sims": 1000,
+  "seed": 3339,
+  "design": {
+    "families": [
+      "F1",
+      "F2",
+      "F3",
+      "F4",
+      "F5",
+      "F7"
+    ],
+    "levels": {
+      "1": [
+        0.55,
+        0.75
+      ],
+      "2": [
+        0.45,
+        0.65
+      ],
+      "3": [
+        0.3,
+        0.5
+      ],
+      "4": [
+        0.15,
+        0.35
+      ],
+      "5": [
+        0.1,
+        0.3
+      ]
+    },
+    "tasks_per_stratum": 4,
+    "seeds": 3,
+    "costs": {
+      "A": 0.02,
+      "B": 0.4
+    },
+    "coupling": 0.0,
+    "spread": 0.1,
+    "population_rate": 0.56,
+    "population_ratio": 1.3658536585365855,
+    "alpha": 0.05,
+    "envelope_bars": {
+      "X": 0.9,
+      "Y": 0.3
+    }
+  },
+  "resamples": {
+    "b_per_interval": 10000,
+    "intervals_per_campaign": 7,
+    "total_replicates": 70000000
+  },
+  "criteria": {
+    "bootstrap_rate_coverage": {
+      "value": 0.975,
+      "band": [
+        0.93,
+        0.97
+      ],
+      "in_band": false,
+      "mc_se": 0.004937104414532877
+    },
+    "bootstrap_diff_coverage": {
+      "value": 0.968,
+      "band": [
+        0.93,
+        0.97
+      ],
+      "in_band": true,
+      "mc_se": 0.005565608681896351
+    },
+    "bootstrap_ratio_coverage": {
+      "value": 0.97,
+      "band": [
+        0.93,
+        0.97
+      ],
+      "in_band": true,
+      "mc_se": 0.0053944415837044735
+    },
+    "cuped_coverage": {
+      "value": 0.951,
+      "band": [
+        0.93,
+        0.97
+      ],
+      "in_band": true,
+      "mc_se": 0.006826346021115546
+    },
+    "cs_anytime_coverage": {
+      "value": 0.982,
+      "band": [
+        0.95,
+        1.0
+      ],
+      "in_band": true,
+      "mc_se": 0.004204283529925166
+    },
+    "envelope_fwer_r": {
+      "value": 0.01,
+      "band": [
+        0.0,
+        0.05
+      ],
+      "in_band": true,
+      "mc_se": 0.003146426544510455
+    },
+    "envelope_fwer_c": {
+      "value": 0.01,
+      "band": [
+        0.0,
+        0.05
+      ],
+      "in_band": true,
+      "mc_se": 0.003146426544510455
+    }
+  },
+  "all_in_band": false,
+  "seconds": 2313.6
+}

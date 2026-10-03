@@ -94,7 +94,7 @@ pub use budget::{
     GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot, PlanBudgetControl, PlanBudgetRaise,
     plan_ceiling_micro_usd,
 };
-pub use feedback::GraphFeedbackContext;
+pub use feedback::{GraphFeedbackContext, SectionOutcomes};
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
 pub use operator_directives::OperatorDirectives;
 pub use operator_stop::OperatorStops;

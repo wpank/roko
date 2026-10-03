@@ -1338,6 +1338,8 @@ async fn run_graph_plan_body(
     );
     // CLI dispatch turns record with their run's provenance sink (gap-ca8022).
     graph_feedback.provenance_sinks = Some(provenance_sinks.clone());
+    // What the run's attempts teach the section bandit, saved at its end.
+    let section_outcomes = graph_feedback.section_outcomes.clone();
 
     // ── TUI vs inline progress decision ──────────────────────────────
     //
@@ -2115,6 +2117,23 @@ async fn run_graph_plan_body(
         );
     }
 
+    // ── Persist the section bandit (S02 L9) ─────────────────────────
+    //
+    // Fold what the run's settled attempts taught the section bandit into
+    // its file, under the file's lock, so a concurrent run's outcomes
+    // survive. The attempts of failed and cancelled plans count too; a
+    // frozen run has no outcomes to fold.
+    if let Some(outcomes) = &section_outcomes {
+        let path = workdir.join(roko_learn::section_effect::SECTION_BANDIT_PATH);
+        if let Err(err) = outcomes.save(&path) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "failed to persist the section bandit (non-fatal)"
+            );
+        }
+    }
+
     // ── Persist run metrics (backlog #169) ──────────────────────────
     //
     // Collect task counts and cost from the just-completed plan loop and
@@ -2387,6 +2406,8 @@ pub fn build_graph_feedback_context(
         runs_dir: Some(graph_layout.runs_dir()),
         // The run body attaches its runs' provenance sinks (gap-ca8022).
         provenance_sinks: None,
+        // S02 L9: the section bandit's outcomes, saved when the run ends.
+        section_outcomes: learning.then(Arc::default),
     }
 }
 
@@ -5572,12 +5593,13 @@ max_retries = 0
     /// live run has them all.
     #[tokio::test]
     async fn frozen_run_registers_no_learning_sinks() {
-        const LEARNING: [&str; 6] = [
+        const LEARNING: [&str; 7] = [
             "sink.episode",
             "sink.routing",
             "sink.knowledge_ingestion",
             "sink.playbook_outcome",
             "sink.error_pattern",
+            "sink.section_effect",
             "store.prompt_experiment",
         ];
         const KEPT: [&str; 4] = [

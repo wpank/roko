@@ -162,8 +162,9 @@ impl GraphTaskDispatcher {
             component(
                 "sink.section_effect",
                 WiringKind::Sink,
-                false,
-                "no writer of per-section prompt effects",
+                feedback.section_outcomes.is_some(),
+                "section bandit outcomes, folded into `learn/section-bandit.json` when the run \
+                 ends",
             ),
             component(
                 "store.attempt_log",

@@ -7,6 +7,7 @@ use roko_agent::safety::{
 };
 use roko_core::ContentHash;
 use roko_core::extension::CamelTaintLevel;
+use roko_learn::section_effect::{SectionBandit, SectionDecision};
 
 use super::tui_forward::append_jsonl_line_async;
 use super::verification::verify_step_label;
@@ -70,6 +71,71 @@ pub struct GraphFeedbackContext {
     /// The safety provenance sinks of the runs in flight (gap-ca8022): a
     /// CLI provider's dispatch turn leaves one record with its run's sink.
     pub provenance_sinks: Option<crate::safety_provenance::ProvenanceSinks>,
+
+    /// S02 L9: what the section bandit learns from this run's settled
+    /// attempts, folded into `.roko/learn/section-bandit.json` when the run
+    /// ends. `None` in a frozen run (decision 2218).
+    pub section_outcomes: Option<Arc<SectionOutcomes>>,
+}
+
+/// What the section bandit learns from one run (S02 L9): the draws of each
+/// settled attempt's prompt, with its learning label. The run's prompts draw
+/// from the bandit as the run found it (the prompt cache's snapshot); when
+/// the run ends, [`SectionOutcomes::save`] folds these into the bandit's file
+/// under its lock, so a concurrent run's outcomes survive.
+#[derive(Debug, Default)]
+pub struct SectionOutcomes {
+    pending: parking_lot::Mutex<Vec<SectionOutcome>>,
+}
+
+/// One droppable section of one settled attempt.
+#[derive(Debug, Clone)]
+struct SectionOutcome {
+    section: String,
+    /// Whether the attempt's prompt left the section out.
+    excluded: bool,
+    /// The attempt's learning label: 1 for a verified pass, 0 for a failure
+    /// of the agent's work, `None` when it teaches nothing.
+    label: Option<u8>,
+}
+
+impl SectionOutcomes {
+    /// Record a settled attempt whose prompt drew `draws`: each is an
+    /// opportunity for its section and, with a `learning_label`, an outcome
+    /// on the arm the section had.
+    pub fn record(&self, draws: &[SectionDecision], learning_label: Option<u8>) {
+        let mut pending = self.pending.lock();
+        for draw in draws {
+            pending.push(SectionOutcome {
+                section: draw.section.clone(),
+                excluded: draw.excluded,
+                label: learning_label,
+            });
+        }
+    }
+
+    /// Fold the recorded outcomes into the bandit at `path`, in one
+    /// transaction under its lock, and return how many it folded; with none
+    /// recorded it writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read, parsed or written. The
+    /// outcomes stay recorded then, for a later save.
+    pub fn save(&self, path: &Path) -> std::io::Result<usize> {
+        let mut pending = self.pending.lock();
+        if pending.is_empty() {
+            return Ok(0);
+        }
+        SectionBandit::transaction(path, |bandit| {
+            for outcome in pending.iter() {
+                bandit.record(&outcome.section, outcome.excluded, outcome.label);
+            }
+        })?;
+        let folded = pending.len();
+        pending.clear();
+        Ok(folded)
+    }
 }
 
 /// A `costs.jsonl` row with its attempt's settled verdict beside it: the
@@ -107,6 +173,7 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("retrieval_outcomes_path", &self.retrieval_outcomes_path)
             .field("runs_dir", &self.runs_dir)
             .field("provenance_sinks", &self.provenance_sinks.is_some())
+            .field("section_outcomes", &self.section_outcomes.is_some())
             .finish()
     }
 }
@@ -126,6 +193,7 @@ impl Default for GraphFeedbackContext {
             retrieval_outcomes_path: None,
             runs_dir: None,
             provenance_sinks: None,
+            section_outcomes: None,
         }
     }
 }
@@ -533,6 +601,16 @@ impl GraphTaskDispatcher {
                     );
                 }
             }
+        }
+
+        // ── W07b: Section bandit settlement (S02 L9) ─────────────────────
+        //
+        // Each droppable section the prompt drew for is one more opportunity
+        // and, with the attempt's learning label, one outcome on the arm it
+        // had: left out or kept. The run folds them into the bandit when it
+        // ends; a frozen run keeps none.
+        if let Some(outcomes) = &self.feedback.section_outcomes {
+            outcomes.record(&diagnostics.section_decisions, learning.map(u8::from));
         }
 
         // ── W09: DaimonState affect feedback ─────────────────────────────
@@ -1876,5 +1954,64 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         );
         assert!(reason.contains("verify[0:check]"), "{reason}");
         assert!(reason.contains("the greeting is missing"), "{reason}");
+    }
+
+    /// S02 L9 (backlog 4124): every settled attempt whose prompt the section
+    /// bandit drew for is an opportunity for each droppable section, and only
+    /// a learning label moves a posterior: two labelled attempts and one
+    /// unverified attempt move each section's counts by exactly two. Saving
+    /// folds them into `section-bandit.json`, and a second save writes
+    /// nothing.
+    #[tokio::test]
+    async fn labelled_attempt_updates_section_posteriors() {
+        use roko_learn::section_effect::{BetaPosterior, SECTION_BANDIT_PATH};
+
+        let temp = tempdir().expect("tempdir");
+        let outcomes = Arc::new(SectionOutcomes::default());
+        let feedback = GraphFeedbackContext {
+            section_outcomes: Some(Arc::clone(&outcomes)),
+            ..GraphFeedbackContext::default()
+        };
+        // Every chain's prompts run the section bandit.
+        let configure = |config: &mut RokoConfig| {
+            no_auto_fix(config);
+            config
+                .experiments
+                .force_arms
+                .insert("sections".to_string(), "learned".to_string());
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, configure, feedback).await;
+        let ctx = CellContext::new();
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("an attempt without verify steps completes unverified");
+        task.verify = vec![verify_step("check", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verify step passes");
+        let mut failing = task.clone();
+        failing.id = "T-FAIL".into();
+        failing.verify = vec![verify_step("check", "false")];
+        dispatcher
+            .dispatch(&make_spec(&failing), Vec::new(), &ctx)
+            .await
+            .expect_err("the failing verify step fails the attempt");
+
+        let path = temp.path().join(SECTION_BANDIT_PATH);
+        let folded = outcomes.save(&path).expect("save the section bandit");
+        assert!(folded >= 3, "{folded}");
+        let bandit = SectionBandit::load(&path).expect("load the section bandit");
+        assert!(bandit.sections.contains_key("conventions"), "{bandit:?}");
+        let counts = |arm: &BetaPosterior| arm.alpha + arm.beta;
+        for (section, arms) in &bandit.sections {
+            // Both arms start at Beta(1, 1).
+            let moved = counts(&arms.included) + counts(&arms.excluded) - 4.0;
+            assert!((moved - 2.0).abs() < 1e-9, "{section}: {arms:?}");
+            assert_eq!(arms.opportunities, 3, "{section}");
+        }
+        assert_eq!(outcomes.save(&path).expect("nothing to save"), 0);
     }
 }

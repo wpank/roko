@@ -328,6 +328,24 @@ impl ReflexStore {
         })
     }
 
+    /// Find the rule [`Self::match_observation_with_id`] would fire, without
+    /// firing it: no hit is counted, no firing time or feedback binding is
+    /// recorded, and the store stays clean, so nothing reaches disk. A run
+    /// that holds learned state fixed (decision 2218) reads its reflexes so.
+    #[must_use]
+    pub fn peek_observation_with_id(&self, observation: &ReflexObservation) -> Option<ReflexMatch> {
+        let state = self.inner.state.lock();
+        state
+            .rules
+            .iter()
+            .find(|(_, rule)| rule.condition.matches(observation))
+            .map(|(id, rule)| ReflexMatch {
+                rule_id: *id,
+                condition: rule.condition.clone(),
+                action: rule.action.clone(),
+            })
+    }
+
     /// Record a passing gate for the rule that most recently fired `action`.
     ///
     /// The success count and confidence ratio are updated and the store is
@@ -736,6 +754,36 @@ mod tests {
             store.match_observation(&ReflexObservation::default()),
             Some(candidate.action)
         );
+    }
+
+    /// A peek finds the rule a match would fire and records nothing, in the
+    /// store or on disk.
+    #[test]
+    fn peek_matches_without_counting_a_hit() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("reflexes.jsonl");
+        let store = ReflexStore::open(&path);
+        let candidate = candidate("peek");
+        assert!(store.try_promote(&candidate, 3));
+        let persisted = std::fs::read(&path).expect("persisted rule");
+
+        let peeked = store
+            .peek_observation_with_id(&observation("peek"))
+            .expect("the rule matches");
+        assert_eq!(peeked.action, candidate.action);
+        let unmatched = store.peek_observation_with_id(&ReflexObservation::default());
+        assert_eq!(unmatched, None, "every populated field must match");
+        drop(store);
+
+        let reread = std::fs::read(&path).expect("reread the store");
+        assert_eq!(reread, persisted, "a peek writes nothing");
+        let rule = ReflexStore::open(&path)
+            .snapshot()
+            .pop()
+            .expect("reloaded rule");
+        assert_eq!(rule.id, peeked.rule_id);
+        assert_eq!((rule.hit_count, rule.success_count), (3, 3));
+        assert!(rule.last_fired_at.is_none());
     }
 
     #[test]

@@ -1031,8 +1031,9 @@ impl GraphTaskDispatcher {
                 // stored in the PostGateReflectionStore (at
                 // `.roko/learn/post-gate-reflections.json`) so subsequent
                 // retry prompts and playbook extraction see real LLM
-                // analysis instead of the deterministic pattern template.
-                if self.feedback.replan_on_gate_failure {
+                // analysis instead of the deterministic pattern template. A
+                // frozen run asks for none (decision 2218).
+                if self.feedback.replan_on_gate_failure && !self.learning_frozen() {
                     if let Some((reflection_path, cheap_agent)) = self
                         .feedback
                         .post_gate_reflection_path

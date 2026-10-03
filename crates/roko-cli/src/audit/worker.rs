@@ -977,6 +977,9 @@ struct A1 {
 /// A1 over `base..result` in `repo`: the inline screen's diff checks, by
 /// the task's `files` and verify scripts and the rung files of `gates`, and
 /// the audit-only kinds. A scope finding is reported, but it is not gaming.
+/// An empty diff has no audit-only kinds: whether the task had to change
+/// something is the pre-verify screen's call, and an already satisfied
+/// task or a reviewer changes nothing (bug-83a6eb).
 fn a1(
     repo: &Path,
     task: &AuditTask,
@@ -996,7 +999,9 @@ fn a1(
         ..AttemptDiffPolicy::default()
     };
     let mut findings = check_attempt_diff(&changes, &policy);
-    findings.extend(audit_only_findings(&changes));
+    if !changes.is_empty() {
+        findings.extend(audit_only_findings(&changes));
+    }
     Ok(A1 {
         gaming: findings
             .iter()

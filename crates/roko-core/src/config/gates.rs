@@ -107,8 +107,9 @@ const fn default_convergence_min_observations() -> u64 {
 
 /// What kind of check a gate rung is (`kind` in `[[gates.rungs]]`, 9119).
 ///
-/// Only `command` rungs run today. The other kinds parse and are validated;
-/// the verifier packs give them their checks.
+/// Plan tasks run `command`, `citations`, `judge`, `schema` and `confirm`
+/// rungs; a `receipt` rung checks an applied outbound effect (9132), and a
+/// task that must pass one is refused before its agent runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RungKind {
@@ -124,7 +125,8 @@ pub enum RungKind {
     Schema,
     /// After an action, its target shows the effect the action claims.
     Receipt,
-    /// The person the work is for confirms the outcome.
+    /// The person the work is for confirms the outcome, through the task's
+    /// review hold (9137). Its `rubric` is the question to ask.
     Confirm,
 }
 
@@ -184,7 +186,8 @@ pub struct GateRungConfig {
     /// A `schema` rung's schema file, relative to the task's workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
-    /// A `judge` rung's rubric: its text, or the path of a file holding it.
+    /// A `judge` rung's rubric, or the question a `confirm` rung asks: its
+    /// text, or the path of a file holding it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rubric: Option<String>,
     /// Whether the rung only advises: its verdict is recorded and never

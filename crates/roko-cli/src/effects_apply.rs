@@ -213,6 +213,7 @@ pub fn effects_report(workdir: &Path, run_id: Option<&str>) -> serde_json::Value
                 "attempt": hold.attempt,
                 "tool": hold.tool,
                 "server": hold.server,
+                "arguments": argument_summary(&hold.arguments),
                 "proposed_at": hold.proposed_at,
             })
         })
@@ -223,6 +224,39 @@ pub fn effects_report(workdir: &Path, run_id: Option<&str>) -> serde_json::Value
         .filter(|record| of_run(&record.run_id))
         .collect();
     serde_json::json!({ "waiting": waiting, "decided": decided })
+}
+
+/// What a held call's `arguments` hold, without their values, which may
+/// carry secrets (9138): each field's JSON type, with a string's length.
+fn argument_summary(arguments: &serde_json::Value) -> serde_json::Value {
+    let Some(fields) = arguments.as_object() else {
+        return serde_json::Value::from(json_type(arguments));
+    };
+    let summary: serde_json::Map<String, serde_json::Value> = fields
+        .iter()
+        .map(|(name, value)| {
+            let shown = match value {
+                serde_json::Value::String(text) => {
+                    format!("string ({} chars)", text.chars().count())
+                }
+                other => json_type(other).to_string(),
+            };
+            (name.clone(), serde_json::Value::String(shown))
+        })
+        .collect();
+    serde_json::Value::Object(summary)
+}
+
+/// The JSON type of `value`, as JSON Schema names it.
+fn json_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 /// Decide the staged effect `effect_id` in the workspace at `workdir`, as

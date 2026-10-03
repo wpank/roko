@@ -204,12 +204,16 @@ bounds, `pattern`, `allOf`, `anyOf`, `oneOf`, `not` and local `$ref`s), and CSV 
 as a table schema (`fields` with `name`, a `type` among `string`, `integer`, `number`, `boolean` and
 `date`, and `constraints.required`; `primaryKey`). It reads `schema` from the main workspace, lists
 the first 20 violations by JSON pointer or CSV row, and is skipped when the schema uses a keyword it
-does not check. `receipt` and `confirm` parse and are validated but are not built yet: a plan task
-that must pass one fails before its agent runs, and an advisory or optional one is skipped. Loading
+does not check. `confirm` (9137) asks the person the work is for to confirm the outcome: it writes
+the task's review hold with its question and a summary of its `artefacts` (which it does not need)
+and waits up to `timeout_secs` for an answer in the review log; a yes passes it as
+`confirmed_by_user`, a no fails it, and no answer skips it. `receipt` checks an applied outbound
+effect (9132) and is not built as a task rung: a plan task that must pass one fails before its agent
+runs, and an advisory or optional one is skipped. Loading
 fails when a rung lacks what its kind needs: a `command` rung a command, a
 `schema` rung `schema` (a file relative to the task's workspace), and a `citations`, `judge` or
 `schema` rung `artefacts` (globs relative to the task's workspace). `rubric` is a `judge` rung's
-rubric, as text or a file path. A rung with `advisory = true` only advises: its verdict is recorded
+rubric, or a `confirm` rung's question, as text or a file path. A rung with `advisory = true` only advises: its verdict is recorded
 and never fails the task, so no verify step runs it. A `judge` rung advises unless it sets
 `advisory = false`; then a counted score below `[gates] llm_judge_min_score` fails the task.
 

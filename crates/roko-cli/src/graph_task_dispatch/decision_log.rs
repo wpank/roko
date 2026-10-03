@@ -819,4 +819,55 @@ mod tests {
             assert!((assignment.propensity - 1.0).abs() < 1e-12, "{arms:?}");
         }
     }
+
+    /// S02 L12, S03 §4.3: every attempt writes one placebo decision, its
+    /// chain's placebo assignment with identical proposals, and a retry
+    /// inherits the arm; across 1,000 chains the placebo's h of 0.5 splits
+    /// its arms evenly.
+    #[tokio::test]
+    async fn placebo_decisions_have_identical_proposals() {
+        use roko_learn::loop_audit::Registry;
+        use roko_learn::loop_audit::arm_set::{ArmDraws, ArmMode, ArmSet};
+        use roko_learn::telemetry::{Arm, AttemptKey};
+
+        let run = arm_set_run(false, 2).await;
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        let placebo = &run.placebo_decisions;
+        let keys: Vec<&str> = placebo
+            .iter()
+            .map(|row| row.record.identity.attempt_key.as_str())
+            .collect();
+        let attempts: Vec<&str> = run
+            .verdicts
+            .iter()
+            .map(|row| row.record.identity.attempt_key.as_str())
+            .collect();
+        assert_eq!(keys, attempts, "one placebo row per attempt");
+        let first = &placebo[0].record.assignment;
+        for row in placebo {
+            let record = &row.record;
+            assert_eq!(record.decision_point, "placebo");
+            assert_eq!(record.loop_id, "L-placebo");
+            assert_eq!(record.proposals.learned, record.proposals.default);
+            assert_eq!(&record.assignment, first, "retries inherit");
+            assert!((record.chosen_propensity - record.assignment.propensity).abs() < 1e-12);
+        }
+        let arms = run.decisions[0].record.arm_set.as_ref().expect("the arms");
+        assert_eq!(arms.placebo(), Some(first));
+
+        let loops = Registry::embedded().expect("the embedded loop registry");
+        let draws = ArmDraws::new(0, "2026-10-03");
+        let (mut learned, mut withheld) = (0_u32, 0_u32);
+        for index in 0..1_000 {
+            let key = AttemptKey::new("gr-placebo", "plan", format!("t{index}"), 1);
+            let set = ArmSet::assign(&key, &loops, &ArmMode::Normal, &draws);
+            match set.placebo().expect("the placebo").arm {
+                Arm::Learned => learned += 1,
+                Arm::Default => withheld += 1,
+                _ => {}
+            }
+        }
+        let share = f64::from(learned) / f64::from(learned + withheld);
+        assert!((0.45..=0.55).contains(&share), "learned share {share}");
+    }
 }

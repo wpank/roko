@@ -30,7 +30,7 @@ use roko_learn::loop_audit::Registry;
 use roko_learn::loop_audit::arm_set::{ArmDraws, ArmMode, ArmSet};
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::records::{
-    AttemptCost, AttemptUsage, CacheWriteClass, VerifyStepVerdict,
+    AttemptCost, AttemptUsage, CacheWriteClass, PlaceboDecisionRecord, VerifyStepVerdict,
 };
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord,
@@ -446,6 +446,18 @@ impl AttemptContext {
         self.run.submit(decision);
     }
 
+    /// Queue the attempt's placebo decision (S03 §4.3, S02 L12) for the
+    /// run's `decisions.jsonl`: its chain's placebo assignment, whose two
+    /// arms propose the same thing, so nothing reads the arm. A retry carries
+    /// its chain's arm; an attempt without an arm set writes none.
+    fn record_placebo_decision(&self) {
+        let Some(assignment) = self.arm_set.as_deref().and_then(ArmSet::placebo) else {
+            return;
+        };
+        let decision = PlaceboDecisionRecord::new(self.identity.clone(), assignment.clone());
+        self.run.submit(decision);
+    }
+
     /// The identity every record of the attempt flattens.
     pub(super) fn identity(&self) -> &AttemptIdentity {
         &self.identity
@@ -759,10 +771,12 @@ impl GraphTaskDispatcher {
             ctx.cell_id.as_deref(),
         );
         attempt.pricing = self.pricing_snapshot();
-        // S02.P1-14: the chain's arms, drawn on its first attempt.
+        // S02.P1-14: the chain's arms, drawn on its first attempt, and the
+        // placebo's decision among them (S02 L12).
         attempt.arm_set = self
             .attempts
             .arm_set(&attempt, &self.workdir, &self.config.experiments);
+        attempt.record_placebo_decision();
         attempt
     }
 

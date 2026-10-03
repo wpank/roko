@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use roko_core::usage::UsageSource;
 use serde::{Deserialize, Serialize};
 
-use super::assign::Arm;
+use super::assign::{Arm, Assignment};
 use crate::prompt_experiment::PromptAttemptKey;
 use crate::routing_log::{DecisionState, RoutingDecisionLog};
 
@@ -1153,6 +1153,65 @@ fn eligible_by_default() -> bool {
     true
 }
 
+/// `decision_point` of the placebo's decision rows (S03 §4.3).
+pub const PLACEBO_DECISION_POINT: &str = "placebo";
+/// The placebo loop's registry id.
+pub const PLACEBO_LOOP_ID: &str = "L-placebo";
+/// What both arms of the placebo propose: the same thing, nothing.
+pub const PLACEBO_PROPOSAL: &str = "no_op";
+
+/// What the placebo's two arms propose: the same, by construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceboProposals {
+    /// The learned arm's proposal.
+    pub learned: String,
+    /// The default arm's proposal.
+    pub default: String,
+}
+
+/// `roko.decision/1` at the placebo decision point (S03 §4.3, S02 L12): the
+/// L-placebo loop's arm for the attempt's chain. Its two arms are identical
+/// and cost nothing, so its true effect is 0, and S03 calibrates its false
+/// transitions on it. Nothing reads the arm.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlaceboDecisionRecord {
+    /// The attempt the decision belongs to.
+    #[serde(flatten)]
+    pub identity: AttemptIdentity,
+    /// Always [`PLACEBO_DECISION_POINT`].
+    pub decision_point: String,
+    /// Always [`PLACEBO_LOOP_ID`].
+    pub loop_id: String,
+    /// The chain's assignment on the placebo layer.
+    pub assignment: Assignment,
+    /// What each arm proposes.
+    pub proposals: PlaceboProposals,
+    /// The realised arm's proposal.
+    pub chosen: String,
+    /// The realised arm's propensity.
+    pub chosen_propensity: f64,
+}
+
+impl PlaceboDecisionRecord {
+    /// The placebo decision of the attempt `identity`, from its chain's
+    /// `assignment` on the placebo layer.
+    #[must_use]
+    pub fn new(identity: AttemptIdentity, assignment: Assignment) -> Self {
+        Self {
+            identity,
+            decision_point: PLACEBO_DECISION_POINT.to_string(),
+            loop_id: PLACEBO_LOOP_ID.to_string(),
+            chosen_propensity: assignment.propensity,
+            assignment,
+            proposals: PlaceboProposals {
+                learned: PLACEBO_PROPOSAL.to_string(),
+                default: PLACEBO_PROPOSAL.to_string(),
+            },
+            chosen: PLACEBO_PROPOSAL.to_string(),
+        }
+    }
+}
+
 /// `roko.decision/1` at a content decision point (S01 §4.5, §5.3): the items
 /// an attempt's prompt retrieved there are the candidates, and the set it
 /// included is the choice. It shares `decisions.jsonl` with the route rows,
@@ -1582,6 +1641,17 @@ impl TelemetryRecord for ContentDecisionRecord {
     fn record_id(&self) -> String {
         let key = &self.identity.attempt_key;
         record_id(Self::SCHEMA, key, self.decision_point.as_str(), "", "")
+    }
+}
+
+/// One placebo decision per attempt.
+impl TelemetryRecord for PlaceboDecisionRecord {
+    const SCHEMA: &'static str = DECISION_SCHEMA;
+    const FILE: RunFile = RunFile::Decisions;
+
+    fn record_id(&self) -> String {
+        let key = &self.identity.attempt_key;
+        record_id(Self::SCHEMA, key, PLACEBO_DECISION_POINT, "", "")
     }
 }
 

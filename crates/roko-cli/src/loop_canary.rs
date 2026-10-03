@@ -114,11 +114,6 @@ fn run_store<T: Send>(
     })
 }
 
-/// The success count of `playbook`, if there is one.
-fn successes(playbook: Option<Playbook>) -> Option<u64> {
-    playbook.map(|playbook| playbook.success_count)
-}
-
 /// L-know's canary writer (S03 §4.7): a `CANARY-<nonce>` knowledge entry on
 /// the canary's category, which the cached knowledge reader selects for the
 /// canary task.
@@ -202,9 +197,9 @@ impl CanaryWriter for KnowledgeCanary {
         let id = canary_id(nonce);
         let before = self.balance(&id);
         let ids = [id.as_str()];
-        let reinforced = self
-            .store
-            .reinforce_batch(&ids, ReinforcementSignal::Gated, CREDIT_NOVELTY);
+        let reinforced =
+            self.store
+                .reinforce_batch(&ids, ReinforcementSignal::Gated, CREDIT_NOVELTY);
         reinforced.is_ok_and(|count| count == 1) && self.balance(&id) > before
     }
 
@@ -282,9 +277,15 @@ impl CanaryWriter for PlaybookCanary {
         let id = canary_id(nonce);
         let store = &self.store;
         let credited = run_store(async {
-            let before = successes(store.load(&id).await?);
+            let before = store
+                .load(&id)
+                .await?
+                .map(|playbook| playbook.success_count);
             let recorded = store.record_outcome(&id, true).await?;
-            let after = successes(store.load(&id).await?);
+            let after = store
+                .load(&id)
+                .await?
+                .map(|playbook| playbook.success_count);
             Ok::<_, std::io::Error>(recorded && after > before)
         });
         credited.unwrap_or(false)
@@ -302,7 +303,9 @@ impl CanaryWriter for PlaybookCanary {
 
 #[cfg(test)]
 mod tests {
-    use roko_learn::loop_audit::canary::{CanaryTarget, CanaryTask, DryRunPlanner, PlanProbe, trace};
+    use roko_learn::loop_audit::canary::{
+        CanaryTarget, CanaryTask, DryRunPlanner, PlanProbe, trace,
+    };
 
     use super::*;
 
@@ -398,7 +401,11 @@ mod tests {
                 .collect();
             let expected = [("P1", true), ("P2", true), ("P3", true), ("P4", false)];
             assert_eq!(probes, expected, "{loop_id}: {row:?}");
-            assert_eq!(stores(dir.path()), before, "{loop_id}: the trace cleaned up");
+            assert_eq!(
+                stores(dir.path()),
+                before,
+                "{loop_id}: the trace cleaned up"
+            );
 
             // While the canary is written, a real task's readers pass it by
             // and still find the real state.

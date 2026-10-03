@@ -1075,7 +1075,12 @@ fn post_pass_action(ran: &CandidateForecast, depth: VerifyDepth) -> Option<PassA
         return None;
     }
     let loss_fg = FALSE_GREEN_LOSS * expected_cost(ran);
-    Some(after_pass(ran.p_fg, depth_level(depth), &DEPTH_OPTIONS, loss_fg))
+    Some(after_pass(
+        ran.p_fg,
+        depth_level(depth),
+        &DEPTH_OPTIONS,
+        loss_fg,
+    ))
 }
 
 /// `depth`'s level on S05's V0–V4 scale.
@@ -1554,7 +1559,11 @@ mod tests {
             // $0.20: below the deepest depth the pass asks for V3, never for a new model.
             let depth =
                 dispatcher.self_model_depth(&spec, &task, &attempt_key, cheap, VerifyDepth::V0);
-            let deeper = if active { VerifyDepth::V3 } else { VerifyDepth::V0 };
+            let deeper = if active {
+                VerifyDepth::V3
+            } else {
+                VerifyDepth::V0
+            };
             assert_eq!(depth, deeper, "{mode:?}");
             let step = dispatcher.self_model_after_pass(&spec, &task, &attempt_key, cheap, depth);
             assert_eq!(step, None, "{mode:?}");
@@ -1662,7 +1671,10 @@ mod tests {
         let model = verdicts[0]["executed"]["model_requested"]
             .as_str()
             .unwrap_or_default();
-        assert!(default.contains(&format!("/{model}@")), "{default} vs {model}");
+        assert!(
+            default.contains(&format!("/{model}@")),
+            "{default} vs {model}"
+        );
 
         // A diagnosis and an event-log entry tell a person; the spec ledger tells S07.
         let snapshot = hub.current_snapshot();

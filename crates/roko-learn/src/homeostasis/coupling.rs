@@ -179,10 +179,7 @@ mod tests {
             (0.05, 1, 1, 0.05),
         ] {
             let rate = audit_rate(rho, boost, factor, &policy);
-            assert!(
-                close(rate, expected),
-                "{rho} x {boost} x {factor}: {rate}"
-            );
+            assert!(close(rate, expected), "{rho} x {boost} x {factor}: {rate}");
         }
     }
 }

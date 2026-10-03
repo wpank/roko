@@ -699,8 +699,9 @@ fn audit_feedback_opportunity(
         .arm_set
         .as_ref()
         .and_then(|arms| arms.get(AUDIT_FEEDBACK_LAYER));
-    let (learned_arm, propensity) =
-        draw.map_or((true, 1.0), |draw| (!takes_default(draw.arm), draw.propensity));
+    let (learned_arm, propensity) = draw.map_or((true, 1.0), |draw| {
+        (!takes_default(draw.arm), draw.propensity)
+    });
     Some(Opportunity {
         learned_arm,
         propensity,

@@ -432,6 +432,35 @@ pub fn worktree_isolation_blocker(repo: &Path) -> Option<&'static str> {
     None
 }
 
+/// Whether a run in `workdir` isolates each task in its own git worktree:
+/// `--worktree-per-task` / `--no-worktree-per-task` (`flag`) win, otherwise
+/// `[runner] worktree_per_task` decides (gap-4ec59f). The setting alone does
+/// not isolate a workdir that cannot be isolated, such as one that is not
+/// the top level of a git checkout with a commit
+/// ([`worktree_isolation_blocker`]); an explicit flag there fails the run.
+///
+/// Every entry point that runs a plan resolves the setting here: `roko plan
+/// run`, and `roko run`, with no flag (backlog 3112).
+#[must_use]
+pub fn resolve_worktree_per_task(flag: Option<bool>, workdir: &Path) -> bool {
+    if let Some(flag) = flag {
+        return flag;
+    }
+    let configured = roko_core::config::loader::load_config_unified(workdir)
+        .unwrap_or_default()
+        .runner
+        .worktree_per_task;
+    if configured && let Some(blocker) = worktree_isolation_blocker(workdir) {
+        tracing::warn!(
+            workdir = %workdir.display(),
+            "[runner] worktree_per_task is on, but the workdir {blocker}: the tasks run in the \
+             shared working tree"
+        );
+        return false;
+    }
+    configured
+}
+
 /// The output of `git <args>` in `repo` when it succeeds, run without the
 /// invoking environment's `GIT_DIR` and `GIT_WORK_TREE`.
 fn git_probe(repo: &Path, args: &[&str]) -> Option<std::process::Output> {
@@ -507,6 +536,44 @@ mod tests {
             worktree_isolation_blocker(&subdirectory),
             Some("is a subdirectory of a git checkout, not its top level")
         );
+    }
+
+    /// gap-4ec59f: a run's worktree mode is the flag when one is given, and
+    /// `[runner] worktree_per_task` otherwise, which isolates only a git
+    /// checkout with a commit to start worktrees from.
+    #[test]
+    fn worktree_per_task_follows_the_flag_then_the_runner_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "[runner]\nworktree_per_task = true\n",
+        )
+        .expect("write roko.toml");
+        assert!(
+            !resolve_worktree_per_task(None, dir.path()),
+            "not a git checkout: the setting falls back to the shared tree"
+        );
+        assert!(resolve_worktree_per_task(Some(true), dir.path()));
+
+        git(dir.path(), &["init", "--quiet"]);
+        git(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=Operator",
+                "-c",
+                "user.email=operator@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+        );
+        assert!(resolve_worktree_per_task(None, dir.path()));
+        assert!(!resolve_worktree_per_task(Some(false), dir.path()));
     }
 
     /// A repository on `main`, with plan branches `roko/plan/plan-a` and

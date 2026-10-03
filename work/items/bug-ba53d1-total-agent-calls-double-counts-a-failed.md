@@ -80,3 +80,16 @@ event increments the counter regardless of whether its `agent_id` already opened
 - Distinct from `bug-c55f1c` (an earlier batch's finding: a provider exhaustion refusal recorded twice between
   the bridge and failover's `record_exhaustion`) — that is a cost/health-ledger double-count; this is a
   dashboard/metrics double-count. Different code paths, same general failover-retrofit-after-the-fact pattern.
+
+## Progress
+
+- 2026-10-03 (w4-length): implemented on `work/bug-412a5e` at 59b623f8d; cargo verification deferred to the batch
+  gate. The Plan's "count each agent id once" would undercount retries, because every attempt of a task opens its
+  row under the same id (`{plan}/{task}`). The event-log writer therefore tracks open rows instead: `AgentSpawned`
+  opens a row and `AgentCompleted` closes it. A spawn counts only when it opens a row, so failover's rename of an
+  open row (backlog 1128) is not counted and a retry still is. The rename itself is unchanged.
+- Tests (event_log.rs): `failed_over_attempt_counts_one_agent_call` (planned spawn, failover rename, completion:
+  1 call) and `each_attempt_counts_one_agent_call` (the same plus a retry: 2 calls).
+- Known limit: the attempt path that fails when the budget settlement refuses after a call
+  (`budget_reservation.settle`, graph_task_dispatch.rs) publishes no `AgentCompleted`. That leaves the dashboard row
+  "running", and a later spawn on that row would not count. A follow-up could close the row there.

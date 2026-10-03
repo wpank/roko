@@ -8,6 +8,12 @@
 //!
 //! Alerts are logged with [`tracing::warn!`] and appended to
 //! `.roko/learn/gate-gaming-alerts.jsonl`.
+//!
+//! Observations can carry a weight and count toward the pass rate, the
+//! quality or both ([`GateGamingDetector::observe_weighted`], backlog 7128):
+//! the audit worker adds each settled attempt's gate verdict at weight 1 and
+//! each audited label, quality 1 − Y, at weight 1/π_i. The window then keeps
+//! observations by weight, not by count, and splits its weight in halves.
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -46,6 +52,29 @@ pub struct GamingObservation {
     pub quality_score: f64,
     /// Wall-clock time the observation was recorded.
     pub timestamp: DateTime<Utc>,
+    /// Its weight in the window: 1, or 1/π_i for an audited unit.
+    #[serde(default = "unit_weight")]
+    pub weight: f64,
+    /// What it counts toward.
+    #[serde(default)]
+    pub observed: Observed,
+}
+
+/// What a [`GamingObservation`] counts toward.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Observed {
+    /// The pass rate and the quality: a gate evaluation with a quality score.
+    #[default]
+    Both,
+    /// The pass rate alone: a gate verdict whose quality is unknown.
+    Gate,
+    /// The quality alone: an audited unit's label.
+    Quality,
+}
+
+const fn unit_weight() -> f64 {
+    1.0
 }
 
 impl GamingObservation {
@@ -56,6 +85,8 @@ impl GamingObservation {
             gate_passed,
             quality_score,
             timestamp: Utc::now(),
+            weight: 1.0,
+            observed: Observed::Both,
         }
     }
 }
@@ -152,14 +183,48 @@ impl GateGamingDetector {
     ///
     /// Older observations are evicted once the window is full.
     pub fn observe(&mut self, model_slug: &str, gate_passed: bool, quality_score: f64) {
+        self.observe_weighted(model_slug, Some(gate_passed), Some(quality_score), 1.0);
+    }
+
+    /// Add one observation for `model_slug` at `weight`: of the gate's
+    /// verdict, of quality, or both (backlog 7128).
+    ///
+    /// The window keeps the newest observations whose weights sum to at least
+    /// its size. An observation of neither, or of no positive weight, is
+    /// ignored.
+    pub fn observe_weighted(
+        &mut self,
+        model_slug: &str,
+        gate_passed: Option<bool>,
+        quality_score: Option<f64>,
+        weight: f64,
+    ) {
+        let observed = match (gate_passed, quality_score) {
+            (Some(_), Some(_)) => Observed::Both,
+            (Some(_), None) => Observed::Gate,
+            (None, Some(_)) => Observed::Quality,
+            (None, None) => return,
+        };
+        if weight.is_nan() || weight <= 0.0 {
+            return;
+        }
+        let size = self.window_size as f64;
         let window = self
             .observations
             .entry(model_slug.to_owned())
             .or_insert_with(|| VecDeque::with_capacity(self.window_size));
-
-        window.push_back(GamingObservation::now(gate_passed, quality_score));
-
-        if window.len() > self.window_size {
+        window.push_back(GamingObservation {
+            gate_passed: gate_passed.unwrap_or(false),
+            quality_score: quality_score.unwrap_or(0.0),
+            timestamp: Utc::now(),
+            weight,
+            observed,
+        });
+        let mut total: f64 = window.iter().map(|observation| observation.weight).sum();
+        while let Some(front) = window.front()
+            && total - front.weight >= size
+        {
+            total -= front.weight;
             window.pop_front();
         }
     }
@@ -172,14 +237,23 @@ impl GateGamingDetector {
     #[must_use]
     pub fn detect(&self, model_slug: &str) -> Option<GamingAlert> {
         let window = self.observations.get(model_slug)?;
+        let total: f64 = window.iter().map(|observation| observation.weight).sum();
 
         // Require a full window before making any comparison.
-        if window.len() < self.window_size.max(MIN_WINDOW_FOR_DETECTION) {
+        if total < self.window_size.max(MIN_WINDOW_FOR_DETECTION) as f64 {
             return None;
         }
 
-        let half = self.window_size / 2;
+        // The halves split the window's weight.
         let observations: Vec<&GamingObservation> = window.iter().collect();
+        let mut cumulative = 0.0;
+        let half = observations
+            .iter()
+            .position(|observation| {
+                cumulative += observation.weight;
+                cumulative > total / 2.0
+            })
+            .unwrap_or(observations.len());
 
         let first_half = &observations[..half];
         let second_half = &observations[half..];
@@ -333,19 +407,28 @@ pub async fn read_gaming_alerts(path: &Path) -> io::Result<Vec<GamingAlert>> {
 // ---------------------------------------------------------------------------
 
 fn pass_rate(obs: &[&GamingObservation]) -> f64 {
-    if obs.is_empty() {
-        return 0.0;
-    }
-    let passed = obs.iter().filter(|o| o.gate_passed).count();
-    passed as f64 / obs.len() as f64
+    weighted_mean(
+        obs.iter()
+            .filter(|o| o.observed != Observed::Quality)
+            .map(|o| (o.weight, f64::from(u8::from(o.gate_passed)))),
+    )
 }
 
 fn avg_quality(obs: &[&GamingObservation]) -> f64 {
-    if obs.is_empty() {
-        return 0.0;
-    }
-    let sum: f64 = obs.iter().map(|o| o.quality_score).sum();
-    sum / obs.len() as f64
+    weighted_mean(
+        obs.iter()
+            .filter(|o| o.observed != Observed::Gate)
+            .map(|o| (o.weight, o.quality_score)),
+    )
+}
+
+/// The weighted mean of `(weight, value)` pairs; NaN without any weight, so
+/// a half with nothing to compare raises no alert.
+fn weighted_mean(pairs: impl Iterator<Item = (f64, f64)>) -> f64 {
+    let (weight, sum) = pairs.fold((0.0, 0.0), |(weight, sum), (w, value)| {
+        (weight + w, w.mul_add(value, sum))
+    });
+    if weight > 0.0 { sum / weight } else { f64::NAN }
 }
 
 // ---------------------------------------------------------------------------

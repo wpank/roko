@@ -92,14 +92,28 @@ pub enum AuditEvent {
     Result {
         /// The selection audited.
         sel_id: String,
+        /// The result's id.
+        #[serde(default)]
+        res_id: String,
         /// S01's attempt key.
         attempt_key: String,
         /// The labels.
         labels: AuditLabels,
+        /// What phase A's diff checks found, one line each: A1 and the
+        /// audit-only kinds, which name the attempt's own paths only.
+        #[serde(default)]
+        findings: Vec<String>,
         /// Each check's detail; never mirrored, as it may name hidden tests.
         checks: Value,
         /// The audit's spend.
         cost_usd: Option<f64>,
+        /// Seconds the audit's checks ran, the CPU cap's measure.
+        #[serde(default)]
+        cpu_secs: Option<f64>,
+        /// π_i·π_B, the inclusion probability of phase B's labels; phase A's
+        /// is the selection's π_i.
+        #[serde(default)]
+        pi_eff: Option<f64>,
     },
     /// A window's estimate.
     #[serde(rename = "audit.estimate")]
@@ -475,6 +489,30 @@ pub fn verify_chain(dir: &Path) -> Result<u64, ChainError> {
     Ok(count)
 }
 
+/// Every record of the ledger in `dir`, in order, without checking the
+/// chain ([`verify_chain`] does that); a line that does not parse is
+/// skipped, and a ledger not yet written holds none.
+///
+/// # Errors
+///
+/// A day file cannot be read.
+pub fn records(dir: &Path) -> std::io::Result<Vec<LedgerRecord>> {
+    let files = match day_files(dir) {
+        Ok(files) => files,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut records = Vec::new();
+    for file in files {
+        for line in std::fs::read_to_string(&file)?.lines() {
+            if let Ok(record) = serde_json::from_str(line) {
+                records.push(record);
+            }
+        }
+    }
+    Ok(records)
+}
+
 /// A record as the workspace mirror shows it: the same chain fields, with
 /// what agents must not read removed.
 ///
@@ -643,10 +681,14 @@ mod tests {
         ledger.append(change).expect("policy change");
         let result = AuditEvent::Result {
             sel_id: "sel-0".into(),
+            res_id: "res-0".into(),
             attempt_key: "run-1:plan:T0:1".into(),
             labels: AuditLabels::default(),
+            findings: Vec::new(),
             checks: serde_json::json!({"b1": {"failed": ["test_hidden_upper_bound"]}}),
             cost_usd: Some(0.01),
+            cpu_secs: None,
+            pi_eff: None,
         };
         ledger.append(result).expect("result");
         let before = std::fs::read_to_string(&mirror).expect("the mirror");

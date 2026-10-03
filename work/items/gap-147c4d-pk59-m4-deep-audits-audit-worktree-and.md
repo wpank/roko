@@ -89,3 +89,15 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK53 (gap-dff960), PK58 (gap-f0a7ee).
 - Suggested model: opus.
+
+## Progress
+
+- 7122: implemented on work/gap-147c4d at a9cd4dd48; cargo verification deferred to the batch gate.
+- 7123: implemented on work/gap-147c4d at 5b820fdfc; cargo verification deferred to the batch gate. Canary coverage here is the diff's added lines (the task's Notes); the prompt scan landed with 7130. `[audit] enabled` still defaults to false: decision 7103's switch-on (with `--no-audit`) has no task yet.
+- 7124: implemented on work/gap-147c4d at 3b5cabb42; cargo verification deferred to the batch gate.
+- 7125: implemented on work/gap-147c4d at 9aa07d162; cargo verification deferred to the batch gate. Adds the roko-cli → roko-lang-rust dependency (Cargo.lock edited by hand).
+- 7126: implemented on work/gap-147c4d at a1f56a058; cargo verification deferred to the batch gate.
+- 7127: implemented on work/gap-147c4d at 81008a8d0; cargo verification deferred to the batch gate.
+- 7128: implemented on work/gap-147c4d at 09d4787d4; cargo verification deferred to the batch gate. Audited units are always green, so the detector also counts every settled attempt's gate verdict (weight 1) for the pass rate.
+- 7129: implemented on work/gap-147c4d at a4445c185; cargo verification deferred to the batch gate. `run_gate_once` stays, documented: its tests pin behaviour ProductionGateService lacks.
+- 7130: implemented on work/gap-147c4d at edd962f07; cargo verification deferred to the batch gate. Not test-only after all: it needed the dispatch-time prompt scan and the burn (exposed, then retired) on a canary hit.

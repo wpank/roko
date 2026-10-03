@@ -1281,6 +1281,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         if let Some(previous_ms) = timeout_resume {
             prompt.push_str(&timeout_resume_note(previous_ms, timeout_ms));
         }
+        // SC4: a hidden-suite canary in the composed prompt is a leak (7130).
+        if let Some(audit) = self.attempts.audit() {
+            audit.scan_prompt(&dispatch_plan.prompt.system_prompt, &prompt);
+        }
         let mut request = AgentDispatchRequest {
             model_key: self.dispatch_model_key(&dispatch_plan, &task),
             prompt,

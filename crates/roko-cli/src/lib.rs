@@ -120,6 +120,7 @@ pub mod agent_config;
 pub mod agent_episode;
 pub mod agent_exec;
 pub mod agent_spawn;
+pub mod audit;
 pub mod auth;
 pub mod auth_detect;
 pub(crate) mod background_writes;

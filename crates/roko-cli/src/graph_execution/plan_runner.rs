@@ -2573,7 +2573,8 @@ pub fn build_graph_feedback_facade(
     }
     // M1 (S06, 8122): each settled verdict feeds the ultrastable controller.
     if let Some(sink) = homeostasis {
-        facade = facade.with_sink(Arc::clone(sink));
+        facade =
+            facade.with_sink(Arc::clone(sink) as Arc<dyn crate::runtime_feedback::FeedbackSink>);
     }
 
     // ── #143: Dream consolidation trigger on plan completion ────────

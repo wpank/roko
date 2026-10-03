@@ -655,7 +655,6 @@ command = "true"
         use roko_core::config::schema::RokoConfig;
         use roko_learn::homeostasis::controller::Controller;
         use roko_learn::homeostasis::detect::Baseline;
-        use roko_graph::cells::RetryBudgetSource as _;
         use roko_learn::homeostasis::policy::ViabilityPolicy;
 
         use crate::graph_task_dispatch::GraphFeedbackContext;

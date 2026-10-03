@@ -1022,6 +1022,7 @@ mod tests {
                 failure_reason: None,
                 reflex_rule: None,
                 live_tool_calls: LiveToolCalls::default(),
+                harness: None,
             }
         };
 

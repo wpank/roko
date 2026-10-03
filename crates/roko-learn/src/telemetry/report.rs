@@ -721,7 +721,7 @@ fn executed_model(executed: &ExecutedModel) -> Option<&str> {
 }
 
 /// `model` without a trailing `-YYYYMMDD` release date.
-fn undated(model: &str) -> &str {
+pub(crate) fn undated(model: &str) -> &str {
     match model.rsplit_once('-') {
         Some((base, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => base,
         _ => model,
@@ -1457,6 +1457,8 @@ mod tests {
             state: None,
             thresholds_digest: None,
             arm_set: None,
+            proposals: None,
+            audit: Default::default(),
         }
     }
 

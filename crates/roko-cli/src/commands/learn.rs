@@ -3607,6 +3607,8 @@ mod tests {
                         arms: [("knowledge".to_string(), draw)].into(),
                         condition_id: NORMAL_CONDITION.to_string(),
                     }),
+                    proposals: None,
+                    audit: Default::default(),
                 };
                 let line = Stamped {
                     schema_version: DECISION_SCHEMA.to_string(),

@@ -295,6 +295,12 @@ impl GraphTuiBridge {
     pub fn error(&self, message: &str) {
         self.tui.error(message);
     }
+
+    /// Publish an event that has no helper here, such as the loop auditor's
+    /// `LoopHealth` and `LoopTransition` (5126).
+    pub fn publish_event(&self, event: roko_core::DashboardEvent) {
+        self.tui.publish_event(event);
+    }
 }
 
 /// Dashboard outcome for a finished node.

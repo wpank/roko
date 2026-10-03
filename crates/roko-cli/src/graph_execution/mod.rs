@@ -18,6 +18,7 @@
 //! | [`failure_issues`] | GitHub issues for the tasks a plan run leaves failed |
 //! | [`fast_lane`] | FAST lane (`./dev.sh fast`) run deadline |
 //! | [`identity_map`] | Graph node-to-plan/task identity resolution |
+//! | [`loop_audit`] | The loop auditor's tick at each run's close: ledger rows, StateHub events |
 //! | [`plan_runner`] | Runs a selected plan set through the Graph engine |
 //! | [`plan_set`] | Plan-set order, footprints, and which plans may run at once |
 //! | [`plan_verify`] | The whole-plan gate: `[meta] verify` on a plan's integrated result |
@@ -36,6 +37,7 @@ pub mod event_log;
 pub mod failure_issues;
 pub mod fast_lane;
 pub mod identity_map;
+pub mod loop_audit;
 pub mod plan_runner;
 pub mod plan_set;
 pub mod plan_verify;

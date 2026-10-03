@@ -63,6 +63,32 @@ impl KnowledgeStore {
         Ok(removed)
     }
 
+    /// Remove the entries named `entry_ids`, whatever their confidence, and
+    /// rewrite the store atomically. The loop canary removes its own
+    /// `CANARY-<nonce>` entry with it (S03 §4.7); M2 deletes no other
+    /// learned state.
+    ///
+    /// Returns the number of entries removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be read or rewritten.
+    pub fn remove_entries(&self, entry_ids: &[&str]) -> Result<usize> {
+        let _guard = self.write_gate.lock();
+        let before = self.read_all()?;
+        let before_len = before.len();
+        let entries = before
+            .into_iter()
+            .filter(|entry| !entry_ids.contains(&entry.id.as_str()))
+            .collect::<Vec<_>>();
+        let removed = before_len.saturating_sub(entries.len());
+        if removed > 0 {
+            self.rewrite_all(&entries)?;
+            self.synchronize_temporal_entries(&entries);
+        }
+        Ok(removed)
+    }
+
     /// NEURO-11: Garbage-collect entries with freeze-before-delete semantics.
     ///
     /// Entries below the confidence threshold are frozen into cold storage

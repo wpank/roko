@@ -11,21 +11,31 @@
 //! the learned state it chose from (P0-10). A T0 reflex attempt and a
 //! harness failure before planning write none.
 //!
+//! The knowledge and playbook rows also carry S03's fields (A-DEC, backlog
+//! 5125): L-know's or L-play's layer and the chain's draw on it, both
+//! proposals on both arms, and a receipt that binds the included items'
+//! rendered digests to the assembled request ([`content_audit`]).
+//!
 //! [`ModelRouter::decide`]: crate::dispatch::ModelRouter::decide
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use std::time::SystemTime;
 
+use roko_learn::loop_audit::arm_set::ArmSet;
 use roko_learn::routing_log::DecisionState;
 use roko_learn::section_effect::SectionDecision;
-use roko_learn::telemetry::records::b3_digest;
+use roko_learn::telemetry::records::{
+    AuditFields, ContentProposals, DecisionAssignment, DecisionOpportunity, DecisionReceipt,
+    b3_digest,
+};
 use roko_learn::telemetry::{
-    AttemptIdentity, ContentCandidate, ContentDecisionPoint, ContentDecisionRecord, DecisionSource,
-    ExcludedReason, ExposureCounts, ExposureItemKind, ExposureRecord,
+    AttemptIdentity, AttemptTiming, ContentCandidate, ContentDecisionPoint, ContentDecisionRecord,
+    DecisionSource, ExcludedReason, ExposureCounts, ExposureItemKind, ExposureRecord,
 };
 
 use super::attempt::AttemptContext;
+use super::prompt_experiment::dispatch_prompt_hash;
 use super::*;
 use crate::dispatch::RunnerDispatchPlan;
 use crate::dispatch::prompt_builder::PromptItemDiagnostic;
@@ -116,8 +126,20 @@ impl GraphTaskDispatcher {
         }
         let state = self.learned_state();
         let draws = &plan.prompt.diagnostics.section_decisions;
+        let prompt = &plan.prompt;
+        let request_hash = dispatch_prompt_hash(&prompt.system_prompt, &prompt.user_prompt);
+        let times = decision_times(attempt.timing());
+        let arm_set = attempt.arm_set();
         for (point, items) in points {
-            let decision = content_decision(attempt.identity(), point, &items, &state, draws);
+            let identity = attempt.identity();
+            let mut decision = content_decision(identity, point, &items, &state, draws);
+            let draw = (arm_set.as_deref(), times);
+            if let Some((proposals, audit)) =
+                content_audit(point, &items, identity, draw, &request_hash)
+            {
+                decision.proposals = Some(proposals);
+                decision.audit = audit;
+            }
             attempt.record_content_decision(decision);
         }
     }
@@ -235,7 +257,88 @@ fn content_decision(
         state: read,
         thresholds_digest: state.thresholds.clone(),
         arm_set: None,
+        proposals: None,
+        audit: Default::default(),
     }
+}
+
+/// When the chain's arms were drawn and when the prompt's content decisions
+/// were made: the attempt's open and its prompt's assembly. A decision never
+/// shares its draw's millisecond.
+fn decision_times(timing: &AttemptTiming) -> (i64, i64) {
+    let decided_at = timing
+        .prompt_assembled_at
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let assigned_at = timing.attempt_started_at.unwrap_or(decided_at - 1);
+    (assigned_at, decided_at.max(assigned_at + 1))
+}
+
+/// S03's fields and proposals of the content decision at `point` (A-DEC, S01
+/// §5.3; backlog 5125), for L-know at `knowledge` and L-play at `playbooks`;
+/// the other points carry none yet. The learned proposal is the ids the
+/// reader would include, on the withheld arm too, and π⁰ includes none. The
+/// draw is the chain's arm set's on the point's layer, with `(assigned_at,
+/// decided_at)`. The receipt names the included items' rendered digests,
+/// which prompt assembly found in the system prompt dispatch launches as is,
+/// bound to the hash of the assembled request. Pure, for E1 (5130).
+pub(super) fn content_audit(
+    point: ContentDecisionPoint,
+    items: &[&PromptItemDiagnostic],
+    identity: &AttemptIdentity,
+    draw: (Option<&ArmSet>, (i64, i64)),
+    request_hash: &str,
+) -> Option<(ContentProposals, AuditFields)> {
+    let (loop_id, layer) = match point {
+        ContentDecisionPoint::Knowledge => ("L-know", "knowledge"),
+        ContentDecisionPoint::Playbooks => ("L-play", "playbooks"),
+        _ => return None,
+    };
+    let (arm_set, (assigned_at, decided_at)) = draw;
+    let withheld = Some(ExcludedReason::WithheldArm);
+    let learned = items
+        .iter()
+        .filter(|item| item.included || item.excluded_reason == withheld)
+        .map(|item| item.id.clone())
+        .collect();
+    let offered = items
+        .iter()
+        .any(|item| item.excluded_reason != Some(ExcludedReason::RoleFilter));
+    let reason = if offered {
+        "items_retrieved"
+    } else {
+        "no_item_for_the_role"
+    };
+    let key = identity.key();
+    let assignment = arm_set
+        .and_then(|arms| arms.get(layer))
+        .map(|draw| DecisionAssignment::new(draw.clone(), &key, assigned_at));
+    let receipt = DecisionReceipt {
+        kind: "content".to_string(),
+        ok: true,
+        request_hash: Some(request_hash.to_string()),
+        exposure_hashes: items
+            .iter()
+            .filter(|item| item.included)
+            .map(|item| item.rendered_sha256.clone())
+            .collect(),
+    };
+    let proposals = ContentProposals {
+        learned: Some(learned),
+        default: Some(Vec::new()),
+    };
+    let audit = AuditFields {
+        loop_id: Some(loop_id.to_string()),
+        loop_ids: vec![loop_id.to_string()],
+        layer: Some(layer.to_string()),
+        opportunity: Some(DecisionOpportunity {
+            eligible: offered,
+            reason: reason.to_string(),
+        }),
+        assignment,
+        decided_at: Some(decided_at),
+        receipt: Some(receipt),
+    };
+    Some((proposals, audit))
 }
 
 /// The probability the logging policy included `item`: 1 − p_ex for a
@@ -532,6 +635,71 @@ mod tests {
             assert!(line.seq < run.verdicts[0].seq, "exposed before settled");
         }
         assert_eq!(run.verdicts[0].record.exposures, Some(counts));
+    }
+
+    /// S03 §5 A-DEC (backlog 5125): the knowledge row carries L-know's
+    /// layer and the chain's draw, made before the prompt was assembled, both
+    /// proposals, and a receipt that binds the included entry's digest to
+    /// the assembled request. The playbook row carries L-play's.
+    #[tokio::test]
+    async fn graph_decisions_log_arm_before_plan_and_receipt() {
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let mut attempt = dispatcher.open_attempt(&spec, &task, &ctx);
+        let chain_key = attempt.key.chain_key();
+        let mut plan = planned(vec![
+            knowledge_item("kn-1", 1, true),
+            knowledge_item("kn-2", 2, false),
+            playbook_item("pb-1"),
+        ]);
+        plan.prompt.system_prompt = "## Domain Context\nkn-1 rendered".to_string();
+        plan.prompt.user_prompt = "# Task Request\nt".to_string();
+        let request = dispatch_prompt_hash(&plan.prompt.system_prompt, &plan.prompt.user_prompt);
+        attempt.prompt_assembled();
+        dispatcher.record_planned_attempt(&mut attempt, &task, &plan);
+        let passed = Settlement::verified(&Ok(TaskGateVerdict::Passed));
+        attempt.settle(passed, "stream-model", None);
+        dispatcher.close_run_attempts(RUN);
+
+        let run = RunRecords::load(&runs_dir.join(RUN)).expect("load the run");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        let row = |point: ContentDecisionPoint| {
+            run.content_decisions
+                .iter()
+                .map(|line| &line.record)
+                .find(|row| row.decision_point == point)
+                .expect("a row at the point")
+        };
+        let knowledge = row(ContentDecisionPoint::Knowledge);
+        let audit = &knowledge.audit;
+        assert_eq!(audit.layer.as_deref(), Some("knowledge"));
+        assert_eq!(audit.loop_id.as_deref(), Some("L-know"));
+        let opportunity = audit.opportunity.as_ref().expect("the opportunity");
+        assert!(opportunity.eligible, "{opportunity:?}");
+        let assignment = audit.assignment.as_ref().expect("the chain's draw");
+        assert_eq!(assignment.unit_key, chain_key);
+        assert_eq!(assignment.draw.layer, "knowledge");
+        assert!(assignment.assigned_at < audit.decided_at.expect("decided_at"));
+        let proposals = knowledge.proposals.as_ref().expect("the proposals");
+        assert_eq!(proposals.learned, Some(vec!["kn-1".to_string()]));
+        assert_eq!(proposals.default, Some(Vec::new()));
+        let receipt = audit.receipt.as_ref().expect("the receipt");
+        assert!(receipt.ok);
+        assert_eq!(receipt.request_hash.as_deref(), Some(request.as_str()));
+        assert_eq!(receipt.exposure_hashes, ["kn-1-digest"]);
+
+        let playbooks = row(ContentDecisionPoint::Playbooks);
+        assert_eq!(playbooks.audit.loop_id.as_deref(), Some("L-play"));
+        let learned = playbooks.proposals.as_ref().and_then(|p| p.learned.clone());
+        assert_eq!(learned, Some(vec!["pb-1".to_string()]));
     }
 
     /// One content decision per decision point a prompt retrieved items at

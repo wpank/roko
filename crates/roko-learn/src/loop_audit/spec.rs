@@ -166,6 +166,19 @@ pub enum AuditState {
     Demoted,
 }
 
+impl AuditState {
+    /// The serialized form, e.g. `probation`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Probation => "probation",
+            Self::Live => "live",
+            Self::Flagged => "flagged",
+            Self::Demoted => "demoted",
+        }
+    }
+}
+
 /// S03 §4.6's one closed reason enum, in precedence order: when several codes
 /// apply, the first one wins, because its check is the cheapest. A
 /// write-only state with no Graph opportunity is therefore

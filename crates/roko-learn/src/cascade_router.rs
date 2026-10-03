@@ -2557,6 +2557,7 @@ impl CascadeRouter {
             influences: Vec::new(),
             state: None,
             arm_set: None,
+            audit: Default::default(),
         };
         log.append(&record)?;
         Ok(record)

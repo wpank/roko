@@ -1237,6 +1237,73 @@ printf '%s\n' '{"type":"result","session_id":"sess-t","model":"claude-sonnet-4-6
         assert_eq!(dispatcher.worktree_generation(&task_key), 1);
     }
 
+    /// A provider whose call `n` writes `file-<n>.txt`, and nothing else.
+    const WRITES_OWN_FILE_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/calls"
+printf 'task %s\n' "$n" > "file-$n.txt"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"wrote its own file"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-o","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// backlog 1124: an attempt's diff starts from the commit its checkout
+    /// was made from. Sibling A lands on the plan branch; B's checkout then
+    /// starts from that tip, and B, which changes only its own file, is not
+    /// flagged for A's file, even under `diff_scope = "enforce"` and with
+    /// the base branch named by name (which does not hold A's work).
+    #[tokio::test]
+    async fn outside_scope_ignores_sibling_accepted_commits() {
+        let (repo, worktrees) = repo_with_worktrees();
+        let provider = Arc::new(WorktreeExecutionWorkspaceProvider::new(
+            WorktreeManager::new(WorktreeConfig {
+                repo_root: repo.path().to_path_buf(),
+                base_branch: "main".to_string(),
+                worktrees_root: worktrees.path().to_path_buf(),
+                max_live: None,
+                idle_ttl: std::time::Duration::from_secs(3600),
+            }),
+        ));
+        let (dispatcher, mut first) = make_test_dispatcher_with(
+            &repo,
+            WRITES_OWN_FILE_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                config.gates.diff_scope = roko_core::config::gates::DiffScope::Enforce;
+            },
+            GraphFeedbackContext::default(),
+            |dispatcher| dispatcher.with_workspace_provider(provider),
+        )
+        .await;
+        let mut second = first.clone();
+        second.id = "T-SECOND".to_string();
+        for (n, task) in [(1, &mut first), (2, &mut second)] {
+            task.files = vec![format!("file-{n}.txt")];
+            task.verify = vec![verify_step("structural", &format!("test -f file-{n}.txt"))];
+        }
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        dispatcher
+            .dispatch(&make_spec(&first), Vec::new(), &ctx)
+            .await
+            .expect("the first sibling lands");
+        let outputs = dispatcher
+            .dispatch(&make_spec(&second), Vec::new(), &ctx)
+            .await
+            .expect("the second sibling is not flagged for the first one's file");
+
+        let accepted = TaskAttempt::from_signals(&outputs)
+            .expect("the output names its attempt")
+            .accepted
+            .expect("the second sibling was accepted");
+        for file in ["file-1.txt", "file-2.txt"] {
+            let landed = format!("{}:{file}", accepted.plan_branch);
+            assert!(!git(repo.path(), &["show", &landed]).is_empty(), "{file}");
+        }
+    }
+
     /// reg-7cf6f9: an attempt waits for disk headroom while another attempt
     /// holds it, and its provider runs once that attempt ends.
     #[tokio::test]

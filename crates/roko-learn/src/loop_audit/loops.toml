@@ -88,7 +88,8 @@ opportunity = "an active model experiment for the role"
 default_policy = "the experiment's control model"
 receipt = "executed_model"
 notes = [
-    "On the route layer if it is ever wired, rotating by epoch with L-route and L-M3; 5119 replaces its rule.",
+    "On the route layer if it is ever wired, rotating by epoch with L-route and L-M3.",
+    "5119 replaced its rule: each task draws its variant uniformly on the model_experiment layer and gets the propensity back to log, and an experiment concludes only on difference confidence sequences.",
 ]
 
 [[loop.static_findings]]
@@ -96,12 +97,6 @@ claim = "Only the CLI (commands/experiment.rs, commands/learn.rs) reads or write
 pointer = "crates/roko-cli/src/commands/experiment.rs::ModelExperimentStore"
 verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
 reason = "dormant:no_opportunity"
-
-[[loop.static_findings]]
-claim = "assign_variant is UCB1 over a DefaultHasher partition, and check_conclusion is re-tested after every outcome, which optional stopping makes invalid."
-pointer = "crates/roko-learn/src/model_experiment.rs::ModelExperiment::assign_variant"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
-qualifier = "misspecified"
 
 [[loop]]
 id = "L-routing-log"
@@ -256,19 +251,13 @@ opportunity = "an active prompt experiment for the role"
 default_policy = "the experiment's control variant"
 receipt = "artifact_hash_in_request"
 notes = [
-    "5118 replaces the UCB1 assignment and the peeking χ² rule with confidence sequences and logged propensities.",
+    "5118 replaced the UCB1 assignment and the peeking χ² rule: each attempt draws its variant uniformly and logs the propensity, and an experiment concludes only on difference confidence sequences over those draws.",
 ]
 
 [[loop.static_findings]]
 claim = "Prompt experiments run on the Graph path: context builds an attempt's treatments whenever the store holds a prompt experiment (gap-fdd27f)."
 pointer = "crates/roko-cli/src/graph_task_dispatch/prompt_experiment.rs::context"
 verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
-
-[[loop.static_findings]]
-claim = "assign_variant is UCB1, and record_outcome re-tests check_conclusion (χ² or a Wilson early stop) after every outcome, which optional stopping makes invalid."
-pointer = "crates/roko-learn/src/prompt_experiment.rs::PromptExperiment::check_conclusion"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
-qualifier = "misspecified"
 
 [[loop.static_findings]]
 claim = "The live .roko/learn/experiments.json holds only the retrieval-strategy experiment, which context skips, so no prompt experiment runs today."

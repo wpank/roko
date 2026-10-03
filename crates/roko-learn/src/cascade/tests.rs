@@ -7,7 +7,6 @@ use crate::cascade_router::CascadeRouter;
 use crate::cfactor::CFactor;
 use crate::model_experiment::{ModelExperiment, ModelExperimentStore, ModelVariant};
 use crate::model_router::RoutingContext;
-use crate::prompt_experiment::ExperimentStatus;
 use crate::provider_health::{ErrorClass, ProviderHealthRegistry};
 use crate::routing_log::{RoutingDecisionMeta, RoutingLogger};
 use async_trait::async_trait;
@@ -186,24 +185,20 @@ fn experiment_override_for_active_model_experiment() {
     let ctx = default_ctx();
 
     let mut store = ModelExperimentStore::default();
-    store.register(ModelExperiment {
-        experiment_id: "impl-model-ab".into(),
-        description: "Override implementer implementation routing".into(),
-        role: Some("implementer".into()),
-        task_category: Some("implementation".into()),
-        variants: vec![ModelVariant {
+    let mut experiment = ModelExperiment::new(
+        "impl-model-ab",
+        "Override implementer implementation routing",
+        vec![ModelVariant {
             id: "override".into(),
             model_key: "override-model".into(),
             slug: "override-model-slug".into(),
             provider: "test-provider".into(),
         }],
-        stats: HashMap::new(),
-        status: ExperimentStatus::Running,
-        winner_id: None,
-        min_trials_per_variant: 1,
-        min_effect_size: 0.05,
-        created_at: "2026-04-11T00:00:00Z".into(),
-    });
+    );
+    experiment.role = Some("implementer".into());
+    experiment.task_category = Some("implementation".into());
+    experiment.min_trials_per_variant = 1;
+    store.register(experiment);
 
     let routed = cascade.route_with_experiments(&ctx, &store);
 

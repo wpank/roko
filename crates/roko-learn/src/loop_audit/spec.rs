@@ -1135,7 +1135,6 @@ receipt = "artifact_hash_in_request"
             ("L-route", "::ladder_choice"),
             ("L-dream-bias", "::cascade_pick"),
             ("L-prompt-exp", "prompt_experiment.rs::context"),
-            ("L-prompt-exp", "::check_conclusion"),
             ("L-prompt-exp", "::RETRIEVAL_STRATEGY_EXPERIMENT_ID"),
             ("L-gate-thr", "retry_budget.rs::AdaptiveThresholds"),
             ("L-rag11", "retrieval_outcome.rs::STRATEGY_KEYWORD"),

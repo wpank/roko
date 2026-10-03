@@ -1024,8 +1024,14 @@ async fn experiment_updates_static_table() {
         ],
     );
     experiment.role = Some("implementer".to_string());
-    experiment.min_trials_per_variant = 5;
+    experiment.min_trials_per_variant = 30;
     experiment.min_effect_size = 0.5;
+    // Settled attempts already separate the variants (25 randomized draws
+    // each); the runtime outcomes below supply the trials still missing.
+    for _ in 0..25 {
+        experiment.record_observation("haiku", true, 0.5);
+        experiment.record_observation("sonnet", false, 0.5);
+    }
     runtime.experiment_store().lock().register(experiment);
 
     let mut before_ctx = RoutingContext {

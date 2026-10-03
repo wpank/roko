@@ -86,6 +86,7 @@ mod supervision;
 mod tui_forward;
 mod turn_policy;
 mod verification;
+mod verify_depth;
 mod verify_focus;
 mod watchdog;
 mod wiring;
@@ -270,6 +271,9 @@ pub struct GraphTaskDispatcher {
     /// Failed test steps run again on the plan run's start commit, to tell
     /// pre-existing failures from new ones (gap-161be1).
     baselines: baseline_verify::Baselines,
+    /// The verify depth each task type ran at in its ladder window, which
+    /// never decreases within one (DP3, 7132).
+    depths: verify_depth::Depths,
     /// Verify runs not yet written to `gate-thresholds.json`: written every
     /// `[learning] gate_threshold_flush_interval` observations, and when the
     /// dispatcher is dropped (reg-c7ecf6).
@@ -343,6 +347,7 @@ impl GraphTaskDispatcher {
             in_flight: sibling_settle::InFlightTasks::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
             baselines: baseline_verify::Baselines::default(),
+            depths: verify_depth::Depths::default(),
             gate_threshold_writes: gate_learning::GateThresholdWrites::new(flush_interval),
             conductor: None,
             approval_plans: parking_lot::Mutex::default(),

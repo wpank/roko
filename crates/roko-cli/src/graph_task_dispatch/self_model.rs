@@ -10,19 +10,29 @@
 //! In active mode (6130), while the calibration gate holds, the rung the self-model would
 //! choose becomes the chain's start rung: dispatch hands it to the router, which draws it
 //! through S03's route table and logs its propensity.
+//!
+//! After a gate pass (6132), policy (b) weighs the attempt's false-green risk r = p_fg: it asks
+//! DP3 (`verify_depth`) for the deepest verify depth d* whose check pays, r·L_fg·d_j > c_j, and
+//! only at the deepest depth with r above r_max rejects the pass so that a stronger model
+//! retries the task. An active self-model acts on the chains it started; in shadow mode the
+//! step is only logged. A pass that stands exports r as `risk_fg` for S05's audit tilt.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use roko_core::audit_types::VerifyDepth;
 use roko_core::config::schema::RokoConfig;
 use roko_core::config::self_model::{SelfModelConfig, SelfModelMode, SelfModelPolicy};
 use roko_core::pricing_snapshot::PriceSnapshot;
+use roko_learn::self_model::baselines::K_MAX;
 use roko_learn::self_model::cascade::{
-    BREAK_EVEN_MARGIN, FailureContext, StepAction, after_failure, start_rung,
+    BREAK_EVEN_MARGIN, DepthOption, FALSE_GREEN_RISK_MAX, FailureContext, PassAction, StepAction,
+    after_failure, after_pass, start_rung,
 };
 use roko_learn::self_model::features::TaskFeatures;
 use roko_learn::self_model::gate::{CalibrationGate, CalibrationWindow, GateReport, WindowOutcome};
+use roko_learn::self_model::logit::FALSE_GREEN_PRIOR;
 use roko_learn::self_model::model::{MODEL_CLASS, SelfModel, StateLoad};
 use roko_learn::self_model::policy::{LcbAci, LcbAciConfig, RouteAction, expected_cost};
 use roko_learn::self_model::spec_features::{SPEC_RECORDS_FILE, SpecFeatureIndex, SpecVector};
@@ -42,6 +52,37 @@ const FEATURES_SCHEMA: u32 = 1;
 
 /// Settled attempts a run keeps for late VS labels (6129); older ones are let go.
 const SETTLED_KEPT: usize = 4_096;
+
+/// The verify depths policy (b) may ask DP3 for after a pass (6132), each with its catch rate
+/// d_j, the prior 0.5 until S05's audits measure it, and its cost c_j in USD: V1's and V2's
+/// checks take machine time only, V3 adds a hidden suite a model writes, and V4 mutation and a
+/// review by a model of another family.
+const DEPTH_OPTIONS: [DepthOption; 4] = [
+    DepthOption {
+        depth: 1,
+        catch_rate: 0.5,
+        cost_usd: 0.005,
+    },
+    DepthOption {
+        depth: 2,
+        catch_rate: 0.5,
+        cost_usd: 0.02,
+    },
+    DepthOption {
+        depth: 3,
+        catch_rate: 0.5,
+        cost_usd: 0.08,
+    },
+    DepthOption {
+        depth: 4,
+        catch_rate: 0.5,
+        cost_usd: 0.20,
+    },
+];
+
+/// A false green's loss L_fg, in the attempt's expected cost on the model that ran: S04
+/// §4.10's five task costs.
+const FALSE_GREEN_LOSS: f64 = 5.0;
 
 /// A plan run's self-model: loaded at plan start when `[self_model] mode` is not off, and shared
 /// by dispatch, which forecasts each routed attempt, and the outcome sink, which teaches it each
@@ -74,6 +115,12 @@ pub struct SelfModelRuntime {
     early_climbs: parking_lot::Mutex<HashMap<String, bool>>,
     /// Each run's spec records (3240), by run id, with the size of the file read.
     spec_indexes: parking_lot::Mutex<HashMap<String, (u64, SpecFeatureIndex)>>,
+    /// P(false green) of each chain's last pass that stood, by chain key: `risk_fg` for S05's
+    /// audit tilt (6132).
+    risks: parking_lot::Mutex<HashMap<String, f64>>,
+    /// The attempts whose pass an active self-model rejected as suspicious at the deepest
+    /// depth, by attempt key, so that their failure climbs a rung (6132).
+    suspicious: parking_lot::Mutex<HashSet<String>>,
 }
 
 /// The units a run settled, by attempt key, oldest first; past [`SETTLED_KEPT`] the oldest go.
@@ -187,6 +234,8 @@ impl SelfModelRuntime {
             chain_plans: parking_lot::Mutex::new(HashMap::new()),
             early_climbs: parking_lot::Mutex::new(HashMap::new()),
             spec_indexes: parking_lot::Mutex::new(HashMap::new()),
+            risks: parking_lot::Mutex::new(HashMap::new()),
+            suspicious: parking_lot::Mutex::new(HashSet::new()),
         }
     }
 
@@ -446,6 +495,64 @@ impl SelfModelRuntime {
         Some(after_failure(&forecasts, &context, &|_| None))
     }
 
+    /// P(false green) of the chain `chain_key`'s last pass that stood, exported as `risk_fg` for
+    /// S05's audit tilt (6132), which S05 keeps at 0 until M3 has 50 audited labels.
+    #[must_use]
+    pub fn risk_fg(&self, chain_key: &str) -> Option<f64> {
+        self.risks.lock().get(chain_key).copied()
+    }
+
+    /// The candidates' forecasts of the open attempt `attempt_key`, whose forecast stays cached
+    /// for its verdict.
+    fn open_candidates(&self, attempt_key: &str) -> Option<Vec<CandidateForecast>> {
+        self.forecasts
+            .lock()
+            .get(attempt_key)
+            .map(|forecast| forecast.candidates.clone())
+    }
+
+    /// Whether the self-model's step after a pass acts on the chain `chain_key` (6132): policy
+    /// (b) in active mode, on a chain whose start rung it chose, until the breaker trips.
+    /// Otherwise the step is only logged.
+    fn acts_after_pass(&self, chain_key: &str) -> bool {
+        let started = self.chain_starts.lock().get(chain_key).copied().flatten();
+        self.settings.mode == SelfModelMode::Active
+            && self.settings.policy == SelfModelPolicy::Cascade
+            && started.is_some()
+            && !self.gate().breaker_tripped
+    }
+
+    /// Whether the chain `chain_key` can climb a rung from its candidate `current` (6132): a
+    /// rung above it, fewer than `K_MAX` climbs so far, and an attempt left.
+    fn can_climb(&self, chain_key: &str, current: usize, retries_left: u32) -> bool {
+        let plans = self.chain_plans.lock();
+        plans.get(chain_key).is_some_and(|(candidates, _)| {
+            !candidates.pinned
+                && current + 1 < candidates.rungs.len()
+                && candidates.step < K_MAX
+                && retries_left > 0
+        })
+    }
+
+    /// The climb the failure of the attempt `attempt_key` on ladder rung `rung` of the chain
+    /// `chain_key` earns when the self-model rejected its pass as suspicious (6132); `None` for
+    /// any other failure.
+    fn escalation_step(
+        &self,
+        attempt_key: &str,
+        chain_key: &str,
+        rung: usize,
+    ) -> Option<StepAction> {
+        if !self.suspicious.lock().remove(attempt_key) {
+            return None;
+        }
+        let plans = self.chain_plans.lock();
+        let (candidates, _) = plans.get(chain_key)?;
+        let current = candidates.rungs.iter().position(|&index| index == rung)?;
+        let to = current + 1;
+        (to < candidates.rungs.len()).then_some(StepAction::Climb { to })
+    }
+
     /// The candidate the policy would choose, and its action's name.
     fn decide(
         &self,
@@ -570,6 +677,20 @@ impl Candidates {
     }
 }
 
+/// What the self-model makes of one attempt's gate pass (6132).
+struct PostPass<'a> {
+    /// The run's self-model.
+    runtime: &'a SelfModelRuntime,
+    /// The attempt's chain key.
+    chain: String,
+    /// The candidate that ran, by its place among the chain's candidates.
+    current: usize,
+    /// r, P(false green) of the pass.
+    risk_fg: f64,
+    /// Policy (b)'s step after the pass.
+    action: PassAction,
+}
+
 impl GraphTaskDispatcher {
     /// M3's hook before routing (6128): forecast the attempt's candidates, log the prediction
     /// with the rung the self-model would choose beside the ladder's, and keep the forecast for
@@ -613,7 +734,8 @@ impl GraphTaskDispatcher {
 
 impl GraphTaskDispatcher {
     /// The self-model's step after `verdict`, an agent-blamed failure on ladder rung `rung`
-    /// after `climbs` climbs (6131); `None` when the self-model does not route the chain.
+    /// after `climbs` climbs (6131); `None` when the self-model does not route the chain. A
+    /// failure that rejected a suspicious pass climbs a rung (6132).
     pub(super) fn self_model_step(
         &self,
         spec: &TaskExecutionSpec,
@@ -623,6 +745,10 @@ impl GraphTaskDispatcher {
         climbs: u32,
     ) -> Option<StepAction> {
         let runtime = self.feedback.self_model.as_deref()?;
+        let chain = &verdict.identity.chain_key;
+        if let Some(step) = runtime.escalation_step(&verdict.identity.attempt_key, chain, rung) {
+            return Some(step);
+        }
         let used = self.attempt_in_run(&format!("{}/{}", spec.plan_id, task.id));
         let retries_left = spec.max_retries.saturating_sub(used);
         let error_class = verdict
@@ -634,8 +760,118 @@ impl GraphTaskDispatcher {
                     .ok()
                     .and_then(|value| value.as_str().map(str::to_string))
             });
-        let chain = &verdict.identity.chain_key;
         runtime.post_failure_step(chain, rung, climbs, retries_left, error_class)
+    }
+
+    /// The verify depth DP3 checks the attempt `attempt_key`, which ran `executor`, at (6132):
+    /// `depth`, its task type's ladder level or M1's floor, raised to the self-model's request
+    /// d* when an active self-model acts on the chain. In shadow mode the request is only
+    /// logged. Depth never decreases.
+    pub(super) fn self_model_depth(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_key: &str,
+        executor: &str,
+        depth: VerifyDepth,
+    ) -> VerifyDepth {
+        let Some(pass) = self.post_pass(attempt_key, executor, depth) else {
+            return depth;
+        };
+        let PassAction::Deepen { depth: level, .. } = pass.action else {
+            return depth;
+        };
+        let requested = depth_at(level).max(depth);
+        let applied = pass.runtime.acts_after_pass(&pass.chain);
+        tracing::info!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            depth = ?depth,
+            requested = ?requested,
+            risk_fg = pass.risk_fg,
+            applied,
+            "self-model: a low-confidence pass asks for a deeper verify depth"
+        );
+        if applied { requested } else { depth }
+    }
+
+    /// The self-model's step once the attempt `attempt_key`, which ran `executor`, passed every
+    /// check of verify depth `depth` (6132): the failure that escalates the model, when at the
+    /// deepest depth P(false green) is still above r_max and an active self-model can climb the
+    /// chain a rung; that failure climbs it. Otherwise `None`: the pass stands and exports its
+    /// risk as `risk_fg`, and in shadow mode an escalation is only logged.
+    pub(super) fn self_model_after_pass(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_key: &str,
+        executor: &str,
+        depth: VerifyDepth,
+    ) -> Option<String> {
+        let pass = self.post_pass(attempt_key, executor, depth)?;
+        let runtime = pass.runtime;
+        if !matches!(pass.action, PassAction::Escalate { .. }) {
+            runtime.risks.lock().insert(pass.chain, pass.risk_fg);
+            return None;
+        }
+        let used = self.attempt_in_run(&format!("{}/{}", spec.plan_id, task.id));
+        let retries_left = spec.max_retries.saturating_sub(used);
+        let applied = runtime.acts_after_pass(&pass.chain)
+            && runtime.can_climb(&pass.chain, pass.current, retries_left);
+        tracing::warn!(
+            plan_id = %spec.plan_id,
+            task_id = %task.id,
+            depth = ?depth,
+            risk_fg = pass.risk_fg,
+            r_max = FALSE_GREEN_RISK_MAX,
+            applied,
+            "self-model: the pass looks like a false green at the deepest verify depth \
+             (pass but suspicious); a stronger model should retry the task"
+        );
+        if !applied {
+            runtime.risks.lock().insert(pass.chain, pass.risk_fg);
+            return None;
+        }
+        runtime.suspicious.lock().insert(attempt_key.to_string());
+        Some(format!(
+            "self_model:pass_but_suspicious: the self-model puts P(false green) at {:.2}, above \
+             r_max {FALSE_GREEN_RISK_MAX}, after every check of verify depth {depth:?}, the \
+             deepest; a stronger model retries the task",
+            pass.risk_fg
+        ))
+    }
+
+    /// What the self-model makes of the pass of the attempt `attempt_key`, which ran
+    /// `executor`, at verify depth `depth` (6132); `None` without a self-model, a forecast of
+    /// the attempt for the model that ran, or a false-green risk that has learned.
+    fn post_pass(
+        &self,
+        attempt_key: &str,
+        executor: &str,
+        depth: VerifyDepth,
+    ) -> Option<PostPass<'_>> {
+        let runtime = self.feedback.self_model.as_deref()?;
+        let candidates = runtime.open_candidates(attempt_key)?;
+        let (current, ran) = candidates
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| self.ran_model(&candidate.arm.model, executor))?;
+        let action = post_pass_action(ran, depth)?;
+        let chain = roko_learn::telemetry::AttemptKey::parse(attempt_key)?.chain_key();
+        Some(PostPass {
+            runtime,
+            chain,
+            current,
+            risk_fg: ran.p_fg,
+            action,
+        })
+    }
+
+    /// Whether `model`, an arm's model, is the one `executor` names: the same name, or the
+    /// `[models.*]` key of its slug.
+    fn ran_model(&self, model: &str, executor: &str) -> bool {
+        let profile = self.config.models.get(model);
+        model == executor || profile.is_some_and(|profile| profile.slug == executor)
     }
 
     /// Note whether the self-model made the climb the chain `chain_key` just took (6131).
@@ -672,6 +908,40 @@ pub(crate) fn active_start(
         settings.mode == SelfModelMode::Active && !pinned && gate.eligible && !gate.breaker_tripped;
     let choice = would_choose.filter(|_| acts)?;
     (settings.allow_downward_start || choice >= default).then_some(choice)
+}
+
+/// Policy (b)'s step after a gate pass at verify depth `depth` (S04 §4.4, 6132), from `ran`, the
+/// attempt's forecast for the model that ran: ask for a deeper depth d*, escalate the model, or
+/// accept and export r = P(false green). `None` while r is the false-green head's prior: no VS
+/// label from S05's audits has taught it, so it says nothing about this pass.
+fn post_pass_action(ran: &CandidateForecast, depth: VerifyDepth) -> Option<PassAction> {
+    if (ran.p_fg - FALSE_GREEN_PRIOR).abs() < 1e-9 {
+        return None;
+    }
+    let loss_fg = FALSE_GREEN_LOSS * expected_cost(ran);
+    Some(after_pass(ran.p_fg, depth_level(depth), &DEPTH_OPTIONS, loss_fg))
+}
+
+/// `depth`'s level on S05's V0–V4 scale.
+const fn depth_level(depth: VerifyDepth) -> u8 {
+    match depth {
+        VerifyDepth::V0 => 0,
+        VerifyDepth::V1 => 1,
+        VerifyDepth::V2 => 2,
+        VerifyDepth::V3 => 3,
+        VerifyDepth::V4 => 4,
+    }
+}
+
+/// The verify depth at `level` on S05's scale; V4 above it.
+const fn depth_at(level: u8) -> VerifyDepth {
+    match level {
+        0 => VerifyDepth::V0,
+        1 => VerifyDepth::V1,
+        2 => VerifyDepth::V2,
+        3 => VerifyDepth::V3,
+        _ => VerifyDepth::V4,
+    }
 }
 
 /// What the self-model knows of `task` before its attempt runs. Plan tasks have no benchmark
@@ -1049,5 +1319,118 @@ mod tests {
         assert_eq!(dispatcher.ladder_step(&held_spec, &held), 1);
         let held_chain = AttemptKey::new(RUN, "stream-plan", "T-HOLD", 1).chain_key();
         assert!(!dispatcher.self_model_climbed(&held_chain));
+    }
+
+    /// 6132: after a pass whose learned false-green risk is high, an active self-model asks DP3
+    /// for a deeper verify depth while one below the deepest pays, and keeps the model; after
+    /// the deepest depth it rejects the pass, and that one failure climbs the chain a rung. In
+    /// shadow mode it only logs. A pass that stands exports its risk.
+    #[tokio::test]
+    async fn low_confidence_pass_requests_depth_before_model() {
+        use roko_learn::telemetry::{AttemptKey, AttemptLadder, AttemptOutcome, LadderReason};
+
+        for mode in [SelfModelMode::Active, SelfModelMode::Shadow] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+            let settings = SelfModelConfig {
+                mode,
+                ..SelfModelConfig::default()
+            };
+            let state = temp.path().join(".roko/learn/self-model/state-v1.json");
+            let fresh = SelfModel::new(&snapshot);
+            let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+            let feedback = GraphFeedbackContext {
+                self_model: Some(Arc::clone(&runtime)),
+                ..GraphFeedbackContext::default()
+            };
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, VERIFY_PROVIDER, ladder(mode), feedback).await;
+            task.id = "T-PASS".to_string();
+            task.model_hint = None;
+            let mut spec = make_spec(&task);
+            spec.max_retries = 5;
+
+            // The self-model started the chain on the cheap rung, and puts the chance that a
+            // pass there is a false green at 60%, at $0.10 an attempt.
+            let key = AttemptKey::new(RUN, "stream-plan", "T-PASS", 1);
+            let (attempt_key, chain) = (key.attempt_key(), key.chain_key());
+            let arms: Vec<ArmKey> = ["cheap-model", "stream-model"]
+                .into_iter()
+                .map(|model| ArmKey::roko("stream-cli", model))
+                .collect();
+            let suspicious = |arm: &ArmKey| CandidateForecast {
+                arm: arm.clone(),
+                p_gate: 0.9,
+                p_fg: 0.6,
+                p_vs: 0.36,
+                p_vs_lcb: 0.3,
+                cost_q50: 0.10,
+                cost_q90: 0.10,
+                lat_q50_s: 60.0,
+                lat_q90_s: 60.0,
+                cold_start: false,
+            };
+            let candidates = Candidates {
+                arms: arms.clone(),
+                rungs: vec![0, 1],
+                default: 0,
+                step: 0,
+                pinned: false,
+            };
+            runtime.chain_starts.lock().insert(chain.clone(), Some(0));
+            let plan = (candidates, TaskFeatures::default());
+            runtime.chain_plans.lock().insert(chain.clone(), plan);
+            let forecast = AttemptForecast {
+                version: runtime.version(),
+                features: TaskFeatures::default(),
+                candidates: arms.iter().map(suspicious).collect(),
+                would_choose: Some(0),
+                default: 0,
+                pinned: false,
+                routed: true,
+            };
+            runtime.remember(attempt_key.clone(), forecast);
+            let (active, cheap) = (mode == SelfModelMode::Active, "claude-haiku-4-5");
+
+            // r·L_fg·d_j = 0.6 × (5 × $0.10) × 0.5 = $0.15 pays for V3's $0.08 but not for V4's
+            // $0.20: below the deepest depth the pass asks for V3, never for a new model.
+            let depth =
+                dispatcher.self_model_depth(&spec, &task, &attempt_key, cheap, VerifyDepth::V0);
+            let deeper = if active { VerifyDepth::V3 } else { VerifyDepth::V0 };
+            assert_eq!(depth, deeper, "{mode:?}");
+            let step = dispatcher.self_model_after_pass(&spec, &task, &attempt_key, cheap, depth);
+            assert_eq!(step, None, "{mode:?}");
+            assert_eq!(runtime.risk_fg(&chain), Some(0.6));
+
+            // After V4's checks r is still above r_max: an active self-model rejects the pass.
+            let depth =
+                dispatcher.self_model_depth(&spec, &task, &attempt_key, cheap, VerifyDepth::V4);
+            assert_eq!(depth, VerifyDepth::V4);
+            let step = dispatcher.self_model_after_pass(&spec, &task, &attempt_key, cheap, depth);
+            assert_eq!(step.is_some(), active, "{mode:?}: {step:?}");
+
+            // That one failure climbs the chain a rung; in shadow mode nothing moves.
+            let identity = AttemptIdentity::new(&key);
+            let outcome = AttemptOutcome::GateFailed;
+            let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+            verdict.ladder = Some(AttemptLadder {
+                rung: Some("cheap".to_string()),
+                index: Some(0),
+                step: 0,
+                reason: LadderReason::SelfModel,
+                exhausted: false,
+                router_pick: None,
+            });
+            let settled = SettledAttempt {
+                verdict: Arc::new(verdict),
+                failure_reason: None,
+                reflex_rule: None,
+                live_tool_calls: LiveToolCalls::default(),
+                harness: None,
+            };
+            dispatcher.note_ladder_outcome(&spec, &task, &settled);
+            assert_eq!(dispatcher.ladder_step(&spec, &task), u32::from(active));
+            assert_eq!(dispatcher.self_model_climbed(&chain), active, "{mode:?}");
+        }
     }
 }

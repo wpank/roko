@@ -88,7 +88,8 @@ opportunity = "an active model experiment for the role"
 default_policy = "the experiment's control model"
 receipt = "executed_model"
 notes = [
-    "On the route layer if it is ever wired, rotating by epoch with L-route and L-M3; 5119 replaces its rule.",
+    "On the route layer if it is ever wired, rotating by epoch with L-route and L-M3.",
+    "5119 replaced its rule: each task draws its variant uniformly on the model_experiment layer and gets the propensity back to log, and an experiment concludes only on difference confidence sequences.",
 ]
 
 [[loop.static_findings]]
@@ -96,12 +97,6 @@ claim = "Only the CLI (commands/experiment.rs, commands/learn.rs) reads or write
 pointer = "crates/roko-cli/src/commands/experiment.rs::ModelExperimentStore"
 verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
 reason = "dormant:no_opportunity"
-
-[[loop.static_findings]]
-claim = "assign_variant is UCB1 over a DefaultHasher partition, and check_conclusion is re-tested after every outcome, which optional stopping makes invalid."
-pointer = "crates/roko-learn/src/model_experiment.rs::ModelExperiment::assign_variant"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
-qualifier = "misspecified"
 
 [[loop]]
 id = "L-routing-log"

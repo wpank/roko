@@ -338,7 +338,7 @@ pub struct PromptExperiment {
 }
 
 /// A new experiment's α share: all of it.
-const fn default_alpha() -> f64 {
+pub(crate) const fn default_alpha() -> f64 {
     EXPERIMENT_ALPHA
 }
 
@@ -472,16 +472,6 @@ impl PromptExperiment {
         }
     }
 
-    /// The level of this experiment's sequences: its α share, capped at
-    /// [`EXPERIMENT_ALPHA`].
-    fn level(&self) -> f64 {
-        if self.alpha > 0.0 && self.alpha < EXPERIMENT_ALPHA {
-            self.alpha
-        } else {
-            EXPERIMENT_ALPHA
-        }
-    }
-
     /// The winner the rule declares, if any. A lone active variant wins at
     /// once, as there is nothing to compare it with. Otherwise, once every
     /// active variant has `min_trials_per_variant` trials, the winner is the
@@ -501,20 +491,8 @@ impl PromptExperiment {
         if arms.iter().any(|id| trials(id) < min_trials) {
             return None;
         }
-        let (alpha, min_effect) = (self.level(), self.min_effect_size);
-        let stale = self.rule.as_ref().is_none_or(|rule| {
-            rule.arms != arms || rule.alpha != alpha || rule.consumed > self.observations.len()
-        });
-        if stale {
-            self.rule = None;
-        }
-        let rule = self
-            .rule
-            .get_or_insert_with(|| ConclusionRule::new(arms, alpha));
-        for observation in &self.observations[rule.consumed..] {
-            rule.push(observation);
-        }
-        rule.winner(min_effect).map(str::to_string)
+        let (alpha, min_effect) = (self.alpha, self.min_effect_size);
+        ConclusionRule::judge(&mut self.rule, arms, alpha, &self.observations, min_effect)
     }
 
     fn build_archive(&self) -> ExperimentArchive {
@@ -686,8 +664,37 @@ struct ArmPair {
 }
 
 impl ConclusionRule {
+    /// The winner the rule declares over `observations` for `arms`, at α
+    /// share `alpha` (capped at [`EXPERIMENT_ALPHA`]). The cached `rule` is
+    /// rebuilt when the arms or the share changed, then fed the observations
+    /// it has not taken yet.
+    pub(crate) fn judge(
+        rule: &mut Option<Self>,
+        arms: Vec<String>,
+        alpha: f64,
+        observations: &[VariantObservation],
+        min_effect: f64,
+    ) -> Option<String> {
+        let alpha = if alpha > 0.0 && alpha < EXPERIMENT_ALPHA {
+            alpha
+        } else {
+            EXPERIMENT_ALPHA
+        };
+        let stale = rule.as_ref().is_none_or(|rule| {
+            rule.arms != arms || rule.alpha != alpha || rule.consumed > observations.len()
+        });
+        if stale {
+            *rule = None;
+        }
+        let rule = rule.get_or_insert_with(|| Self::new(arms, alpha));
+        for observation in &observations[rule.consumed..] {
+            rule.push(observation);
+        }
+        rule.winner(min_effect).map(str::to_string)
+    }
+
     /// A rule over `arms` at level `alpha`, split over the pairs.
-    pub(crate) fn new(arms: Vec<String>, alpha: f64) -> Self {
+    fn new(arms: Vec<String>, alpha: f64) -> Self {
         let count = arms.len();
         let level = alpha / (count * count.saturating_sub(1) / 2).max(1) as f64;
         let mut pairs = Vec::new();
@@ -713,7 +720,7 @@ impl ConclusionRule {
     /// Take the next observation. One of a variant outside the arms, or one
     /// drawn over another number of arms (its propensity is not 1/k), is
     /// skipped.
-    pub(crate) fn push(&mut self, observation: &VariantObservation) {
+    fn push(&mut self, observation: &VariantObservation) {
         self.consumed += 1;
         let variant = observation.variant_id.as_str();
         let Some(arm) = self.arms.iter().position(|id| id == variant) else {
@@ -738,7 +745,7 @@ impl ConclusionRule {
 
     /// The arm whose CS against every other arm lies above 0, with an
     /// estimated lead of at least `min_effect` over each.
-    pub(crate) fn winner(&self, min_effect: f64) -> Option<&str> {
+    fn winner(&self, min_effect: f64) -> Option<&str> {
         if self.pairs.is_empty() {
             return None;
         }

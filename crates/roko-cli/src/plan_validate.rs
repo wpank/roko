@@ -2855,6 +2855,7 @@ title = "One task"
             timeout_secs: 60,
             required,
             parallel_with: Vec::new(),
+            ..Default::default()
         };
         let gates = GatesConfig {
             custom_rungs: vec![

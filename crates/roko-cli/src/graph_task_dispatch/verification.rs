@@ -1391,16 +1391,17 @@ impl GraphTaskDispatcher {
         runs
     }
 
-    /// The workspace rungs an attempt at `task` of `spec`'s plan faces: the
-    /// `[[gates.rungs]]` [`task_runs_rung`] picks, none when the plan opts
-    /// out.
+    /// The workspace rungs an attempt at `task` of `spec`'s plan faces: those
+    /// of the pack its work domain picks (`pack_rungs`, 9120), by default
+    /// `[[gates.rungs]]`, that [`task_runs_rung`] picks; none when the plan
+    /// opts out.
     pub(super) fn task_rungs(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
     ) -> impl Iterator<Item = &roko_core::config::GateRungConfig> {
         let runs = self.plan_runs_workspace_rungs(spec);
-        let rungs = self.config.gates.custom_rungs.iter();
+        let rungs = self.pack_rungs(spec, task).iter();
         rungs.filter(move |rung| runs && task_runs_rung(task, rung))
     }
 
@@ -1457,6 +1458,8 @@ impl GraphTaskDispatcher {
             .into_iter()
             .map(|(_, step)| step)
             .collect();
+        // Each workspace rung's step names the rung and its kind (9120).
+        pack_rungs::name_rung_steps(&mut prompt_task.verify, self.task_rungs(spec, task));
         prompt_task
     }
 }
@@ -1466,7 +1469,17 @@ impl GraphTaskDispatcher {
 /// gate-profile hints ask for it (gap-69a56e). A `quality_profile =
 /// "hardened"` task runs every declared rung, and a task that names
 /// `test_invariants` also runs the rungs that run tests.
+///
+/// An advisory rung never fails a task, so no verify step runs it. A rung of
+/// a kind not built yet is faced only when it is required, so that it fails
+/// closed (`pack_rungs`, 9120).
 fn task_runs_rung(task: &TaskDef, rung: &roko_core::config::GateRungConfig) -> bool {
+    if rung.is_advisory() {
+        return false;
+    }
+    if !rung.kind.is_command() {
+        return rung.required;
+    }
     if rung.command.trim().is_empty() {
         return false;
     }
@@ -1496,7 +1509,7 @@ fn attempt_verify_steps<'a>(
     for rung in rungs {
         let command = rung.command.trim();
         if !task.verify.iter().any(|s| s.command.trim() == command) {
-            steps.push((rung_step_label(&rung.name), rung.into()));
+            steps.push((rung_step_label(&rung.name), pack_rungs::verify_step(rung)));
         }
     }
     steps
@@ -2692,6 +2705,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
             timeout_secs: 10,
             required,
             parallel_with: Vec::new(),
+            ..Default::default()
         }
     }
 

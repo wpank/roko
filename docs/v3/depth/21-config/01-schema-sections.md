@@ -77,7 +77,8 @@ every agent roko builds for an API provider (Anthropic, OpenAI-compatible, Gemin
 Cerebras), and ACP's. The model sees only the extracted summary and facts, or a notice that they
 were withheld. CLI providers run their own tool loops, so it cannot cover them. The data model
 must be one roko calls over an API: if roko cannot build it, the agent fails to start, or the ACP
-turn fails, rather than run without the boundary.
+turn fails, rather than run without the boundary. A run a chat host starts over `/mcp` is refused
+while the section is left out, unless `[serve.mcp] allow_without_data_llm = true`.
 
 ---
 
@@ -183,7 +184,18 @@ semantics and built-in profiles.
 | `clippy_enabled` | bool | true | Enable clippy gate |
 | `skip_tests` | bool | false | Skip test gate |
 | `max_iterations` | u32 | 3 | Global gate retry ceiling |
-| `rungs` | array of tables (`name`, `command`, `timeout_secs`, `required`, `parallel_with`) | none | Declared gate rungs. The `required` ones are `roko run`'s verify steps, and every `roko plan run` task runs them after its own, skipping a rung whose command one of its steps already runs. A plan opts out with `[meta] workspace_rungs = false` |
+| `rungs` | array of tables (`name`, `kind`, `command`, `timeout_secs`, `required`, `parallel_with`, `artefacts`, `schema`, `rubric`, `advisory`) | none | Declared gate rungs, the `code` verifier pack. The `required` `command` ones are `roko run`'s verify steps, and every `roko plan run` task with no domain, or of the `code` domain when `packs` declares no `code` pack, runs them after its own, skipping a rung whose command one of its steps already runs. A plan opts out with `[meta] workspace_rungs = false` |
+| `packs` | table of tables (`[gates.packs.<domain>] rungs = [...]`) | none | Verifier packs by task domain label (`code`, `chain`, `research`, `docs` or a custom label). A plan task faces its domain's pack in place of `rungs`; a task of a domain other than `code` with no pack runs only its own verify steps, so it ends unverified rather than run the code ladder |
+
+A rung's `kind` says what it checks. `command`, the default, runs `command` under `sh -c`.
+`citations`, `judge`, `schema`, `receipt` and `confirm` parse and are validated but are not built
+yet: a plan task that must pass one fails before its agent runs, and an advisory or optional one is
+skipped. Loading fails when a rung lacks what its kind needs: a `command` rung a command, a
+`schema` rung `schema` (a file relative to the task's workspace), and a `citations`, `judge` or
+`schema` rung `artefacts` (globs relative to the task's workspace). `rubric` is a `judge` rung's
+rubric, as text or a file path. A rung with `advisory = true` only advises: its verdict is recorded
+and never fails the task, so no verify step runs it. A `judge` rung advises unless it sets
+`advisory = false`.
 
 ---
 
@@ -311,6 +323,16 @@ max_iterations = 5
 | `enabled` | bool | false | Enable authentication middleware |
 | `api_key` | String | `""` | Legacy single API key |
 | `api_keys` | Vec\<ApiKeyEntry\> | `[]` | Named scoped API keys |
+
+### `[serve.mcp]` -- ServeMcpConfig
+
+Runs a chat host starts through the `/mcp` endpoint's `run_prompt` and `plan_run` tools
+(`docs/v3/26-HTTP-API.md` 8.41). Runs started any other way are not affected.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_run_usd` | f64 | 5.0 | Most a run may spend; each call names its own `max_usd`, at most this, which becomes the run's budget ceiling |
+| `allow_without_data_llm` | bool | false | Let such a run start without the data-model boundary (`[agent.data_llm]`); by default it is refused |
 
 ---
 

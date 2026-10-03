@@ -263,6 +263,10 @@ pub enum ServerEvent {
         run_id: String,
         #[serde(rename = "prompt_preview")]
         prompt: String,
+        /// Where a gated run's request came from (9116); `None` for an
+        /// agent's reply.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<crate::runtime::RunOrigin>,
     },
 
     /// A one-shot run completed.
@@ -1286,6 +1290,7 @@ mod tests {
             ServerEvent::RunStarted {
                 run_id: "r1".into(),
                 prompt: "p".into(),
+                origin: None,
             },
             ServerEvent::RunCompleted {
                 run_id: "r1".into(),

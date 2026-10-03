@@ -27,6 +27,7 @@
 //! `roko research` answer questions).
 
 use crate::*;
+use roko_core::TaskDomain;
 use roko_core::config::schema::RokoConfig;
 use roko_gate::PlanComplexity;
 use std::path::{Path, PathBuf};
@@ -150,6 +151,8 @@ pub(crate) struct RunArgs {
     pub(crate) provider: Option<String>,
     /// `--max-retries`.
     pub(crate) max_retries: Option<u32>,
+    /// `--domain`: the work-domain label of a one-task run (9121).
+    pub(crate) domain: Option<String>,
     /// `--fresh` (plan directories only).
     pub(crate) fresh: bool,
     /// `--resume-plan` (plan directories only).
@@ -228,6 +231,7 @@ pub(crate) async fn cmd_run(cli: &Cli, args: RunArgs) -> Result<i32> {
             args.provider,
             args.max_retries,
             None,
+            args.domain.as_deref().and_then(TaskDomain::from_label),
         )
         .await;
     }
@@ -494,8 +498,9 @@ async fn run_one_task(
         state_hub: None,
         run_id: None,
         cancel: None,
-        domain: None,
+        domain: args.domain.as_deref().and_then(TaskDomain::from_label),
         max_usd: None,
+        origin: roko_serve::runtime::RunOrigin::Cli,
     })
     .await;
 

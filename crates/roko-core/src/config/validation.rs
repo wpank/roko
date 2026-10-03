@@ -237,6 +237,13 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         ));
     }
 
+    // 9119: each gate rung has what its kind needs, such as a command for a
+    // `command` rung and artefacts for a `citations` one.
+    for (key, problem) in config.gates.rung_problems() {
+        let message = format!("{key}: {problem}");
+        results.push(invariant(12, InvariantSeverity::Error, key, message));
+    }
+
     results
 }
 

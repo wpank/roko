@@ -260,6 +260,27 @@ impl RunManifests {
     }
 }
 
+/// Record in run `run_id`'s manifest under `workdir` where its request came
+/// from (backlog 9116): `http`, or `mcp:<client>` for a chat host. A server
+/// records it once the run returns; a run without a manifest, such as one
+/// that failed before it started, is left alone, and a manifest that cannot
+/// be read or written is logged.
+pub fn record_origin(workdir: &Path, run_id: &str, origin: &str) {
+    let run_dir = RokoLayout::for_project(workdir).runs_dir().join(run_id);
+    match RunProvenanceManifest::load(&run_dir) {
+        Ok(Some(mut manifest)) => {
+            manifest.origin = Some(origin.to_string());
+            if let Err(error) = manifest.store(&run_dir) {
+                tracing::warn!(run_id, %error, "run manifest not written; its origin is not in it");
+            }
+        }
+        Ok(None) => tracing::debug!(run_id, "run has no manifest to record its origin in"),
+        Err(error) => {
+            tracing::warn!(run_id, %error, "run manifest unreadable; its origin is not recorded");
+        }
+    }
+}
+
 /// The harness build: its commit and build-time dirty flag, and a digest of
 /// the uncommitted changes of the source tree it was built from. Edits after
 /// a build do not rerun the build script, so the tree is checked here too.

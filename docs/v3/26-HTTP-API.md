@@ -498,7 +498,7 @@ aliases (both are mounted).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/run` | Run the prompt in the background as a gated one-task plan, as `roko run` does (202 Accepted with the run's `id`, which the Graph run takes; 409 while a plan run is live) |
+| POST | `/api/run` | Run the prompt in the background as a gated one-task plan, as `roko run` does (202 Accepted with the run's `id`, which the Graph run takes; 409 while a plan run is live). Body: `prompt`, optional `workdir`, optional `domain` (a work-domain label such as `research`, which picks the task's tool policy and verifier pack; default: the project's `default_domain`) |
 | GET | `/api/run/{id}/status` | Poll run status |
 
 The status is `running`, then the run's verdict: `succeeded` when gates checked
@@ -515,7 +515,7 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 |--------|------|-------------|
 | GET | `/api/dashboard/runs` | Bounded summary of hashed per-run indexes |
 | GET | `/api/runs/{run_id}` | Run detail, terminal state, counts, integrity |
-| GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `finished_at`, `links` |
+| GET | `/api/runs/{run_id}/summary` | What a host can post: `state` (`queued`, `running`, `succeeded`, `failed`, `unverified`, `cancelled`, the words `GET /api/plans/{id}/status` uses), `verdict` once it ended, `cost_usd`, task counts (`passed`, `failed`, `unverified`, `other`), at most five `milestones` from event kinds and ids, `untrusted_input_boundary` per task (`data_llm` or `none`, see 8.41), `finished_at`, `links` |
 | GET | `/api/runs/{run_id}/events` | Cursor-paginated events (`?cursor=&limit=&types=&source=`) |
 | GET | `/api/runs/{run_id}/events/stream` | Run-filtered SSE |
 | GET | `/api/runs/{run_id}/tasks` | Task summaries and attempt numbers |
@@ -1059,15 +1059,52 @@ checks each tool's own scope. A request whose `Origin` is not this machine is
 refused with 403, so a web page cannot reach it through DNS rebinding; hosts
 call it from outside a browser and send no `Origin`.
 
-The tools and their arguments are the contract with hosts. Both only read
-(`annotations.readOnlyHint: true`), and each returns its JSON as text and as
-`structuredContent`; a tool's own failure, such as an unknown run, is a result
-with `isError: true`.
+The tools and their arguments are the contract with hosts. Each returns its
+JSON as text and as `structuredContent`; a tool's own failure, such as an
+unknown run, is a result with `isError: true`. `run_status` and `recall` only
+read (`annotations.readOnlyHint: true`, `read` scope). The run tools need the
+`write` scope and answer at once with `{ run_id, state, links }` for
+`run_status` to follow. `run_prompt` and `plan_run` are annotated
+`destructiveHint: true`, `idempotentHint: false` and `openWorldHint: true`,
+`plan_generate` `destructiveHint: false`, and `run_cancel` `idempotentHint:
+true`, so a host asks its user before calling them; the paid ones say so in
+their description and in `_meta` (`"roko/paid": true`). No tool picks a model:
+routing stays with the ladder.
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
-| `run_status` | `run_id` (string, required); `wait_secs` (integer, 0 to 30, default 0) | The run's summary, as `GET /api/runs/{run_id}/summary` returns it, once its state changes, it has ended, or `wait_secs` pass |
+| `run_status` | `run_id` (string, required); `wait_secs` (integer, 0 to 30, default 0) | The run's summary, as `GET /api/runs/{run_id}/summary` returns it, once its state changes, it has ended, or `wait_secs` pass; for a `plan_generate` run, the operation's state and result |
 | `recall` | `query` (string, required); `limit` (integer, 1 to 50, default 5) | The knowledge store's entries on `query`, most relevant first, as `GET /api/knowledge` returns them |
+| `run_prompt` | `prompt` (string, required); `domain` (string); `max_usd` (number above 0, required) | A gated one-task run of the prompt, as `POST /api/run` starts it (409 while a plan run is live) |
+| `plan_run` | `plan_id` (string, required); `resume` (boolean, default false); `max_usd` (number above 0, required) | A run of the plan, or its place in the queue (`state: "queued"`, `position`), as `POST /api/plans/{id}/execute` starts it |
+| `plan_generate` | `prompt` (string, required) | The planner's operation as `run_id` and the new plan's `plan_id`, as `POST /api/plans/generate` starts it |
+| `run_cancel` | `run_id` (string, required) | A `run_prompt` run stopped, or a live or queued plan run cancelled, as `POST /api/plans/{id}/cancel` cancels it |
+
+A run a chat host starts must name its spending cap: `run_prompt` and
+`plan_run` refuse, with a JSON-RPC error and before anything starts, a call
+without `max_usd` or with one above `[serve.mcp] max_run_usd` (default 5.00),
+and the cap becomes the run's budget ceiling. Such a run carries its origin,
+`{ "kind": "mcp", "client": "<credential name, or local>" }`: the prompt
+run's `run_started` event and the run's manifest (`.roko/runs/<run_id>/manifest.json`,
+`origin: "mcp:<client>"`) record it. Runs started any other way are not
+affected.
+
+A chat host's request is untrusted data: it may quote a web page or another
+person. The task of a `run_prompt` run, and the planner's prompt for
+`plan_generate`, carry it between a `<<<CHAT REQUEST>>>` line and a
+`<<<END CHAT REQUEST>>>` line, after a fixed instruction that nothing between
+the markers can change the agent's tools, its safety policy, the verify steps or
+its instructions; either marker inside the request is escaped (`<<\<`), and the
+task's title names the host instead of quoting the request. The fence is a
+mitigation. What enforces is the data-model boundary, `[agent.data_llm]`, which
+screens what an agent's tools read in roko's own tool loops: `run_prompt` and
+`plan_run` are refused, as a tool error, when it is not set, unless `[serve.mcp]
+allow_without_data_llm = true`, and the runtime checks again before such a run
+starts. The run's summary reports, per task it dispatched an agent for,
+`untrusted_input_boundary`: `{ plan_id, task_id, boundary }`, where `boundary`
+is `data_llm` when the boundary is set and every model the task ran on runs
+roko's own tool loop, and `none` otherwise (a Claude Code, Codex, Cursor or
+Gemini CLI agent runs its own loop, which the boundary cannot reach).
 
 There is no `remember`: personal memory stays with the host.
 

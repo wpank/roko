@@ -19,6 +19,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures::stream::{self, StreamExt};
+use roko_core::agent::resolve_model;
+use roko_core::config::schema::RokoConfig;
 use roko_core::dashboard_snapshot::{
     TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_ALREADY_SATISFIED, TASK_OUTCOME_BLOCKED,
     TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED, TaskOutcomeClass, classify_task_outcome,
@@ -229,7 +231,8 @@ pub(super) async fn summarize_run(state: &Arc<AppState>, run_id: &str) -> Result
         return Err(ApiError::not_found(format!("run '{run_id}' not found")));
     }
     let events = page.map(|page| page.events).unwrap_or_default();
-    Ok(run_summary(run_id, &events, in_memory))
+    let config = state.load_roko_config();
+    Ok(run_summary(run_id, &events, in_memory, &config))
 }
 
 /// What this server holds of run `run_id` in memory: the state of its
@@ -1615,18 +1618,36 @@ fn completion_status(value: &Value) -> &'static str {
 /// end and the last outcome of each task, the words `GET
 /// /api/plans/{id}/status` uses too. A run with neither is still running, as
 /// a run another process writes the index of is.
+///
+/// Each task the run dispatched an agent for also gets its untrusted-input
+/// boundary under `config` ([`untrusted_input_boundary`]).
 fn run_summary(
     run_id: &str,
     events: &[IndexedEvent],
     in_memory: Option<(RunState, Option<usize>)>,
+    config: &RokoConfig,
 ) -> Value {
     let mut completion = None;
     let mut tasks = BTreeMap::<(String, String), TaskOutcomeClass>::new();
+    // The models each task's agents were dispatched to.
+    let mut task_models = BTreeMap::<(String, String), BTreeSet<String>>::new();
     // The first milestone of each kind, with its event's place in the run.
     let mut milestones = BTreeMap::<&str, (usize, Value)>::new();
     for (place, item) in events.iter().enumerate() {
         let value = &item.value;
         let kind = event_type(value).unwrap_or_default();
+        if matches!(kind, "agent_spawned" | "agent.dispatch.started")
+            && let Some(task_id) = event_task_id(value)
+            && let Some(model) = string_field(value, "model")
+                .or_else(|| string_field(value, "requested_model"))
+                .filter(|model| !model.is_empty())
+        {
+            let plan_id = event_plan_id(value).unwrap_or_default().to_string();
+            task_models
+                .entry((plan_id, task_id.to_string()))
+                .or_default()
+                .insert(model.to_string());
+        }
         if matches!(
             kind,
             "run.started" | "run_started" | "workflow_started" | "plan_started" | "plan.started"
@@ -1714,6 +1735,16 @@ fn run_summary(
         count(TaskOutcomeClass::Failed),
         count(TaskOutcomeClass::Unverified),
     );
+    let boundaries = task_models
+        .iter()
+        .map(|((plan_id, task_id), models)| {
+            json!({
+                "plan_id": plan_id,
+                "task_id": task_id,
+                "boundary": untrusted_input_boundary(config, models),
+            })
+        })
+        .collect::<Vec<_>>();
     let summary = summarize_events(events);
     json!({
         "run_id": run_id,
@@ -1729,11 +1760,27 @@ fn run_summary(
             "unverified": unverified,
             "other": tasks.len() - passed - failed - unverified,
         },
+        "untrusted_input_boundary": boundaries,
         "milestones": milestones,
         "started_at": summary["started_at"],
         "finished_at": summary["finished_at"],
         "links": run_links(run_id),
     })
+}
+
+/// What screens the text a task's agents read, such as a chat host's request
+/// or a fetched page, before it reaches their model (9117): `data_llm` when
+/// `[agent.data_llm]` is set and every one of the task's `models` runs roko's
+/// own tool loop, where the boundary screens tool results (gap-b0d514);
+/// `none` when it is unset or a model runs a CLI or ACP agent with its own
+/// tool loop, which the boundary cannot reach.
+fn untrusted_input_boundary(config: &RokoConfig, models: &BTreeSet<String>) -> &'static str {
+    let screened = config.agent.data_llm.is_some()
+        && models.iter().all(|model| {
+            let kind = resolve_model(config, model).provider_kind;
+            roko_agent::adapter_for_kind(kind).supports_local_tool_runtime()
+        });
+    if screened { "data_llm" } else { "none" }
 }
 
 /// A summary milestone: its kind, a line built from event kinds and ids, and
@@ -2316,6 +2363,63 @@ mod tests {
         assert_eq!(summary["verdict"], "unverified", "{summary}");
         assert_eq!(summary["tasks"]["unverified"], 1, "{summary}");
         assert_eq!(summary["tasks"]["failed"], 0, "{summary}");
+    }
+
+    /// 9117: each task the run dispatched an agent for reports what screens
+    /// the text it reads. With `[agent.data_llm]` set, a task whose model
+    /// runs roko's own tool loop is screened and one that ran a CLI agent is
+    /// not; without it, no task is.
+    #[test]
+    fn run_summary_reports_each_tasks_untrusted_input_boundary() {
+        use roko_core::config::{DataLlmConfig, ModelProfile, ProviderConfig};
+
+        let mut config = RokoConfig::default();
+        for (provider, kind) in [
+            ("zai", roko_core::ProviderKind::OpenAiCompat),
+            ("claude", roko_core::ProviderKind::ClaudeCli),
+        ] {
+            config.providers.insert(
+                provider.to_string(),
+                ProviderConfig {
+                    kind,
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+        for (model, provider) in [("api-model", "zai"), ("cli-model", "claude")] {
+            config.models.insert(
+                model.to_string(),
+                ModelProfile {
+                    provider: provider.to_string(),
+                    slug: model.to_string(),
+                    ..ModelProfile::default()
+                },
+            );
+        }
+        let events = [
+            json!({"type":"agent_spawned","run_id":"r1","plan_id":"p1","task_id":"T1","model":"api-model"}),
+            json!({"type":"agent.dispatch.started","run_id":"r1","plan_id":"p1","task_id":"T2","requested_model":"cli-model"}),
+        ]
+        .map(|value| IndexedEvent { cursor: 0, value });
+        let boundaries = |config: &RokoConfig| {
+            run_summary("r1", &events, None, config)["untrusted_input_boundary"].clone()
+        };
+
+        assert_eq!(
+            boundaries(&config),
+            json!([
+                {"plan_id": "p1", "task_id": "T1", "boundary": "none"},
+                {"plan_id": "p1", "task_id": "T2", "boundary": "none"}
+            ])
+        );
+        config.agent.data_llm = Some(DataLlmConfig::default());
+        assert_eq!(
+            boundaries(&config),
+            json!([
+                {"plan_id": "p1", "task_id": "T1", "boundary": "data_llm"},
+                {"plan_id": "p1", "task_id": "T2", "boundary": "none"}
+            ])
+        );
     }
 
     /// bug-54c729: a task that settled as unverified, skipped or already

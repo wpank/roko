@@ -3,9 +3,12 @@
 > **Implementation status (2026-10):** Proposed. What is live today is
 > the task domain: `TaskDomain` (`crates/roko-core/src/task.rs`) picks a
 > task's built-in tool set (`roko_std::roles::domain_profile`) and the
-> threshold priors its unobserved gate rungs start from. Per-domain
-> checks are pending (backlog 9120, verifier packs keyed by
-> `TaskDomain`): every domain runs the same `[[gates.rungs]]` ladder.
+> threshold priors its unobserved gate rungs start from, and its
+> verifier pack (backlog 9120): a `code` task, or one with no domain,
+> faces the `[[gates.rungs]]` ladder, and a task of another domain its
+> `[gates.packs.<domain>]` rungs, or only its own verify steps when the
+> domain has no pack. Only `command` rungs run so far; the other rung
+> kinds (9119) parse, and a required one fails its task.
 > `[profiles.<name>]` (`roko_core::config::DomainProfile`) is parsed,
 > but nothing resolves it at run time yet (9125). The domain plugin
 > enum (`DomainPlugin`) and lifecycle manifests exist in
@@ -70,9 +73,10 @@ operation without changing the kernel.
 | Ops/SRE | Operator, Deployer, Monitor, Reviewer | kubectl, logs, metrics, runbooks, pager | incident archive, runbook library |
 | Writing | DocWriter, Researcher, Reviewer | corpus search, style guide, fact-check, citation | voice fingerprint, editorial archive |
 
-No profile has gates of its own today. Every domain runs the shared
-`[[gates.rungs]]` ladder; per-domain checks (verifier packs keyed by
-`TaskDomain`) are pending (9120).
+No profile has gates of its own today. A domain's checks are its
+verifier pack, `[gates.packs.<domain>]` (9120): `code` runs the shared
+`[[gates.rungs]]` ladder, and a domain without a pack runs only its
+tasks' own verify steps.
 
 ### Coding
 
@@ -252,8 +256,8 @@ templates = "@roko/research-templates"
 
 The exact package format can evolve, but the contract should remain
 stable: install a profile, get a domain-shaped agent stack. A profile
-names no gates: its checks would come from its domain's verifier pack
-(9120).
+names no gates: its checks come from its domain's verifier pack
+(`[gates.packs.<domain>]`, 9120).
 
 ---
 

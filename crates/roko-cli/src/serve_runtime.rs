@@ -132,11 +132,23 @@ impl CliRuntime for RokoCliRuntime {
         prompt: &str,
         options: roko_serve::runtime::PromptPlanOptions,
     ) -> anyhow::Result<roko_serve::runtime::PromptPlanResult> {
+        refuse_unscreened_chat_run(workdir, &self.repo_registry, &options.origin)?;
         let workdir = workdir.to_path_buf();
         let prompt = prompt.to_string();
         let state_hub = self.state_hub.clone();
         tokio::task::spawn_blocking(move || {
-            run_prompt_plan_on_local_runtime(workdir, prompt, state_hub, options)
+            let origin = options.origin.label();
+            let result =
+                run_prompt_plan_on_local_runtime(workdir.clone(), prompt, state_hub, options);
+            // The run's manifest says where its request came from (9116).
+            if let Ok(result) = &result {
+                crate::graph_execution::run_manifest::record_origin(
+                    &workdir,
+                    &result.run_id,
+                    &origin,
+                );
+            }
+            result
         })
         .await
         .map_err(|err| anyhow::anyhow!("prompt run worker failed: {err}"))?
@@ -284,6 +296,7 @@ impl CliRuntime for RokoCliRuntime {
         plan_target: &Path,
         options: PlanRunOptions,
     ) -> anyhow::Result<PlanExecutionResult> {
+        refuse_unscreened_chat_run(workdir, &self.repo_registry, &options.origin)?;
         let workdir = workdir.to_path_buf();
         let plan_target = plan_target.to_path_buf();
         let config = self.config.clone();
@@ -293,8 +306,10 @@ impl CliRuntime for RokoCliRuntime {
         let extension_chain = self.extension_chain_for_workdir(&workdir)?;
         let live_agent_output = config_live_output_to_dispatcher(options.live_agent_output);
         tokio::task::spawn_blocking(move || {
-            run_plan_on_local_runtime(
-                workdir,
+            let origin = options.origin.label();
+            let run_id = options.run_id.clone();
+            let result = run_plan_on_local_runtime(
+                workdir.clone(),
                 plan_target,
                 config,
                 repo_registry,
@@ -308,7 +323,13 @@ impl CliRuntime for RokoCliRuntime {
                 options.cancel,
                 live_agent_output,
                 options.run_id,
-            )
+                options.max_usd,
+            );
+            // The run's manifest says where its request came from (9116).
+            if let Some(run_id) = &run_id {
+                crate::graph_execution::run_manifest::record_origin(&workdir, run_id, &origin);
+            }
+            result
         })
         .await
         .map_err(|err| anyhow::anyhow!("plan execution worker failed: {err}"))?
@@ -888,6 +909,7 @@ fn run_plan_on_local_runtime(
     cancel: Option<CancelToken>,
     live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
     run_id: Option<String>,
+    budget_override: Option<f64>,
 ) -> anyhow::Result<PlanExecutionResult> {
     // Acquire the runner lock before touching the workspace.  Server-side runs
     // and `roko plan run` both take this lock, so only one plan executor can be
@@ -949,7 +971,8 @@ fn run_plan_on_local_runtime(
                 max_retries: None,
                 // 0 → use each plan's meta.max_parallel default.
                 max_tasks: 0,
-                budget_override: None,
+                // A chat host's spending cap is the run's ceiling (9116).
+                budget_override,
                 no_budget: false,
                 cli_model_override: None,
                 dangerously_skip_permissions,
@@ -1046,6 +1069,7 @@ fn run_prompt_plan_on_local_runtime(
             cancel: Some(cancel.clone()),
             domain: options.domain,
             max_usd: options.max_usd,
+            origin: options.origin,
         })
         .await?;
         let snapshot = state_hub.current_snapshot();
@@ -1055,6 +1079,22 @@ fn run_prompt_plan_on_local_runtime(
             cancel.is_cancelled(),
         ))
     })
+}
+
+/// Refuse a chat host's run when the workspace has no data-model boundary
+/// (`[agent.data_llm]`) and does not allow running without one (9117).
+fn refuse_unscreened_chat_run(
+    workdir: &Path,
+    repo_registry: &RepoRegistry,
+    origin: &roko_serve::runtime::RunOrigin,
+) -> anyhow::Result<()> {
+    if !origin.is_chat() {
+        return Ok(());
+    }
+    match load_effective_roko_config(workdir, repo_registry)?.chat_run_refusal() {
+        Some(reason) => anyhow::bail!("{reason}"),
+        None => Ok(()),
+    }
 }
 
 /// What a prompt run reports to serve: its id; its verdict, which

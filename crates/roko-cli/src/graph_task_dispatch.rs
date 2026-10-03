@@ -71,6 +71,7 @@ mod live_tool_calls;
 mod operator_directives;
 mod operator_pause;
 mod operator_stop;
+mod pack_rungs;
 mod prompt_experiment;
 mod red_flags;
 mod reflex_credit;
@@ -242,6 +243,9 @@ pub struct GraphTaskDispatcher {
     /// (`[meta] workspace_rungs`), per plan id, read once from the plan's
     /// `tasks.toml`.
     workspace_rung_plans: parking_lot::Mutex<HashMap<String, bool>>,
+    /// `(plan id, work domain)` pairs whose tasks face no workspace rungs
+    /// for want of a `[gates.packs]` entry, each logged once (`pack_rungs`).
+    unpacked_domains: parking_lot::Mutex<std::collections::HashSet<(String, String)>>,
     /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt stopped at its turn
     /// cap; the next attempt raises the cap and resumes the partial work.
     turn_cap_retries: parking_lot::Mutex<HashMap<String, TurnCapRetry>>,
@@ -340,6 +344,7 @@ impl GraphTaskDispatcher {
             stopping: tokio_util::sync::CancellationToken::new(),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
+            unpacked_domains: parking_lot::Mutex::default(),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
@@ -795,6 +800,11 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         dispatch_ctx: &mut DispatchContext,
     ) -> Result<crate::dispatch::RunnerDispatchPlan> {
+        // A rung the task must pass whose kind is not built yet fails the
+        // attempt before its agent runs, and is not retried (9120).
+        if let Some(rejection) = self.unbuilt_rung(spec, task) {
+            return Err(rejection);
+        }
         // The prompt shows every check that will judge the task: its own
         // verify steps, then the workspace rungs it faces.
         let task = &self.prompt_task(spec, task);

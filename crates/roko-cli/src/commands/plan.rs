@@ -2605,7 +2605,11 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
     if blocking.is_empty() {
         spec_gate_before_run(plans_dir, workdir)
     } else {
-        tracing::error!(report = %plan_validate::render_text(&report), "plan validation failed — fix the errors above before running");
+        let rendered = plan_validate::render_text(&report);
+        // On stderr as well as in the log: without `--verbose` an operator
+        // sees no tracing output.
+        eprintln!("plan validation failed; fix these errors before running:\n{rendered}");
+        tracing::error!(report = %rendered, "plan validation failed — fix the errors above before running");
         Some(1)
     }
 }
@@ -2637,22 +2641,10 @@ fn spec_gate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
     // is not refused here on its score.
     let epoch = roko_cli::spec_gate::holdout_epoch();
     roko_cli::spec_gate::apply_holdout(&mut report, config.holdout_frac, &epoch);
-    for decision in report.blocked() {
-        for finding in &decision.findings {
-            tracing::error!(
-                plan = %decision.plan_path,
-                task = %decision.task_id,
-                rule = finding.rule,
-                detail = %finding.detail,
-                "spec gate: task blocked"
-            );
-        }
-    }
     if report.blocks() {
-        tracing::error!(
-            "plan refused before dispatch: fix the task specs above ([spec_quality] in roko.toml \
-             sets what the gate checks)"
-        );
+        // On stderr as well as in the log: without `--verbose` an operator
+        // sees no tracing output.
+        roko_cli::spec_gate::log_blocked(&report);
         Some(1)
     } else {
         None

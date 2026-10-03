@@ -368,6 +368,14 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         create_deployment,
         teardown_deployment,
         doctor_report,
+        learn_loops_list,
+        learn_loop_detail,
+        learn_loop_decisions,
+        learn_loop_canary,
+        learn_loop_fault,
+        showcase_m2_loops,
+        showcase_m2_loop_ledger,
+        showcase_m2_loop_break,
         list_effects,
         decide_effect,
         sse_handler,
@@ -1542,6 +1550,30 @@ doc_get!(doctor_report, "/doctor", "doctor");
 // ── effects (backlog 9133) ─────────────────────────────────────────────────────────
 doc_get!(list_effects, "/effects", "effects");
 doc_post_value!(decide_effect, "/effects/{id}/decision", "effects");
+
+// ── learn loops (backlog 5132-5133) ────────────────────────────────────────────────
+doc_get!(learn_loops_list, "/learn/loops", "learning");
+doc_get_param!(learn_loop_detail, "/learn/loops/{id}", "learning", "id");
+doc_get_param!(
+    learn_loop_decisions,
+    "/learn/loops/{id}/decisions",
+    "learning",
+    "id"
+);
+doc_post_value!(learn_loop_canary, "/learn/loops/{id}/canary", "learning");
+doc_post_value!(learn_loop_fault, "/learn/loops/{id}/fault", "learning");
+doc_get!(showcase_m2_loops, "/showcase/m2/loops", "learning");
+doc_get_param!(
+    showcase_m2_loop_ledger,
+    "/showcase/m2/loops/{id}/ledger",
+    "learning",
+    "id"
+);
+doc_post_value!(
+    showcase_m2_loop_break,
+    "/showcase/m2/loops/{id}/break",
+    "learning"
+);
 
 // ── event_ingest (gap-c50b85) ──────────────────────────────────────────────────────
 doc_post_value!(ingest_event, "/events/ingest", "event_ingest");

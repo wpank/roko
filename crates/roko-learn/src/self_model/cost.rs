@@ -184,7 +184,8 @@ fn solve(a: &[Vec<f64>], b: &[f64]) -> Option<Vec<f64>> {
             if row != column {
                 let factor = rows[row][column] / rows[column][column];
                 for k in column..=n {
-                    rows[row][k] -= factor * rows[column][k];
+                    let step = factor * rows[column][k];
+                    rows[row][k] -= step;
                 }
             }
         }

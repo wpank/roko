@@ -1,7 +1,8 @@
-//! Heartbeat data types the rest of the runtime uses: the tick topics and
-//! speeds, the environmental regime, the behavioural and emotion labels, and
-//! the event-bus payloads (`HeartbeatTick`, `CognitiveSignal`,
-//! `WakeupCondition`).
+//! Heartbeat data types the rest of the runtime uses.
+//!
+//! They are the tick topics and speeds, the environmental regime, the
+//! behavioural and emotion labels, and the event-bus payloads
+//! (`HeartbeatTick`, `CognitiveSignal`, `WakeupCondition`).
 //!
 //! The cognitive clock itself (`heartbeat`, `theta_consumer` and
 //! `delta_consumer`) is parked behind the `cognitive-clock` feature (9222);

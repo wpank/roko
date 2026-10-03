@@ -69,3 +69,33 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK17 (gap-cb5133), PK19 (gap-de0b87), PK21 (gap-1149aa), PK22 (gap-46fd19), PK23 (gap-eb1aa3).
 - Suggested model: sonnet.
+
+## Progress
+
+- 3235: implemented at `e2715c2a3`. New `specops/refine.py`: at most two additive-only rounds of a model over a
+  TSS v1 spec (acceptance, verify, non_goals, assumptions, context.read_files/symbols, each with a source);
+  rejects a round that deletes/reorders/edits an existing verify step, changes `files`, names a hidden-suite
+  path, carries a sourceless or non-additive addition, or would not raise the spec's own `speclint.score_task`
+  score. `test_refine.py` (19 tests) covers every rejection path, the max-rounds cap, and a hypothesis property
+  test over the 3233 fixtures proving monotonicity. Added `hypothesis` to `requirements.in`/`.lock` (via `uv`).
+- 3237: implemented at `ee71ed2d5`. New `specops/critic.py` (a fixed four-question rubric; `critic_score` is the
+  fraction answered yes) and `specops/ambiguity.py` (k=3 ClarifyGPT-style samples of a model's own idea of the
+  interface inputs; `ambiguity` is their mean pairwise Jaccard distance). `speclint.py` gains `--critic` and
+  `--ambiguity-probe`; since a live model is S09 block C and not this task, passing either refuses clearly
+  rather than guessing or calling out. `test_critic.py` (9 tests) proves a default run scores both null with no
+  socket ever opened, and exercises both features against stub models.
+- 3236: **blocked**. Its own Plan needs a live run against gpt-oss-120b with real ledgered spend (about $0.40 at
+  the cap) to produce the committed summary.md the verify grep reads; this wave's brief says no live model
+  calls. Not attempted; no commit. Unblocks once a live run is authorized.
+- 3234: implemented at `8b27ca8a2`, independently of 3236 (its own `depends_on` is `["3233"]` only, not 3236, so
+  it is not one of "the tasks that depend on" the blocked one). New `specops/manipulation_check.py`: degrades a
+  precise spec with D-v1's full `VAGUE` composition and scores both halves, reporting the gap plus a suite hash
+  (linter id, rule weights/names) and an environment hash (interpreter, workspace root) per half so a mismatch
+  between how precise and vague were scored is caught rather than silently trusted. `test_manipulation.py` (9
+  tests) passes on the four 3233 fixtures: gaps of 62-68 points, far past the 30-point bar. The full 48-instance
+  H3 report needs a converter from each family's own `gen.py`/`render_spec` into this module's `[[task]]` shape;
+  that is additional scope this task's own Done when does not gate ("passes on the fixture families... the full
+  48-instance report passes once S08.T8 and S08.T9 land") and was not built here.
+
+All three implemented tasks' own verify commands pass locally (no cargo involved; pure Python). The whole
+`specops/` and `speclint/` test trees (151 tests) pass with no regressions.

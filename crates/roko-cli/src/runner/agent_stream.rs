@@ -421,17 +421,18 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentEvent> {
 
 /// Parse one line using the selected provider's stream protocol.
 ///
-/// `model` is the configured model slug; providers with model-dependent
-/// pricing (codex) use it to resolve per-model cost tiers, others ignore it.
+/// `codex_row` prices a Codex turn: the price snapshot row of the configured
+/// model, resolved once for the dispatch (backlog 6106). Other protocols
+/// ignore it.
 pub fn parse_provider_stream_line(
     protocol: CliProtocol,
     line: &str,
-    model: Option<&str>,
+    codex_row: Option<&roko_core::pricing_snapshot::PriceRow>,
 ) -> Vec<AgentEvent> {
     match protocol {
         CliProtocol::ClaudeStreamJson => parse_stream_line(line),
         CliProtocol::CodexExecJson => {
-            roko_agent::provider::codex_cli::stream::parse_stream_line_with_model(line, model)
+            roko_agent::provider::codex_cli::stream::parse_stream_line_priced(line, codex_row)
         }
         CliProtocol::GeminiStreamJson => {
             roko_agent::provider::gemini_cli::stream::parse_stream_line(line)
@@ -651,7 +652,10 @@ pub async fn spawn_agent_controlled(
     let agent_id = config.agent_id.clone();
     let stdout_tx = event_tx.clone();
     let protocol = invocation.protocol;
-    let stream_model = invocation.model.clone();
+    // Codex turns are priced at the model's snapshot row, resolved once for
+    // the dispatch (backlog 6106).
+    let codex_row =
+        roko_agent::provider::codex_cli::stream::codex_price_row(Some(invocation.model.as_str()));
     let scrubber = Arc::new(LogScrubber::new());
     let stdout_scrubber = Arc::clone(&scrubber);
     let reader_task = tokio::spawn(async move {
@@ -660,7 +664,7 @@ pub async fn spawn_agent_controlled(
 
         while let Ok(Some(line)) = lines.next_line().await {
             let line = stdout_scrubber.scrub(&line);
-            for event in parse_provider_stream_line(protocol, &line, Some(&stream_model)) {
+            for event in parse_provider_stream_line(protocol, &line, codex_row.as_ref()) {
                 if stdout_tx.send(event).await.is_err() {
                     debug!(agent_id = %agent_id, "event channel closed, stopping reader");
                     return;

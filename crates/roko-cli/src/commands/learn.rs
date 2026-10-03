@@ -527,11 +527,21 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
 pub(crate) enum TelemetryCmd {
     /// Check a run's records: schema validity, join coverage of the efficiency,
     /// cost and episode rows, duplicate settlements, seq ordering and the
-    /// cost-source mix. Exits non-zero when a check fails.
+    /// cost-source mix; with --srm, each randomised layer's arm split
+    /// instead. Exits non-zero when a check fails.
     Check {
         /// Run to check, a directory under .roko/runs (default: the latest run).
         #[arg(long)]
         run: Option<String>,
+        /// Check instead that each randomised layer's arms split as their
+        /// logged propensities say (S02 SC3): no sample-ratio mismatch at
+        /// alpha 0.001. Prints each layer's units, expected and realised arm
+        /// shares (learned/default/all-off) and e-value.
+        #[arg(long)]
+        srm: bool,
+        /// With `--srm`: pool these runs (comma-separated) instead of one.
+        #[arg(long, value_delimiter = ',', requires = "srm", conflicts_with = "run")]
+        runs: Vec<String>,
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<std::path::PathBuf>,
@@ -569,6 +579,12 @@ fn telemetry_workdir(cli: &Cli, cmd: &TelemetryCmd) -> PathBuf {
 fn cmd_learn_telemetry(cli: &Cli, cmd: TelemetryCmd, json: bool) -> Result<i32> {
     let layout = roko_fs::RokoLayout::for_project(&telemetry_workdir(cli, &cmd));
     match cmd {
+        TelemetryCmd::Check {
+            srm: true,
+            run,
+            runs,
+            ..
+        } => telemetry_srm(&layout, run.as_deref(), &runs, json),
         TelemetryCmd::Check { run, .. } => telemetry_check(&layout, run.as_deref(), json),
         TelemetryCmd::RouteReport {
             run,
@@ -704,6 +720,119 @@ fn render_telemetry_check(
             out,
             "  join         {:<24} {}/{} settled attempts{orphans}",
             coverage.file, coverage.joined, coverage.verdicts
+        );
+    }
+    if failures.is_empty() {
+        let _ = writeln!(out, "PASS");
+    } else {
+        let _ = writeln!(out, "FAIL ({})", failures.len());
+        for failure in failures {
+            let _ = writeln!(out, "  - {failure}");
+        }
+    }
+    out
+}
+
+/// `roko learn telemetry check --srm` (S02 SC3): the arm split of each
+/// randomised layer over one run (`--run`, else the latest) or several
+/// (`--runs`). Exits non-zero on a mismatch.
+fn telemetry_srm(
+    layout: &roko_fs::RokoLayout,
+    run: Option<&str>,
+    runs: &[String],
+    json: bool,
+) -> Result<i32> {
+    use roko_learn::telemetry::report::{RunRecords, srm_check};
+
+    let run_dirs: Vec<PathBuf> = if runs.is_empty() {
+        vec![telemetry_run_dir(layout, run)?]
+    } else {
+        runs.iter()
+            .map(|id| telemetry_run_dir(layout, Some(id.as_str())))
+            .collect::<Result<_>>()?
+    };
+    let records = run_dirs
+        .iter()
+        .map(|run_dir| RunRecords::load(run_dir))
+        .collect::<Result<Vec<_>, _>>()?;
+    let report = srm_check(&records);
+    let failures = report.failures();
+    let passed = failures.is_empty();
+    if json {
+        let document = serde_json::json!({
+            "passed": passed,
+            "failures": failures,
+            "report": report,
+        });
+        println!("{}", serde_json::to_string_pretty(&document)?);
+    } else {
+        print!("{}", render_srm_check(&report, &failures));
+    }
+    Ok(if passed { EXIT_SUCCESS } else { EXIT_FAILURE })
+}
+
+/// The text form of a `check --srm` report: one line per layer with its
+/// units, its arms' expected and realised shares (learned/default/all-off)
+/// and its e-value.
+fn render_srm_check(
+    report: &roko_learn::telemetry::report::SrmReport,
+    failures: &[String],
+) -> String {
+    use roko_learn::telemetry::report::SRM_MIN_UNITS;
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "srm: {} run(s), alpha {}; S02 SC3 judges a layer of at least {SRM_MIN_UNITS} units",
+        report.runs.len(),
+        report.alpha
+    );
+    if !report.excluded.is_empty() {
+        let excluded: Vec<String> = report
+            .excluded
+            .iter()
+            .map(|(condition, chains)| format!("{chains} {condition}"))
+            .collect();
+        let _ = writeln!(out, "  left out     {} chain(s)", excluded.join(", "));
+    }
+    if report.unassigned > 0 {
+        let _ = writeln!(
+            out,
+            "  no arms      {} decision row(s) carry no arm set",
+            report.unassigned
+        );
+    }
+    if report.layers.is_empty() {
+        let _ = writeln!(out, "  no decision row carries arms: nothing to check");
+    } else {
+        let _ = writeln!(
+            out,
+            "  {:<16} {:>6}  {:<17} {:<17} {:>10}  verdict",
+            "layer", "n", "expected l/d/off", "realised l/d/off", "e-value"
+        );
+    }
+    for layer in &report.layers {
+        let (mut expected, mut realised) = (Vec::new(), Vec::new());
+        for arm in &layer.arms {
+            expected.push(format!("{:.3}", arm.expected));
+            realised.push(format!("{:.3}", arm.realised));
+        }
+        let verdict = if layer.mismatch {
+            "MISMATCH".to_string()
+        } else if layer.enough_units {
+            "ok".to_string()
+        } else {
+            format!("ok, n < {SRM_MIN_UNITS}")
+        };
+        let _ = writeln!(
+            out,
+            "  {:<16} {:>6}  {:<17} {:<17} {:>10.3e}  {verdict}",
+            layer.layer,
+            layer.units,
+            expected.join("/"),
+            realised.join("/"),
+            layer.e_value
         );
     }
     if failures.is_empty() {
@@ -3359,11 +3488,54 @@ mod tests {
                 cmd: LearnCmd::Telemetry {
                     cmd: TelemetryCmd::Check {
                         run: None,
-                        workdir: None
+                        srm: false,
+                        ref runs,
+                        workdir: None,
                     },
                 },
-            })
+            }) if runs.is_empty()
         ));
+        // Backlog 4130: `check --srm` pools the runs `--runs` names; `--runs`
+        // needs `--srm` and conflicts with `--run`.
+        let cli = Cli::try_parse_from([
+            "roko",
+            "learn",
+            "telemetry",
+            "check",
+            "--srm",
+            "--runs",
+            "graph-a-1,graph-b-2",
+        ])
+        .expect("parse learn telemetry check --srm");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Telemetry {
+                    cmd: TelemetryCmd::Check {
+                        run: None,
+                        srm: true,
+                        ref runs,
+                        workdir: None,
+                    },
+                },
+            }) if *runs == ["graph-a-1", "graph-b-2"]
+        ));
+        let needs_srm = Cli::try_parse_from(["roko", "learn", "telemetry", "check", "--runs", "a"])
+            .expect_err("--runs needs --srm");
+        assert_eq!(needs_srm.kind(), ErrorKind::MissingRequiredArgument);
+        let conflict = Cli::try_parse_from([
+            "roko",
+            "learn",
+            "telemetry",
+            "check",
+            "--srm",
+            "--run",
+            "a",
+            "--runs",
+            "b",
+        ])
+        .expect_err("--run and --runs conflict");
+        assert_eq!(conflict.kind(), ErrorKind::ArgumentConflict);
         let help = Cli::try_parse_from(["roko", "learn", "telemetry", "route-report", "--help"])
             .expect_err("--help prints help instead of parsing");
         assert_eq!(help.kind(), ErrorKind::DisplayHelp);
@@ -3382,6 +3554,97 @@ mod tests {
         let since = parse_telemetry_since("2026-09-29").expect("a date");
         assert_eq!(since.to_rfc3339(), "2026-09-29T00:00:00+00:00");
         assert!(parse_telemetry_since("yesterday").is_err());
+    }
+
+    /// Backlog 4130: `roko learn telemetry check --srm` exits 0 when each
+    /// layer splits as logged and non-zero on a skewed split, over one run
+    /// or the runs `--runs` names, and prints one line per layer.
+    #[test]
+    fn learn_telemetry_check_srm_exits_non_zero_on_a_mismatch() {
+        use roko_learn::loop_audit::arm_set::{ArmSet, NORMAL_CONDITION};
+        use roko_learn::telemetry::records::DECISION_SCHEMA;
+        use roko_learn::telemetry::report::{RunRecords, srm_check};
+        use roko_learn::telemetry::{
+            Arm, Assignment, AssignmentUnit, AttemptIdentity, AttemptKey, ContentDecisionPoint,
+            ContentDecisionRecord, RunFile, Stamped, TelemetryRecord,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let layout = roko_fs::RokoLayout::for_project(dir.path());
+        // A run of 300 chains, each with one knowledge row whose draw at
+        // h = 0.5 is the default arm for the first `defaults` chains.
+        let write_run = |run_id: &str, defaults: usize| {
+            let mut lines = String::new();
+            for index in 0..300 {
+                let key = AttemptKey::new(run_id, "srm", format!("T{index}"), 1);
+                let (arm, u) = if index < defaults {
+                    (Arm::Default, 0.25)
+                } else {
+                    (Arm::Learned, 0.75)
+                };
+                let draw = Assignment {
+                    unit: AssignmentUnit::Chain,
+                    layer: "knowledge".to_string(),
+                    salt_id: "knowledge@2026-10-03".to_string(),
+                    u,
+                    h: 0.5,
+                    g: 0.0,
+                    arm,
+                    propensity: 0.5,
+                };
+                let record = ContentDecisionRecord {
+                    identity: AttemptIdentity::new(&key),
+                    decision_point: ContentDecisionPoint::Knowledge,
+                    policy: "keyword_overlap_top3".to_string(),
+                    candidates: Vec::new(),
+                    chosen: Vec::new(),
+                    chosen_propensity: Some(1.0),
+                    source: None,
+                    state: None,
+                    thresholds_digest: None,
+                    arm_set: Some(ArmSet {
+                        chain_key: key.chain_key(),
+                        arms: [("knowledge".to_string(), draw)].into(),
+                        condition_id: NORMAL_CONDITION.to_string(),
+                    }),
+                };
+                let line = Stamped {
+                    schema_version: DECISION_SCHEMA.to_string(),
+                    record_id: record.record_id(),
+                    seq: index as u64 + 1,
+                    ts: "2026-10-03T09:00:00Z".to_string(),
+                    record,
+                };
+                lines.push_str(&serde_json::to_string(&line).unwrap());
+                lines.push('\n');
+            }
+            let run_dir = layout.run_dir(run_id);
+            std::fs::create_dir_all(&run_dir).unwrap();
+            std::fs::write(RunFile::Decisions.path_in(&run_dir), lines).unwrap();
+        };
+        write_run("srm-even-a", 150);
+        write_run("srm-even-b", 150);
+        write_run("srm-skewed", 90);
+
+        let check = |run: Option<&str>, runs: &[&str]| {
+            let runs: Vec<String> = runs.iter().map(|id| id.to_string()).collect();
+            telemetry_srm(&layout, run, &runs, false)
+        };
+        assert_eq!(check(Some("srm-even-a"), &[]).unwrap(), EXIT_SUCCESS);
+        assert_eq!(check(Some("srm-skewed"), &[]).unwrap(), EXIT_FAILURE);
+        assert!(check(None, &["srm-even-a", "no-such-run"]).is_err());
+        let pooled = ["srm-even-a".to_string(), "srm-even-b".to_string()];
+        let exit = telemetry_srm(&layout, None, &pooled, true).unwrap();
+        assert_eq!(exit, EXIT_SUCCESS);
+
+        // 210 of the skewed run's 300 chains took the learned arm.
+        let skewed = RunRecords::load(&layout.run_dir("srm-skewed")).unwrap();
+        let report = srm_check(&[skewed]);
+        let text = render_srm_check(&report, &report.failures());
+        let shares = "0.500/0.500/0.000 0.700/0.300/0.000";
+        assert!(text.contains(shares), "{text}");
+        assert!(text.contains("MISMATCH"), "{text}");
+        assert!(text.contains("FAIL (1)"), "{text}");
     }
 
     #[test]

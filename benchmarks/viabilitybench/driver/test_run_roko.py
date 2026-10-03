@@ -24,11 +24,14 @@ from pathlib import Path
 import pytest
 
 import agent_env
+import campaign
+import caps
 import census
 import layout
 import ledger
 import materialize
 import planemit
+import provider
 import records
 import run_roko
 import validate
@@ -190,6 +193,20 @@ def plan_spec(task: materialize.Materialized, **changes: object) -> planemit.Pla
     return planemit.PlanSpec(**{**fields, **changes})
 
 
+def real_arm_spec(arm_name: str, model: str = PIN) -> planemit.PlanSpec:
+    """`run_roko._plan_spec` over the real arm file `arm_name` names (`vb.load_arm`), the construction a real
+    dispatch does (3360): confirms the arm's `[overlay]` table, if it has one, reaches `PlanSpec.overlay`."""
+    arm = vb.load_arm(arm_name)
+    first = next(iter(arm["providers"]))
+    endpoint = provider.Endpoint(provider=first, base_url=arm["providers"][first]["base_url"],
+                                 api_key_env=arm["providers"][first]["api_key_env"])
+    snapshot = ledger.load_snapshot()
+    limits = caps.Caps.from_table(arm["caps"])
+    return run_roko._plan_spec(arm, model, endpoint, limits, snapshot.row(model), limits.usd_per_task,
+                               key="overlay-test.s1", spec_text="# T\n\nTest.\n", files=("f.py",),
+                               visible=("true",), snapshot=snapshot)
+
+
 def fake_roko(tmp_path: Path, models: list[str], *, status: str = "succeeded", **extra: object) -> tuple[Path, Path]:
     """Write the fake roko and its behaviour (`extra` adds episode `completed` times and `durations`, and `proxy` rows
     to append to `proxy_log`); return the binary and the log of its calls."""
@@ -283,6 +300,28 @@ def test_emitted_plan_has_explicit_rungs_and_no_hidden_checks(tmp_path):
     [task_table] = tomllib.loads(tricky.tasks_text)["task"]
     assert task_table["description"].strip() == nasty.strip()
     assert [step["command"] for step in task_table["verify"]] == ["( true ) && ( echo ok )"]
+
+
+def test_roko_full_arm_overlay_reaches_the_emitted_config(tmp_path, monkeypatch):
+    """3360's follow-up: run_roko._plan_spec now passes the arm's [overlay] table into PlanSpec (previously
+    dropped), so a real roko_full dispatch emits every mechanism's table; roko_fixed and roko_ladder, which name
+    no [overlay], keep emitting exactly what they did before this feature existed."""
+    monkeypatch.setattr(campaign, "census_report", lambda repo=None, roko_bin=None: {
+        "schema": campaign.LOOPS_SCHEMA, "harness_sha": "f1x3d", "rows": [{"loop": "L-M1", "state": "live"}]})
+    full = planemit.emit(real_arm_spec("roko_full"), tmp_path / "full")
+    config = tomllib.loads(full.config_text)
+    assert config["spec_quality"] == {"mode": "enforce"}
+    assert config["audit"] == {"enabled": True, "eps_floor": 0.05}
+    assert config["self_model"] == {"mode": "active", "policy": "lcb_aci"}
+    assert config["homeostasis"] == {"holdout": 0.10, "mode": "on"}  # L-M1 is LIVE
+
+    for arm_name, name in (("roko_fixed", "fixed"), ("roko_ladder", "ladder")):
+        emitted = planemit.emit(real_arm_spec(arm_name), tmp_path / name)
+        config = tomllib.loads(emitted.config_text)
+        assert not {"spec_quality", "audit", "self_model", "homeostasis"} & set(config)
+        # Byte-identical to before the overlay existed: nothing is appended after CONFIG_TAIL's own last line.
+        assert emitted.config_text.endswith("[learning.dreams]\ntrigger_on_plan_complete = false\n")
+    assert planemit.TEMPLATE_SHA256 == "24d5db33665a3537449708ff920e53ec0e182d9fd77c411c1feefd1eae4b8007"
 
 
 def test_vb_run_refuses_a_binary_that_rejects_the_emitted_plan(places, tmp_path, capsys):

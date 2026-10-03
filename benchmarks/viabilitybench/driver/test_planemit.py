@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import agent_env
+import campaign
 import layout
 import ledger
 import materialize
@@ -110,6 +111,52 @@ def test_ladder_mode_refuses_a_frontier_rung_and_a_bad_ladder(tmp_path, changes,
     with pytest.raises(planemit.PlanEmitError, match=error):
         planemit.emit(ladder_spec(**changes), workspace(tmp_path))
     assert not (tmp_path / "ws" / "roko.toml").exists()  # refused before anything is written
+
+
+ROKO_FULL_OVERLAY = {"gate_mode": "enforce", "audit_floor": 0.05, "routing_mode": "active",
+                     "routing_policy": "lcb_aci", "holdout": 0.10, "homeostasis": "if_live"}
+
+
+def full_spec(**changes: object) -> planemit.PlanSpec:
+    return dataclasses.replace(ladder_spec(), overlay=ROKO_FULL_OVERLAY, **changes)
+
+
+def fake_census(live: bool) -> object:
+    """A monkeypatch replacement for `campaign.census_report`, reporting `planemit.HOMEOSTASIS_LOOP` as `live`."""
+    def fake(repo=None, roko_bin=None):
+        state = "live" if live else "flagged"
+        return {"schema": campaign.LOOPS_SCHEMA, "harness_sha": "f1x3d5eed",
+                "rows": [{"loop": planemit.HOMEOSTASIS_LOOP, "state": state}]}
+    return fake
+
+
+def test_roko_full_overlay_turns_on_gate_routing_audits_and_holdout(tmp_path, monkeypatch):
+    """3360: every mechanism the overlay names lands in roko.toml, each in its own table, and S06's
+    homeostasis mode follows L-M1's own loop census (faked here, never a real roko binary)."""
+    monkeypatch.setattr(campaign, "census_report", fake_census(live=True))
+    emitted = planemit.emit(full_spec(), workspace(tmp_path))
+    config = tomllib.loads(emitted.config_text)
+    assert config["spec_quality"] == {"mode": "enforce"}
+    assert config["audit"] == {"enabled": True, "eps_floor": 0.05}
+    assert config["self_model"] == {"mode": "active", "policy": "lcb_aci"}
+    assert config["homeostasis"] == {"holdout": 0.10, "mode": "on"}  # L-M1 is LIVE
+
+    monkeypatch.setattr(campaign, "census_report", fake_census(live=False))
+    shadow = planemit.emit(full_spec(), workspace(tmp_path, "shadow"))
+    assert tomllib.loads(shadow.config_text)["homeostasis"] == {"holdout": 0.10, "mode": "shadow"}
+
+
+def test_roko_fixed_and_roko_ladder_emit_no_overlay_table(tmp_path):
+    """3360's Plan step 3: the overlay's absence in roko_fixed's and roko_ladder's configs."""
+    for spec, name in ((pinned_spec(), "fixed"), (ladder_spec(), "ladder")):
+        emitted = planemit.emit(spec, workspace(tmp_path, name))
+        config = tomllib.loads(emitted.config_text)
+        assert not {"spec_quality", "audit", "self_model", "homeostasis"} & set(config)
+
+
+def test_resolve_overlay_refuses_an_unknown_mechanism():
+    with pytest.raises(planemit.PlanEmitError, match="no mechanism for overlay key"):
+        planemit.resolve_overlay({"nonexistent_mechanism": True})
 
 
 @real_roko

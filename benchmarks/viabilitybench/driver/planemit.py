@@ -33,6 +33,17 @@ budget, turns, runner, learning) is the pinned mode's. `_check` accepts it only 
 arm's allowlist (`allow`) in the allowlist's order, each once, and the start rung is a rung whose model is `model`.
 Without rungs, the files are byte for byte the pinned mode's (`testdata/planemit/`).
 
+**The overlay** (3360). A spec with `overlay` appends extra tables after the rest of roko.toml, once per table so a
+later field never duplicates one: `gate_mode` -> `[spec_quality] mode` (D14); `audit_floor` -> `[audit] enabled =
+true`, `eps_floor` (D13, locked at 0.05 or more); `routing_mode`/`routing_policy` -> `[self_model] mode`/`policy`
+(S04's cross-fitted, verify-then-escalate predictor, D11 policy (a) `lcb_aci`; no separate fold key: cross-fitting is
+`lcb_aci`'s own training, not a roko.toml knob); `holdout` -> `[homeostasis] holdout` (D10). `resolve_overlay` first
+refuses a key this build has no mechanism for (`SUPPORTED_OVERLAY_KEYS`), then resolves `homeostasis = "if_live"` to
+`[homeostasis] mode = "on"` or `"shadow"` by `HOMEOSTASIS_LOOP`'s current loop census (`campaign.census_report`/
+`is_loop_live`, the same check 3359's requires_live reads; a test fakes it with `monkeypatch.setattr(campaign,
+"census_report", ...)`, never a real binary). An empty overlay (`roko_fixed`, `roko_ladder`) appends nothing, so
+their files stay byte for byte what they were before this task (`testdata/planemit/`, `TEMPLATE_SHA256`).
+
 Agents see verify commands (A4), so no hidden check goes into either file: every command in them is one of the
 manifest's visible commands, which the spec states, and `emit` refuses to write a file that holds a canary. The
 authoring rules (memory `roko_plan_authoring_constraints.md`) are checked here too: no `depends_on_plan`, no
@@ -51,6 +62,8 @@ API:
     TEMPLATE_VERSION, TEMPLATE_SHA256                 # the pinned mode's, provider_kind openai_compat
     LADDER_VERSION, LADDER_TEMPLATE_SHA256            # ladder mode's
     CLAUDE_CLI_TEMPLATE_SHA256                        # the pinned mode's, provider_kind claude_cli (3318)
+    SUPPORTED_OVERLAY_KEYS, HOMEOSTASIS_LOOP          # the overlay (3360)
+    resolve_overlay(overlay: Mapping[str, object]) -> dict        # raises PlanEmitError on an unknown key
 """
 
 from __future__ import annotations
@@ -60,9 +73,11 @@ import math
 import re
 import shlex
 import tomllib
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+import campaign  # the overlay's homeostasis=if_live census check (3360): census_report, is_loop_live
 import layout  # noqa: F401 (puts families/ on sys.path for common)
 from common import canary
 
@@ -80,6 +95,10 @@ ROLE = "implementer"
 MAX_FILES = 32
 GLOB = re.compile(r"[*?\[\]]")
 MODEL_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# The overlay (module docstring, 3360): the keys this build knows how to emit, and the loop its "if_live" reads.
+SUPPORTED_OVERLAY_KEYS = frozenset({"gate_mode", "audit_floor", "routing_mode", "routing_policy", "holdout",
+                                    "homeostasis"})
+HOMEOSTASIS_LOOP = "L-M1"  # S06's own loop id (S09 §9.5: roko_full includes S06 only when the census says LIVE)
 
 TASKS_TEMPLATE = """\
 # Emitted by the ViabilityBench driver ({version}) for one benchmark task. Roko's agent sees this file and its
@@ -286,6 +305,8 @@ class PlanSpec:
     rungs: tuple[Rung, ...] = ()
     start: str | None = None
     allow: tuple[str, ...] = ()
+    # The overlay (module docstring, 3360): extra mechanism tables, empty for every arm but roko_full.
+    overlay: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -336,9 +357,11 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
     if not (spec.usd_cap > 0 and math.isfinite(spec.usd_cap)):
         raise PlanEmitError(f"the dollar cap must be a finite number above 0, not {spec.usd_cap!r}")
     slug = plan_slug(spec.key)
+    overlay = resolve_overlay(spec.overlay)
     if spec.rungs:
         tasks_text, config_text = _ladder_texts(spec, slug, files, visible)
-        _check_ladder(tasks_text, config_text, spec, slug, files, visible)
+        config_text += _overlay_text(overlay)
+        _check_ladder(tasks_text, config_text, spec, slug, files, visible, overlay)
         return _write(workspace, slug, tasks_text, config_text, visible)
     tasks_text = TASKS_TEMPLATE.format(
         version=TEMPLATE_VERSION, slug=_s(slug), skip_enrichment=_b(spec.skip_enrichment), task_id=_s(TASK_ID),
@@ -356,7 +379,8 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
         config_text = CONFIG_TEMPLATE.format(version=TEMPLATE_VERSION, provider_kind=_s(spec.provider_kind),
                                              base_url=_s(spec.base_url), api_key_env=_s(spec.api_key_env),
                                              rates=_rates(spec.price_row), **common)
-    _check(tasks_text, config_text, spec, slug, files, visible)
+    config_text += _overlay_text(overlay)
+    _check(tasks_text, config_text, spec, slug, files, visible, overlay)
     return _write(workspace, slug, tasks_text, config_text, visible)
 
 
@@ -399,8 +423,66 @@ def _ladder_texts(spec: PlanSpec, slug: str, files: list[str], visible: str) -> 
     return tasks_text, config_text
 
 
+def resolve_overlay(overlay: Mapping[str, object]) -> dict:
+    """`overlay` (an arm's `[overlay]` table) with `homeostasis: "if_live"` resolved to `"on"` or `"shadow"` by
+    `HOMEOSTASIS_LOOP`'s current loop census (module docstring). Raises PlanEmitError for a key outside
+    `SUPPORTED_OVERLAY_KEYS`: this build has no mechanism to emit it."""
+    unknown = set(overlay) - SUPPORTED_OVERLAY_KEYS
+    if unknown:
+        raise PlanEmitError(f"this build has no mechanism for overlay key(s) {', '.join(sorted(unknown))}")
+    resolved = dict(overlay)
+    if resolved.get("homeostasis") == "if_live":
+        report = campaign.census_report()
+        rows = {row.get("loop"): row for row in report.get("rows", []) if isinstance(row, dict)}
+        resolved["homeostasis"] = "on" if campaign.is_loop_live(rows.get(HOMEOSTASIS_LOOP, {})) else "shadow"
+    return resolved
+
+
+def _overlay_text(resolved: Mapping[str, object]) -> str:
+    """The `[spec_quality]`, `[audit]`, `[self_model]` and `[homeostasis]` tables `resolved` (`resolve_overlay`'s
+    own output) requests, one table per mechanism so a later field never writes `[homeostasis]` twice. Empty
+    when `resolved` is empty (every arm but roko_full, module docstring)."""
+    if not resolved:
+        return ""
+    tables: dict[str, list[str]] = {}
+    if "gate_mode" in resolved:
+        tables.setdefault("spec_quality", []).append(f"mode = {_s(resolved['gate_mode'])}")
+    if "audit_floor" in resolved:
+        tables.setdefault("audit", []).append("enabled = true")
+        tables["audit"].append(f"eps_floor = {float(resolved['audit_floor'])!r}")
+    if "routing_mode" in resolved:
+        tables.setdefault("self_model", []).append(f"mode = {_s(resolved['routing_mode'])}")
+    if "routing_policy" in resolved:
+        tables.setdefault("self_model", []).append(f"policy = {_s(resolved['routing_policy'])}")
+    if "holdout" in resolved:
+        tables.setdefault("homeostasis", []).append(f"holdout = {float(resolved['holdout'])!r}")
+    if "homeostasis" in resolved:
+        tables.setdefault("homeostasis", []).append(f"mode = {_s(resolved['homeostasis'])}")
+    return "".join(f"\n[{name}]\n" + "\n".join(lines) + "\n" for name, lines in tables.items())
+
+
+def _check_overlay(config: dict, resolved: Mapping[str, object]) -> None:
+    """The overlay's own tables, parsed back (module docstring); empty `resolved` means none of them exist."""
+    if not resolved:
+        if {"spec_quality", "audit", "self_model", "homeostasis"} & set(config):
+            raise PlanEmitError("an empty overlay must emit no spec_quality, audit, self_model or homeostasis table")
+        return
+    if "gate_mode" in resolved and config.get("spec_quality", {}).get("mode") != resolved["gate_mode"]:
+        raise PlanEmitError("[spec_quality].mode must match the overlay's gate_mode")
+    if "audit_floor" in resolved and (config.get("audit", {}).get("enabled") is not True or
+                                      config["audit"].get("eps_floor") != resolved["audit_floor"]):
+        raise PlanEmitError("[audit] must be enabled with the overlay's audit_floor as eps_floor")
+    for key, overlay_key in (("mode", "routing_mode"), ("policy", "routing_policy")):
+        if overlay_key in resolved and config.get("self_model", {}).get(key) != resolved[overlay_key]:
+            raise PlanEmitError(f"[self_model].{key} must match the overlay's {overlay_key}")
+    if "holdout" in resolved and config.get("homeostasis", {}).get("holdout") != resolved["holdout"]:
+        raise PlanEmitError("[homeostasis].holdout must match the overlay's holdout")
+    if "homeostasis" in resolved and config.get("homeostasis", {}).get("mode") != resolved["homeostasis"]:
+        raise PlanEmitError("[homeostasis].mode must match the overlay's resolved homeostasis")
+
+
 def _check_ladder(tasks_text: str, config_text: str, spec: PlanSpec, slug: str, files: list[str],
-                  visible: str) -> None:
+                  visible: str, overlay: Mapping[str, object]) -> None:
     """Ladder mode's rules (module docstring), on the parsed files."""
     models = [rung.model for rung in spec.rungs]
     names = [rung.name for rung in spec.rungs]
@@ -440,9 +522,11 @@ def _check_ladder(tasks_text: str, config_text: str, spec: PlanSpec, slug: str, 
                             "rungs in order from the start rung, and no fallbacks")
     if config["runner"] != {"worktree_per_task": False}:
         raise PlanEmitError("roko.toml must run the task in the shared working tree, where the driver reads it")
+    _check_overlay(config, overlay)
 
 
-def _check(tasks_text: str, config_text: str, spec: PlanSpec, slug: str, files: list[str], visible: str) -> None:
+def _check(tasks_text: str, config_text: str, spec: PlanSpec, slug: str, files: list[str], visible: str,
+          overlay: Mapping[str, object]) -> None:
     """Parse both files back and hold them to the rules in the module docstring."""
     for text in (tasks_text, config_text):
         if canary.find(text):
@@ -468,6 +552,7 @@ def _check(tasks_text: str, config_text: str, spec: PlanSpec, slug: str, files: 
                             "routing ladder off")
     if config["runner"] != {"worktree_per_task": False}:
         raise PlanEmitError("roko.toml must run the task in the shared working tree, where the driver reads it")
+    _check_overlay(config, overlay)
 
 
 def _files(paths: tuple[str, ...]) -> list[str]:

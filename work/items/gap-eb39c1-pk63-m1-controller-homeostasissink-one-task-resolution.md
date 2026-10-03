@@ -75,3 +75,17 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK07 (gap-f548c1), PK09 (gap-cc5051), PK13 (gap-9e3134), PK32 (gap-b5caf3), PK49 (gap-7ec3ef), PK61 (gap-8b67de), PK62 (gap-f7bab8).
 - Suggested model: opus.
+
+## Progress
+
+- 8122: implemented at bd8beb198 (cargo verification deferred to the batch gate). A-CTL rows go through the run's
+  TelemetryWriter to the cross-run `learn/controller.jsonl` (S01 v1.3 §5.10); M3's prior reads the self-model through
+  a SelfModelPredictor adapter.
+- 8123: implemented at e033aae04 (cargo verification deferred to the batch gate).
+- 8124: implemented at e2e9238e5 (cargo verification deferred to the batch gate). The floor raises the start rung
+  through a rung hint on the routed task; the cap stops the climb; only knobs M1 moved from θ₀ bind; the
+  harness_policy row says `pinned`.
+- 8125: implemented at 3f340ad60 (cargo verification deferred to the batch gate). Budget admission runs before the
+  attempt opens, so it reads the chain's θ itself.
+- 8126: implemented at 941b58654 (cargo verification deferred to the batch gate). The live source sits on
+  TaskExecutionSpec (`retry_budget`) and is attached by plan_runner; it also keeps M1's sink on the live limits.

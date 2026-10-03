@@ -50,6 +50,7 @@ use roko_learn::telemetry::records::{AttemptOutcome, AttemptVerdictRecord, GateV
 use crate::audit::b1::{B1, FactoryAuthor, SuiteAuthor};
 use crate::audit::b2::B2;
 use crate::audit::b3::{B3, Reviewer};
+use crate::audit::labels::VsLearner;
 use crate::audit::worker::{
     AuditTask, AuditUnit, AuditWorker, GamingWatch, PhaseB, WorkerContext, queue_unit,
 };
@@ -83,6 +84,8 @@ pub(super) struct AuditSelector {
     phase_b: PhaseB,
     /// The workspace's gate-gaming detector (F1), fed every settled attempt.
     gaming: GamingWatch,
+    /// The self-model audited VS labels teach (DP5, 7134).
+    learner: Option<Arc<dyn VsLearner>>,
     /// Draw every green unit at π = 1 ([`Self::census`]).
     census: AtomicBool,
 }
@@ -140,6 +143,7 @@ impl AuditSelector {
             config: config.clone(),
             gates: gates.clone(),
             phase_b: PhaseB::default(),
+            learner: None,
             census: AtomicBool::new(false),
         })
     }
@@ -148,6 +152,14 @@ impl AuditSelector {
     #[must_use]
     pub(super) fn with_phase_b(mut self, phase_b: PhaseB) -> Self {
         self.phase_b = phase_b;
+        self
+    }
+
+    /// The lottery, whose audited VS labels teach `learner`, the run's
+    /// self-model (DP5).
+    #[must_use]
+    pub(super) fn with_learner(mut self, learner: Option<Arc<dyn VsLearner>>) -> Self {
+        self.learner = learner;
         self
     }
 
@@ -209,6 +221,7 @@ impl AuditSelector {
             run_spend: Arc::clone(spend),
             phase_b: self.phase_b.clone(),
             gaming: self.gaming.clone(),
+            learner: self.learner.clone(),
         };
         match AuditWorker::start(context) {
             Ok(worker) => Some(worker),

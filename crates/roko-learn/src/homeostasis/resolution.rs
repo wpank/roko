@@ -166,6 +166,15 @@ impl ResolutionFold {
         Some(state.resolve(chain_key.clone()))
     }
 
+    /// Resolve the open chain `chain_key` at its last settled attempt, as
+    /// when the run has no retry left for it. `None` when the chain is not
+    /// open.
+    pub fn resolve(&mut self, chain_key: &str) -> Option<TaskResolution> {
+        let state = self.open.shift_remove(chain_key)?;
+        self.resolved.insert(chain_key.to_string());
+        Some(state.resolve(chain_key.to_string()))
+    }
+
     /// The run closed: resolve every open chain at its last settled
     /// attempt, in the order the chains first settled.
     pub fn close(&mut self) -> Vec<TaskResolution> {

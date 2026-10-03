@@ -257,6 +257,10 @@ impl FallbackReason {
 /// avoids such providers itself.
 const PROVIDER_UNHEALTHY: &str = "provider_unhealthy";
 
+/// A candidate DP4 leaves out because audits keep finding false greens in
+/// its passes (S05 §4.6, 7133).
+const AUDIT_TRUST: &str = "audit_trust";
+
 /// The cascade router's counts a learned-state digest was computed at: its
 /// observations, and the trials and successes of its confidence stats (a
 /// hindsight retraction lowers successes without a new observation).
@@ -844,6 +848,7 @@ impl ModelRouter {
                     self.provider_of(&candidate.slug),
                     candidate.score,
                     self.ineligible_reason(&candidate.slug, needs_tools)
+                        .or_else(|| self.trust_reason(&candidate.slug, ctx, chosen))
                         .map(str::to_string),
                 )
             })
@@ -1109,6 +1114,19 @@ impl ModelRouter {
         let provider = self.model_providers.get(slug)?;
         let health = self.health.as_ref()?;
         (!health.is_available(provider)).then_some(PROVIDER_UNHEALTHY)
+    }
+
+    /// [`AUDIT_TRUST`] when DP4 (S05 §4.6) leaves `slug` out of `ctx`'s task,
+    /// unless it is `chosen`, as one route in twenty lets it be.
+    fn trust_reason(
+        &self,
+        slug: &str,
+        ctx: Option<&RoutingContext>,
+        chosen: &str,
+    ) -> Option<&'static str> {
+        let router = self.cascade.as_ref()?;
+        let excluded = router.trust_excludes(slug, ctx?.complexity).is_some();
+        (excluded && slug != chosen).then_some(AUDIT_TRUST)
     }
 
     /// Why the guards in [`Self::route`] replace the cascade router's pick
@@ -1590,6 +1608,14 @@ impl RoutingLadder {
     pub fn has_rung(&self, role: &str, name: &str) -> bool {
         let rungs = self.config.role_rungs(role);
         rungs.iter().any(|rung| rung.name == name)
+    }
+
+    /// Index of the rung named `name` on `role`'s ladder, cheapest first,
+    /// runnable or not: where M1's tier floor and cap sit (8124).
+    #[must_use]
+    pub fn rung_index(&self, role: &str, name: &str) -> Option<usize> {
+        let rungs = self.config.role_rungs(role);
+        rungs.iter().position(|rung| rung.name == name)
     }
 }
 

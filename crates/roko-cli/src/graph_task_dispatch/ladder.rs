@@ -14,8 +14,18 @@
 //! the last one stopped. A task whose last attempt fails on its top rung has
 //! exhausted the ladder: dispatch logs `ladder_exhausted` and tells the
 //! dashboard to split or replan the task. Nothing splits it automatically.
+//!
+//! M1's B1 knobs bound the ladder per attempt (S06, decision 8101, 8124):
+//! the θ the attempt runs raises its tier's start rung to `tier_floor`, and
+//! `tier_cap` stops its climb as the top rung does. Only what M1 moved from
+//! θ₀ binds, so θ₀ moves nothing; a pinned model ignores both, and a task
+//! already above a cap M1 lowered keeps its rung.
+
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use roko_core::dashboard_snapshot::{DiagnosisSeverity, DiagnosisSummary};
+use roko_core::task::TaskTier;
 use roko_learn::self_model::cascade::StepAction;
 use roko_learn::telemetry::{AttemptLadder, AttemptVerdictRecord, Blame, LadderReason};
 
@@ -23,6 +33,7 @@ use super::attempt::AttemptContext;
 use super::retry_feedback::LadderStanding;
 use super::*;
 use crate::dispatch::{RoutingLadder, RunnerDispatchPlan};
+use crate::runtime_feedback::homeostasis::HarnessDecision;
 
 /// Agent-blamed failures on one rung before the task climbs to the next.
 const FAILURES_PER_RUNG: u32 = 2;
@@ -34,6 +45,23 @@ const MAX_ESCALATIONS: u32 = 2;
 /// ladder routes it: [`FAILURES_PER_RUNG`] attempts on its start rung and on
 /// each rung it may climb, less the first attempt.
 const LADDER_MIN_RETRIES: u32 = FAILURES_PER_RUNG * (MAX_ESCALATIONS + 1) - 1;
+
+/// M1's B1 bounds on one task's rungs, as indices among its role's rungs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TierBounds {
+    /// The lowest rung the task starts on (`tier_floor`).
+    floor: Option<usize>,
+    /// The highest rung the task climbs to (`tier_cap`).
+    cap: Option<usize>,
+}
+
+impl TierBounds {
+    /// Whether rung `index` is at or above the cap, so the task climbs no
+    /// further from it.
+    fn caps(self, index: usize) -> bool {
+        self.cap.is_some_and(|cap| index >= cap)
+    }
+}
 
 impl GraphTaskDispatcher {
     /// `[routing.ladder]` as dispatch binds it: `None` when it is off or no
@@ -59,6 +87,66 @@ impl GraphTaskDispatcher {
         self.gate_retry_context
             .ladder_standing(&spec.plan_id, &task.id)
             .escalations
+    }
+
+    /// Whether a pin chooses `task`'s model: `--model`, express routing, or
+    /// the task's `model_hint` or `preferred_model`. The ladder never moves a
+    /// pinned model, and M1's B1 knobs with it (8124).
+    pub(super) fn model_pinned(&self, task: &TaskDef) -> bool {
+        self.cli_model_override.is_some()
+            || is_express_task(&self.config, task)
+            || task.model_hint.is_some()
+            || task.hints.preferred_model.is_some()
+    }
+
+    /// The bounds M1's `decision` puts on `task`'s rungs: the rungs its θ
+    /// names for the task's tier, where they differ from θ₀'s. θ is
+    /// role-less, so θ₀'s floor and cap would move a role's own start or
+    /// rungs; only what M1 moved binds (decision 8101: θ₀ moves nothing). A
+    /// rung the role's ladder lacks bounds nothing.
+    fn tier_bounds(&self, task: &TaskDef, decision: Option<&HarnessDecision>) -> TierBounds {
+        let (Some(decision), Some(ladder)) = (decision, self.routing_ladder()) else {
+            return TierBounds::default();
+        };
+        let role = task.role.as_deref().unwrap_or("implementer");
+        let tier = task.tier_class();
+        let moved = |theta: &BTreeMap<TaskTier, String>, theta0: &BTreeMap<TaskTier, String>| {
+            let name = theta
+                .get(&tier)
+                .filter(|&name| theta0.get(&tier) != Some(name))?;
+            ladder.rung_index(role, name)
+        };
+        let (theta, theta0) = (&decision.applied, &decision.default);
+        TierBounds {
+            floor: moved(&theta.tier_floor, &theta0.tier_floor),
+            cap: moved(&theta.tier_cap, &theta0.tier_cap),
+        }
+    }
+
+    /// `task` as the router sees it on `attempt`: when the θ the attempt
+    /// runs puts the tier's floor above the rung the task would start on, a
+    /// `rung` hint names the floor rung, and the ladder starts the task there
+    /// (B1, 8124). A pin beats any rung, so a pinned task runs its model
+    /// either way.
+    pub(super) fn routed_task<'a>(
+        &self,
+        task: &'a TaskDef,
+        attempt: &AttemptContext,
+    ) -> Cow<'a, TaskDef> {
+        let bounds = self.tier_bounds(task, attempt.harness_decision());
+        let (Some(floor), Some(ladder)) = (bounds.floor, self.routing_ladder()) else {
+            return Cow::Borrowed(task);
+        };
+        let role = task.role.as_deref().unwrap_or("implementer");
+        let start = ladder.start(role, task.tier_class(), task.hints.rung.as_deref());
+        match (start, ladder.rung_name(role, floor)) {
+            (Some(start), Some(name)) if start.index < floor => {
+                let mut floored = task.clone();
+                floored.hints.rung = Some(name.to_string());
+                Cow::Owned(floored)
+            }
+            _ => Cow::Borrowed(task),
+        }
     }
 
     /// Record on `attempt` where `plan` put it on the ladder, `step` rungs
@@ -119,8 +207,13 @@ impl GraphTaskDispatcher {
                     reason = ?reason,
                     "attempt routed on the model ladder"
                 );
-                // The task's last attempt, with no rung left to climb.
-                let top = step >= MAX_ESCALATIONS || ladder.runnable_above(role, rung) == 0;
+                // The task's last attempt, with no rung left to climb: M1's
+                // cap stops the climb as the top rung does (8124).
+                let capped = self
+                    .tier_bounds(task, attempt.harness_decision())
+                    .caps(rung);
+                let top =
+                    step >= MAX_ESCALATIONS || capped || ladder.runnable_above(role, rung) == 0;
                 let task_key = format!("{}/{}", spec.plan_id, task.id);
                 (
                     record,
@@ -193,6 +286,9 @@ impl GraphTaskDispatcher {
         };
         let role = task.role.as_deref().unwrap_or("implementer");
         let index = ladder.index.and_then(|index| usize::try_from(index).ok());
+        // The cap of the θ the attempt ran stops the climb as the top rung
+        // does (8124); a task already above a cap M1 lowered keeps its rung.
+        let bounds = self.tier_bounds(task, settled.harness.as_deref());
         let mut standing = self
             .gate_retry_context
             .ladder_standing(&spec.plan_id, &task.id);
@@ -211,7 +307,11 @@ impl GraphTaskDispatcher {
             Some(StepAction::Skip { .. }) => (true, 2),
             _ => (false, 1),
         };
-        let can_climb = index.is_some_and(|index| routing.runnable_above(role, index) >= rungs);
+        // A climb of `rungs` lands at most on the cap: the rung below its
+        // target is under the cap (8124), for a one-rung climb and a skip.
+        let can_climb = index.is_some_and(|index| {
+            !bounds.caps(index + rungs - 1) && routing.runnable_above(role, index) >= rungs
+        });
         let within = standing.escalations.saturating_add(rungs as u32) <= MAX_ESCALATIONS;
         if (two_failures || early) && within && can_climb {
             standing = LadderStanding {
@@ -329,6 +429,14 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
     /// fails. Helper model calls go to their own provider, so [`PROVIDER`]
     /// records only the attempts.
     async fn ladder_fixture(temp: &tempfile::TempDir) -> (GraphTaskDispatcher, TaskDef) {
+        ladder_fixture_with(temp, |_| {}).await
+    }
+
+    /// [`ladder_fixture`], with `configure` run last on its config.
+    async fn ladder_fixture_with(
+        temp: &tempfile::TempDir,
+        configure: impl FnOnce(&mut RokoConfig),
+    ) -> (GraphTaskDispatcher, TaskDef) {
         let helper = temp.path().join("helper.sh");
         std::fs::write(&helper, VERIFY_PROVIDER).expect("write helper provider");
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
@@ -349,6 +457,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
                 model("helper-cli", "helper-slug", None),
             );
             config.routing.fast_task_model = "helper-model".to_string();
+            configure(config);
         })
         .await;
         task.model_hint = None;
@@ -490,6 +599,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
             failure_reason: None,
             reflex_rule: None,
             live_tool_calls: LiveToolCalls::default(),
+            harness: None,
         }
     }
 
@@ -610,5 +720,174 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
             plain_verdict["ladder"].get("router_pick").is_none(),
             "{plain_verdict}"
         );
+    }
+
+    /// S06 B1 (8124): M1's tier floor `mid` starts a mechanical task on
+    /// `mid`, its tier cap `mid` stops a climb from `cheap` at `mid`, and a
+    /// pinned task runs its own model under both, below the floor or above
+    /// the cap. The `harness_policy` rows say which attempts a pin routed,
+    /// and a lower cap is a cost-reducing move, which M1 couples to audits.
+    #[tokio::test]
+    async fn tier_floor_raises_start_rung_but_pins_win() {
+        use roko_core::config::harness_params::{
+            HarnessLadders, HarnessParams, Knob, KnobKind, Step,
+        };
+        use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
+        use roko_learn::homeostasis::catalog::catalog_move;
+        use roko_learn::homeostasis::controller::Controller;
+        use roko_learn::homeostasis::detect::Baseline;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+        use roko_learn::telemetry::report::RunRecords;
+
+        use crate::runtime_feedback::HomeostasisSink;
+
+        const MID: &str = "claude-opus-4-6";
+        const POLICY: &str = "policy_version = 1\nholdout = 0.0\n\
+            ev.pass_rate = { lo = 0.70 }\nev.usd_per_verified_success = { hi = 0.12 }\n\
+            ev.false_green = { hi = 0.10 }\nev.latency_p90_s = { hi = 900 }\n";
+
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let (dispatcher, task) = ladder_fixture_with(&temp, |config| {
+            config
+                .models
+                .insert("mid-model".to_string(), model("batch-cli", MID, None));
+            config.routing.ladder.rungs = vec![
+                rung("cheap", "cheap-model"),
+                rung("mid", "mid-model"),
+                rung("top", "batch-model"),
+            ];
+        })
+        .await;
+        let theta0 = HarnessParams::baseline(&dispatcher.config);
+        let ladders = HarnessLadders::from_config(&dispatcher.config);
+        let settings = HomeostasisConfig {
+            mode: HomeostasisMode::On,
+            ..HomeostasisConfig::default()
+        };
+        let baseline = Baseline {
+            pass_rate: 0.80,
+            usd_per_resolution: 0.05,
+            wall_ms: 300_000.0,
+        };
+        let policy = ViabilityPolicy::parse(POLICY).expect("the policy parses");
+        let controller = Controller::new(
+            &settings,
+            policy,
+            theta0.clone(),
+            ladders.clone(),
+            baseline,
+            0,
+        );
+        let sink = HomeostasisSink::new(temp.path(), Some(controller), None);
+        // Every chain runs the controller's θ, whatever the day's draws.
+        let sink = Arc::new(sink.with_holdout(0.0));
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            homeostasis: Some(Arc::clone(&sink)),
+            ..GraphFeedbackContext::default()
+        });
+        let floor = Knob::TierFloor(TaskTier::Mechanical);
+        let cap = Knob::TierCap(TaskTier::Mechanical);
+        let floored = theta0
+            .step(floor, Step::Up, &ladders)
+            .expect("floor cheap to mid");
+        let capped = theta0
+            .step(cap, Step::Down, &ladders)
+            .expect("cap top to mid");
+        let both = floored
+            .step(cap, Step::Down, &ladders)
+            .expect("cap mid on floor mid");
+        let named = |id: &str, model_hint: Option<&str>| TaskDef {
+            id: id.to_string(),
+            model_hint: model_hint.map(str::to_string),
+            ..task.clone()
+        };
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        // Floor mid: the task starts on mid, above its tier's start rung.
+        assert_eq!(sink.handle().swap(floored, "floor"), 1);
+        let raised = named("T-FLOOR", None);
+        dispatcher
+            .dispatch(&make_spec(&raised), Vec::new(), &ctx)
+            .await
+            .expect_err("the attempt fails its verify step");
+
+        // Cap mid: two failures on cheap climb to mid, and failures on mid
+        // climb no further.
+        assert_eq!(sink.handle().swap(capped, "cap"), 2);
+        let climbing = named("T-CAP", None);
+        let mut climbing_spec = make_spec(&climbing);
+        climbing_spec.max_retries = 4;
+        for _ in 0..5 {
+            dispatcher
+                .dispatch(&climbing_spec, Vec::new(), &ctx)
+                .await
+                .expect_err("every attempt fails its verify step");
+        }
+        assert_eq!(dispatcher.ladder_step(&climbing_spec, &climbing), 1);
+
+        // Both: a pinned task runs its model, below the floor or above the
+        // cap.
+        assert_eq!(sink.handle().swap(both, "both"), 3);
+        for (id, model_key) in [("T-LOW", "cheap-model"), ("T-HIGH", "batch-model")] {
+            let pinned = named(id, Some(model_key));
+            dispatcher
+                .dispatch(&make_spec(&pinned), Vec::new(), &ctx)
+                .await
+                .expect_err("the pinned attempt fails its verify step");
+        }
+        assert_eq!(
+            called_models(&temp),
+            [MID, CHEAP, CHEAP, MID, MID, MID, CHEAP, TOP]
+        );
+
+        dispatcher.close_run_attempts(RUN);
+        let run = RunRecords::load(&runs_dir.join(RUN)).expect("load the run");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        let places: Vec<(&str, Option<&str>, LadderReason)> = run
+            .verdicts
+            .iter()
+            .map(|line| {
+                let ladder = line.record.ladder.as_ref().expect("a ladder record");
+                let task = line.record.identity.task_id.as_str();
+                (task, ladder.rung.as_deref(), ladder.reason)
+            })
+            .collect();
+        let (start, climbed) = (LadderReason::Start, LadderReason::Escalated);
+        assert_eq!(
+            places,
+            [
+                ("T-FLOOR", Some("mid"), start),
+                ("T-CAP", Some("cheap"), start),
+                ("T-CAP", Some("cheap"), start),
+                ("T-CAP", Some("mid"), climbed),
+                ("T-CAP", Some("mid"), climbed),
+                ("T-CAP", Some("mid"), climbed),
+                ("T-LOW", None, LadderReason::Pinned),
+                ("T-HIGH", None, LadderReason::Pinned),
+            ]
+        );
+        let pins: Vec<(&str, bool)> = run
+            .harness_decisions
+            .iter()
+            .map(|line| (line.record.identity.task_id.as_str(), line.record.pinned))
+            .collect();
+        assert_eq!(
+            pins,
+            [
+                ("T-FLOOR", false),
+                ("T-CAP", false),
+                ("T-CAP", false),
+                ("T-CAP", false),
+                ("T-CAP", false),
+                ("T-CAP", false),
+                ("T-LOW", true),
+                ("T-HIGH", true),
+            ]
+        );
+        // A lower cap saves cost, so M1 doubles the audit rate after it.
+        let lower = catalog_move(KnobKind::TierCap, Step::Down);
+        assert!(lower.is_some_and(|lower| lower.audit_coupled()));
     }
 }

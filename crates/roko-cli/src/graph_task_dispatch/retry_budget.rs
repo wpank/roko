@@ -17,16 +17,25 @@
 //! the model ladder routes tasks, one that no `model_hint` or `preferred_model`
 //! pins gets at least enough retries to climb it (gap-460230).
 //! `plan run --max-retries` overrides all of this.
+//!
+//! M1 moves these budgets during a run (B2, decision 8101, 8126): the Graph
+//! executor reads [`LiveRetryBudgets`] before each retry decision, which add
+//! the `retry_delta` of the θ the task's chain runs to a budget the task does
+//! not author ([`TaskRetryBudgets::max_retries_with_delta`]).
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::Arc;
 
 use roko_core::config::GatesConfig;
 use roko_core::defaults::DEFAULT_GATE_RETRY_MIN_OBSERVATIONS;
 use roko_gate::AdaptiveThresholds;
 use roko_gate::rung_for_gate_name;
+use roko_graph::cell::CellContext;
+use roko_graph::cells::TaskExecutionSpec;
 use roko_neuro::KnowledgeStore;
 
+use super::GraphTaskDispatcher;
 use crate::knowledge_helpers::apply_neuro_gate_hints;
 use crate::task_parser::TaskDef;
 
@@ -65,6 +74,9 @@ pub(crate) struct TaskRetryBudgets {
     /// model is not pinned: `0`, or what climbing the model ladder takes
     /// while it routes tasks.
     ladder_min_retries: u32,
+    /// `[gates] adaptive_min_retries..=adaptive_max_retries`, the range M1's
+    /// `retry_delta` moves a budget within.
+    adaptive_range: (u32, u32),
 }
 
 impl TaskRetryBudgets {
@@ -93,10 +105,12 @@ impl TaskRetryBudgets {
         let authored = std::fs::read_to_string(tasks_toml)
             .map(|content| authored_max_retries(&content))
             .unwrap_or_default();
+        let min = gates.adaptive_min_retries;
         Self {
             thresholds,
             authored,
             ladder_min_retries: 0,
+            adaptive_range: (min, gates.adaptive_max_retries.max(min)),
         }
     }
 
@@ -133,14 +147,38 @@ impl TaskRetryBudgets {
             };
         }
         let budget = self.suggested(task);
-        let pinned = task.model_hint.is_some() || task.hints.preferred_model.is_some();
-        if !pinned && budget.max_retries < self.ladder_min_retries {
+        if !pinned(task) && budget.max_retries < self.ladder_min_retries {
             return RetryBudget {
                 max_retries: self.ladder_min_retries,
                 source: RetryBudgetSource::Ladder,
             };
         }
         budget
+    }
+
+    /// `task`'s retry budget moved by M1's `retry_delta` (B2, decision 8101,
+    /// 8126). An authored budget never changes. Any other moves by `delta`
+    /// within `[gates] adaptive_min_retries..=adaptive_max_retries`, a budget
+    /// already outside that range moving no further out, and an unpinned
+    /// task keeps what climbing the model ladder takes. θ₀'s `delta` of 0
+    /// changes nothing.
+    pub(crate) fn max_retries_with_delta(&self, task: &TaskDef, delta: i32) -> u32 {
+        let budget = self.for_task(task);
+        if delta == 0 || budget.source == RetryBudgetSource::Authored {
+            return budget.max_retries;
+        }
+        let (min, max) = self.adaptive_range;
+        let low = i64::from(min.min(budget.max_retries));
+        let high = i64::from(max.max(budget.max_retries));
+        let moved = (i64::from(budget.max_retries) + i64::from(delta)).clamp(low, high);
+        let floor = if pinned(task) {
+            0
+        } else {
+            self.ladder_min_retries
+        };
+        u32::try_from(moved)
+            .unwrap_or(budget.max_retries)
+            .max(floor)
     }
 
     /// Budget of a task that does not author `max_retries`: the default, or
@@ -246,6 +284,50 @@ impl TaskRetryBudgets {
             }
             _ => None,
         }
+    }
+}
+
+/// Whether `task`'s `model_hint` or `preferred_model` pins its model, so the
+/// model ladder never climbs it.
+fn pinned(task: &TaskDef) -> bool {
+    task.model_hint.is_some() || task.hints.preferred_model.is_some()
+}
+
+/// The live retry budgets of one plan run's tasks (M1's B2, 8126), which the
+/// Graph executor reads before each retry decision: each task's plan-load
+/// budget moved by the `retry_delta` of the θ its chain runs now. A task
+/// without M1 keeps its plan-load budget. Each budget it hands out becomes
+/// the one M1's sink resolves the task's chain at.
+struct LiveRetryBudgets {
+    budgets: TaskRetryBudgets,
+    dispatcher: Arc<GraphTaskDispatcher>,
+}
+
+impl roko_graph::cells::RetryBudgetSource for LiveRetryBudgets {
+    fn max_retries(&self, spec: &TaskExecutionSpec, ctx: &CellContext) -> Option<u32> {
+        let task: TaskDef = serde_json::from_str(&spec.task_def_json).ok()?;
+        let theta = self.dispatcher.next_attempt_theta(spec, &task.id, ctx)?;
+        let max_retries = self
+            .budgets
+            .max_retries_with_delta(&task, theta.retry_delta);
+        if let Some(sink) = self.dispatcher.homeostasis_sink() {
+            sink.set_retry_limits(&spec.plan_id, [(task.id, max_retries)]);
+        }
+        Some(max_retries)
+    }
+}
+
+impl GraphTaskDispatcher {
+    /// The live source of a plan run's retry `budgets` (B2, 8126), for each
+    /// of its tasks' executor cells to read before a retry.
+    pub(crate) fn live_retry_budgets(
+        self: Arc<Self>,
+        budgets: TaskRetryBudgets,
+    ) -> Arc<dyn roko_graph::cells::RetryBudgetSource> {
+        Arc::new(LiveRetryBudgets {
+            budgets,
+            dispatcher: self,
+        })
     }
 }
 
@@ -558,5 +640,107 @@ command = "true"
             untracked.for_task(&task("TEST")).source,
             RetryBudgetSource::Default
         );
+    }
+
+    /// M1's B2 (8126, decision 8101): `retry_delta` moves a budget the task
+    /// does not author within `[gates] adaptive_min_retries..=
+    /// adaptive_max_retries`, a budget already outside it no further out,
+    /// and never below the ladder's floor; an authored budget never changes,
+    /// and θ₀'s delta of 0 changes nothing. The executor's live source reads
+    /// the delta of the θ the task's chain runs now.
+    #[tokio::test]
+    async fn retry_delta_never_changes_authored_budget() {
+        use roko_core::config::harness_params::{HarnessLadders, HarnessParams, Knob, Step};
+        use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
+        use roko_core::config::schema::RokoConfig;
+        use roko_learn::homeostasis::controller::Controller;
+        use roko_learn::homeostasis::detect::Baseline;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+
+        use crate::graph_task_dispatch::GraphFeedbackContext;
+        use crate::graph_task_dispatch::tests::{
+            VERIFY_PROVIDER, make_test_dispatcher, no_auto_fix,
+        };
+        use crate::runtime_feedback::HomeostasisSink;
+
+        let dir = tempdir().expect("tempdir");
+        let gates = GatesConfig {
+            adaptive_min_retries: 2,
+            adaptive_max_retries: 8,
+            ..GatesConfig::default()
+        };
+        let wide = budgets(dir.path(), &gates);
+        let mut pinned = task("STRUCTURAL");
+        pinned.model_hint = Some("claude-sonnet-4-6".to_string());
+        for delta in [-2, -1, 0, 1, 2] {
+            assert_eq!(wide.max_retries_with_delta(&task("AUTHORED"), delta), 0);
+        }
+        // STRUCTURAL keeps the default budget, 3.
+        let moved = |budgets: &TaskRetryBudgets, task: &TaskDef| {
+            [-2, -1, 0, 1, 9].map(|delta| budgets.max_retries_with_delta(task, delta))
+        };
+        assert_eq!(moved(&wide, &task("STRUCTURAL")), [2, 2, 3, 4, 8]);
+        // While the ladder routes tasks it takes five retries to climb, which
+        // an unpinned task keeps; a pinned one never climbs.
+        let ladder = budgets_with(dir.path(), &gates, 5);
+        assert_eq!(moved(&ladder, &task("STRUCTURAL")), [5, 5, 5, 6, 8]);
+        assert_eq!(moved(&ladder, &pinned), [2, 2, 3, 4, 8]);
+        // A budget above `adaptive_max_retries` goes no higher.
+        let narrow = budgets_with(dir.path(), &GatesConfig::default(), 6);
+        assert_eq!(moved(&narrow, &task("STRUCTURAL")), [6, 6, 6, 6, 6]);
+
+        // The live source: θ₀, then a θ that adds one retry.
+        const POLICY: &str = "policy_version = 1\n\
+            ev.pass_rate = { lo = 0.70 }\nev.usd_per_verified_success = { hi = 0.12 }\n\
+            ev.false_green = { hi = 0.10 }\nev.latency_p90_s = { hi = 900 }\n";
+        let config = RokoConfig::default();
+        let theta0 = HarnessParams::baseline(&config);
+        let ladders = HarnessLadders::from_config(&config);
+        let settings = HomeostasisConfig {
+            mode: HomeostasisMode::On,
+            ..HomeostasisConfig::default()
+        };
+        let baseline = Baseline {
+            pass_rate: 0.80,
+            usd_per_resolution: 0.05,
+            wall_ms: 300_000.0,
+        };
+        let policy = ViabilityPolicy::parse(POLICY).expect("the policy parses");
+        let controller = Controller::new(
+            &settings,
+            policy,
+            theta0.clone(),
+            ladders.clone(),
+            baseline,
+            0,
+        );
+        let sink = HomeostasisSink::new(dir.path(), Some(controller), None);
+        let sink = Arc::new(sink.with_holdout(0.0));
+        let feedback = GraphFeedbackContext {
+            homeostasis: Some(Arc::clone(&sink)),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, _) =
+            make_test_dispatcher(&dir, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let plan_budgets = dispatcher.task_retry_budgets(dir.path());
+        let live = Arc::clone(&dispatcher).live_retry_budgets(plan_budgets);
+        let ctx = CellContext::new().with_run_id("live".to_string());
+        let read = |task: &TaskDef| {
+            let spec = TaskExecutionSpec {
+                plan_id: "budget".to_string(),
+                max_retries: task.max_retries,
+                task_def_json: serde_json::to_string(task).expect("serialize task"),
+                ..TaskExecutionSpec::default()
+            };
+            live.max_retries(&spec, &ctx)
+        };
+        // The pinned task never climbs the ladder, so it keeps the default 3.
+        let authored = task("AUTHORED");
+        assert_eq!((read(&authored), read(&pinned)), (Some(0), Some(3)));
+        let more = theta0
+            .step(Knob::RetryDelta, Step::Up, &ladders)
+            .expect("one more retry");
+        assert_eq!(sink.handle().swap(more, "more"), 1);
+        assert_eq!((read(&authored), read(&pinned)), (Some(0), Some(4)));
     }
 }

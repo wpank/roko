@@ -145,6 +145,9 @@ pub struct CascadeRouter {
     /// appears in this list are filtered out before any health or scoring
     /// pass.  An empty list (the default) disables the filter.
     disabled_providers: Vec<String>,
+    /// DP4's routing trust from audit estimates (S05 §4.6): see
+    /// [`Self::set_audit_trust`].
+    audit_trust: Mutex<AuditTrust>,
     /// The persisted state this router last loaded or saved.
     ///
     /// [`Self::save`] writes only what the router learned since, merged into
@@ -416,6 +419,7 @@ impl CascadeRouter {
             verdict_blend_weight: 0.2,
             cost_pressure_until: Mutex::new(None),
             disabled_providers: Vec::new(),
+            audit_trust: Mutex::new(AuditTrust::default()),
             baseline: Mutex::new(baseline),
             canary_routes: Mutex::new(HashMap::new()),
         }
@@ -1258,6 +1262,8 @@ impl CascadeRouter {
         if available.is_empty() {
             return None;
         }
+        // DP4: leave out the models audits keep finding false greens from.
+        let available = self.filter_untrusted(&available, ctx.complexity);
 
         // Apply latency-based demotion: collect slugs whose provider p95
         // exceeds the threshold so we can filter them out of the preferred
@@ -1338,7 +1344,9 @@ impl CascadeRouter {
     }
 
     /// Remove candidates whose provider is currently unhealthy or explicitly
-    /// disabled via `RoutingConfig::disabled_providers`.
+    /// disabled via `RoutingConfig::disabled_providers`, and then those
+    /// audit trust leaves out of standard-band work ([`Self::filter_untrusted`],
+    /// DP4).
     #[must_use]
     pub fn filter_unhealthy(
         &self,
@@ -1364,7 +1372,7 @@ impl CascadeRouter {
             .cloned()
             .collect();
         if !available.is_empty() {
-            return available;
+            return self.filter_untrusted(&available, TaskComplexityBand::Standard);
         }
 
         let snapshot = health.snapshot();
@@ -3835,6 +3843,181 @@ fn quantize_floats(value: &mut serde_json::Value) {
     }
 }
 
+// ─── DP4: routing trust from audit estimates (S05 §4.6) ──────────────────────
+
+/// The harness the cascade routes for, as audits name it.
+pub const AUDIT_HARNESS: &str = "roko";
+
+/// DP4 leaves a model out when its trust posterior puts more than this on a
+/// false-green rate above 2·θ_max.
+pub const TRUST_EXCLUDE_PROBABILITY: f64 = 0.9;
+
+/// One in this many routes an excluded model would have is let through, the
+/// 5% re-probe, so audits keep seeing it.
+pub const TRUST_PROBE_EVERY: u64 = 20;
+
+/// Exclusions a router keeps for [`CascadeRouter::trust_exclusions`].
+const TRUST_LOG_LIMIT: usize = 64;
+
+/// One routing decision DP4 made: a model left out by audit trust.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrustExclusion {
+    /// The model.
+    pub model: String,
+    /// The task's complexity band.
+    pub band: TaskComplexityBand,
+    /// P(θ > 2·θ_max) under the model's trust posterior.
+    pub probability: f64,
+}
+
+/// DP4's state in a router.
+#[derive(Debug, Default)]
+struct AuditTrust {
+    /// `[audit] theta_max`; nothing is left out while it is unset.
+    theta_max: Option<f64>,
+    /// M1 (S06) is on, and routing trust is its actuator: the router keeps
+    /// the estimates and leaves nothing out.
+    publish_only: bool,
+    /// Each model's trust estimate for roko's harness.
+    estimates: HashMap<String, roko_core::audit_types::TrustEstimate>,
+    /// Each model's routes left out so far, for the re-probe.
+    excluded: HashMap<String, u64>,
+    /// The latest exclusions, oldest first.
+    log: Vec<TrustExclusion>,
+}
+
+impl AuditTrust {
+    /// P(θ > 2·θ_max) for `slug`, when it passes
+    /// [`TRUST_EXCLUDE_PROBABILITY`] for a task of `band`, standard or above.
+    fn exclusion(&self, slug: &str, band: TaskComplexityBand) -> Option<f64> {
+        if self.publish_only || band < TaskComplexityBand::Standard {
+            return None;
+        }
+        let theta_max = self.theta_max?;
+        let probability = trust_exceedance(self.estimates.get(slug)?, 2.0 * theta_max);
+        (probability > TRUST_EXCLUDE_PROBABILITY).then_some(probability)
+    }
+
+    fn record(&mut self, exclusion: TrustExclusion) {
+        if self.log.len() >= TRUST_LOG_LIMIT {
+            self.log.remove(0);
+        }
+        self.log.push(exclusion);
+    }
+}
+
+/// P(θ > `bound`) under `estimate`'s Beta posterior on the false-green rate.
+#[must_use]
+pub fn trust_exceedance(estimate: &roko_core::audit_types::TrustEstimate, bound: f64) -> f64 {
+    let bound = bound.clamp(0.0, 1.0);
+    let below = crate::self_model::prior::reg_inc_beta(estimate.alpha, estimate.beta, bound);
+    (1.0 - below).clamp(0.0, 1.0)
+}
+
+impl CascadeRouter {
+    /// DP4 (S05 §4.6): route by `estimates`, the latest audit trust
+    /// estimates from the vault, with `theta_max` from `[audit]`.
+    ///
+    /// Only roko's harness counts. With `publish_only`, when M1 (S06) is on
+    /// and routing trust is its actuator, the router keeps the estimates and
+    /// leaves nothing out.
+    pub fn set_audit_trust(
+        &self,
+        estimates: &[roko_core::audit_types::TrustEstimate],
+        theta_max: f64,
+        publish_only: bool,
+    ) {
+        let mut trust = self.audit_trust.lock();
+        trust.theta_max = Some(theta_max);
+        trust.publish_only = publish_only;
+        trust.estimates = estimates
+            .iter()
+            .filter(|estimate| estimate.harness == AUDIT_HARNESS)
+            .map(|estimate| (estimate.model.clone(), estimate.clone()))
+            .collect();
+    }
+
+    /// P(θ > 2·θ_max) for `slug` when DP4 leaves it out of a task of `band`:
+    /// the band is standard or above, M1 is off, and the probability passes
+    /// [`TRUST_EXCLUDE_PROBABILITY`]. `None` otherwise.
+    #[must_use]
+    pub fn trust_excludes(&self, slug: &str, band: TaskComplexityBand) -> Option<f64> {
+        self.audit_trust.lock().exclusion(slug, band)
+    }
+
+    /// DP4: `models`, in order, less those audits keep finding false greens
+    /// from, for a task of `band`.
+    ///
+    /// A model [`Self::trust_excludes`] is left out, but one route in
+    /// [`TRUST_PROBE_EVERY`] lets it through, and trust never empties a model
+    /// class (fast, standard, premium): a class whose models are all left out
+    /// keeps its most trusted one. Each exclusion is logged as a routing
+    /// decision and kept for [`Self::trust_exclusions`].
+    pub fn filter_untrusted(&self, models: &[String], band: TaskComplexityBand) -> Vec<String> {
+        let mut trust = self.audit_trust.lock();
+        let excluded: HashMap<&str, f64> = models
+            .iter()
+            .filter_map(|slug| Some((slug.as_str(), trust.exclusion(slug, band)?)))
+            .collect();
+        if excluded.is_empty() {
+            return models.to_vec();
+        }
+        let tiers: Vec<ModelTier> = models.iter().map(|slug| self.tier_for_slug(slug)).collect();
+        // Each class's most trusted excluded model, and the classes a trusted
+        // model keeps.
+        let mut spare: HashMap<ModelTier, (&str, f64)> = HashMap::new();
+        let mut covered: Vec<ModelTier> = Vec::new();
+        for (slug, tier) in models.iter().zip(&tiers) {
+            match excluded.get(slug.as_str()) {
+                Some(&probability) => {
+                    let best = spare.entry(*tier).or_insert((slug.as_str(), probability));
+                    if probability < best.1 {
+                        *best = (slug.as_str(), probability);
+                    }
+                }
+                None => covered.push(*tier),
+            }
+        }
+        let mut kept = Vec::with_capacity(models.len());
+        for (slug, tier) in models.iter().zip(&tiers) {
+            let Some(&probability) = excluded.get(slug.as_str()) else {
+                kept.push(slug.clone());
+                continue;
+            };
+            let spared = !covered.contains(tier)
+                && spare
+                    .get(tier)
+                    .is_some_and(|(best, _)| *best == slug.as_str());
+            let count = trust.excluded.entry(slug.clone()).or_default();
+            if !spared {
+                *count += 1;
+            }
+            if spared || count.is_multiple_of(TRUST_PROBE_EVERY) {
+                kept.push(slug.clone());
+                continue;
+            }
+            tracing::info!(
+                model = %slug,
+                band = band.label(),
+                probability,
+                "routing decision: audit trust leaves the model out (DP4)"
+            );
+            trust.record(TrustExclusion {
+                model: slug.clone(),
+                band,
+                probability,
+            });
+        }
+        kept
+    }
+
+    /// The latest routing decisions DP4 made, oldest first.
+    #[must_use]
+    pub fn trust_exclusions(&self) -> Vec<TrustExclusion> {
+        self.audit_trust.lock().log.clone()
+    }
+}
+
 #[cfg(test)]
 mod cascade_router_tests {
     use super::*;
@@ -5222,5 +5405,88 @@ mod cost_control_integration_tests {
         assert_eq!(budget.record_cost(1_000_000.0, "task"), BudgetAction::Ok);
         assert_eq!(budget.record_cost(1_000_000.0, "session"), BudgetAction::Ok);
         assert_eq!(budget.record_cost(1_000_000.0, "day"), BudgetAction::Ok);
+    }
+}
+
+// ─── DP4 tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod audit_trust_tests {
+    use roko_core::audit_types::TrustEstimate;
+
+    use super::*;
+    use crate::provider_health::ProviderHealthRegistry;
+
+    fn trust(model: &str, theta: f64, n_eff: f64) -> TrustEstimate {
+        TrustEstimate::from_estimate(model, AUDIT_HARNESS, theta, n_eff)
+    }
+
+    /// DP4 (S05 §4.6): a model whose passes audits keep finding false is
+    /// left out of standard-band routing, but never out of its whole class,
+    /// and one route in twenty still lets it through.
+    #[test]
+    fn audit_trust_excludes_a_gaming_model_but_keeps_one_per_class() {
+        use TaskComplexityBand::{Fast, Standard};
+
+        // By the slug heuristics, glm-4.7 and kimi-k2 are standard models,
+        // claude-haiku-4-5 a fast one and claude-opus-4-1 a premium one.
+        let models: Vec<String> = ["glm-4.7", "kimi-k2", "claude-haiku-4-5", "claude-opus-4-1"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let router = CascadeRouter::new(models.clone());
+        assert_eq!(router.tier_for_slug("claude-haiku-4-5"), ModelTier::Fast);
+        // Audits keep finding false greens in glm-4.7's and claude-haiku-4-5's
+        // passes, and none in kimi-k2's.
+        let gaming = [
+            trust("glm-4.7", 0.4, 50.0),
+            trust("kimi-k2", 0.0, 50.0),
+            trust("claude-haiku-4-5", 0.4, 50.0),
+        ];
+        router.set_audit_trust(&gaming, 0.05, false);
+        let excluded = router.trust_excludes("glm-4.7", Standard);
+        assert!(
+            excluded.is_some_and(|p| p > TRUST_EXCLUDE_PROBABILITY),
+            "{excluded:?}"
+        );
+        assert_eq!(router.trust_excludes("kimi-k2", Standard), None);
+        assert_eq!(router.trust_excludes("glm-4.7", Fast), None);
+
+        // glm-4.7 is left out of standard work; claude-haiku-4-5 stays, as
+        // the only fast model.
+        let kept = ["kimi-k2", "claude-haiku-4-5", "claude-opus-4-1"];
+        assert_eq!(router.filter_untrusted(&models, Standard), kept);
+        assert_eq!(router.filter_untrusted(&models, Fast), models);
+        let logged = router.trust_exclusions();
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0].model, "glm-4.7");
+        assert_eq!(logged[0].band, Standard);
+        // The health filter applies it too.
+        let health = ProviderHealthRegistry::new();
+        let healthy = router.filter_unhealthy(&models, &health, &HashMap::new());
+        assert_eq!(healthy, kept);
+
+        // One route in twenty lets glm-4.7 through: its routes 3 to 22.
+        let glm = "glm-4.7".to_string();
+        let probes = (0..TRUST_PROBE_EVERY)
+            .filter(|_| router.filter_untrusted(&models, Standard).contains(&glm))
+            .count();
+        assert_eq!(probes, 1);
+
+        // With both standard models gaming, the class keeps the more trusted.
+        let both = [trust("glm-4.7", 0.4, 50.0), trust("kimi-k2", 0.25, 40.0)];
+        router.set_audit_trust(&both, 0.05, false);
+        let kimi = router.trust_excludes("kimi-k2", Standard);
+        assert!(kimi.is_some(), "kimi-k2 is excluded too");
+        assert_eq!(router.filter_untrusted(&models, Standard), kept);
+
+        // Another harness's estimates do not count, and with M1 on DP4 only
+        // keeps the estimates.
+        let elsewhere = TrustEstimate::from_estimate("glm-4.7", "fd_claude", 0.4, 50.0);
+        router.set_audit_trust(&[elsewhere], 0.05, false);
+        assert_eq!(router.filter_untrusted(&models, Standard), models);
+        router.set_audit_trust(&gaming, 0.05, true);
+        assert_eq!(router.trust_excludes("glm-4.7", Standard), None);
+        assert_eq!(router.filter_untrusted(&models, Standard), models);
     }
 }

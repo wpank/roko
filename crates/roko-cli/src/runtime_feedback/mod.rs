@@ -35,6 +35,7 @@ use async_trait::async_trait;
 pub mod episodes;
 pub mod error_patterns;
 pub mod hindsight;
+pub mod homeostasis;
 pub mod knowledge;
 pub mod plan_completion;
 pub mod routing;
@@ -44,6 +45,7 @@ pub mod verified_knowledge;
 pub use episodes::EpisodeSink;
 pub use error_patterns::ErrorPatternSink;
 pub use hindsight::HindsightSink;
+pub use homeostasis::HomeostasisSink;
 pub use knowledge::{KnowledgeIngestionSink, KnowledgeIngestor, NeuroKnowledgeIngestor};
 pub use plan_completion::{DaimonPersistenceSink, DreamConsolidationSink};
 #[cfg(feature = "cognitive-clock")]

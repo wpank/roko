@@ -46,9 +46,9 @@ impl PromiseTracker {
         }
     }
 
-    /// Override the minimum promise threshold (default: 0.2).
+    /// Override the minimum promise threshold (default: 0.2). Graph verify
+    /// takes M1's B6 knob from here (8125).
     #[must_use]
-    #[allow(dead_code)] // used only in tests
     pub fn with_min_promise(mut self, min: f64) -> Self {
         self.min_promise = min;
         self
@@ -57,7 +57,6 @@ impl PromiseTracker {
     /// Override the consecutive low-promise turn count required before
     /// termination (default: 2).
     #[must_use]
-    #[allow(dead_code)] // used only in tests
     pub fn with_consecutive_threshold(mut self, n: u32) -> Self {
         self.consecutive_threshold = n;
         self

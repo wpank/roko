@@ -252,6 +252,15 @@ impl Dispatcher {
         self
     }
 
+    /// Fall back to `slug` when nothing else decides a route
+    /// ([`ModelRouter::with_default_slug`]): a workspace's `[agent]
+    /// default_model` (backlog 3107).
+    #[must_use]
+    pub fn with_default_slug(mut self, slug: impl Into<String>) -> Self {
+        self.router = self.router.with_default_slug(slug);
+        self
+    }
+
     /// Start tasks without an override or hint on their `[routing.ladder]`
     /// rung ([`ModelRouter::with_routing_ladder`]).
     #[must_use]
@@ -607,6 +616,35 @@ mod tests {
                 is_error: false,
             })
         }
+    }
+
+    /// backlog 3107: with `[agent] default_model` set (a `[models.*]` key,
+    /// resolved as failover resolves it) and no ladder, a task with no hint
+    /// and no routing context routes to that model, as the default.
+    #[tokio::test]
+    async fn router_default_follows_agent_default_model() {
+        let mut config = RokoConfig::default();
+        config.routing.ladder.enabled = false;
+        config.agent.default_model = "house-model".to_string();
+        let profile = roko_core::config::schema::ModelProfile {
+            provider: "house-cli".to_string(),
+            slug: "glm-5.1".to_string(),
+            ..Default::default()
+        };
+        config.models.insert("house-model".to_string(), profile);
+        let factory = SharedAgentFactory::new(Arc::new(config), None, None, None).await;
+        let mut task = make_task("t-default");
+        task.model_hint = None;
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let ctx = DispatchContext {
+            workdir: workdir.path().to_path_buf(),
+            ..make_ctx()
+        };
+
+        let plan = factory.dispatcher().plan(&task, &ctx).expect("plan");
+
+        assert_eq!(plan.model.slug, "glm-5.1");
+        assert_eq!(plan.source, ModelChoiceSource::Default);
     }
 
     #[tokio::test]

@@ -61,3 +61,21 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK10 (gap-f61823), PK25 (gap-daeaa9), PK27 (gap-5ddf9b), PK40 (gap-1f4bec), PK44 (gap-85d176).
 - Suggested model: sonnet.
+
+## Progress
+
+- 3359: implemented at 2bb61611b. `check()` runs the loop census (new `census_report`, injectable) and refuses
+  before dispatch when a `requires_live` loop's audit state is not `live`; `cmd_campaign` writes a NOT RUN stub
+  (`vb.not_run/1`, not a forced `vb.metric_record/1`) naming the loops and the harness sha before raising.
+  `test_campaign.py::test_live_manifest_refuses_loops_that_are_not_live` fakes the census with monkeypatch (dormant
+  refuses and writes the stub; all-LIVE then runs normally). Verify passes.
+- 3361: implemented at fd2d12aab. New `h5_live.toml` (BL4), `h6_live.toml` (BL3), `h7_live.toml` (BL5), each a
+  valid `vb.experiment/1` manifest on 3331's compiled streams (s1_learncurve, s3_disturbance +
+  s3_disturbance_hooks.toml, s5_holdout), with `requires_live` from S09 §5's own example (H5/H6) and the prereg
+  sketch's `closure_4` census check (H7: L-M1, L-audit, L-route-trust). `test_live.py::test_live_manifests_name_lines_caps_and_required_loops`
+  validates all three via `vb campaign --dry-run`, faking the census LIVE (3359) and the pre-registration lock
+  clean (3341/3345, held for Will as gap-394f28, not this task's job) with monkeypatch. Verify passes. Two
+  judgment calls, documented in the manifests' own comments: the H5-A0/A1/A3 and H6 9-seed/arm split (no separate
+  arm files exist for these labels, so each uses `roko_fixed` differentiated by seed/disturbance rather than a
+  new arm), and H7's stream (budget.toml's BL3 note mentions "the S1 stream and the harmful stream" for H7, but
+  only s5_holdout, 3331's harmful-loop stream, is used here; nothing read for this task names a second file).

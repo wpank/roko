@@ -1,0 +1,64 @@
+# H5 live (S09 v1.5 §5, E7; task 3361): coverage of the Hajek+Wilson confidence-sequence estimator (H5: max of
+# coverage, bias TOST and theta-ratio p-values) under the audit loops' tilted exploration, at three loop-exposure
+# depths (H5-A0, H5-A1, H5-A3; S09 §5's prereg sketch: "cell":"rho=0.15,tilted"). Follows S09 §5's h5_live.toml
+# example, adapted to the real vb.experiment/1 schema (arm and seeds are per-block scalars, not list-valued) and
+# to 3331's compiled stream (s1_learncurve; the sketch's "p1_h5" predates 3331). The 3 arms share one roko_fixed
+# cell and stream, split by seed (S08 §4.7's "two passes" loop-exposure design: a later seed has accumulated more
+# audited decisions for the same policy to be read back from); H5-A0 is the concurrent baseline pass, A1 and A3
+# the deeper-exposure passes the coverage test compares it to. Which exact seed a cell's analysis treats as A0 vs
+# A1 vs A3 is analysis/cs.py's call, not this manifest's.
+#
+# requires_live names S09 §5's own example for this file: the loops H5's audit-exposure estimator reads must be
+# LIVE (not retired, observe-only, probation, flagged or demoted) at the harness sha, or the campaign is refused
+# and reports NOT RUN (3359) rather than spending against a wiring failure.
+#
+# Budget: line BL4 (experiments/budget.toml), planned $36, cap $40. This manifest's own 3 blocks plan $21.60 (3 x
+# 96 runs x $0.075), leaving headroom under the cap for the review/judge calls budget.toml's BL4 note also covers
+# (≈ 70 reviews) that this driver does not dispatch itself. Stop rules (S09 §5): the ledger refuses any dispatch
+# that would take BL4 past its cap; an infra_error rate above 10%, or a harmful swing
+# (cs(theta_A3 - theta_A0) > 0.10), pauses the campaign for a logged deviation (vb.deviation/1) rather than a
+# schema field, since vb.experiment/1 has none for it (schema/experiment.schema.json, additionalProperties false).
+#
+# This experiment id starts with E-, so campaign.requires_lock also makes it run only under the pre-registration
+# lock (3341; the lock itself is task 3345, held for the author as gap-394f28) in addition to requires_live
+# (3359). experiments/test_live.py fakes both to validate this manifest's own shape; it does not take the lock.
+#
+# Validate and estimate with
+#     benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/driver/vb.py campaign \
+#         --manifest benchmarks/viabilitybench/experiments/h5_live.toml --dry-run
+schema_version = "vb.experiment/1"
+id = "E-H5-live"
+title = "H5 live: roko_fixed on s1_learncurve at three loop-exposure depths (G4, BL4)"
+requires_lock = true
+requires_live = ["L-audit", "L-gate-depth", "L-route-trust"]
+order = { kind = "as_listed" }
+
+[[block]]
+id = "h5-a0"
+stream = "s1_learncurve"
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "1"
+line = "BL4"
+planned_usd = 7.20   # 96 runs x $0.075 (S09 §3); the concurrent baseline pass
+max_cost_usd = 13.00  # the 3 blocks' worst cases must sum to at most BL4's $40 cap: 3 x 13.00 = 39.00
+
+[[block]]
+id = "h5-a1"
+stream = "s1_learncurve"
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "2"
+line = "BL4"
+planned_usd = 7.20   # 96 runs x $0.075; the first deeper-exposure pass
+max_cost_usd = 13.00
+
+[[block]]
+id = "h5-a3"
+stream = "s1_learncurve"
+arm = "roko_fixed"
+model = "gpt-oss-120b"
+seeds = "3"
+line = "BL4"
+planned_usd = 7.20   # 96 runs x $0.075; the second deeper-exposure pass
+max_cost_usd = 13.00

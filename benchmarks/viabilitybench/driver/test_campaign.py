@@ -234,3 +234,45 @@ def test_log1_refuses_to_start_without_the_lock(places, capsys, tmp_path):
         assert run_campaign(places, path, stub.url, "--lock", str(missing)) == 2
         assert "refused before any run: requires_lock" in capsys.readouterr().err
         assert stub.requests == [] and not (places["results"] / EXPERIMENT).exists()
+
+
+def fake_census(rows: list[dict], sha: str = "abc1234") -> object:
+    """A monkeypatch replacement for `campaign.census_report`, matching its real signature, that returns a fixed
+    `roko.loop_census/1` report instead of running a roko binary (3359's own test plan: "tests with a fake
+    census")."""
+    def fake(repo=None, roko_bin=None):
+        return {"schema": campaign.LOOPS_SCHEMA, "harness_sha": sha, "rows": rows}
+    return fake
+
+
+def test_live_manifest_refuses_loops_that_are_not_live(places, capsys, monkeypatch):
+    """3359 (S09 §5): a manifest's requires_live loops must be LIVE (roko.loop_census/1's audit `state`) at the
+    harness sha the campaign would run under. One flagged/dormant loop refuses before any call and writes a NOT
+    RUN stub naming the loop and the sha; once every required loop is LIVE, the same manifest runs normally."""
+    path = manifest(places, block("live"))
+    path.write_text(path.read_text().replace("requires_live = []", 'requires_live = ["L-test-loop"]'))
+    dormant = fake_census([{"loop": "L-test-loop", "state": "flagged", "reason": "dormant:no_learning"}])
+    live = fake_census([{"loop": "L-test-loop", "state": "live"}])
+
+    with StubServer(SOLVE) as stub:
+        monkeypatch.setattr(campaign, "census_report", dormant)
+        code, summary = dry_run(places, path, stub.url, capsys)
+        assert code == 2 and summary["harness_sha"] == "abc1234" and summary["not_run"] == ["L-test-loop"]
+        assert ("requires_live: not LIVE at harness abc1234: L-test-loop (flagged, dormant:no_learning)"
+                in " ".join(summary["problems"]))
+        assert run_campaign(places, path, stub.url) == 2
+        assert "refused before any run: requires_live" in capsys.readouterr().err
+        out = places["results"] / EXPERIMENT
+        assert stub.requests == [] and not (out / campaign.LOG).exists()  # no unit was ever dispatched
+        stub_path = out / campaign.NOT_RUN_FILE
+        record = json.loads(stub_path.read_text())
+        assert record["schema"] == campaign.NOT_RUN_SCHEMA and record["status"] == "not_run"
+        assert record["experiment_id"] == EXPERIMENT and record["harness_sha"] == "abc1234"
+        assert record["loops_not_live"] == ["L-test-loop"]
+        assert stub.requests == []  # the stub was never called: the refusal happens before any dispatch
+
+        monkeypatch.setattr(campaign, "census_report", live)
+        code, summary = dry_run(places, path, stub.url, capsys)
+        assert code == 0 and summary["problems"] == [] and summary["not_run"] == []
+        assert run_campaign(places, path, stub.url) == 0
+        assert stub.requests  # this time the run went ahead and reached the stub provider

@@ -1185,6 +1185,10 @@ pub struct ContentDecisionRecord {
     /// (`learn/gate-thresholds.json`); `None` when there are none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thresholds_digest: Option<String>,
+    /// The arms of the attempt's chain (S02.P1-14), which every decision row
+    /// of the attempt carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arm_set: Option<crate::loop_audit::arm_set::ArmSet>,
 }
 
 /// `b3(attempt_key|item_kind|item_id)`: one item's exposure in one attempt
@@ -2044,6 +2048,7 @@ mod tests {
             source: Some(DecisionSource::Default),
             state: Some(state),
             thresholds_digest: None,
+            arm_set: None,
         };
         let json = serde_json::to_value(&record).expect("serialize");
         assert_eq!(json["decision_point"], "knowledge");

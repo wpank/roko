@@ -212,6 +212,7 @@ fn content_decision(
         source: Some(DecisionSource::Default),
         state: read,
         thresholds_digest: state.thresholds.clone(),
+        arm_set: None,
     }
 }
 
@@ -735,5 +736,87 @@ mod tests {
         let report = check(&run, &legacy);
         assert_eq!(report.failures(), Vec::<String>::new());
         assert_eq!(report.decisions, 1);
+    }
+
+    /// The run records of `dispatches` passing attempts of one task, with
+    /// `[experiments] maximize` set to `maximize`. Each prompt includes a
+    /// knowledge entry, so each attempt writes a content decision too.
+    async fn arm_set_run(maximize: bool, dispatches: usize) -> RunRecords {
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        // The task is "Streaming graph task": the entry shares its words.
+        seed_knowledge(
+            temp.path(),
+            &[(
+                "kn-stream",
+                "Streaming graph task output flushes each chunk",
+            )],
+        );
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let configure = |config: &mut RokoConfig| {
+            no_auto_fix(config);
+            config.experiments.maximize = maximize;
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, configure, feedback).await;
+        task.verify = vec![verify_step("structural", "true")];
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for _ in 0..dispatches {
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect("the verified attempt passes");
+        }
+        drop(dispatcher);
+        crate::background_writes::settled(&roko).await;
+        RunRecords::load(&roko.join("runs").join(RUN)).expect("load the run")
+    }
+
+    /// S02.P1-14: the attempts of one task share their chain's arm set,
+    /// drawn at attempt open from the chain's key, and every decision row of
+    /// each attempt carries it; maximize mode (`[experiments] maximize`)
+    /// leaves every loop on its learned arm.
+    #[tokio::test]
+    async fn arm_set_is_chain_stable_and_logged() {
+        use roko_learn::loop_audit::Registry;
+        use roko_learn::loop_audit::arm_set::{ArmDraws, ArmMode, ArmSet, MAXIMIZE_CONDITION};
+        use roko_learn::telemetry::{Arm, AttemptKey};
+
+        let run = arm_set_run(false, 2).await;
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        assert_eq!(run.decisions.len(), 2, "one route row per attempt");
+        assert!(!run.content_decisions.is_empty());
+        let route = |index: usize| run.decisions[index].record.arm_set.clone();
+        let first = route(0).expect("the first route row's arms");
+        assert_eq!(route(1), Some(first.clone()), "retries inherit");
+        for row in &run.content_decisions {
+            assert_eq!(row.record.arm_set.as_ref(), Some(&first));
+        }
+
+        // The set is the chain's draw, so a resumed run re-derives it.
+        let identity = &run.verdicts[0].record.identity;
+        assert_eq!(first.chain_key, identity.chain_key);
+        let key = AttemptKey::new(&identity.run_id, &identity.plan_id, &identity.task_id, 1);
+        let salt = &first.arms["placebo"].salt_id;
+        let epoch = salt
+            .split_once('@')
+            .map(|(_, epoch)| epoch)
+            .expect("salt_id names the epoch");
+        let loops = Registry::embedded().expect("the embedded loop registry");
+        let drawn = ArmSet::assign(&key, &loops, &ArmMode::Normal, &ArmDraws::new(0, epoch));
+        assert_eq!(drawn, first);
+
+        let run = arm_set_run(true, 1).await;
+        let row = &run.decisions[0].record;
+        let arms = row.arm_set.as_ref().expect("the route row's arms");
+        assert_eq!(arms.condition_id, MAXIMIZE_CONDITION);
+        for assignment in arms.arms.values() {
+            assert_eq!(assignment.arm, Arm::Learned, "{arms:?}");
+            assert!((assignment.propensity - 1.0).abs() < 1e-12, "{arms:?}");
+        }
     }
 }

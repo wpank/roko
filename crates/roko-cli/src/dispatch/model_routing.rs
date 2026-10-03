@@ -854,6 +854,7 @@ impl ModelRouter {
             fallback_reason,
             influences,
             state: self.learned_state(),
+            arm_set: None,
         }
     }
 

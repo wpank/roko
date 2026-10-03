@@ -23,8 +23,11 @@
 //! learner. That includes the T0 reflex rule that served an attempt
 //! (`reflex_credit`).
 
+use roko_core::config::experiments::ExperimentsConfig;
 use roko_core::config::schema::ProviderBilling;
 use roko_core::pricing_snapshot::{PriceSnapshot, PricedUsage, TokenCounts};
+use roko_learn::loop_audit::Registry;
+use roko_learn::loop_audit::arm_set::{ArmDraws, ArmMode, ArmSet};
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::records::{
     AttemptCost, AttemptUsage, CacheWriteClass, VerifyStepVerdict,
@@ -42,7 +45,13 @@ use super::failover::FailoverChain;
 use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
 
-/// Attempt state of one run: its durable ordinals and its telemetry writer.
+/// `run_seed` of the arm-set draws (`telemetry::assign`): 0 until runs
+/// record an experiment seed (S01 `experiment.seed`), as the route's
+/// exploration draws do. The chain key names the run.
+const ARM_SEED: u64 = 0;
+
+/// Attempt state of one run: its durable ordinals, its telemetry writer and
+/// its chains' arm sets.
 struct RunAttempts {
     ordinals: AttemptOrdinals,
     /// `None` when the dispatcher keeps no run files, or the writer did not
@@ -51,6 +60,12 @@ struct RunAttempts {
     /// The run's audit lottery (DP1), with `[audit] enabled`.
     audit: Option<Arc<AuditSelector>>,
     run_id: String,
+    /// The UTC day this process draws the run's arm sets for, fixed when it
+    /// opened the run, so a retry after midnight keeps its chain's arms.
+    epoch: String,
+    /// Each chain's arm set (S02.P1-14), drawn on its first attempt in this
+    /// process and inherited by its retries.
+    arm_sets: parking_lot::Mutex<HashMap<String, Arc<ArmSet>>>,
 }
 
 impl RunAttempts {
@@ -63,12 +78,16 @@ impl RunAttempts {
             audit.open_run(run_id);
         }
         let run_id = run_id.to_string();
+        let epoch = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let arm_sets = parking_lot::Mutex::new(HashMap::new());
         let Some(run_dir) = runs_dir.map(|dir| dir.join(&run_id)) else {
             return Self {
                 ordinals: AttemptOrdinals::default(),
                 writer: None,
                 audit,
                 run_id,
+                epoch,
+                arm_sets,
             };
         };
         let ordinals = AttemptOrdinals::load(&run_dir).unwrap_or_else(|error| {
@@ -95,7 +114,20 @@ impl RunAttempts {
             writer,
             audit,
             run_id,
+            epoch,
+            arm_sets,
         }
+    }
+
+    /// The arm set of `key`'s chain: drawn over `loops` in `mode` on the
+    /// chain's first attempt, and the same for every later one.
+    fn arm_set(&self, key: &AttemptKey, loops: &Registry, mode: &ArmMode) -> Arc<ArmSet> {
+        let mut sets = self.arm_sets.lock();
+        let set = sets.entry(key.chain_key()).or_insert_with(|| {
+            let draws = ArmDraws::new(ARM_SEED, self.epoch.clone());
+            Arc::new(ArmSet::assign(key, loops, mode, &draws))
+        });
+        Arc::clone(set)
     }
 
     /// Queue `record` without waiting; the writer counts what it drops.
@@ -147,6 +179,9 @@ pub(super) struct AttemptBook {
     invocations: parking_lot::Mutex<HashMap<String, u32>>,
     /// The audit lottery, made when the first attempt opens (`[audit]`).
     audit: std::sync::OnceLock<Option<Arc<AuditSelector>>>,
+    /// The loop registry and the `[experiments]` mode the arm sets are drawn
+    /// with, loaded when the first attempt opens; `None` without a registry.
+    arm_inputs: std::sync::OnceLock<Option<(Registry, ArmMode)>>,
 }
 
 impl Default for AttemptBook {
@@ -156,8 +191,22 @@ impl Default for AttemptBook {
             runs: parking_lot::Mutex::new(HashMap::new()),
             invocations: parking_lot::Mutex::new(HashMap::new()),
             audit: std::sync::OnceLock::new(),
+            arm_inputs: std::sync::OnceLock::new(),
         }
     }
+}
+
+/// The loop registry the arm sets are drawn over: the embedded registry,
+/// merged with `workdir`'s override. An unreadable override is logged and
+/// the embedded registry used; `None` only when that fails too.
+fn load_loop_registry(workdir: &Path) -> Option<Registry> {
+    Registry::load(workdir)
+        .inspect_err(|error| {
+            tracing::warn!(%error, "loop registry override unreadable; using the embedded one");
+        })
+        .or_else(|_| Registry::embedded())
+        .inspect_err(|error| tracing::warn!(%error, "no loop registry; attempts draw no arms"))
+        .ok()
 }
 
 /// The provider agent id of one attempt: its attempt key
@@ -196,6 +245,23 @@ impl AttemptBook {
             .entry(run_id.to_string())
             .or_insert_with(|| Arc::new(RunAttempts::open(runs_dir, run_id, audit)));
         Arc::clone(run)
+    }
+
+    /// The arm set of `attempt`'s chain in its run (S02.P1-14): drawn over
+    /// `workdir`'s loop registry in the mode `experiments` sets on the chain's
+    /// first attempt, and inherited by its retries. `None` when no registry
+    /// loads.
+    fn arm_set(
+        &self,
+        attempt: &AttemptContext,
+        workdir: &Path,
+        experiments: &ExperimentsConfig,
+    ) -> Option<Arc<ArmSet>> {
+        let (loops, mode) = self
+            .arm_inputs
+            .get_or_init(|| Some((load_loop_registry(workdir)?, ArmMode::for_config(experiments))))
+            .as_ref()?;
+        Some(attempt.run.arm_set(&attempt.key, loops, mode))
     }
 
     /// The audit lottery, once the first attempt opened with `[audit]
@@ -273,6 +339,7 @@ impl AttemptBook {
             verify_steps: Vec::new(),
             exposures: None,
             pricing: None,
+            arm_set: None,
             run,
         }
     }
@@ -304,6 +371,9 @@ pub(super) struct AttemptContext {
     exposures: Option<ExposureCounts>,
     /// The run's price snapshot, which prices the verdict (backlog 2115).
     pricing: Option<Arc<PriceSnapshot>>,
+    /// The arms of the attempt's chain (S02.P1-14), which every decision row
+    /// of the attempt carries; `None` when no loop registry loaded.
+    arm_set: Option<Arc<ArmSet>>,
     run: Arc<RunAttempts>,
 }
 
@@ -365,9 +435,14 @@ impl AttemptContext {
         self.ladder = Some((ladder, last_chance));
     }
 
-    /// Queue the attempt's route decision for the run's `decisions.jsonl`
-    /// (S01 P0-8); the writer stamps its sequence number.
-    pub(super) fn record_decision(&self, decision: roko_learn::routing_log::RoutingDecisionLog) {
+    /// Queue the attempt's route decision, with its chain's arms, for the
+    /// run's `decisions.jsonl` (S01 P0-8); the writer stamps its sequence
+    /// number.
+    pub(super) fn record_decision(
+        &self,
+        mut decision: roko_learn::routing_log::RoutingDecisionLog,
+    ) {
+        decision.arm_set = self.arm_set.as_deref().cloned();
         self.run.submit(decision);
     }
 
@@ -383,8 +458,10 @@ impl AttemptContext {
     }
 
     /// Queue the content decision the attempt's prompt made at one decision
-    /// point for the run's `decisions.jsonl` (S01 P0-9).
-    pub(super) fn record_content_decision(&self, decision: ContentDecisionRecord) {
+    /// point, with its chain's arms, for the run's `decisions.jsonl` (S01
+    /// P0-9).
+    pub(super) fn record_content_decision(&self, mut decision: ContentDecisionRecord) {
+        decision.arm_set = self.arm_set.as_deref().cloned();
         self.run.submit(decision);
     }
 
@@ -682,6 +759,10 @@ impl GraphTaskDispatcher {
             ctx.cell_id.as_deref(),
         );
         attempt.pricing = self.pricing_snapshot();
+        // S02.P1-14: the chain's arms, drawn on its first attempt.
+        attempt.arm_set = self
+            .attempts
+            .arm_set(&attempt, &self.workdir, &self.config.experiments);
         attempt
     }
 

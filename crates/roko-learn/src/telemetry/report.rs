@@ -1091,6 +1091,7 @@ mod tests {
             source: Some(DecisionSource::Default),
             state: None,
             thresholds_digest: None,
+            arm_set: None,
         }
     }
 

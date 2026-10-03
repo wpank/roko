@@ -17,6 +17,7 @@
 
 use std::collections::BTreeMap;
 
+use roko_core::config::experiments::ExperimentsConfig;
 use serde::{Deserialize, Serialize};
 
 use super::assign::{GLOBAL_OFF_RATE, LoopLayer, takes_default};
@@ -49,6 +50,42 @@ pub enum ArmMode {
 }
 
 impl ArmMode {
+    /// The mode `[experiments]` sets: maximize, else the forced arms, else
+    /// normal. A forced arm that names no arm (`learned`, `default` or
+    /// `global_off`) is logged and left out.
+    #[must_use]
+    pub fn for_config(config: &ExperimentsConfig) -> Self {
+        if config.maximize {
+            return Self::Maximize;
+        }
+        let forced: BTreeMap<String, Arm> = config
+            .force_arms
+            .iter()
+            .filter_map(|(layer, arm)| {
+                let parsed = match arm.trim() {
+                    "learned" => Some(Arm::Learned),
+                    "default" => Some(Arm::Default),
+                    "global_off" => Some(Arm::GlobalOff),
+                    _ => None,
+                };
+                if parsed.is_none() {
+                    tracing::warn!(
+                        %layer,
+                        %arm,
+                        "[experiments] force_arms names no arm (learned, default or global_off); \
+                         ignored"
+                    );
+                }
+                parsed.map(|arm| (layer.clone(), arm))
+            })
+            .collect();
+        if forced.is_empty() {
+            Self::Normal
+        } else {
+            Self::Forced(forced)
+        }
+    }
+
     /// The condition an arm set in this mode records.
     #[must_use]
     pub const fn condition_id(&self) -> &'static str {
@@ -190,6 +227,8 @@ fn force(
 mod tests {
     use std::collections::BTreeMap;
 
+    use roko_core::config::experiments::ExperimentsConfig;
+
     use super::{ArmDraws, ArmMode, ArmSet, FORCED_CONDITION, MAXIMIZE_CONDITION, NORMAL_CONDITION};
     use crate::loop_audit::spec::Registry;
     use crate::telemetry::{Arm, AttemptKey};
@@ -267,6 +306,16 @@ mod tests {
         let knowledge = set.get("knowledge").expect("the knowledge arm");
         assert_eq!((knowledge.arm, knowledge.propensity), (Arm::Default, 1.0));
         assert_eq!(set.get("sections"), first.get("sections"));
+
+        // `[experiments]` sets the mode; a forced arm that names no arm is
+        // left out.
+        let mut config = ExperimentsConfig::default();
+        assert_eq!(ArmMode::for_config(&config), ArmMode::Normal);
+        config.force_arms.insert("L-know".to_string(), "default".to_string());
+        config.force_arms.insert("sections".to_string(), "sometimes".to_string());
+        assert_eq!(ArmMode::for_config(&config), forced);
+        config.maximize = true;
+        assert_eq!(ArmMode::for_config(&config), ArmMode::Maximize);
 
         let row = serde_json::to_value(&first).expect("serialize the arm set");
         assert_eq!(row["arms"]["placebo"]["layer"], "placebo");

@@ -252,8 +252,13 @@ impl SharedAgentFactory {
             None => dispatcher,
         };
         // `[routing] explore_epsilon`: routes the cascade router decides
-        // explore the eligible models (S02.P1-3).
-        let epsilon = config.routing.effective_explore_epsilon();
+        // explore the eligible models (S02.P1-3). Maximize mode
+        // (`[experiments] maximize`, decision 4115) explores nothing.
+        let epsilon = if config.experiments.maximize {
+            0.0
+        } else {
+            config.routing.effective_explore_epsilon()
+        };
         let dispatcher = dispatcher.with_explore_epsilon(epsilon);
 
         Self {

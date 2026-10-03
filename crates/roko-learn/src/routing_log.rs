@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use crate::loop_audit::arm_set::ArmSet;
 use crate::telemetry::records::DecisionSource;
 
 /// `decision_point` of every route decision row (S01 §5.3).
@@ -103,6 +104,10 @@ pub struct RoutingDecisionLog {
     /// without a router.
     #[serde(default)]
     pub state: Option<DecisionState>,
+    /// The arms of the attempt's chain (S02.P1-14), which every decision row
+    /// of the attempt carries; `None` for a row written outside an attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arm_set: Option<ArmSet>,
 }
 
 fn route_decision_point() -> String {
@@ -532,6 +537,7 @@ mod tests {
             fallback_reason: None,
             influences: Vec::new(),
             state: None,
+            arm_set: None,
         }
     }
 

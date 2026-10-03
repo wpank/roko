@@ -17,6 +17,7 @@ pub mod cache;
 pub mod chain;
 pub mod env_registry;
 pub mod execution;
+pub mod experiments;
 pub mod fingerprint;
 pub mod gates;
 pub mod graduation;

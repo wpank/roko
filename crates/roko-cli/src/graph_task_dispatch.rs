@@ -2715,7 +2715,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-6
         assert_eq!(contexts.marks(), [(0, false), (1, true)]);
     }
 
-    /// Every record file a Graph attempt writes, under `workdir/.roko`.
+    /// Every record file a Graph attempt writes, under `workdir/.roko`:
+    /// `workdir` is the dispatcher's workspace root, never an attempt's own
+    /// worktree, where workspace records do not belong (bug-412a5e).
     pub(super) fn recording_feedback(workdir: &Path) -> GraphFeedbackContext {
         let roko = workdir.join(".roko");
         let facade = crate::runtime_feedback::FeedbackFacade::new().with_sink(Arc::new(

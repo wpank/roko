@@ -302,10 +302,8 @@ fn find(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 /// The 1-based line of the byte at `offset` in `text`.
 fn line_of(text: &str, offset: usize) -> usize {
     text.as_bytes()[..offset]
-        .iter()
-        .filter(|&&byte| byte == b'\n')
+        .split(|&byte| byte == b'\n')
         .count()
-        + 1
 }
 
 #[cfg(test)]

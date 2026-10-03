@@ -902,7 +902,7 @@ fn either(labels: &[Option<bool>]) -> Option<bool> {
 
 /// The plan of an attempt key, `{run}:{plan}:{task}:{attempt}`.
 fn plan_of(attempt_key: &str) -> &str {
-    attempt_key.rsplitn(4, ':').nth(2).unwrap_or("-")
+    attempt_key.rsplit(':').nth(2).unwrap_or("-")
 }
 
 /// An exclusive lock on `sel_id` among the workspace's workers, or `None`

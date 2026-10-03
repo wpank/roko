@@ -222,6 +222,17 @@ impl Dispatcher {
         self
     }
 
+    /// Route by `health` from now on ([`ModelRouter::replace_provider_health`]).
+    pub fn replace_provider_health(&mut self, health: Arc<ProviderHealthRegistry>) {
+        self.router.replace_provider_health(health);
+    }
+
+    /// The provider health registry routing reads, if any.
+    #[must_use]
+    pub fn provider_health(&self) -> Option<&Arc<ProviderHealthRegistry>> {
+        self.router.provider_health()
+    }
+
     /// Exclude models whose provider ID is in `providers`.
     ///
     /// Populated from `[routing] disabled_providers` in `roko.toml`.

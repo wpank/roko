@@ -141,6 +141,18 @@ impl LadderRoute {
     }
 }
 
+/// The dashboard row an attempt's `agent_spawned` opened before dispatch,
+/// which [`GraphTaskDispatcher::run_bridge_with_failover`] republishes with
+/// the model and provider that run once failover passes the planned model
+/// over (backlog 1128).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DashboardRow<'a> {
+    /// The dashboard's agent id (`plan/cell`).
+    pub(super) agent_id: &'a str,
+    /// The task's role.
+    pub(super) role: &'a str,
+}
+
 impl FailoverChain {
     fn of(refusals: &[ProviderRefusal]) -> Self {
         Self {
@@ -196,7 +208,9 @@ impl GraphTaskDispatcher {
     /// refused gets cost and efficiency rows of its own, keyed by
     /// `attempt_key` (role `failover_refused`, bug-220385). Each call starts
     /// on `progress`, so a call the watchdog cancels is recorded against the
-    /// model it ran on (bug-aa2044).
+    /// model it ran on (bug-aa2044). Once failover passed a model over, the
+    /// attempt's `dashboard` row names the model and provider that run.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_bridge_with_failover(
         &self,
         spec: &TaskExecutionSpec,
@@ -205,6 +219,7 @@ impl GraphTaskDispatcher {
         mut request: AgentDispatchRequest,
         progress: Option<&super::watchdog::AttemptProgress>,
         ladder: Option<LadderRoute>,
+        dashboard: Option<DashboardRow<'_>>,
     ) -> Result<(crate::dispatch_v2::AgentResultDispatch, FailoverChain)> {
         let ladder = ladder.as_ref();
         let pinned = self.cli_model_override.is_some();
@@ -250,6 +265,23 @@ impl GraphTaskDispatcher {
             }
 
             request.model_key = candidate.model_key.clone();
+            // Once failover passed a model over, the dashboard row the
+            // attempt opened with the planned model names the one that runs
+            // instead; the hub upserts the row by its agent id (backlog 1128).
+            if !refusals.is_empty()
+                && let (Some(tui), Some(row)) = (&self.tui_bridge, dashboard)
+            {
+                let target = self.resolve_candidate(&candidate);
+                tui.agent_spawned(
+                    row.agent_id,
+                    &spec.plan_id,
+                    task_id,
+                    0,
+                    row.role,
+                    &target.model_slug,
+                    &target.provider_id,
+                );
+            }
             if let Some(progress) = progress {
                 progress.call_started(
                     self.resolve_candidate(&candidate),
@@ -2346,5 +2378,64 @@ printf '%s\n' '{{"type":"result","session_id":"s","total_cost_usd":0,"usage":{{"
             .filter_map(|line| line.split("--model ").nth(1)?.split_whitespace().next())
             .collect();
         assert_eq!(models, ["claude-opus-4-6", "claude-sonnet-4-6"], "{calls}");
+    }
+
+    /// backlog 1128: the planned provider's circuit is open, so failover
+    /// runs the fallback without calling it. The dashboard row the attempt
+    /// opened with the planned model before dispatch is republished with
+    /// the fallback's model and provider, so the hub's last word on the
+    /// agent is the model that ran.
+    #[tokio::test]
+    async fn failover_publishes_fallback_slug_to_hub() {
+        use roko_learn::provider_health::ErrorClass;
+
+        let temp = tempdir().expect("tempdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        session_limit_claude(&claude, &calls);
+        let mut answer = final_turn("fallback finished");
+        answer["model"] = serde_json::json!("api-model-1");
+        let (base_url, _requests) = spawn_openai_mock(vec![answer]);
+        let config = Arc::new(failover_config(&claude, &base_url, &["api-model"]));
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        for _ in 0..3 {
+            factory
+                .health_registry
+                .record_failure("claude_cli", ErrorClass::ServerError);
+        }
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_tui_bridge(crate::runner::tui_bridge::TuiBridge::new(hub.sender()));
+        let task = TaskDef {
+            id: "T08".to_string(),
+            title: "Implement with failover".to_string(),
+            model_hint: Some("claude-sonnet-4-6".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            ..make_task_def("focused")
+        };
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the fallback runs the task");
+        assert_eq!(invocations(&calls), 0, "the open circuit is never called");
+
+        let spawned = crate::graph_task_dispatch::tests::spawned_agents(&mut events);
+        let agent = format!("stream-plan/{}", task.id);
+        let rows: Vec<(&str, &str)> = spawned
+            .iter()
+            .filter(|(agent_id, _, _)| *agent_id == agent)
+            .map(|(_, model, provider)| (model.as_str(), provider.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("claude-sonnet-4-6", "claude_cli"),
+                ("api-model-1", "mock_api"),
+            ],
+            "{spawned:?}"
+        );
     }
 }

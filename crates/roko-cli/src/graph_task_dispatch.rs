@@ -1439,6 +1439,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     request,
                     Some(&progress),
                     failover::LadderRoute::of(&task, &dispatch_plan),
+                    Some(failover::DashboardRow {
+                        agent_id: &pre_dispatch_agent_id,
+                        role: task.role.as_deref().unwrap_or("implementer"),
+                    }),
                 ),
                 &progress,
                 stall_watch,

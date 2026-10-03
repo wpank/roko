@@ -723,9 +723,16 @@ fn tool_result_previews(
 }
 
 fn tool_result_preview(result: &roko_core::tool::ToolResult) -> String {
+    use roko_core::tool::{ToolError, ToolResult};
+
     match result {
-        roko_core::tool::ToolResult::Ok { .. } => truncate_preview(&result.text_content(), 120),
-        roko_core::tool::ToolResult::Err(err) => truncate_preview(&format!("error: {err}"), 120),
+        ToolResult::Ok { .. } => truncate_preview(&result.text_content(), 120),
+        // A refusal is kept whole, up to a bound: the rule it names is what
+        // the attempt's feedback tells the next attempt (gap-2e455d).
+        ToolResult::Err(err @ ToolError::PermissionDenied(_)) => {
+            truncate_preview(&format!("error: {err}"), 400)
+        }
+        ToolResult::Err(err) => truncate_preview(&format!("error: {err}"), 120),
     }
 }
 
@@ -3065,6 +3072,23 @@ mod tests {
             "{:?}",
             trace.tool_results
         );
+    }
+
+    /// gap-2e455d: a refusal's preview keeps the rule it names and what it
+    /// asks for, which the 120 characters of another error's preview cut off.
+    #[test]
+    fn a_refusal_keeps_its_whole_preview() {
+        use roko_core::tool::ToolError;
+
+        let refusal = "contract violation for role `implementer` (RequireToolBeforeEdit): \
+                       tool `read_file` must run before `write_file`";
+        let refused = ToolResult::err(ToolError::PermissionDenied(refusal.to_string()));
+        assert_eq!(
+            tool_result_preview(&refused),
+            format!("error: permission denied: {refusal}")
+        );
+        let failed = ToolResult::err(ToolError::Other("x".repeat(200)));
+        assert_eq!(tool_result_preview(&failed).chars().count(), 120);
     }
 
     #[tokio::test]

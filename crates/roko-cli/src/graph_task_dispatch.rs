@@ -1479,6 +1479,15 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // results: callers may still have incurred the reported cost.
         self.record_task_spend(&spec.plan_id, &task.id, &dispatch.result.usage);
         if let Err(error) = budget_reservation.settle(f64::from(dispatch.result.usage.cost_usd)) {
+            // The call ran, but the plan budget could not settle its spend,
+            // so the attempt ends here: its dashboard row says why and
+            // closes, as every other end of an attempt closes it
+            // (bug-f03b0d).
+            if let Some(tui) = &self.tui_bridge {
+                let reason = format!("the plan budget could not settle this call: {error}");
+                tui.agent_output(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0, &reason);
+                tui.agent_completed(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0);
+            }
             let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
             return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
         }

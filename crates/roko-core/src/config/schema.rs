@@ -135,6 +135,10 @@ pub struct RokoConfig {
     /// M4, random deep audits: the lottery, its floor and budget (S05 §5).
     #[serde(default)]
     pub audit: super::audit::AuditConfig,
+    /// M3, the self-model: whether it forecasts routed attempts or picks their start rung
+    /// (S04 §5). Off by default.
+    #[serde(default)]
+    pub self_model: super::self_model::SelfModelConfig,
     #[serde(default, skip_serializing_if = "WatcherConfig::is_empty")]
     pub watcher: WatcherConfig,
     #[serde(default)]
@@ -485,6 +489,7 @@ impl Default for RokoConfig {
             conductor: ConductorConfig::default(),
             homeostasis: super::homeostasis::HomeostasisConfig::default(),
             audit: super::audit::AuditConfig::default(),
+            self_model: super::self_model::SelfModelConfig::default(),
             watcher: WatcherConfig::default(),
             learning: LearningConfig::default(),
             tui: TuiConfig::default(),

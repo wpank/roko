@@ -35,6 +35,7 @@ pub mod retrieval;
 pub mod routing;
 pub mod schema;
 pub mod sections;
+pub mod self_model;
 pub mod serve;
 pub mod spec_quality;
 pub mod subscriptions;

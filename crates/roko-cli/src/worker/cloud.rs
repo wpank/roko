@@ -14,6 +14,10 @@ use roko_core::child_env::CredentialScrub;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::graph_execution::batch::{
+    BATCH_BRANCH_PREFIX, new_batch_run_id, resolve_worktree_per_task,
+};
+use crate::graph_execution::plan_runner::run_graph_plan_in_run;
 use crate::serve::deploy::CloudExecutionConfig;
 use crate::workspace_paths::relative_plans_dir;
 
@@ -452,6 +456,51 @@ pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// Take the run's `batch` branch onto the job branch, which a fast-forward
+/// does: the batch started at the job branch's tip (backlog 3113). A batch
+/// with no change has nothing to push, and one that changes a path a cloud
+/// worker never stages ([`EXCLUDED_PATTERNS`], #373) is refused.
+pub async fn git_take_batch(workspace: &Path, batch: &str) -> Result<()> {
+    let changed = git_command(workspace)
+        .args(["diff", "--name-only", "HEAD", batch, "--"])
+        .output()
+        .await
+        .context("spawn git diff --name-only HEAD <batch>")?;
+    if !changed.status.success() {
+        return Err(git_error(
+            "git diff --name-only HEAD <batch>",
+            &changed,
+            None,
+        ));
+    }
+    let changed = String::from_utf8_lossy(&changed.stdout);
+    let paths: Vec<&str> = changed
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .collect();
+    if paths.is_empty() {
+        bail!("nothing to commit (the run's batch branch {batch} holds no change)");
+    }
+    let excluded: Vec<&str> = paths.into_iter().filter(|path| is_excluded(path)).collect();
+    if !excluded.is_empty() {
+        bail!(
+            "the run's batch branch {batch} changes paths a cloud worker never pushes: {}",
+            excluded.join(", ")
+        );
+    }
+
+    let output = git_command(workspace)
+        .args(["merge", "--ff-only", batch])
+        .output()
+        .await
+        .context("spawn git merge --ff-only <batch>")?;
+    if !output.status.success() {
+        return Err(git_error("git merge --ff-only <batch>", &output, None));
+    }
+    Ok(())
+}
+
 /// Push the implementation branch to origin.
 ///
 /// Validates the branch name before pushing (#373). Protected branches
@@ -570,47 +619,57 @@ pub async fn run_code_implementer_cloud(
                 }
             },
         );
-        let exit_code =
-            crate::graph_execution::run_graph_plan(crate::graph_execution::GraphPlanRunParams {
-                plans_dir: plan_dir.clone(),
-                workdir: workspace.clone(),
-                quiet: false,
-                json: false,
-                resume_plan: None,
-                fresh: false,
-                force_resume: false,
-                max_retries: None,
-                max_tasks: 0,
-                budget_override: None,
-                no_budget: false,
-                cli_model_override: None,
-                dangerously_skip_permissions: false,
-                log_file: None,
-                worktree_per_task: false,
-                worktree_per_task_explicit: false,
-                rich_topology: false,
-                promote: None,
-                no_tui: true,
-                state_hub: Some(state_hub),
-                interrupt: None,
-                max_parallel_plans: None,
-                fail_fast: false,
-                only_plans: None,
-                live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
-                force_disk_check: false,
-                effort: None,
-                no_cascade: false,
-                frozen_learning: false,
-                no_holdout: false,
-                metrics: None,
-            })
-            .await?;
+        // The fresh clone is the top level of a checkout with a commit, so
+        // `[runner] worktree_per_task` decides, as for `roko plan run`
+        // (backlog 3113). An isolated run delivers into its batch branch,
+        // which the job branch then takes.
+        let isolated = resolve_worktree_per_task(None, &workspace);
+        let run_id = new_batch_run_id();
+        let params = crate::graph_execution::GraphPlanRunParams {
+            plans_dir: plan_dir.clone(),
+            workdir: workspace.clone(),
+            quiet: false,
+            json: false,
+            resume_plan: None,
+            fresh: false,
+            force_resume: false,
+            max_retries: None,
+            max_tasks: 0,
+            budget_override: None,
+            no_budget: false,
+            cli_model_override: None,
+            dangerously_skip_permissions: false,
+            log_file: None,
+            worktree_per_task: isolated,
+            worktree_per_task_explicit: false,
+            rich_topology: false,
+            promote: None,
+            no_tui: true,
+            state_hub: Some(state_hub),
+            interrupt: None,
+            max_parallel_plans: None,
+            fail_fast: false,
+            only_plans: None,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+            force_disk_check: false,
+            effort: None,
+            no_cascade: false,
+            frozen_learning: false,
+            no_holdout: false,
+            metrics: None,
+        };
+        let exit_code = run_graph_plan_in_run(params, Some(run_id.clone())).await?;
         let success = exit_code == crate::exit_codes::EXIT_SUCCESS;
         let gate_verdicts = gates.finish().await?;
 
         if success {
-            let commit_message = format!("plan: {}", execution.plan_slug);
-            git_commit(&workspace, &commit_message).await?;
+            if isolated {
+                let batch = format!("{BATCH_BRANCH_PREFIX}{run_id}");
+                git_take_batch(&workspace, &batch).await?;
+            } else {
+                let commit_message = format!("plan: {}", execution.plan_slug);
+                git_commit(&workspace, &commit_message).await?;
+            }
             git_push(
                 &workspace,
                 &execution.branch_name(),
@@ -744,5 +803,70 @@ mod tests {
         assert!(!is_excluded("Cargo.toml"));
         assert!(!is_excluded("plans/p07/tasks.toml"));
         assert!(!is_excluded("crates/roko-core/src/lib.rs"));
+    }
+
+    /// backlog 3113: an isolated job takes its run's batch branch onto the
+    /// job branch by fast-forward. A batch with no change, or one that adds a
+    /// path a cloud worker never stages, is refused, and the job branch stays
+    /// where it was.
+    #[tokio::test]
+    async fn job_branch_takes_the_runs_batch_branch() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let path = repo.path();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(path)
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "--initial-branch=impl/job"]);
+        for (key, value) in [
+            ("user.name", "Operator"),
+            ("user.email", "operator@example.test"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git(&["config", key, value]);
+        }
+        std::fs::write(path.join("README.md"), "base\n").expect("readme");
+        git(&["add", "-A"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["branch", "roko/batch/run-empty", base.as_str()]);
+        // A batch whose plan added a source file, and one that added a `.env`.
+        for (branch, file) in [
+            ("roko/batch/run-ok", "src.txt"),
+            ("roko/batch/run-env", ".env"),
+        ] {
+            git(&["checkout", "--quiet", "-b", branch, base.as_str()]);
+            std::fs::write(path.join(file), "work\n").expect("work");
+            git(&["add", "-A"]);
+            git(&["commit", "--quiet", "-m", branch]);
+        }
+        git(&["checkout", "--quiet", "impl/job"]);
+
+        let empty = git_take_batch(path, "roko/batch/run-empty")
+            .await
+            .expect_err("no change to take");
+        assert!(empty.to_string().contains("nothing to commit"), "{empty}");
+        let secret = git_take_batch(path, "roko/batch/run-env")
+            .await
+            .expect_err("a .env is never pushed");
+        assert!(secret.to_string().contains(".env"), "{secret}");
+        assert_eq!(git(&["rev-parse", "HEAD"]), base);
+
+        git_take_batch(path, "roko/batch/run-ok")
+            .await
+            .expect("a fast-forward");
+        let taken = git(&["rev-parse", "roko/batch/run-ok"]);
+        assert_eq!(git(&["rev-parse", "HEAD"]), taken);
+        let work = std::fs::read_to_string(path.join("src.txt")).expect("the batch's work");
+        assert_eq!(work, "work\n");
     }
 }

@@ -212,8 +212,10 @@ impl GraphTaskDispatcher {
     /// (`roko_gate::check_citations`); a `judge` rung has a helper model
     /// score them against its rubric, quoting them ([`Self::judge_rung`]); a
     /// `schema` rung checks them against its schema, read from the main
-    /// workspace so that the attempt cannot loosen it
-    /// (`roko_gate::schema_gate`).
+    /// workspace (`roko_gate::schema_gate`). In a shared checkout that is
+    /// the attempt's own tree, so the pre-verify screen fails an attempt
+    /// that edits the schema, or a judge rung's rubric file, as tampering
+    /// (`GatesConfig::rung_files`, bug-d5d55f).
     /// A rung that must pass and fails gives a line for the attempt's
     /// failure, and one that could not run (a lookup it could not make, a
     /// judge that quoted nothing) leaves the attempt unverified, never

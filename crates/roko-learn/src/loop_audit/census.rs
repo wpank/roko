@@ -572,7 +572,7 @@ mod tests {
                 Lifecycle::Active,
                 Some(Flagged),
                 R::NoOpportunity,
-                vec![Misspecified],
+                vec![],
                 Log,
             ),
             (

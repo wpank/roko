@@ -18,6 +18,7 @@ use std::sync::LazyLock;
 use std::time::SystemTime;
 
 use roko_learn::routing_log::DecisionState;
+use roko_learn::section_effect::SectionDecision;
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::{
     AttemptIdentity, ContentCandidate, ContentDecisionPoint, ContentDecisionRecord, DecisionSource,
@@ -114,8 +115,9 @@ impl GraphTaskDispatcher {
             return;
         }
         let state = self.learned_state();
+        let draws = &plan.prompt.diagnostics.section_decisions;
         for (point, items) in points {
-            let decision = content_decision(attempt.identity(), point, &items, &state);
+            let decision = content_decision(attempt.identity(), point, &items, &state, draws);
             attempt.record_content_decision(decision);
         }
     }
@@ -173,14 +175,27 @@ const fn content_policy(point: ContentDecisionPoint) -> &'static str {
     }
 }
 
+/// The policy of a sections decision the section bandit drew at (S02 L9):
+/// its draws, then the token budget.
+const SECTION_BANDIT_POLICY: &str = "section_bandit_token_budget";
+
 /// The content decision at `point`, whose candidates are `items`, made from
 /// `state`. An item the role's prompt has no place for was never eligible.
+/// At the sections point, `draws` are the section bandit's: the row gives
+/// each drawn section its odds of staying in, and the propensity of the
+/// bandit's draws.
 fn content_decision(
     identity: &AttemptIdentity,
     point: ContentDecisionPoint,
     items: &[&PromptItemDiagnostic],
     state: &LearnedState,
+    draws: &[SectionDecision],
 ) -> ContentDecisionRecord {
+    let draws: &[SectionDecision] = if point == ContentDecisionPoint::Sections {
+        draws
+    } else {
+        &[]
+    };
     let candidates = items
         .iter()
         .map(|item| ContentCandidate {
@@ -188,7 +203,7 @@ fn content_decision(
             rank: item.rank,
             score: item.score,
             eligible: item.excluded_reason != Some(ExcludedReason::RoleFilter),
-            p: Some(if item.included { 1.0 } else { 0.0 }),
+            p: Some(inclusion_probability(item, draws)),
         })
         .collect();
     let chosen = items
@@ -201,18 +216,38 @@ fn content_decision(
         ContentDecisionPoint::Playbooks => Some(state.playbooks.clone()),
         _ => None,
     };
+    let (policy, chosen_propensity, source) = if draws.is_empty() {
+        // A fixed ranking chooses its set with certainty.
+        (content_policy(point), 1.0, DecisionSource::Default)
+    } else {
+        // Given the bandit's draws, the token budget's cut is fixed.
+        let propensity: f64 = draws.iter().map(|draw| draw.propensity).product();
+        (SECTION_BANDIT_POLICY, propensity, DecisionSource::Explore)
+    };
     ContentDecisionRecord {
         identity: identity.clone(),
         decision_point: point,
-        policy: content_policy(point).to_string(),
+        policy: policy.to_string(),
         candidates,
         chosen,
-        // A fixed ranking chooses its set with certainty.
-        chosen_propensity: Some(1.0),
-        source: Some(DecisionSource::Default),
+        chosen_propensity: Some(chosen_propensity),
+        source: Some(source),
         state: read,
         thresholds_digest: state.thresholds.clone(),
         arm_set: None,
+    }
+}
+
+/// The probability the logging policy included `item`: 1 − p_ex for a
+/// section the bandit drew (`draws`), else 1 or 0, as a fixed ranking chose.
+fn inclusion_probability(item: &PromptItemDiagnostic, draws: &[SectionDecision]) -> f64 {
+    let drawn = draws
+        .iter()
+        .find(|draw| item.kind == ExposureItemKind::Section && draw.section == item.id);
+    match drawn {
+        Some(draw) => 1.0 - draw.p_exclude,
+        None if item.included => 1.0,
+        None => 0.0,
     }
 }
 
@@ -371,7 +406,8 @@ mod tests {
     use super::*;
     use crate::dispatch::{AssembledPrompt, PromptDiagnostics};
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
+        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, no_auto_fix_maximize,
+        verify_step,
     };
     use crate::runtime_feedback::EpisodeSink;
 
@@ -634,7 +670,8 @@ mod tests {
     }
 
     /// G29: a dispatch whose prompt retrieved a matching knowledge entry logs
-    /// the entry as included, and its verdict counts the inclusion.
+    /// the entry as included, and its verdict counts the inclusion. The run
+    /// is in maximize mode, so no arm withholds the entry.
     #[tokio::test]
     async fn attempt_record_fills_exposures() {
         let temp = tempdir().expect("tempdir");
@@ -652,7 +689,7 @@ mod tests {
             ..GraphFeedbackContext::default()
         };
         let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix_maximize, feedback).await;
         task.verify = vec![verify_step("structural", "true")];
         let ctx = CellContext::new().with_run_id(RUN.to_string());
         dispatcher

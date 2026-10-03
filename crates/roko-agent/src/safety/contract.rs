@@ -12,7 +12,9 @@ use thiserror::Error;
 
 use roko_core::corrigibility::{ActionContext, evaluate_action};
 use roko_core::extension::CamelTaintLevel;
-use roko_core::tool::{ExternalAction, ToolCall, ToolContext, ToolError, ToolResult};
+use roko_core::tool::{
+    ExternalAction, OutboundPolicy, ToolCall, ToolContext, ToolError, ToolResult,
+};
 
 const CONTRACT_DIR: &str = "src/safety/contracts";
 const NETWORK_TOOLS: &[&str] = &["web_fetch", "web_search"];
@@ -431,6 +433,30 @@ impl AgentContract {
         self
     }
 
+    /// What the role's run does with a tool call that acts on the outside
+    /// world: its `OutboundEffects` rule, else `allow` (9131).
+    #[must_use]
+    pub fn outbound_policy(&self) -> OutboundPolicy {
+        self.governance
+            .iter()
+            .find_map(|rule| match rule {
+                GovernanceRule::OutboundEffects(policy) => Some(*policy),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// This contract with `policy` as its outbound-effect policy, in place of
+    /// any it had (9131).
+    #[must_use]
+    pub fn with_outbound_policy(mut self, policy: OutboundPolicy) -> Self {
+        self.governance
+            .retain(|rule| !matches!(rule, GovernanceRule::OutboundEffects(_)));
+        self.governance
+            .push(GovernanceRule::OutboundEffects(policy));
+        self
+    }
+
     /// Whether the role may reach the network: the contract has no
     /// `NoNetworkAccess` invariant and lets the role call a network tool.
     #[must_use]
@@ -618,6 +644,10 @@ pub enum GovernanceRule {
     MaxConsecutiveFailures(u32),
     /// Require one tool to appear before another action.
     RequireToolBeforeEdit(String),
+    /// What the run does with a tool call that acts on the outside world
+    /// (9131). The dispatcher applies it once the call has passed every
+    /// check, so it refuses nothing here.
+    OutboundEffects(OutboundPolicy),
 }
 
 /// Recovery action triggered by a soft violation or other policy condition.
@@ -791,6 +821,7 @@ impl GovernanceRule {
                     }
                 }
             }
+            Self::OutboundEffects(_) => {}
         }
 
         Ok(())

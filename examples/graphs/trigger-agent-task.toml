@@ -1,0 +1,88 @@
+# trigger-agent-task.toml — a trigger's event starts a gated agent task.
+#
+# A host event (a webhook, a schedule, a message) wakes a Roko trigger, and
+# the trigger runs this graph with the event's payload as its root signal;
+# `summarize` reads the payload's `topic` field. (A binding with an input
+# mapping nests the mapped fields under `inputs`: name `inputs` there.) For
+# example:
+#
+#   roko trigger create summary --kind manual --graph examples/graphs/trigger-agent-task.toml
+#   roko trigger fire summary --payload '{"topic": "the release notes"}'
+#
+# (`roko trigger fire` queues the event; a running `roko serve` runs it.)
+#
+# 1. `precheck` (shell.exec) checks the workspace before any agent starts. A
+#    non-zero exit stops the graph; on success it passes the payload on.
+# 2. `summarize` (agent.task) runs its prompt as a gated one-task plan, as
+#    `roko run` does: its agent works in this workspace and the workspace's
+#    gates verify the change. The payload's `topic` reaches the prompt fenced
+#    as untrusted data, so it cannot change the agent's tools, policy or
+#    checks. A failed or cancelled run fails the node.
+# 3. `check` (verify.command) reads the agent run's output from the file
+#    `ROKO_CELL_INPUT` names and passes only when the run's gates passed: a
+#    run that ended unverified gives a fail verdict.
+#
+# Commands never contain payload values: payloads reach a shell command only
+# through `ROKO_CELL_INPUT`. The agent node needs the `llm` capability, which
+# a trigger's run has unless its Space withholds it; `roko graph run` grants
+# no `llm`, so it refuses the agent node.
+
+[graph]
+name = "trigger-agent-task"
+description = "A trigger's event starts a gated agent task between two shell checks"
+version = "1.0.0"
+
+[graph.policy]
+mode = "one_shot"
+failure_strategy = "fail_fast"
+max_concurrent_nodes = 1
+timeout_ms = 1800000
+capabilities = ["read_fs", "shell", "llm"]
+
+# ─── Nodes ───────────────────────────────────────────────────────────────────
+
+[[nodes]]
+id = "precheck"
+name = "Workspace check"
+cell_type = "shell.exec"
+
+[nodes.config]
+command = "test -f roko.toml"
+timeout_secs = 30
+
+[[nodes]]
+id = "summarize"
+name = "Summarize the topic"
+cell_type = "agent.task"
+
+[nodes.config]
+prompt = "Write a short summary of the topic below, citing the files you read."
+role = "implementer"
+tier = "focused"
+max_usd = 1.0
+inputs = ["topic"]
+
+[[nodes]]
+id = "check"
+name = "Agent run passed its gates"
+cell_type = "verify.command"
+
+[nodes.config]
+command = '''grep -q '"verdict":"succeeded"' "$ROKO_CELL_INPUT"'''
+timeout_secs = 30
+
+# ─── Edges ───────────────────────────────────────────────────────────────────
+
+[[edges]]
+from = "precheck"
+to = "summarize"
+
+[edges.condition]
+type = "success"
+
+[[edges]]
+from = "summarize"
+to = "check"
+
+[edges.condition]
+type = "success"

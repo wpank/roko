@@ -1338,6 +1338,8 @@ async fn run_graph_plan_body(
     );
     // CLI dispatch turns record with their run's provenance sink (gap-ca8022).
     graph_feedback.provenance_sinks = Some(provenance_sinks.clone());
+    // What the run's attempts teach the section bandit, saved at its end.
+    let section_outcomes = graph_feedback.section_outcomes.clone();
 
     // ── TUI vs inline progress decision ──────────────────────────────
     //
@@ -2115,6 +2117,23 @@ async fn run_graph_plan_body(
         );
     }
 
+    // ── Persist the section bandit (S02 L9) ─────────────────────────
+    //
+    // Fold what the run's settled attempts taught the section bandit into
+    // its file, under the file's lock, so a concurrent run's outcomes
+    // survive. The attempts of failed and cancelled plans count too; a
+    // frozen run has no outcomes to fold.
+    if let Some(outcomes) = &section_outcomes {
+        let path = workdir.join(roko_learn::section_effect::SECTION_BANDIT_PATH);
+        if let Err(err) = outcomes.save(&path) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "failed to persist the section bandit (non-fatal)"
+            );
+        }
+    }
+
     // ── Persist run metrics (backlog #169) ──────────────────────────
     //
     // Collect task counts and cost from the just-completed plan loop and
@@ -2304,7 +2323,9 @@ async fn run_graph_plan_body(
 /// (`--frozen-learning`, decision 2218) freezes its learning and
 /// `no_holdout` (`--no-holdout`, decision 4115) turns on maximize mode, for
 /// this run alone. Without them the config's own `[learning] frozen` and
-/// `[experiments] maximize` stand.
+/// `[experiments] maximize` stand. Maximize mode, from either, holds nothing
+/// out: it zeroes the plan-load spec gate's gate-off holdout
+/// (`[spec_quality] holdout_frac`) too (gap-29fe0a).
 pub fn apply_run_switches(
     config: &mut roko_core::config::schema::RokoConfig,
     frozen_learning: bool,
@@ -2315,6 +2336,9 @@ pub fn apply_run_switches(
     }
     if no_holdout {
         config.experiments.maximize = true;
+    }
+    if config.experiments.maximize {
+        config.spec_quality.holdout_frac = 0.0;
     }
 }
 
@@ -2381,12 +2405,12 @@ pub fn build_graph_feedback_context(
         // verify sequence. Uses the canonical workspace path so the TUI,
         // serve, and `roko learn gates` all read from the same file.
         gate_thresholds_path: Some(graph_layout.gate_thresholds_path()),
-        // RAG-10: retrieval outcome JSONL for gate-pass correlation telemetry.
-        retrieval_outcomes_path: Some(graph_learn_dir.join("retrieval-outcomes.jsonl")),
         // S01: every attempt's open line and verdict, per checkpoint run.
         runs_dir: Some(graph_layout.runs_dir()),
         // The run body attaches its runs' provenance sinks (gap-ca8022).
         provenance_sinks: None,
+        // S02 L9: the section bandit's outcomes, saved when the run ends.
+        section_outcomes: learning.then(Arc::default),
     }
 }
 
@@ -5142,6 +5166,10 @@ max_retries = 0
                 "store.exposure_writer",
                 "store.record_access",
                 "reader.gate_thresholds",
+                "store.arm_set",
+                "reader.withhold_arms",
+                "store.placebo",
+                "sink.router_source_credit",
             ]
         );
         let attempt_log = census.component("store.attempt_log");
@@ -5211,7 +5239,8 @@ max_retries = 0
     /// The `[gates]` and later lines of the workspace of
     /// [`run_seeded_learning_plan`]: one verify run per attempt (no auto-fix
     /// re-run), T0 reflexes on, gate thresholds saved after every verify run,
-    /// and no model ladder, so every task runs on its hinted model.
+    /// no model ladder, so every task runs on its hinted model, and maximize
+    /// mode, so no arm withholds the seeded knowledge from a prompt.
     #[cfg(unix)]
     const LEARNED_STATE_CONFIG: &str = r#"cargo_fix_enabled = false
 
@@ -5221,6 +5250,9 @@ gate_threshold_flush_interval = 1
 
 [routing.ladder]
 enabled = false
+
+[experiments]
+maximize = true
 "#;
 
     /// The plan of [`run_seeded_learning_plan`]. T1 passes its verify step,
@@ -5289,9 +5321,6 @@ max_retries = 0
         "learn/efficiency.jsonl",
         // One summary row per run: `roko show`.
         "learn/run-metrics.jsonl",
-        // Retrieval outcomes beside gate verdicts (RAG-10): the TUI's
-        // learning view and serve.
-        "learn/retrieval-outcomes.jsonl",
         // Gate-gaming alerts: `roko diagnose`.
         "learn/gate-gaming-alerts.jsonl",
         // The inference gateway's per-call log: serve's gateway routes.
@@ -5543,23 +5572,28 @@ max_retries = 0
 
     /// Decision 2218: a frozen run's dispatcher has no learning sink, and
     /// none of the paths that only write learned state (playbook outcomes,
-    /// prompt treatments). Its telemetry and the state it also reads stay. A
-    /// live run has them all.
+    /// prompt treatments). Its telemetry, the state it also reads, and its
+    /// chains' arm sets and placebo rows stay. A live run has them all.
     #[tokio::test]
     async fn frozen_run_registers_no_learning_sinks() {
-        const LEARNING: [&str; 6] = [
+        const LEARNING: [&str; 8] = [
             "sink.episode",
             "sink.routing",
             "sink.knowledge_ingestion",
             "sink.playbook_outcome",
             "sink.error_pattern",
+            "sink.section_effect",
+            "sink.router_source_credit",
             "store.prompt_experiment",
         ];
-        const KEPT: [&str; 4] = [
+        const KEPT: [&str; 7] = [
             "store.attempt_log",
             "store.decision_writer",
             "store.exposure_writer",
             "reader.gate_thresholds",
+            "store.arm_set",
+            "reader.withhold_arms",
+            "store.placebo",
         ];
         let temp = tempfile::tempdir().expect("tempdir");
         let mut config = roko_core::config::schema::RokoConfig::default();

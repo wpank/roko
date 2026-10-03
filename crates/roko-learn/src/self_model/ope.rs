@@ -55,7 +55,9 @@ pub fn logged_decisions(
     let mut decisions = Vec::with_capacity(rows.len());
     for row in rows {
         let value = match reward {
-            Reward::Success => row.outcome_success.map(|passed| f64::from(u8::from(passed))),
+            Reward::Success => row
+                .outcome_success
+                .map(|passed| f64::from(u8::from(passed))),
             Reward::Cost => row.outcome_cost_usd,
         };
         let propensity = row
@@ -183,13 +185,21 @@ mod tests {
             for _ in 0..1_000 {
                 let k = ((rng.uniform() * 4.0) as usize).min(3);
                 let learned = !rng.bernoulli(p_default[k]);
-                let rate = if learned { learned_rate[k] } else { default_rate[k] };
+                let rate = if learned {
+                    learned_rate[k]
+                } else {
+                    default_rate[k]
+                };
                 let passed = rng.bernoulli(rate);
                 decisions.push(LoggedDecision {
                     context: format!("s{k}"),
                     action: if learned { "learned" } else { "default" }.to_string(),
                     default_action: Some("default".to_string()),
-                    propensity: if learned { 1.0 - p_default[k] } else { p_default[k] },
+                    propensity: if learned {
+                        1.0 - p_default[k]
+                    } else {
+                        p_default[k]
+                    },
                     reward: f64::from(u8::from(passed)),
                 });
                 // A biased outcome model: DR stays unbiased with known propensities.

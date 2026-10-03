@@ -66,7 +66,7 @@ from pathlib import Path, PurePosixPath
 import layout  # noqa: F401 (puts families/ on sys.path for common)
 from common import canary
 
-TEMPLATE_VERSION = "planemit-3"
+TEMPLATE_VERSION = "planemit-4"
 LADDER_VERSION = "planemit-ladder-1"
 TIERS = ("mechanical", "focused", "integrative", "architectural")  # Roko's task tiers, each with a start rung
 # The frontier models of S09 §4.2's arms (fd_claude, fd_claude_lite, fd_codex, fd_api, the optional Fable arm) and of
@@ -169,7 +169,6 @@ max_turn_usd = {turn_usd}
 
 [learning]
 auto_playbook_refresh = false
-replan_on_gate_failure = false
 dream_on_completion = false
 
 [learning.dreams]

@@ -386,6 +386,46 @@ pub struct TriggerExecutionScope {
     pub capabilities: Option<roko_core::CapabilitySet>,
 }
 
+/// A person's decision on a staged outbound effect (9133): approve it, so
+/// the held call runs once, or reject it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectDecisionInput {
+    /// Approve the effect, or reject it.
+    pub approve: bool,
+    /// Why, in the decider's words.
+    pub note: Option<String>,
+    /// Who decides: the authenticated principal.
+    pub decided_by: String,
+}
+
+/// Why a staged effect could not be decided (9133).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectDecisionError {
+    /// No staged effect has the id.
+    NotFound(String),
+    /// The effect was decided already; the second field names its outcome.
+    AlreadyDecided(String, String),
+    /// The runtime does not stage outbound effects.
+    Unsupported,
+    /// The decision could not be carried out.
+    Failed(String),
+}
+
+impl std::fmt::Display for EffectDecisionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(id) => write!(formatter, "no staged effect {id}"),
+            Self::AlreadyDecided(id, outcome) => {
+                write!(formatter, "effect {id} was decided already: {outcome}")
+            }
+            Self::Unsupported => formatter.write_str("the runtime does not stage outbound effects"),
+            Self::Failed(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for EffectDecisionError {}
+
 /// No-op runtime used in tests.
 #[cfg(test)]
 pub struct NoOpRuntime;
@@ -766,5 +806,36 @@ pub trait CliRuntime: Send + Sync + 'static {
         _options: SweBenchRunOptions,
     ) -> anyhow::Result<SweBenchRunResult> {
         anyhow::bail!("runtime does not support SWE-bench")
+    }
+
+    /// The staged outbound effects of the workspace at `workdir` (9133):
+    /// `{"waiting": [...], "decided": [...]}`, the tool calls runs hold for
+    /// approval without their arguments and the decisions made on them,
+    /// newest first; only `run_id`'s when it is set.
+    ///
+    /// The default returns an error: not every runtime stages effects.
+    async fn list_effects(
+        &self,
+        workdir: &std::path::Path,
+        run_id: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let _ = (workdir, run_id);
+        anyhow::bail!("runtime does not support staged effects")
+    }
+
+    /// Decide the staged effect `effect_id` in the workspace at `workdir`
+    /// (9133): an approval runs its call once and checks its receipt, a
+    /// rejection only records the decision. Returns the decision's record,
+    /// with the call's result and the receipt verdicts.
+    ///
+    /// The default answers [`EffectDecisionError::Unsupported`].
+    async fn decide_effect(
+        &self,
+        workdir: &std::path::Path,
+        effect_id: &str,
+        decision: EffectDecisionInput,
+    ) -> Result<serde_json::Value, EffectDecisionError> {
+        let _ = (workdir, effect_id, decision);
+        Err(EffectDecisionError::Unsupported)
     }
 }

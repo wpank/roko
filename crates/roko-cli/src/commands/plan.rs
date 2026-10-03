@@ -1252,7 +1252,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             // ── Mandatory validation: reject malformed plans before execution ──
             // Runs in both normal and `--dry-run` mode.
-            if let Some(exit_code) = validate_before_run(&resolved_plans_dir, &wd) {
+            if let Some(exit_code) = validate_before_run(&resolved_plans_dir, &wd, no_holdout) {
                 return Ok(exit_code);
             }
 
@@ -2576,11 +2576,12 @@ fn print_plan_diff(diff: &roko_cli::plan_authoring::PlanDiff, json: bool) -> Res
     Ok(())
 }
 
-/// Run plan validation before `plan run` starts any agents.
+/// Run plan validation before `plan run` starts any agents; `no_holdout`
+/// (`--no-holdout`) turns on maximize mode for the spec gate's holdout.
 ///
 /// Returns `Some(exit_code)` when validation fails, or `None` when the plan
 /// set is valid enough to continue.
-fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
+fn validate_before_run(plans_dir: &Path, workdir: &Path, no_holdout: bool) -> Option<i32> {
     // If the plans directory doesn't exist yet (e.g. before `plan generate` runs),
     // skip pre-flight validation — the run path will report "No plans found".
     if !plans_dir.exists() {
@@ -2633,7 +2634,7 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
         );
     }
     if blocking.is_empty() {
-        spec_gate_before_run(plans_dir, workdir)
+        spec_gate_before_run(plans_dir, workdir, no_holdout)
     } else {
         let rendered = plan_validate::render_text(&report);
         // On stderr as well as in the log: without `--verbose` an operator
@@ -2647,14 +2648,17 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
 /// 3211: run the spec gate ([`roko_cli::spec_gate`]) over the plans `plan
 /// run` is about to start, with the `[spec_quality]` settings of the
 /// workspace's `roko.toml` (the defaults when it has none or does not
-/// parse). Logs each finding with its task, rule and detail, and returns
-/// `Some(1)` when a task is blocked, before any agent starts.
-fn spec_gate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
-    let config = std::fs::read_to_string(workdir.join("roko.toml"))
+/// parse). Maximize mode (`no_holdout`, or `[experiments] maximize`) holds no
+/// task out, as in the plan-load gate (gap-29fe0a). Logs each finding with
+/// its task, rule and detail, and returns `Some(1)` when a task is blocked,
+/// before any agent starts.
+fn spec_gate_before_run(plans_dir: &Path, workdir: &Path, no_holdout: bool) -> Option<i32> {
+    let mut config = std::fs::read_to_string(workdir.join("roko.toml"))
         .ok()
         .and_then(|text| toml::from_str::<roko_core::config::schema::RokoConfig>(&text).ok())
-        .map(|config| config.spec_quality)
         .unwrap_or_default();
+    roko_cli::graph_execution::plan_runner::apply_run_switches(&mut config, false, no_holdout);
+    let config = config.spec_quality;
     let files = match plan_validate::collect_tasks_files(plans_dir) {
         Ok(files) => files,
         Err(error) => {
@@ -3263,82 +3267,16 @@ async fn cmd_plan_run_engine(
 }
 
 /// Whether a plan run in `workdir` isolates each task in its own git
-/// worktree: `--worktree-per-task` / `--no-worktree-per-task` (`flag`) win,
-/// otherwise `[runner] worktree_per_task` decides (gap-4ec59f). The setting
-/// alone does not isolate a workdir that cannot be isolated, such as one that
-/// is not the top level of a git checkout with a commit (see
-/// `worktree_isolation_blocker`); an explicit flag there fails the run.
+/// worktree: [`roko_cli::graph_execution::batch::resolve_worktree_per_task`],
+/// the one resolver `roko run` uses too (backlog 3112).
 fn resolve_worktree_per_task(flag: Option<bool>, workdir: &std::path::Path) -> bool {
-    if let Some(flag) = flag {
-        return flag;
-    }
-    let configured = roko_core::config::loader::load_config_unified(workdir)
-        .unwrap_or_default()
-        .runner
-        .worktree_per_task;
-    if configured
-        && let Some(blocker) = roko_cli::graph_execution::batch::worktree_isolation_blocker(workdir)
-    {
-        tracing::warn!(
-            workdir = %workdir.display(),
-            "[runner] worktree_per_task is on, but the workdir {blocker}: the tasks run in the \
-             shared working tree"
-        );
-        return false;
-    }
-    configured
+    roko_cli::graph_execution::batch::resolve_worktree_per_task(flag, workdir)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
-    /// gap-4ec59f: a run's worktree mode is the flag when one is given, and
-    /// `[runner] worktree_per_task` otherwise, which isolates only a git
-    /// checkout with a commit to start worktrees from.
-    #[test]
-    fn worktree_per_task_follows_the_flag_then_the_runner_config() {
-        let dir = tempdir().expect("tempdir");
-        std::fs::write(
-            dir.path().join("roko.toml"),
-            "[runner]\nworktree_per_task = true\n",
-        )
-        .expect("write roko.toml");
-        assert!(
-            !resolve_worktree_per_task(None, dir.path()),
-            "not a git checkout: the setting falls back to the shared tree"
-        );
-        assert!(resolve_worktree_per_task(Some(true), dir.path()));
-
-        for args in [
-            &["init", "--quiet"][..],
-            &[
-                "-c",
-                "user.name=Operator",
-                "-c",
-                "user.email=operator@example.test",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "--quiet",
-                "--allow-empty",
-                "-m",
-                "base",
-            ][..],
-        ] {
-            let status = std::process::Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .env_remove("GIT_DIR")
-                .env_remove("GIT_WORK_TREE")
-                .status()
-                .expect("run git");
-            assert!(status.success(), "git {args:?}");
-        }
-        assert!(resolve_worktree_per_task(None, dir.path()));
-        assert!(!resolve_worktree_per_task(Some(false), dir.path()));
-    }
 
     #[test]
     fn read_executor_state_returns_none_without_snapshot() {
@@ -3472,10 +3410,13 @@ verify = [{{ phase = "test", command = "cargo test -p demo --lib retry" }}]
             text.contains("\n                 - Is the limit per call or per task?\n"),
             "the question is printed under the task: {text}"
         );
-        assert_eq!(validate_before_run(&plans, workspace.path()), Some(1));
+        assert_eq!(
+            validate_before_run(&plans, workspace.path(), false),
+            Some(1)
+        );
 
         write_plan("");
-        assert_eq!(validate_before_run(&plans, workspace.path()), None);
+        assert_eq!(validate_before_run(&plans, workspace.path(), false), None);
     }
 
     /// 3211: `plan run` refuses a plan whose verify step can never fail
@@ -3506,16 +3447,19 @@ verify = [{{ phase = "compile", command = "{command}" }}]
         };
 
         write_plan("cargo check -p x || true");
-        assert_eq!(validate_before_run(&plans, workspace.path()), Some(1));
+        assert_eq!(
+            validate_before_run(&plans, workspace.path(), false),
+            Some(1)
+        );
 
         let config = workspace.path().join("roko.toml");
         std::fs::write(&config, "[spec_quality]\nmode = \"off\"\n").expect("write roko.toml");
-        assert_eq!(validate_before_run(&plans, workspace.path()), None);
+        assert_eq!(validate_before_run(&plans, workspace.path(), false), None);
         std::fs::remove_file(&config).expect("remove roko.toml");
 
         // Scores advise: a vague but checkable task still runs.
         write_plan("cargo test -p x --lib retry");
-        assert_eq!(validate_before_run(&plans, workspace.path()), None);
+        assert_eq!(validate_before_run(&plans, workspace.path(), false), None);
     }
 
     /// gap-d60281: `plan run` stops on a flag the Graph engine does not

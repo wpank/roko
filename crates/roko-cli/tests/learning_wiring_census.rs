@@ -30,14 +30,15 @@ use roko_cli::graph_task_dispatch::{GraphTaskDispatcher, WiringReport};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::model_call_feedback::ModelCallJournal;
 use roko_learn::routing_log::RoutingDecisionLog;
+use roko_learn::section_effect::{BetaPosterior, SectionBandit};
 use roko_learn::telemetry::DecisionSource;
 use roko_learn::telemetry::report::{RunRecords, route_report};
 use serde_json::Value;
 
-/// Every learning component of S01 §5.8, in census order. The legacy
-/// holdout split is not one: it gated nothing, and S03's registry lists it
-/// (L-holdout) as retired (4101).
-const S01_COMPONENTS: &[&str] = &[
+/// Every learning component of S01 §5.8, then those the S02 loops add
+/// (4131), in census order. The legacy holdout split is not one: it gated
+/// nothing, and S03's registry lists it (L-holdout) as retired (4101).
+const CENSUS_COMPONENTS: &[&str] = &[
     "sink.episode",
     "sink.routing",
     "sink.knowledge_ingestion",
@@ -50,12 +51,17 @@ const S01_COMPONENTS: &[&str] = &[
     "store.exposure_writer",
     "store.record_access",
     "reader.gate_thresholds",
+    "store.arm_set",
+    "reader.withhold_arms",
+    "store.placebo",
+    "sink.router_source_credit",
 ];
 
 /// The components nothing on the Graph path provides yet: the S02 backlog.
-/// It only shrinks. The census fails when one of them is wired, so take it
-/// off the list then.
-const EXPECTED_MISSING: &[&str] = &["sink.section_effect"];
+/// It only shrinks, and it is empty now that the section bandit's outcomes
+/// are saved (4124). The census fails when a component on it is wired, so
+/// take it off the list then.
+const EXPECTED_MISSING: &[&str] = &[];
 
 /// The stand-in `claude_cli` provider: it ignores its prompt and reports a
 /// finished free turn, so each task's verify step alone decides its outcome.
@@ -75,7 +81,11 @@ printf '%s\n' '{"type":"result","session_id":"census","model":"claude-sonnet-4-6
 /// its pick down to (S02.P1-2), and its guard falls back to the default.
 /// Without a model that has tool use, no cheap helper model is selected, so
 /// a failed verify step makes no helper call. The ladder is off, so a task
-/// without a model hint is the cascade router's to route.
+/// without a model hint is the cascade router's to route. Every chain runs
+/// the section bandit and keeps its playbooks (`[experiments] force_arms`),
+/// and the domain context, which carries the playbooks, is pinned, so a
+/// labelled attempt moves the section and playbook counts whatever the run
+/// draws.
 fn write_workspace(workdir: &Path) {
     let provider = workdir.join("fake-provider.sh");
     fs::write(&provider, PROVIDER).expect("write provider script");
@@ -126,6 +136,12 @@ disabled_providers = ["census-off"]
 
 [routing.ladder]
 enabled = false
+
+[experiments]
+force_arms = {{ sections = "learned", playbooks = "learned" }}
+
+[sections]
+pinned = ["domain_context"]
 
 [gates]
 sibling_settle_secs = 0
@@ -279,20 +295,45 @@ async fn graph_dispatcher_production_wiring_census() {
     eprintln!("EXPECTED_MISSING: {}", EXPECTED_MISSING.join(", "));
     let ids: Vec<&str> = report.components.iter().map(|c| c.id).collect();
     assert_eq!(
-        ids, S01_COMPONENTS,
-        "the census names every S01 §5.8 component"
+        ids, CENSUS_COMPONENTS,
+        "the census names every S01 §5.8 and S02 component"
     );
     assert_eq!(census_failures(&report), Vec::<String>::new());
     assert_eq!(report.missing(), EXPECTED_MISSING);
 
+    // S02 SC1: every loop of the registry is live, observe-only or retired.
+    // The loops the arm sets draw are live; decision 4115 gives L-err no
+    // withhold arm, so it observes; 4101 and 4105 retired the legacy
+    // holdout and the retrieval A/A test.
+    assert!(!report.loops.is_empty(), "the registry's loops");
+    for loop_wiring in &report.loops {
+        let state = loop_wiring.state;
+        assert!(
+            matches!(state, "live" | "observe_only" | "retired"),
+            "{loop_wiring:?}"
+        );
+        assert_eq!(loop_wiring.retired_by.is_some(), state == "retired");
+    }
+    for id in ["L-know", "L-play", "L-sec", "L-prompt-exp", "L-placebo"] {
+        assert_eq!(report.loop_state(id), Some("live"), "{id}");
+    }
+    assert_eq!(report.loop_state("L-err"), Some("observe_only"));
+    for id in ["L-holdout", "L-rag11"] {
+        assert_eq!(report.loop_state(id), Some("retired"), "{id}");
+    }
+
     // A sink that drops off the facade fails the census: without a router,
-    // the routing sink is never registered.
+    // the routing sink is never registered, nor the credit it applies.
     let without_router = production_census(workdir, &config, None).await;
     assert!(!without_router.facade_sinks.contains(&"routing"));
     let failures = census_failures(&without_router);
-    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(failures.len(), 2, "{failures:?}");
     assert!(
         failures[0].starts_with("sink.routing is not wired"),
+        "{failures:?}"
+    );
+    assert!(
+        failures[1].starts_with("sink.router_source_credit is not wired"),
         "{failures:?}"
     );
 }
@@ -341,6 +382,12 @@ fn run_loop_census() -> (tempfile::TempDir, PathBuf, String) {
     let learn = workdir.join(".roko/learn");
     fs::create_dir_all(&learn).expect("create .roko/learn");
     fs::write(learn.join("cascade-router.json"), SEEDED_ROUTER).expect("seed the router");
+    // A playbook the prompts of T1, T2 and T3 retrieve: it holds two of their
+    // topic words, "verify" and "step".
+    fs::create_dir_all(learn.join("playbooks")).expect("create the playbook directory");
+    let playbook = roko_learn::playbook::Playbook::new("pb-verify", "Check the verify step");
+    let playbook = serde_json::to_string(&playbook).expect("serialize the playbook");
+    fs::write(learn.join("playbooks/pb-verify.json"), playbook).expect("seed the playbook");
     let plan_dir = workdir.join("plans/loop-census");
     fs::create_dir_all(&plan_dir).expect("create plan directory");
     fs::write(plan_dir.join("tasks.toml"), LOOP_CENSUS_TASKS).expect("write tasks.toml");
@@ -474,6 +521,24 @@ fn loop_census_fixture_settles_one_record_per_attempt() {
             "{model} gained routing trials: {router:#}"
         );
     }
+
+    // S02 §7.2: a labelled attempt moves the section and playbook counts,
+    // and an unlabelled one neither. The labelled attempts are T1's pass,
+    // T2's two failures and routed T4's pass; T3 has no label, and T4's
+    // prompt does not retrieve the playbook.
+    let bandit = SectionBandit::load(&roko.join("learn/section-bandit.json"))
+        .expect("the run saved the section bandit");
+    let arms = &bandit.sections["conventions"];
+    let counts = |arm: &BetaPosterior| arm.alpha + arm.beta;
+    // Both arms start at Beta(1, 1).
+    let moved = counts(&arms.included) + counts(&arms.excluded) - 4.0;
+    assert!((moved - 4.0).abs() < 1e-9, "{arms:?}");
+    assert!(arms.opportunities >= 4, "{arms:?}");
+    let playbook =
+        fs::read_to_string(roko.join("learn/playbooks/pb-verify.json")).expect("read the playbook");
+    let playbook: roko_learn::playbook::Playbook =
+        serde_json::from_str(&playbook).expect("parse the playbook");
+    assert_eq!((playbook.success_count, playbook.failure_count), (1, 2));
 }
 
 /// S01 §7.1 and §7.4: every attempt of the loop-census run leaves one route
@@ -492,7 +557,8 @@ fn loop_census_routed_task_logs_fallback_decision() {
         "one route decision per attempt\n{log}"
     );
     // Every attempt logs what its prompt retrieved (S01 P0-9). The fixture's
-    // workspace has no knowledge store, so its rows are prompt sections.
+    // workspace has no knowledge store, so its rows are prompt sections and
+    // the seeded playbook.
     let exposed: BTreeSet<&str> = run
         .exposures
         .iter()

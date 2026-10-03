@@ -2311,6 +2311,8 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::CriticalPathEtaUpdated { .. }
         | DashboardEvent::CostAnomaly { .. }
         | DashboardEvent::CrossCutCascade { .. }
+        | DashboardEvent::LoopHealth { .. }
+        | DashboardEvent::LoopTransition { .. }
         | DashboardEvent::SnapshotRebased { .. } => None,
     }
 }

@@ -1,0 +1,283 @@
+# The golden path's acceptance fixture (gap-f30b8e; backlog 3115): nine tasks
+# over ../seed/, each with a planner-written [task.accept] test that fails on
+# the seed. Written by hand from plan.md, and frozen before any solution or
+# replay patch existed. No task pins a model: role and tier pick the rung.
+
+[meta]
+plan = "golden-path"
+iteration = 1
+total = 9
+done = 0
+status = "ready"
+estimated_total_minutes = 60
+
+[[meta.verify]]
+phase = "structural"
+command = "cargo fmt --all -- --check"
+timeout_ms = 600000
+
+[[meta.verify]]
+phase = "compile"
+command = "cargo clippy --workspace --all-targets -- -D warnings"
+timeout_ms = 600000
+
+[[meta.verify]]
+phase = "test"
+command = "cargo test --workspace"
+timeout_ms = 600000
+
+[[meta.verify]]
+phase = "test"
+command = "python3 -m unittest discover -s py"
+
+[[meta.verify]]
+phase = "test"
+command = "node --experimental-strip-types --test ts/*.test.ts"
+
+[[task]]
+id = "T1"
+title = "Add slugify to the Python text helpers"
+description = '''
+In py/textutil.py add `slugify(text)`, which returns `text` as a URL slug: lower
+case, every run of characters that are not ASCII letters or digits replaced by
+one hyphen, and no hyphen at either end. `slugify("Hello World")` is
+"hello-world" and `slugify("  Roko -- ships!  ")` is "roko-ships". Use only the
+standard library, and keep `title_words` as it is.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_retries = 2
+files = ["py/textutil.py", "py/test_accept_slugify.py"]
+
+[task.context]
+read_files = [
+    { path = "py/textutil.py", why = "the module slugify joins" },
+    { path = "py/test_textutil.py", why = "how the module's tests import it" },
+]
+
+[[task.accept.files]]
+src = "accept/test_accept_slugify.py"
+dest = "py/test_accept_slugify.py"
+runner = "cd py && python3 -m unittest -v test_accept_slugify"
+count = 3
+
+[[task]]
+id = "T2"
+title = "Add camelCase to the TypeScript string helpers"
+description = '''
+In ts/strings.ts export `camelCase(text: string): string`. It splits `text` into
+words on spaces, hyphens and underscores, drops empty words, lower-cases the
+first word, and capitalises the first letter of every later word (the rest of
+each word lower case), then joins them with nothing between.
+`camelCase("golden path run")` is "goldenPathRun". Keep `reverse` as it is. The
+file runs under Node's type stripping, so use no TypeScript-only syntax beyond
+type annotations.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_retries = 2
+files = ["ts/strings.ts", "ts/camel_case.accept.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "ts/strings.ts", why = "the module camelCase joins" },
+    { path = "ts/strings.test.ts", why = "how the module's tests import it" },
+]
+
+[[task.accept.files]]
+src = "accept/camel_case.test.ts"
+dest = "ts/camel_case.accept.test.ts"
+runner = "node --experimental-strip-types --test {dest}"
+count = 3
+
+[[task]]
+id = "T3"
+title = "Count the words of a text in alpha"
+description = '''
+In crates/alpha/src/lib.rs add `pub fn word_count(text: &str) -> usize`, the
+number of whitespace-separated words in `text`. An empty or all-whitespace text
+has none. Document it with a `///` comment, and keep the crate free of
+dependencies, `cargo fmt` clean and free of clippy warnings.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_retries = 2
+files = ["crates/alpha/src/lib.rs", "crates/alpha/tests/accept_word_count.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/alpha/src/lib.rs", why = "the crate word_count joins" },
+]
+
+[[task.accept.files]]
+src = "accept/alpha_word_count.rs"
+dest = "crates/alpha/tests/accept_word_count.rs"
+runner = "cargo test -p alpha --test accept_word_count"
+count = 3
+timeout_ms = 600000
+
+[[task]]
+id = "T4"
+title = "Say goodbye in beta"
+description = '''
+In crates/beta/src/lib.rs add `pub fn farewell(name: &str) -> String`, which
+returns "GOODBYE, <NAME>." with `name` trimmed and shouted by `alpha::shout`:
+`farewell("  bob ")` is "GOODBYE, BOB.". Document it with a `///` comment, and
+keep the crate `cargo fmt` clean and free of clippy warnings.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_retries = 2
+files = ["crates/beta/src/lib.rs", "crates/beta/tests/accept_farewell.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/beta/src/lib.rs", why = "the crate farewell joins" },
+    { path = "crates/alpha/src/lib.rs", why = "alpha::shout, which farewell uses" },
+]
+
+[[task.accept.files]]
+src = "accept/beta_farewell.rs"
+dest = "crates/beta/tests/accept_farewell.rs"
+runner = "cargo test -p beta --test accept_farewell"
+count = 2
+timeout_ms = 600000
+
+[[task]]
+id = "T5"
+title = "Take a name's initials in alpha"
+description = '''
+In crates/alpha/src/lib.rs add `pub fn initials(name: &str) -> String`: the
+first character of each whitespace-separated word of `name`, upper-cased and
+joined with nothing between. `initials("ada lovelace")` is "AL". beta's `badge`
+(T6) builds on it. Document it with a `///` comment, and keep the crate
+`cargo fmt` clean and free of clippy warnings.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_retries = 2
+depends_on = ["T3"]
+files = ["crates/alpha/src/lib.rs", "crates/alpha/tests/accept_initials.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/alpha/src/lib.rs", why = "the crate initials joins" },
+]
+
+[[task.accept.files]]
+src = "accept/alpha_initials.rs"
+dest = "crates/alpha/tests/accept_initials.rs"
+runner = "cargo test -p alpha --test accept_initials"
+count = 2
+timeout_ms = 600000
+
+[[task]]
+id = "T6"
+title = "Lead a name with its initials in beta"
+description = '''
+In crates/beta/src/lib.rs add `pub fn badge(name: &str) -> String`, which
+returns "[<INITIALS>] <name>" with the initials from `alpha::initials` (T5) and
+`name` trimmed: `badge("  alan turing ")` is "[AT] alan turing". Document it
+with a `///` comment, and keep the crate `cargo fmt` clean and free of clippy
+warnings.
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+max_retries = 2
+depends_on = ["T4", "T5"]
+files = ["crates/beta/src/lib.rs", "crates/beta/tests/accept_badge.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/beta/src/lib.rs", why = "the crate badge joins" },
+    { path = "crates/alpha/src/lib.rs", why = "alpha::initials, which badge uses" },
+]
+
+[[task.accept.files]]
+src = "accept/beta_badge.rs"
+dest = "crates/beta/tests/accept_badge.rs"
+runner = "cargo test -p beta --test accept_badge"
+count = 2
+timeout_ms = 600000
+
+[[task]]
+id = "T7"
+title = "Expose alpha's version"
+description = '''
+In crates/alpha/src/lib.rs add `pub const VERSION: &str`, the crate's version
+as Cargo sets it (`env!("CARGO_PKG_VERSION")`), with a `///` comment.
+'''
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+max_retries = 2
+depends_on = ["T5"]
+files = ["crates/alpha/src/lib.rs", "crates/alpha/tests/accept_version.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/alpha/src/lib.rs", why = "the crate VERSION joins" },
+]
+
+[[task.accept.files]]
+src = "accept/alpha_version.rs"
+dest = "crates/alpha/tests/accept_version.rs"
+runner = "cargo test -p alpha --test accept_version"
+count = 1
+timeout_ms = 600000
+
+[[task]]
+id = "T8"
+title = "Split a text into words in Python"
+description = '''
+In py/textutil.py add `word_list(text)`, which returns the whitespace-separated
+words of `text` as a list (`str.split()` with no argument).
+'''
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+max_retries = 2
+depends_on = ["T1"]
+files = ["py/textutil.py", "py/test_accept_word_list.py"]
+
+[task.context]
+read_files = [
+    { path = "py/textutil.py", why = "the module word_list joins" },
+]
+
+[[task.accept.files]]
+src = "accept/test_accept_word_list.py"
+dest = "py/test_accept_word_list.py"
+runner = "cd py && python3 -m unittest -v test_accept_word_list"
+count = 2
+
+[[task]]
+id = "T9"
+title = "Shout a text in TypeScript"
+description = '''
+In ts/strings.ts export `shout(text: string): string`, which returns `text` in
+upper case.
+'''
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+max_retries = 2
+depends_on = ["T2"]
+files = ["ts/strings.ts", "ts/shout.accept.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "ts/strings.ts", why = "the module shout joins" },
+]
+
+[[task.accept.files]]
+src = "accept/shout.test.ts"
+dest = "ts/shout.accept.test.ts"
+runner = "node --experimental-strip-types --test {dest}"
+count = 1

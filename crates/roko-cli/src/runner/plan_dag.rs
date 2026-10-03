@@ -650,6 +650,7 @@ mod tests {
                     verify: Vec::new(),
                     approval: None,
                     allow_unverified: false,
+                    outbound: None,
                 },
                 tasks,
             },

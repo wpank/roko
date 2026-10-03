@@ -78,7 +78,9 @@ pub mod transcript;
 
 pub use aliases::{ALIASES, ToolAlias};
 pub use call::{Artifact, ToolCall, ToolError, ToolResult, ToolResultContent};
-pub use def::{ToolCategory, ToolConcurrency, ToolDef, ToolPermission, ToolSchema, ToolSource};
+pub use def::{
+    OutboundPolicy, ToolCategory, ToolConcurrency, ToolDef, ToolPermission, ToolSchema, ToolSource,
+};
 pub use execution_record::{ToolExecutionEnvelope, ToolExecutionRecord};
 pub use format::{ToolFormat, ToolFormatProfile, profile_for_model};
 pub use handler::{

@@ -868,6 +868,8 @@ Supervised HTTP JSON connectors.
 |--------|------|-------------|
 | GET | `/api/safety/quarantine` | Tool results the immune boundary withheld, from the workspace vault (plan runs included) plus any older plan-run vault left in a `.roko/worktrees/` checkout. Each entry gives its review `status`, its `full_hash` and its `vault`; each vault gives its `capacity` and whether it is `full` (a full vault cannot index further withheld results) |
 | GET | `/api/safety/incidents` | Links between quarantined results, from the same vaults |
+| GET | `/api/effects?run_id=` | Staged outbound effects (9133): the tool calls runs hold for approval under a `stage` outbound policy (9131), without their arguments, and the decisions made on them, newest first |
+| POST | `/api/effects/{id}/decision` | `{ "approve": bool, "note": ... }`: approve an effect, which replays its call once and runs the receipt rungs of its task's pack, or reject it, as the authenticated principal (scope `write`, permission `plan:execute`). Answers the decision's record with the call's result and the receipt verdicts; 409 for a decided effect, 404 for an unknown one |
 
 ### 8.28 Affect (Daimon)
 

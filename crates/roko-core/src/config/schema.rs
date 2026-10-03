@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 
 use crate::agent::{AgentBackend, ProviderKind};
 use crate::defaults::{DEFAULT_PLAN_TIMEOUT_SECS, DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS};
-use crate::tool::{ToolFormat, profile_for_model};
+use crate::tool::{OutboundPolicy, ToolFormat, profile_for_model};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -207,6 +207,10 @@ pub struct RokoConfig {
     /// arms (`[experiments]`, decision 4115).
     #[serde(default)]
     pub experiments: super::experiments::ExperimentsConfig,
+    /// Prompt sections the section bandit never leaves out, on top of the
+    /// built-in pinned ones (`[sections] pinned`, S02 L9).
+    #[serde(default)]
+    pub sections: super::sections::SectionsConfig,
 }
 
 /// Composition strategy for allocating prompt token budget across candidate sections.
@@ -335,6 +339,15 @@ pub struct DomainProfile {
     /// agent is (9125).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_identity: Option<String>,
+    /// What the domain's tasks do with a tool call that acts on the outside
+    /// world, in place of decision 9107's default: `stage` in the `ops`
+    /// domain, `allow` elsewhere (9131).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound: Option<OutboundPolicy>,
+    /// Where the domain's tasks work when they name no `workspace` of their
+    /// own: `git_worktree` or `scratch_dir` (9134).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<crate::WorkspaceKind>,
     /// Forward-compatible profile-local extension fields.
     #[serde(default, flatten)]
     pub extra: HashMap<String, toml::Value>,
@@ -355,6 +368,8 @@ impl DomainProfile {
             gate_config: GateProfileConfig::overlay(parent.gate_config, child.gate_config),
             pack: child.pack.or(parent.pack),
             role_identity: child.role_identity.or(parent.role_identity),
+            outbound: child.outbound.or(parent.outbound),
+            workspace: child.workspace.or(parent.workspace),
             extra,
         }
     }
@@ -500,6 +515,7 @@ impl Default for RokoConfig {
             repos: Vec::new(),
             retrieval: RetrievalConfig::default(),
             experiments: super::experiments::ExperimentsConfig::default(),
+            sections: super::sections::SectionsConfig::default(),
         }
     }
 }
@@ -706,6 +722,21 @@ impl RokoConfig {
         }
 
         providers
+    }
+
+    /// The `[profiles.<label>]` entry a task of work domain `domain` follows,
+    /// resolved through its `base` chain, which may end at a built-in profile
+    /// (9125): `None` when the workspace declares no entry for the label, or
+    /// when its entry does not resolve.
+    #[must_use]
+    pub fn domain_profile(&self, domain: &crate::TaskDomain) -> Option<DomainProfile> {
+        let label = domain.label();
+        if !self.profiles.contains_key(label) {
+            return None;
+        }
+        let mut profiles = builtin_profiles();
+        profiles.extend(self.profiles.clone());
+        resolve_profile(label, &profiles).ok()
     }
 
     /// Return the explicit model registry that should be used at runtime.

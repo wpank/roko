@@ -184,6 +184,12 @@ pub(crate) const ROUTE_PERMISSION_MANIFEST: &[RoutePermission] = &[
         prefix: "/api/safety",
         permission: Permission::ConfigEdit,
     },
+    // Approving a staged outbound effect runs a plan agent's held tool call
+    // (9133).
+    RoutePermission {
+        prefix: "/api/effects",
+        permission: Permission::PlanExecute,
+    },
     RoutePermission {
         prefix: "/relay",
         permission: Permission::AgentSpawn,
@@ -499,6 +505,15 @@ mod tests {
             required_permission_for(&Method::GET, "/api/safety/controls"),
             None
         );
+    }
+
+    #[test]
+    fn deciding_a_staged_effect_requires_plan_execute() {
+        assert_eq!(
+            required_permission_for(&Method::POST, "/api/effects/effect-1/decision"),
+            Some(Permission::PlanExecute)
+        );
+        assert_eq!(required_permission_for(&Method::GET, "/api/effects"), None);
     }
 
     #[test]

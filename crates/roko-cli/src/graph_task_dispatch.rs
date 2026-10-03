@@ -94,14 +94,14 @@ pub use budget::{
     GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot, PlanBudgetControl, PlanBudgetRaise,
     plan_ceiling_micro_usd,
 };
-pub use feedback::GraphFeedbackContext;
+pub use feedback::{GraphFeedbackContext, SectionOutcomes};
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
 pub use operator_directives::OperatorDirectives;
 pub use operator_stop::OperatorStops;
 pub(crate) use retry_budget::TaskRetryBudgets;
 pub use streaming::streaming_event_channel_capacity;
 pub use supervision::{ConductorStop, ConductorTicker, SUPERVISION_INTERVAL};
-pub use wiring::{WiringComponent, WiringKind, WiringReport};
+pub use wiring::{LoopWiring, WiringComponent, WiringKind, WiringReport};
 
 use attempt::{AttemptBook, SettledAttempt, Settlement, attempt_agent_id, first_token_seen};
 use budget::{
@@ -112,8 +112,8 @@ use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
 use live_tool_calls::LiveToolCalls;
 use routing_context::{
-    CheapFactoryAgent, build_routing_context, effective_agent_contract, select_cheap_model_key,
-    upstream_outputs,
+    CheapFactoryAgent, build_routing_context, effective_agent_contract, outbound_policy,
+    select_cheap_model_key, upstream_outputs,
 };
 use supervision::SupervisedAttempt;
 use tui_forward::forward_live_event_to_tui;
@@ -260,14 +260,6 @@ pub struct GraphTaskDispatcher {
     /// `attempts.jsonl` writer (see [`Self::open_attempt`]).
     attempts: AttemptBook,
 
-    /// RAG-10/11: Per-task retrieval context retained from prompt assembly until
-    /// gate settlement.
-    ///
-    /// Keyed by `"{plan_id}/{task_id}"`.  Value is
-    /// `(strategy, query, results_count, latency_ms)`.
-    /// Set immediately after `plan()` returns so that both the pre-gate record and
-    /// the gate-settled record carry the same metadata.
-    retrieval_ctx: parking_lot::Mutex<HashMap<String, (String, String, usize, u64)>>,
     /// Attempts running now, so a verify step that fails while siblings edit
     /// the same working tree can wait for them to settle.
     in_flight: sibling_settle::InFlightTasks,
@@ -337,7 +329,6 @@ impl GraphTaskDispatcher {
             static_prompt_cache: std::sync::OnceLock::new(),
             learned_tier_limits: std::sync::OnceLock::new(),
             reflex_store: None,
-            retrieval_ctx: parking_lot::Mutex::new(HashMap::new()),
             task_spend: GraphTaskSpendLedger::default(),
             daily_budget: GraphDailyBudget::default(),
             stopping: tokio_util::sync::CancellationToken::new(),
@@ -727,6 +718,15 @@ impl GraphTaskDispatcher {
         HelperAgent::new(agent, target, self.pricing_snapshot())
     }
 
+    /// The agent contract of `task`, a task of `spec`'s plan, for `role`,
+    /// with the policy its plan and domain set for tool calls that act on
+    /// the outside world (9131).
+    fn task_contract(&self, role: &str, spec: &TaskExecutionSpec, task: &TaskDef) -> AgentContract {
+        let meta = self.read_plan_meta(spec);
+        let outbound = outbound_policy(meta.as_ref(), task, &self.config);
+        effective_agent_contract(role, task, &self.config).with_outbound_policy(outbound)
+    }
+
     /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`
     /// when the file is missing or unreadable.
     fn read_plan_meta(&self, spec: &TaskExecutionSpec) -> Option<crate::task_parser::TaskMeta> {
@@ -987,7 +987,19 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // (`open_attempt`).
             attempt: self.worktree_generation(&task_spend_key),
         };
-        let lease = if let Some(provider) = &self.workspace_provider {
+        // A scratch_dir task works in a copy of its data outside git, in
+        // place of a worktree (9135).
+        let scratch = match task.workspace_kind(&self.config) {
+            roko_core::WorkspaceKind::ScratchDir => {
+                Some(self.lease_scratch(&task, ctx, attempt_id.attempt)?)
+            }
+            roko_core::WorkspaceKind::GitWorktree => None,
+        };
+        let provider = self
+            .workspace_provider
+            .as_ref()
+            .filter(|_| scratch.is_none());
+        let lease = if let Some(provider) = provider {
             let lease = provider
                 .acquire(&attempt_id)
                 .await
@@ -1005,10 +1017,13 @@ impl TaskDispatcher for GraphTaskDispatcher {
         } else {
             None
         };
-        // Effective working directory: worktree path if isolated, else shared workdir.
-        let effective_workdir = lease
-            .as_ref()
-            .map_or_else(|| self.workdir.clone(), |l| l.path.clone());
+        // Effective working directory: the scratch workspace or the worktree
+        // when there is one, else the shared workdir.
+        let effective_workdir = match (&scratch, &lease) {
+            (Some(scratch), _) => scratch.dir().to_path_buf(),
+            (None, Some(lease)) => lease.path.clone(),
+            (None, None) => self.workdir.clone(),
+        };
         // A git process killed mid-command (an earlier attempt's agent, a
         // crashed run) leaves `index.lock` behind, and every index-writing git
         // command here then fails: clear a stale one before the agent starts
@@ -1184,79 +1199,17 @@ impl TaskDispatcher for GraphTaskDispatcher {
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
             attempt_key: Some(attempt.key.clone()),
+            arm_set: attempt.arm_set(),
         };
-        let prompt_assembly_started = std::time::Instant::now();
         let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
             Ok(dispatch_plan) => dispatch_plan,
             Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),
         };
-        let prompt_assembly_latency_ms = prompt_assembly_started.elapsed().as_millis() as u64;
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
 
-        // ── RAG-10: Retrieval outcome telemetry (pre-gate) ───────────────
-        //
-        // Immediately after prompt assembly we know:
-        //   - which strategy was used (keyword, the only one retrieval runs)
-        //   - how many knowledge entries were retrieved (diagnostics.knowledge_ids)
-        //   - the query text (task title + description)
-        //   - prompt assembly latency (covers neuro knowledge retrieval)
-        //
-        // We record a pre-gate record now and a settled record after verify.
-        {
-            let results_count = dispatch_plan.prompt.diagnostics.knowledge_ids.len();
-            let query = format!(
-                "{} {}",
-                task.title,
-                task.description.as_deref().unwrap_or("")
-            )
-            .trim()
-            .to_string();
-
-            // `collect_neuro_knowledge_cached` always retrieves by keyword. The
-            // RAG-11 A/A experiment, which drew a strategy label after the
-            // prompt was built and never applied it, is gone (G72).
-            let strategy = roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string();
-
-            // Stash for gate-settlement below.
-            self.retrieval_ctx.lock().insert(
-                retry_key.clone(),
-                (
-                    strategy.clone(),
-                    query.clone(),
-                    results_count,
-                    prompt_assembly_latency_ms,
-                ),
-            );
-
-            // Write the pre-gate record (best-effort, non-blocking).
-            if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
-                let record = roko_learn::retrieval_outcome::RetrievalOutcomeRecord::pre_gate(
-                    &spec.plan_id,
-                    &task.id,
-                    &query,
-                    &strategy,
-                    results_count,
-                )
-                .with_latency_ms(prompt_assembly_latency_ms);
-                crate::background_writes::spawn(&path.clone(), async move {
-                    if let Err(error) =
-                        roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(&path)
-                            .without_fsync()
-                            .append(&record)
-                            .await
-                    {
-                        tracing::warn!(
-                            %error,
-                            "RAG-10: pre-gate retrieval outcome write failed (best-effort)"
-                        );
-                    }
-                });
-            }
-        }
-
-        let contract = effective_agent_contract(role, &task, &self.config);
+        let contract = self.task_contract(role, spec, &task);
         let base_timeout_ms =
             base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         // The last attempt ran out of time with partial work on disk: give
@@ -2232,6 +2185,15 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
 
     pub(super) fn no_auto_fix(config: &mut RokoConfig) {
         config.gates.cargo_fix_enabled = false;
+    }
+
+    /// [`no_auto_fix`] in maximize mode (`[experiments] maximize`): no loop
+    /// withholds its content and no section is left out, so each prompt
+    /// carries the learned content it retrieved, whatever arms the day's
+    /// draw gives its chain.
+    pub(super) fn no_auto_fix_maximize(config: &mut RokoConfig) {
+        no_auto_fix(config);
+        config.experiments.maximize = true;
     }
 
     /// Like [`make_streaming_dispatcher`], with a config tweak and feedback.

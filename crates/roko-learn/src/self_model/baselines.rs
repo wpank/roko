@@ -220,12 +220,11 @@ impl RoutingPolicy for ProductionLadder {
     fn start(&mut self, task: &RouteTask) -> Option<String> {
         let tier = TaskTier::parse(&task.tier).unwrap_or_default();
         let arms = &self.arms;
-        let resolved = self.config.resolve(
-            &task.role,
-            tier,
-            task.rung_hint.as_deref(),
-            |model| arms.contains_key(model),
-        )?;
+        let resolved =
+            self.config
+                .resolve(&task.role, tier, task.rung_hint.as_deref(), |model| {
+                    arms.contains_key(model)
+                })?;
         self.usable = resolved
             .usable
             .iter()
@@ -287,7 +286,10 @@ impl RouterPolicy {
         if models.is_empty() {
             return None;
         }
-        let slugs = models.iter().map(|(slug, _, _)| (*slug).to_string()).collect();
+        let slugs = models
+            .iter()
+            .map(|(slug, _, _)| (*slug).to_string())
+            .collect();
         Some(Self {
             router: CascadeRouter::new(slugs),
             health: ProviderHealthRegistry::new(),
@@ -361,7 +363,8 @@ impl RoutingPolicy for RouterPolicy {
         if let Some(index) = self.router.model_index_for_slug(&model) {
             let features = self.context.to_features_for_model(Some(model.as_str()));
             let reward = if result.passed { 1.0 } else { 0.0 };
-            self.router.observe_outcome(features, index, reward, result.passed);
+            self.router
+                .observe_outcome(features, index, reward, result.passed);
         }
         if result.passed || self.attempts > K_MAX {
             return None;
@@ -482,7 +485,10 @@ mod tests {
         let results = [FAIL; 8];
         let tried = run(&mut ladder, &task("focused"), &results);
         assert_eq!(tried, ["cheap", "cheap", "mid", "mid", "strong", "strong"]);
-        assert!(!tried.iter().any(|arm| arm == "top"), "never more than two climbs");
+        assert!(
+            !tried.iter().any(|arm| arm == "top"),
+            "never more than two climbs"
+        );
 
         // An architectural task starts on `top` and stops once it has failed there twice.
         let mut ladder = default_ladder();
@@ -499,7 +505,10 @@ mod tests {
             rung_hint: Some("mid".to_string()),
             ..task("focused")
         };
-        assert_eq!(run(&mut ladder, &hinted, &[FAIL, passed, FAIL]), ["mid", "mid"]);
+        assert_eq!(
+            run(&mut ladder, &hinted, &[FAIL, passed, FAIL]),
+            ["mid", "mid"]
+        );
     }
 
     #[test]
@@ -518,7 +527,10 @@ mod tests {
             ("claude-sonnet-4-6", "anthropic", "top"),
         ];
         let mut policy = RouterPolicy::new(&models).expect("models");
-        let slugs = models.iter().map(|(slug, _, _)| (*slug).to_string()).collect();
+        let slugs = models
+            .iter()
+            .map(|(slug, _, _)| (*slug).to_string())
+            .collect();
         let twin = CascadeRouter::new(slugs);
         let health = ProviderHealthRegistry::new();
         let providers: HashMap<String, String> = models
@@ -607,6 +619,9 @@ mod tests {
             },
         ];
         // cheap: $0.06 a pass; top: $0.30.
-        assert_eq!(StaticArm::best_single(&train), Some(StaticArm::new("cheap")));
+        assert_eq!(
+            StaticArm::best_single(&train),
+            Some(StaticArm::new("cheap"))
+        );
     }
 }

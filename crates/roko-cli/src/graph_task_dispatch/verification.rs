@@ -565,7 +565,6 @@ impl GraphTaskDispatcher {
                 self.publish_verify_run(spec, task, &effective_workdir, &ran_steps);
                 if failures.is_empty() {
                     self.gate_retry_context.clear(&spec.plan_id, &task.id);
-                    self.retrieval_ctx.lock().remove(&retry_key);
                     self.forget_diff_base(attempt_key);
                     return Ok(if kinds.leaves_unverified(!steps.is_empty()) {
                         TaskGateVerdict::Unverified
@@ -1025,38 +1024,6 @@ impl GraphTaskDispatcher {
                 // No post-gate reflection is generated (decision 4108): the
                 // retry already carries the raw gate output and the
                 // diagnosis above, and nothing read the lessons.
-                // ── RAG-10: Retrieval outcome settlement (gate fail) ─────
-                {
-                    let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
-                    if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
-                        // RAG-10: write settled record.
-                        if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
-                            let record =
-                                roko_learn::retrieval_outcome::RetrievalOutcomeRecord::settled(
-                                    &spec.plan_id,
-                                    &task.id,
-                                    &query,
-                                    &strategy,
-                                    results_count,
-                                    false,
-                                )
-                                .with_latency_ms(latency_ms);
-                            crate::background_writes::spawn(&path.clone(), async move {
-                                if let Err(error) =
-                                    roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(&path)
-                                        .without_fsync()
-                                        .append(&record)
-                                        .await
-                                {
-                                    tracing::warn!(
-                                        %error,
-                                        "RAG-10: gate-fail retrieval outcome write failed (best-effort)"
-                                    );
-                                }
-                            });
-                        }
-                    }
-                }
                 return Err(RokoError::Verify {
                     gate: "graph-verify".to_string(),
                     message: summary,
@@ -1069,41 +1036,8 @@ impl GraphTaskDispatcher {
                 step_count = steps.len(),
                 "all graph verify steps passed"
             );
-            // ── RAG-10: Retrieval outcome settlement (gate pass) ──────────
-            {
-                let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
-                if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
-                    // RAG-10: write settled record.
-                    if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
-                        let record =
-                            roko_learn::retrieval_outcome::RetrievalOutcomeRecord::settled(
-                                &spec.plan_id,
-                                &task.id,
-                                &query,
-                                &strategy,
-                                results_count,
-                                true,
-                            )
-                            .with_latency_ms(latency_ms);
-                        crate::background_writes::spawn(&path.clone(), async move {
-                            if let Err(error) =
-                                roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(&path)
-                                    .without_fsync()
-                                    .append(&record)
-                                    .await
-                            {
-                                tracing::warn!(
-                                    %error,
-                                    "RAG-10: pass retrieval outcome write failed (best-effort)"
-                                );
-                            }
-                        });
-                    }
-                }
-            }
             // Clear any stale gate retry context on success.
             self.gate_retry_context.clear(&spec.plan_id, &task.id);
-            self.retrieval_ctx.lock().remove(&retry_key);
         }
 
         self.forget_diff_base(attempt_key);

@@ -1,7 +1,6 @@
 //! `roko experiment` subcommands.
 
 use anyhow::{Context as _, Result, bail};
-use chrono::Utc;
 use clap::Subcommand;
 use roko_learn::model_experiment::{ModelExperiment, ModelExperimentStore, ModelVariant};
 use roko_learn::prompt_experiment::ExperimentStatus;
@@ -101,19 +100,10 @@ fn cmd_model_create(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let experiment = ModelExperiment {
-        experiment_id: id.clone(),
-        description: format!("Model A/B experiment for {role}"),
-        role: Some(role),
-        task_category: None,
-        variants,
-        stats: Default::default(),
-        status: ExperimentStatus::Running,
-        winner_id: None,
-        min_trials_per_variant: min_trials,
-        min_effect_size: 0.05,
-        created_at: Utc::now().to_rfc3339(),
-    };
+    let description = format!("Model A/B experiment for {role}");
+    let mut experiment = ModelExperiment::new(id.clone(), description, variants);
+    experiment.role = Some(role);
+    experiment.min_trials_per_variant = min_trials;
 
     store.register(experiment);
     store
@@ -228,19 +218,15 @@ fn cmd_model_show(cli: &Cli, id: String) -> Result<i32> {
                 "winner_id": experiment.winner_id.clone(),
                 "min_trials_per_variant": experiment.min_trials_per_variant,
                 "min_effect_size": experiment.min_effect_size,
+                "alpha": experiment.alpha,
                 "created_at": experiment.created_at.clone(),
                 "total_trials": total_trials,
+                "observations": experiment.observations.len(),
                 "variants": experiment
                     .variants
                     .iter()
                     .map(|variant| {
                         let stats = experiment.stats.get(&variant.id).cloned().unwrap_or_default();
-                        let ucb_score = if stats.trials == 0 || total_trials == 0 {
-                            serde_json::Value::Null
-                        } else {
-                            serde_json::json!(model_variant_ucb_score(&stats, total_trials))
-                        };
-
                         serde_json::json!({
                             "id": variant.id.clone(),
                             "model_key": variant.model_key.clone(),
@@ -256,7 +242,7 @@ fn cmd_model_show(cli: &Cli, id: String) -> Result<i32> {
                                 "avg_cost_usd": stats.avg_cost_usd,
                                 "cost_per_success": stats.cost_per_success,
                                 "avg_duration_ms": stats.avg_duration_ms,
-                                "ucb_score": ucb_score,
+                                "observations": variant_observations(experiment, &variant.id),
                             },
                         })
                     })
@@ -314,15 +300,23 @@ fn model_experiments_path(workdir: &Path) -> PathBuf {
         .join("model-experiments.json")
 }
 
+/// The randomized observations of `variant_id` the conclusion rule counts.
+fn variant_observations(experiment: &ModelExperiment, variant_id: &str) -> usize {
+    experiment
+        .observations
+        .iter()
+        .filter(|observation| observation.variant_id == variant_id)
+        .count()
+}
+
 fn render_model_experiment_table(experiment: &ModelExperiment) -> String {
-    let total_trials: u64 = experiment.stats.values().map(|stats| stats.trials).sum();
     let headers = [
         "Variant".to_string(),
         "Trials".to_string(),
         "Pass %".to_string(),
         "Avg Cost".to_string(),
         "$/Success".to_string(),
-        "UCB Score".to_string(),
+        "Draws".to_string(),
     ];
     let mut rows = Vec::with_capacity(experiment.variants.len());
 
@@ -332,18 +326,13 @@ fn render_model_experiment_table(experiment: &ModelExperiment) -> String {
             .get(&variant.id)
             .cloned()
             .unwrap_or_default();
-        let ucb_score = if stats.trials == 0 || total_trials == 0 {
-            "∞".to_string()
-        } else {
-            format!("{:.2}", model_variant_ucb_score(&stats, total_trials))
-        };
         rows.push([
             variant.id.clone(),
             stats.trials.to_string(),
             format!("{:.1}%", stats.pass_rate * 100.0),
             format!("${:.2}", stats.avg_cost_usd),
             format!("${:.2}", stats.cost_per_success),
-            ucb_score,
+            variant_observations(experiment, &variant.id).to_string(),
         ]);
     }
 
@@ -439,24 +428,11 @@ fn render_model_experiment_status(experiment: &ModelExperiment) -> String {
             }
 
             if needs.is_empty() {
-                "Status: Minimum trials met; awaiting effect-size separation".to_string()
+                "Status: Minimum trials met; awaiting separation by the confidence sequences"
+                    .to_string()
             } else {
                 format!("Status: Need {}", needs.join(", "))
             }
         }
     }
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn model_variant_ucb_score(
-    stats: &roko_learn::model_experiment::ModelVariantStats,
-    total_trials: u64,
-) -> f64 {
-    if stats.trials == 0 || total_trials == 0 {
-        return f64::INFINITY;
-    }
-
-    let mean = stats.successes as f64 / stats.trials as f64;
-    let exploration = (2.0 * (total_trials as f64).ln() / stats.trials as f64).sqrt();
-    mean + exploration
 }

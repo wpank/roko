@@ -86,6 +86,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 spec.title
             ))
         })?;
+        // Only the batch dispatch path builds scratch_dir workspaces (9135).
+        if task.workspace_kind(&self.config) == roko_core::WorkspaceKind::ScratchDir {
+            return Err(RokoError::Rejected(format!(
+                "task `{}` was not run: it works in a scratch_dir workspace, which the streaming \
+                 dispatch path does not build",
+                task.id
+            )));
+        }
         let role = task.role.as_deref().unwrap_or("implementer");
         let _in_flight = self.in_flight.register(
             &format!("{}/{}", spec.plan_id, task.id),
@@ -180,6 +188,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
             attempt_key: Some(attempt.key.clone()),
+            arm_set: attempt.arm_set(),
         };
         let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
             Ok(dispatch_plan) => dispatch_plan,
@@ -188,7 +197,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         attempt.prompt_assembled();
         self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
         self.record_planned_attempt(&mut attempt, &task, &dispatch_plan);
-        let contract = effective_agent_contract(role, &task, &self.config);
+        let contract = self.task_contract(role, spec, &task);
         let timeout_ms =
             base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         let request = AgentDispatchRequest {

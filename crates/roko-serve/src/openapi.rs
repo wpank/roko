@@ -368,6 +368,8 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         create_deployment,
         teardown_deployment,
         doctor_report,
+        list_effects,
+        decide_effect,
         sse_handler,
         ingest_event,
         ingest_event_batch,
@@ -1536,6 +1538,10 @@ doc_delete!(teardown_deployment, "/deployments/{id}", "deployments");
 
 // ── doctor (gap-c50b85) ────────────────────────────────────────────────────────────
 doc_get!(doctor_report, "/doctor", "doctor");
+
+// ── effects (backlog 9133) ─────────────────────────────────────────────────────────
+doc_get!(list_effects, "/effects", "effects");
+doc_post_value!(decide_effect, "/effects/{id}/decision", "effects");
 
 // ── event_ingest (gap-c50b85) ──────────────────────────────────────────────────────
 doc_post_value!(ingest_event, "/events/ingest", "event_ingest");

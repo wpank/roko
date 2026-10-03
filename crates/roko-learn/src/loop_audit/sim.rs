@@ -8,8 +8,20 @@
 //! rate as the contrast (C4 row 6), so it must stay runnable after the fix.
 //! `tests/fixtures/legacy_experiment_rule.json` holds the live rule's outcome
 //! on 1,000 seeded A/A sequences; [`legacy_aa_run`] reproduces each one.
+//!
+//! [`e2_run`] is E2 itself (C4): K loops with β = 0, fully exposed, run
+//! through the benefit estimators at α/K and the state machine at its
+//! default parameters (holdout schedule, dwell, N thresholds), and it counts
+//! the replications in which any loop is demoted for harm, with a
+//! Clopper–Pearson interval ([`clopper_pearson`]).
 
 use serde::{Deserialize, Serialize};
+
+use super::estimators::{BenefitConfig, BenefitEstimator, BenefitRow, ChainOutcome, PreAssignment};
+use super::exposure::ExposureEstimate;
+use super::spec::{AuditState, ReasonCode};
+use super::state::{AuditParams, Auditor, AuditorSignals, LoopEvidence, LoopStatus};
+use crate::telemetry::records::GateVerdictTag;
 
 /// Trials every arm needs before the legacy rule may conclude.
 pub const LEGACY_MIN_TRIALS: u64 = 10;
@@ -292,6 +304,223 @@ impl LegacySequence {
     }
 }
 
+/// One E2 scenario (S03 C4): K loops with no benefit (β = 0).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct E2Config {
+    /// K, the loops audited at once (α is split over them).
+    pub loops: usize,
+    /// Opportunities per loop over the horizon.
+    pub opportunities: u64,
+    /// The pass rate on both arms.
+    pub pass_rate: f64,
+    /// The share of chains that settle `Unverified` (scored 0), on both arms.
+    pub unverified_share: f64,
+    /// Opportunities between two evaluations of a loop.
+    pub evaluate_every: u64,
+    /// Seconds between two opportunities of a loop (for the dwell).
+    pub seconds_per_opportunity: i64,
+    /// The auditor's parameters; `enforced_loops` is set to `loops`.
+    pub params: AuditParams,
+}
+
+impl Default for E2Config {
+    fn default() -> Self {
+        Self {
+            loops: 8,
+            // 14 days at one opportunity every 10 minutes: S03's observe-only
+            // window.
+            opportunities: 2_016,
+            pass_rate: 0.6,
+            unverified_share: 0.2,
+            evaluate_every: 50,
+            seconds_per_opportunity: 600,
+            params: AuditParams::default(),
+        }
+    }
+}
+
+/// E2's result: the replications with a false harm-demotion, out of all.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct E2Result {
+    /// Replications run.
+    pub reps: u64,
+    /// Replications in which some loop was demoted for harm.
+    pub demoted: u64,
+    /// The family-wise rate, `demoted / reps`.
+    pub rate: f64,
+    /// Its Clopper–Pearson 95% interval.
+    pub interval: (f64, f64),
+}
+
+/// Run E2 for `reps` replications from `seed`.
+#[must_use]
+pub fn e2_run(config: &E2Config, reps: u64, seed: u64) -> E2Result {
+    let mut params = config.params;
+    params.enforced_loops = config.loops.max(1);
+    let mut demoted = 0_u64;
+    for rep in 0..reps {
+        let mut rng = SplitMix64::new(seed.wrapping_mul(0x9E37_79B9).wrapping_add(rep));
+        demoted += u64::from(e2_replication(config, params, &mut rng));
+    }
+    let rate = if reps == 0 {
+        0.0
+    } else {
+        demoted as f64 / reps as f64
+    };
+    E2Result {
+        reps,
+        demoted,
+        rate,
+        interval: clopper_pearson(demoted, reps, 0.05),
+    }
+}
+
+/// One E2 replication: whether any loop was demoted for harm.
+fn e2_replication(config: &E2Config, params: AuditParams, rng: &mut SplitMix64) -> bool {
+    let mut auditor = Auditor::new(params);
+    let estimator_config = BenefitConfig {
+        alpha: params.loop_alpha(),
+        ..BenefitConfig::default()
+    };
+    let mut loops: Vec<(LoopStatus, BenefitEstimator)> = (0..config.loops)
+        .map(|_| {
+            let status = LoopStatus::registered(true, false, false);
+            (status, BenefitEstimator::new(estimator_config))
+        })
+        .collect();
+    for t in 1..=config.opportunities {
+        for (status, estimator) in &mut loops {
+            let h = params.holdout(status.state);
+            let learned = rng.next_f64() >= h;
+            let outcome = if rng.next_f64() < config.unverified_share {
+                ChainOutcome::Tagged(GateVerdictTag::Unverified)
+            } else if rng.next_f64() < config.pass_rate {
+                ChainOutcome::Tagged(GateVerdictTag::Passed)
+            } else {
+                ChainOutcome::Failed
+            };
+            estimator.push(&BenefitRow {
+                pre: PreAssignment::default(),
+                learned_arm: learned,
+                global_off: false,
+                logged_default: h,
+                global_rate: 0.0,
+                outcome,
+                audit: None,
+                cost: None,
+            });
+            if t % config.evaluate_every.max(1) != 0 {
+                continue;
+            }
+            let evidence = LoopEvidence {
+                now: t as i64 * config.seconds_per_opportunity,
+                opportunities: t,
+                exposure: Some(full_exposure(t)),
+                beta: Some(estimator.dim()),
+                beta_pass: Some(estimator.pass()),
+                ..LoopEvidence::default()
+            };
+            let evaluation = auditor.evaluate(status, &evidence, &AuditorSignals::default());
+            if evaluation.state == AuditState::Demoted
+                && evaluation.reason == Some(ReasonCode::Harm)
+            {
+                return true;
+            }
+            status.apply(&evaluation, t);
+        }
+    }
+    false
+}
+
+/// A loop whose learned state reaches every decision: the worst case for
+/// a false demotion, since β is judged.
+fn full_exposure(opportunities: u64) -> ExposureEstimate {
+    ExposureEstimate {
+        opportunities,
+        epsilon: 1.0,
+        read: 1.0,
+        reach: 1.0,
+        honest: 1.0,
+        receipt: 1.0,
+        interval: Some((0.9, 1.0)),
+        read_failures: (0, 0, 0),
+    }
+}
+
+/// The legacy rule's A/A false-winner rate over `reps` two-arm sequences
+/// at p = 0.5, each up to 400 outcomes, from `seed`: the winners and the
+/// rate.
+#[must_use]
+pub fn legacy_false_winners(reps: u64, seed: u64) -> (u64, f64) {
+    let winners = (0..reps)
+        .filter(|rep| legacy_aa_run(seed.wrapping_add(*rep), 2, 0.5, 400).is_some())
+        .count() as u64;
+    let rate = if reps == 0 {
+        0.0
+    } else {
+        winners as f64 / reps as f64
+    };
+    (winners, rate)
+}
+
+/// The Clopper–Pearson interval at level `1 − alpha` for `successes` out of
+/// `trials`, found by bisection on the binomial tails.
+#[must_use]
+pub fn clopper_pearson(successes: u64, trials: u64, alpha: f64) -> (f64, f64) {
+    if trials == 0 {
+        return (0.0, 1.0);
+    }
+    let lower = if successes == 0 {
+        0.0
+    } else {
+        // P(X ≥ successes; p) = α/2.
+        bisect(|p| 1.0 - binomial_cdf(successes - 1, trials, p) - alpha / 2.0)
+    };
+    let upper = if successes >= trials {
+        1.0
+    } else {
+        // P(X ≤ successes; p) = α/2.
+        bisect(|p| alpha / 2.0 - binomial_cdf(successes, trials, p))
+    };
+    (lower, upper)
+}
+
+/// The p in (0, 1) where the increasing `f` crosses 0.
+fn bisect(f: impl Fn(f64) -> f64) -> f64 {
+    let (mut low, mut high) = (0.0_f64, 1.0_f64);
+    for _ in 0..80 {
+        let middle = 0.5 * (low + high);
+        if f(middle) < 0.0 {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    0.5 * (low + high)
+}
+
+/// P(X ≤ k) for X ~ Binomial(n, p), summed in log space.
+fn binomial_cdf(k: u64, n: u64, p: f64) -> f64 {
+    if p <= 0.0 {
+        return 1.0;
+    }
+    if p >= 1.0 {
+        return if k >= n { 1.0 } else { 0.0 };
+    }
+    let (ln_p, ln_q) = (p.ln(), (1.0 - p).ln());
+    let mut ln_choose = 0.0_f64;
+    let mut terms = Vec::with_capacity(k.min(n) as usize + 1);
+    for i in 0..=k.min(n) {
+        if i > 0 {
+            ln_choose += ((n - i + 1) as f64).ln() - (i as f64).ln();
+        }
+        terms.push(ln_choose + i as f64 * ln_p + (n - i) as f64 * ln_q);
+    }
+    let max = terms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let sum: f64 = terms.iter().map(|term| (term - max).exp()).sum();
+    (max + sum.ln()).exp().min(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +553,33 @@ mod tests {
             fixture.sequences.len()
         );
         assert!((rate - fixture.false_winner_rate).abs() < 1e-12);
+    }
+
+    /// S03 C4: over 10³ replications of K = 8 loops with β = 0, fully
+    /// exposed and judged at α/K, the family-wise rate of a false harm
+    /// demotion is at most 0.05, and its Clopper–Pearson upper bound at most
+    /// 0.08.
+    #[test]
+    fn e2_family_wise_false_demotion_below_alpha() {
+        let result = e2_run(&E2Config::default(), 1_000, 7);
+        println!(
+            "C4 family-wise false harm-demotion: {:.4} ({}/{}; 95% CI {:.4}–{:.4})",
+            result.rate, result.demoted, result.reps, result.interval.0, result.interval.1
+        );
+        assert!(result.rate <= 0.05, "{result:?}");
+        assert!(result.interval.1 <= 0.08, "{result:?}");
+    }
+
+    /// Clopper–Pearson at the textbook values: 0 of 10 gives (0, 0.3085),
+    /// 5 of 10 gives (0.1871, 0.8129).
+    #[test]
+    fn clopper_pearson_matches_reference_values() {
+        let (low, high) = clopper_pearson(0, 10, 0.05);
+        assert_eq!(low, 0.0);
+        assert!((high - 0.308_5).abs() < 1e-4, "{high}");
+        let (low, high) = clopper_pearson(5, 10, 0.05);
+        assert!((low - 0.187_1).abs() < 1e-4, "{low}");
+        assert!((high - 0.812_9).abs() < 1e-4, "{high}");
     }
 
     /// The splitmix64 reference values for seed 0.

@@ -86,3 +86,47 @@ either removing the field or explaining it.
   `test_planemit.py` and the golden `testdata/planemit/pinned.roko.toml`, and checking the ladder and Claude CLI
   templates and any pre-registration lock that names these hashes. The key was off (`false`), so removing it
   doesn't change behaviour.
+
+## Progress
+
+- Removed `replan_on_gate_failure = false` from `planemit.py`'s `CONFIG_TAIL` (shared by the pinned, ladder and
+  Claude CLI templates — one edit fixes all three) and from `run_roko_plan.py`'s hand-written `[learning]` block.
+  Bumped `TEMPLATE_VERSION` `planemit-3` -> `planemit-4`. Regenerated both golden files
+  (`testdata/planemit/pinned.{roko,tasks}.toml`) by calling `planemit.emit(pinned_spec(), ...)` and diffing the
+  result against the old goldens first: the only other change in either file is the version string in its header
+  comment, confirming the edit is surgical. Updated `test_planemit.py`'s pinned `TEMPLATE_VERSION`/`TEMPLATE_SHA256`
+  (new hash `24d5db33665a3537449708ff920e53ec0e182d9fd77c411c1feefd1eae4b8007`) and dropped its now-nonexistent
+  `config["learning"]["replan_on_gate_failure"]` assertion. `LADDER_TEMPLATE_SHA256`/`CLAUDE_CLI_TEMPLATE_SHA256`
+  have no hardcoded pins anywhere (only a `!=` check against `TEMPLATE_SHA256`), so nothing else needed re-pinning.
+  Removed the key (and the now-empty `[learning]` section) from `demo/demo-resources/roko.toml`, and the
+  `replan_on_gate_failure` field row from `ConfigWidget.tsx`'s `learning` section (its other three fields stay).
+  Left `demo-app/src/lib/scenario-runners/archive/gate-retry.ts` untouched: already dead/archived and excluded from
+  the live scenario list, out of scope either way per the item's own Plan step 3.
+- Grep for a pre-registration lock or doc naming the old hash or version: the old hash
+  (`7da8ed4b6f1a7dc39d9c957ef48250c2171185d4b703381e10cc510140e7d910`) appeared nowhere outside `test_planemit.py`
+  (now updated); no pre-registration lock file references it. The old version string (`"planemit-3"`) appears in
+  one closed item's historical note (`work/done/gap-4ec59f-...md:279`, a descriptive aside, not a pin — left as is,
+  out of scope) and in `docs/v1`/`docs/v2`'s roko-config documentation of this key's pre-removal behaviour, which
+  documents roko's own schema (unrelated to ViabilityBench) in doc trees already known-historical; `docs/v3`
+  already documents the key as removed. Per instructions, `docs/whitepaper/*` and `tmp/cybernetic-harness/paper/*`
+  were not touched or checked further.
+- Verify command passes: no live location references the key, and `test_planemit.py` is 10 passed/1 skipped
+  without a binary, 11 passed with `VB_TEST_ROKO_BIN` set (the `real_roko`-marked ladder-validation test). Ran the
+  other three test files that import `planemit`/`run_roko_plan` (`test_run_roko.py`, `test_run_roko_routed.py`,
+  `test_run_roko_plan.py`) as a regression check: all pass, zero collateral change.
+- Ran the shakedown suite (3314) for real verdicts with `VB_TEST_ROKO_BIN` set to the given copy of main's binary
+  (`823f2cfca`-era) and `VB_REQUIRE_REAL_ROKO=1`: setup no longer fails (confirming this fix unblocks the suite).
+  5 of 8 pass (D2, D4, D5, D6, D10). 3 fail:
+  - **D1** (blank answer isolation, G01): isolation itself is fixed (>= 2 attempts run after the blank reply), but
+    the task's final verdict is `gate_failed`, not `completed` (turns=4, cost=$0.0024 — real work was metered).
+    Points at the gate-rerun path for a recovered/retried attempt, not the isolation logic:
+    `crates/roko-cli/src/runner/gate_dispatch.rs` (`run_gate_once`) or the retry loop in
+    `crates/roko-cli/src/graph_task_dispatch.rs`.
+  - **D3** (ladder escalation on a provider 500, G12) and **D7** (ladder escalation on a 401/auth failure, G04)
+    fail with the same signature: `model_dispatched` on every recorded attempt stays the cheap rung
+    (`gpt-oss-120b`), but the metering proxy's own `model_requested`/`model_reported` fields show the wire traffic
+    did escalate (`glm-4.7`, then `gpt-5.4-mini`) — i.e. the ladder climbs correctly on the wire, but the verdict's
+    `model_dispatched` bookkeeping does not follow it, so the run ends `infra_error` (`model_mismatch`) instead of
+    recording a clean escalation. Both likely share one root cause. Code path: `model_dispatched` is written once,
+    from `dispatch.target.model_slug`, at `crates/roko-cli/src/graph_task_dispatch/attempt.rs:918`; rung
+    substitution is decided in `crates/roko-cli/src/graph_task_dispatch/ladder.rs`. Not fixed, per instructions.

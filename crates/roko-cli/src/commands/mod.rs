@@ -10,6 +10,7 @@ pub mod config_cmd;
 pub mod dashboard;
 pub mod dev;
 pub use roko_cli::commands::diagnose;
+pub mod effects;
 pub mod experiment;
 pub mod feed;
 pub mod github;

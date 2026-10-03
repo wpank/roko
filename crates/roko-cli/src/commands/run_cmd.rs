@@ -404,6 +404,9 @@ async fn run_plan_dir(
         return Ok(EXIT_AGENT_FAILURE);
     }
 
+    // Neither worktree flag: the run follows `[runner] worktree_per_task`,
+    // resolved as `roko plan run` resolves it (backlog 3112).
+    let (worktree_flag, no_worktree_flag) = (false, false);
     let plan_cmd = PlanCmd::Run {
         plans_dir,
         engine: PlanEngine::default(),
@@ -426,9 +429,8 @@ async fn run_plan_dir(
         screenshot_interval: 60,
         screenshot_dir: None,
         batch_size: None,
-        // Neither flag: the run follows `[runner] worktree_per_task`.
-        worktree_per_task: false,
-        no_worktree_per_task: false,
+        worktree_per_task: worktree_flag,
+        no_worktree_per_task: no_worktree_flag,
         rich_topology: false,
         // A one-task run learns as usual (2219: `--frozen-learning` is a
         // `plan run` flag).
@@ -751,7 +753,11 @@ pub(crate) async fn run_plan_execution(
         cli_model_override: cli.model.clone(),
         dangerously_skip_permissions: false,
         log_file: None,
-        worktree_per_task: false,
+        // `[runner] worktree_per_task`, as `roko plan run` resolves it with no
+        // flag (backlog 3113); the run then ends with the merge hint.
+        worktree_per_task: roko_cli::graph_execution::batch::resolve_worktree_per_task(
+            None, workdir,
+        ),
         worktree_per_task_explicit: false,
         rich_topology: false,
         promote: None,

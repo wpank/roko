@@ -99,6 +99,8 @@ pub struct DomainProfile {
     pub gate_config: Option<GateProfileConfig>,
     pub pack: Option<String>,           // A [gates.packs.<name>] (9125)
     pub role_identity: Option<String>,  // One line that leads the prompt (9125)
+    pub outbound: Option<OutboundPolicy>, // allow, stage or deny (9131)
+    pub workspace: Option<WorkspaceKind>, // git_worktree or scratch_dir (9134)
     pub extra: HashMap<String, toml::Value>,
 }
 ```
@@ -111,6 +113,40 @@ built-in tool set (`coding`, `chain`, `research` or `general`, from
 `roko_std::roles`) the task's agent gets; and its `role_identity` leads the task's
 prompt. Plan runs ignore `model`, `effort` and `max_iterations`, and log a warning
 when a profile sets them: the tier ladder picks each task's model.
+
+Outbound effects (9131): a tool call that sends, posts, pays or changes a remote
+system (`roko_agent::safety::effects::is_outbound_effect`: an MCP tool that is
+destructive, or open-world and not read-only, with an omitted MCP hint taking the
+spec's default; a plugin tool with network and write access) follows the task's
+outbound policy. `allow` runs it, `deny` refuses it, and `stage` holds it for a
+person's approval in `.roko/state/effect-holds/<run>/<effect_id>.json` (mode 0600)
+and tells the agent it has not run. The policy is the plan's `[meta] outbound`,
+which a chat host's `roko run` sets to `stage`; else the profile's `outbound`;
+else decision 9107's default, `stage` in the `ops` domain and `allow` elsewhere.
+Only in-process tool loops are covered: CLI agents such as Claude Code run their
+own tools.
+
+Workspace kinds (9134): a task's attempts work in a git worktree unless the task,
+or the profile of its domain, sets `workspace = "scratch_dir"`: a scratch copy of
+the data the task's `files` name, outside git. `roko plan validate` refuses a
+`scratch_dir` task that names no data (PLAN_048) or names a path git tracks
+(PLAN_049). A `scratch_dir` attempt (9135) works in
+`.roko/scratch/<run>/<task>/<generation>/`: a copy of the files, directories and
+globs its `files` name, cloned copy-on-write where the file system can (never
+hard-linked), with a SHA-256 manifest of the base beside it and, once the attempt
+ends, one of the result. Its agent and verify steps run there, and retries resume
+there. The directory is kept after the attempt: copying an accepted attempt's
+changes back into the workspace is 9136. Only the batch dispatch path builds these
+workspaces; the streaming path refuses a `scratch_dir` task.
+
+`roko effects list | show <id> | approve <id> | reject <id>` decides a held effect
+(9132). An approval replays the call once through a fresh dispatcher over the
+workspace's `.mcp.json` servers, behind an `applying` marker (a crash after the
+marker leaves the effect `ambiguous`, never retried), then runs the `receipt` rungs
+of the task's pack with the effect's JSON in the file `ROKO_EFFECT_FILE` names.
+Each decision appends a record (outcome `applied`, `failed`, `ambiguous` or
+`rejected`, the result's scrubbed tail, the receipt verdicts, no arguments) to
+`.roko/state/effects.jsonl`, and the hold is removed.
 
 ```toml
 [gates.packs.deep-research]

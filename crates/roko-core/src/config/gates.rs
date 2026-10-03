@@ -564,6 +564,32 @@ impl GatesConfig {
         }
     }
 
+    /// The files rungs check artefacts against, as paths relative to a
+    /// task's workspace: every `schema` rung's schema and every `judge`
+    /// rung's rubric that may name a file, in `[[gates.rungs]]` and every
+    /// pack. An attempt that edits one tampers with its own check
+    /// (bug-d5d55f).
+    #[must_use]
+    pub fn rung_files(&self) -> Vec<String> {
+        let mut files: Vec<String> = self
+            .custom_rungs
+            .iter()
+            .chain(self.packs.values().flat_map(|pack| &pack.rungs))
+            .filter_map(|rung| match rung.kind {
+                RungKind::Schema => rung.schema.as_deref(),
+                // A rubric is its text or the path of a file holding it.
+                RungKind::Judge => rung.rubric.as_deref().filter(|text| !text.contains('\n')),
+                _ => None,
+            })
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect();
+        files.sort();
+        files.dedup();
+        files
+    }
+
     /// The declared `command` rungs if the workspace declares rungs,
     /// otherwise built-in defaults (compile, lint, test). Rungs of the other
     /// kinds run no command, so they are not among them.

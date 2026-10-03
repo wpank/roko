@@ -307,6 +307,8 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::CriticalPathEtaUpdated { .. } => "critical_path_eta_updated",
         DashboardEvent::CostAnomaly { .. } => "cost_anomaly",
         DashboardEvent::CrossCutCascade { .. } => "cross_cut_cascade",
+        DashboardEvent::LoopHealth { .. } => "loop_health",
+        DashboardEvent::LoopTransition { .. } => "loop_transition",
         DashboardEvent::SnapshotRebased { .. } => "snapshot_rebased",
     }
 }

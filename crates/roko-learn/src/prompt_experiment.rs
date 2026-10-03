@@ -1,9 +1,13 @@
 //! Lightweight A/B testing framework for prompt section variants.
 //!
 //! Each experiment tests multiple variants of a prompt section (e.g. a
-//! system-prompt paragraph). Variant selection is bandit-driven: exploration
-//! favours under-sampled arms, then converges on the best performer once
-//! evidence is strong.
+//! system-prompt paragraph). Each attempt draws its variant uniformly at
+//! random through S01's assignment draw ([`crate::telemetry::assign`]) on the
+//! `prompt_variant` layer, and its assignment logs the draw's propensity. An
+//! experiment concludes once two-arm difference confidence sequences over
+//! those draws ([`DifferenceCs`]) put one variant above every other. The
+//! sequences stay valid however often they are checked, so monitoring after
+//! every outcome cannot manufacture a winner (S03 T8, backlog 5118).
 //!
 //! Persistence is a single JSON file managed by [`ExperimentStore`].
 
@@ -15,8 +19,23 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
+use crate::loop_audit::cs::DifferenceCs;
+use crate::telemetry::assign::draw;
+use crate::telemetry::{AssignmentUnit, AttemptKey};
+
 /// Default path for persisted static overrides derived from concluded experiments.
 pub const DEFAULT_STATIC_OVERRIDES_PATH: &str = ".roko/learn/static-overrides.json";
+
+/// The layer prompt experiments draw their variants on (S03 §4.2).
+pub const PROMPT_VARIANT_LAYER: &str = "prompt_variant";
+
+/// The family-wise level of the conclusion rule, split over the experiments
+/// running at once.
+pub const EXPERIMENT_ALPHA: f64 = 0.05;
+
+/// The seed of experiment draws: the experiment id keys the layer, and the
+/// attempt key differs from draw to draw.
+const DRAW_SEED: u64 = 0;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -60,6 +79,18 @@ pub struct VariantStats {
     pub successes: u64,
 }
 
+/// One outcome the conclusion rule counts: an attempt's result under the
+/// variant a randomized draw picked, with the propensity the draw logged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VariantObservation {
+    /// The variant the draw picked.
+    pub variant_id: String,
+    /// Whether the attempt succeeded.
+    pub success: bool,
+    /// P(the draw picks this variant), logged when it was drawn.
+    pub propensity: f64,
+}
+
 /// Immutable statistics captured when an experiment is auto-promoted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperimentArchive {
@@ -82,17 +113,6 @@ impl VariantStats {
         } else {
             self.successes as f64 / self.trials as f64
         }
-    }
-
-    /// UCB1-style score for arm selection (upper confidence bound).
-    #[allow(clippy::cast_precision_loss)]
-    fn ucb_score(&self, total_trials: u64) -> f64 {
-        if self.trials == 0 {
-            return f64::MAX; // Explore unsampled arms first.
-        }
-        let mean = self.successes as f64 / self.trials as f64;
-        let exploration = (2.0 * (total_trials as f64).ln() / self.trials as f64).sqrt();
-        mean + exploration
     }
 
     /// Wilson 95% confidence interval for the empirical success rate.
@@ -201,7 +221,7 @@ pub enum AssignmentSettlement {
 }
 
 /// Durable assignment and audit receipt for one prompt treatment.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromptExperimentAssignment {
     /// Content-addressed deterministic assignment identifier.
     pub assignment_id: String,
@@ -229,6 +249,12 @@ pub struct PromptExperimentAssignment {
     /// Observed outcome, present only for [`PromptAssignmentState::Observed`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub success: Option<bool>,
+    /// P(this variant) under the draw that picked it, logged when it was
+    /// prepared: 1/k over the k active variants of a running experiment, 1
+    /// for a concluded experiment's winner. `None` on receipts written before
+    /// backlog 5118.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub propensity: Option<f64>,
     /// Whether this treatment was assigned while the experiment was running.
     /// Concluded sticky winners remain auditable but never reserve or update a
     /// learning trial.
@@ -238,7 +264,7 @@ pub struct PromptExperimentAssignment {
 
 /// Durable attempt bucket used to make preparation, dispatch, and settlement
 /// idempotent across process crashes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct PromptAttemptAssignments {
     attempt_key: PromptAttemptKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -299,6 +325,21 @@ pub struct PromptExperiment {
     /// Final statistics retained after automatic promotion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive: Option<ExperimentArchive>,
+    /// This experiment's share of [`EXPERIMENT_ALPHA`]: α over the
+    /// experiments running when the store last split it, never raised.
+    #[serde(default = "default_alpha")]
+    pub alpha: f64,
+    /// The randomized observations the conclusion rule counts, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observations: Vec<VariantObservation>,
+    /// The conclusion rule over `observations`, rebuilt after a load.
+    #[serde(skip)]
+    rule: Option<ConclusionRule>,
+}
+
+/// A new experiment's α share: all of it.
+pub(crate) const fn default_alpha() -> f64 {
+    EXPERIMENT_ALPHA
 }
 
 impl PromptExperiment {
@@ -324,12 +365,18 @@ impl PromptExperiment {
             min_trials_per_variant: 10,
             min_effect_size: 0.1,
             archive: None,
+            alpha: EXPERIMENT_ALPHA,
+            observations: Vec::new(),
+            rule: None,
         }
     }
 
-    /// Select the next variant to use via UCB1.
+    /// The variant for a caller without an attempt key: a concluded
+    /// experiment's winner, else the control, its first active variant.
+    /// Without a key there is no draw to log, so an unkeyed caller never runs
+    /// a treatment and its outcomes never reach the conclusion rule.
     ///
-    /// Returns `None` if the experiment is concluded.
+    /// Returns `None` when the experiment has no such variant.
     pub fn assign_variant(&self) -> Option<&PromptVariant> {
         if self.status == ExperimentStatus::Concluded {
             // Return the winner if concluded.
@@ -338,45 +385,77 @@ impl PromptExperiment {
                 .as_ref()
                 .and_then(|wid| self.variants.iter().find(|v| v.id == *wid));
         }
+        self.variants.iter().find(|variant| variant.active)
+    }
 
-        let total: u64 = self.stats.values().map(|s| s.trials).sum();
-        let mut best_variant = None;
-        let mut best_score = f64::NEG_INFINITY;
+    /// Draw the variant of a running experiment for `attempt_key`: uniform
+    /// over the active variants in id order, on [`PROMPT_VARIANT_LAYER`] keyed
+    /// by the experiment id, with the attempt as the unit. Returns the variant
+    /// and its propensity 1/k, or `None` without an active variant.
+    #[must_use]
+    pub fn draw_variant(&self, attempt_key: &PromptAttemptKey) -> Option<(&PromptVariant, f64)> {
+        let arms = self.arms();
+        let unit = AssignmentUnit::Attempt.unit_key(&AttemptKey::from(attempt_key.clone()));
+        let (index, propensity) =
+            draw_uniform(PROMPT_VARIANT_LAYER, &self.experiment_id, &unit, arms.len())?;
+        Some((arms[index], propensity))
+    }
 
-        for variant in &self.variants {
-            if !variant.active {
-                continue;
-            }
-            let stats = self.stats.get(&variant.id).cloned().unwrap_or_default();
-            let score = stats.ucb_score(total);
-            if score > best_score {
-                best_score = score;
-                best_variant = Some(variant);
-            }
-        }
-
-        best_variant
+    /// The active variants with statistics, in id order: the arms of the draw
+    /// and of the conclusion rule.
+    fn arms(&self) -> Vec<&PromptVariant> {
+        let mut arms: Vec<&PromptVariant> = self
+            .variants
+            .iter()
+            .filter(|variant| variant.active && self.stats.contains_key(&variant.id))
+            .collect();
+        arms.sort_by(|left, right| left.id.cmp(&right.id));
+        arms
     }
 
     /// Record an outcome for a variant. Returns true if the experiment concluded.
+    ///
+    /// The outcome counts as a trial, but it carries no logged propensity, so
+    /// the conclusion rule never sees it ([`Self::record_observation`]).
     pub fn record_outcome(&mut self, variant_id: &str, success: bool) -> bool {
-        if let Some(stats) = self.stats.get_mut(variant_id) {
-            stats.trials += 1;
-            if success {
-                stats.successes += 1;
-            }
-        }
+        self.record(variant_id, success, None)
+    }
 
-        // Check for conclusion.
-        if self.status == ExperimentStatus::Running {
-            if let Some(winner) = self.check_conclusion() {
-                self.status = ExperimentStatus::Concluded;
-                self.winner_id = Some(winner);
-                self.archive = Some(self.build_archive());
-                return true;
-            }
+    /// Record a randomized observation: the outcome of an attempt under the
+    /// variant [`Self::draw_variant`] picked, at the propensity its assignment
+    /// logged. Returns true if the experiment concluded.
+    pub fn record_observation(&mut self, variant_id: &str, success: bool, propensity: f64) -> bool {
+        self.record(variant_id, success, Some(propensity))
+    }
+
+    /// Count a trial for `variant_id`, log a running experiment's observation
+    /// when it has a propensity in (0, 1], and conclude when the rule
+    /// declares a winner.
+    fn record(&mut self, variant_id: &str, success: bool, propensity: Option<f64>) -> bool {
+        let Some(stats) = self.stats.get_mut(variant_id) else {
+            return false;
+        };
+        stats.trials += 1;
+        if success {
+            stats.successes += 1;
         }
-        false
+        if self.status != ExperimentStatus::Running {
+            return false;
+        }
+        if let Some(propensity) = propensity.filter(|p| *p > 0.0 && *p <= 1.0) {
+            self.observations.push(VariantObservation {
+                variant_id: variant_id.to_string(),
+                success,
+                propensity,
+            });
+        }
+        let Some(winner) = self.conclusion() else {
+            return false;
+        };
+        self.status = ExperimentStatus::Concluded;
+        self.winner_id = Some(winner);
+        self.archive = Some(self.build_archive());
+        true
     }
 
     /// Record a numeric metric for a variant.
@@ -393,81 +472,27 @@ impl PromptExperiment {
         }
     }
 
-    /// Check if we have enough data to declare a winner.
-    ///
-    /// Requires enough evidence, a practically meaningful effect, and either
-    /// p < 0.05 or non-overlapping Wilson 95% intervals after 50 total trials.
-    fn check_conclusion(&self) -> Option<String> {
-        let active_stats: Vec<(&str, &VariantStats)> = self
-            .variants
-            .iter()
-            .filter(|v| v.active)
-            .filter_map(|v| self.stats.get(&v.id).map(|s| (v.id.as_str(), s)))
+    /// The winner the rule declares, if any. A lone active variant wins at
+    /// once, as there is nothing to compare it with. Otherwise, once every
+    /// active variant has `min_trials_per_variant` trials, the winner is the
+    /// variant whose difference CS against every other lies above 0, with an
+    /// estimated lead of at least `min_effect_size` over each.
+    fn conclusion(&mut self) -> Option<String> {
+        let arms: Vec<String> = self
+            .arms()
+            .into_iter()
+            .map(|variant| variant.id.clone())
             .collect();
-
-        if active_stats.len() < 2 {
-            return active_stats.first().map(|(id, _)| (*id).to_string());
+        if arms.len() < 2 {
+            return arms.into_iter().next();
         }
-
-        // All variants must meet minimum trials.
-        if active_stats
-            .iter()
-            .any(|(_, s)| s.trials < self.min_trials_per_variant)
-        {
+        let min_trials = self.min_trials_per_variant;
+        let trials = |id: &String| self.stats.get(id).map_or(0, |stats| stats.trials);
+        if arms.iter().any(|id| trials(id) < min_trials) {
             return None;
         }
-
-        // Sort by success rate descending.
-        let mut ranked: Vec<_> = active_stats
-            .iter()
-            .map(|(id, s)| (*id, s.success_rate()))
-            .collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        let (best_id, best_rate) = ranked[0];
-        let (_, second_rate) = ranked[1];
-
-        let best_stats = active_stats
-            .iter()
-            .find(|(id, _)| *id == best_id)
-            .map(|(_, stats)| *stats)?;
-        let second_id = ranked[1].0;
-        let second_stats = active_stats
-            .iter()
-            .find(|(id, _)| *id == second_id)
-            .map(|(_, stats)| *stats)?;
-        let (_, p_value) = chi_squared_test(best_stats, second_stats);
-        let significant = p_value < 0.05;
-        let early = self.early_stopping_check().as_deref() == Some(best_id);
-
-        if best_rate - second_rate >= self.min_effect_size && (significant || early) {
-            Some(best_id.to_string())
-        } else {
-            None
-        }
-    }
-
-    /// Return the likely winner when Wilson 95% intervals no longer overlap
-    /// after at least 50 observations across active variants.
-    #[must_use]
-    pub fn early_stopping_check(&self) -> Option<String> {
-        let mut ranked = self
-            .variants
-            .iter()
-            .filter(|variant| variant.active)
-            .filter_map(|variant| {
-                self.stats
-                    .get(&variant.id)
-                    .map(|stats| (&variant.id, stats))
-            })
-            .collect::<Vec<_>>();
-        if ranked.len() < 2 || ranked.iter().map(|(_, stats)| stats.trials).sum::<u64>() < 50 {
-            return None;
-        }
-        ranked.sort_by(|a, b| b.1.success_rate().total_cmp(&a.1.success_rate()));
-        let best_interval = ranked[0].1.confidence_interval_95();
-        let second_interval = ranked[1].1.confidence_interval_95();
-        (best_interval.0 > second_interval.1).then(|| ranked[0].0.clone())
+        let (alpha, min_effect) = (self.alpha, self.min_effect_size);
+        ConclusionRule::judge(&mut self.rule, arms, alpha, &self.observations, min_effect)
     }
 
     fn build_archive(&self) -> ExperimentArchive {
@@ -595,6 +620,166 @@ impl PromptExperiment {
     }
 }
 
+/// Draw one of `arms` arms uniformly for `unit_key` on `layer`, with
+/// `experiment_id` as the epoch, through S01's assignment draw: the index and
+/// its propensity 1/`arms`, or `None` without an arm.
+pub(crate) fn draw_uniform(
+    layer: &str,
+    experiment_id: &str,
+    unit_key: &str,
+    arms: usize,
+) -> Option<(usize, f64)> {
+    if arms == 0 {
+        return None;
+    }
+    let u = draw(DRAW_SEED, layer, experiment_id, unit_key);
+    let index = ((u * arms as f64) as usize).min(arms - 1);
+    Some((index, 1.0 / arms as f64))
+}
+
+/// The conclusion rule over an experiment's randomized observations: one
+/// two-arm difference CS ([`DifferenceCs`]) per pair of arms, each at the
+/// experiment's α share split over the pairs, fed in observation order.
+#[derive(Debug, Clone)]
+pub(crate) struct ConclusionRule {
+    /// The arms (variant ids, in id order) the pairs are over.
+    arms: Vec<String>,
+    /// The α share the rule was built at.
+    alpha: f64,
+    /// Observations taken so far, counted or skipped.
+    consumed: usize,
+    /// One CS per pair of arms.
+    pairs: Vec<ArmPair>,
+}
+
+/// One pair of arms: the CS on the first arm's lead over the second, and the
+/// count and sum of its IPW increments.
+#[derive(Debug, Clone)]
+struct ArmPair {
+    first: usize,
+    second: usize,
+    cs: DifferenceCs,
+    n: u64,
+    sum: f64,
+}
+
+impl ConclusionRule {
+    /// The winner the rule declares over `observations` for `arms`, at α
+    /// share `alpha` (capped at [`EXPERIMENT_ALPHA`]). The cached `rule` is
+    /// rebuilt when the arms or the share changed, then fed the observations
+    /// it has not taken yet.
+    pub(crate) fn judge(
+        rule: &mut Option<Self>,
+        arms: Vec<String>,
+        alpha: f64,
+        observations: &[VariantObservation],
+        min_effect: f64,
+    ) -> Option<String> {
+        let alpha = if alpha > 0.0 && alpha < EXPERIMENT_ALPHA {
+            alpha
+        } else {
+            EXPERIMENT_ALPHA
+        };
+        let stale = rule.as_ref().is_none_or(|rule| {
+            rule.arms != arms || rule.alpha != alpha || rule.consumed > observations.len()
+        });
+        if stale {
+            *rule = None;
+        }
+        let rule = rule.get_or_insert_with(|| Self::new(arms, alpha));
+        for observation in &observations[rule.consumed..] {
+            rule.push(observation);
+        }
+        rule.winner(min_effect).map(str::to_string)
+    }
+
+    /// A rule over `arms` at level `alpha`, split over the pairs.
+    fn new(arms: Vec<String>, alpha: f64) -> Self {
+        let count = arms.len();
+        let level = alpha / (count * count.saturating_sub(1) / 2).max(1) as f64;
+        let mut pairs = Vec::new();
+        for first in 0..count {
+            for second in first + 1..count {
+                pairs.push(ArmPair {
+                    first,
+                    second,
+                    cs: DifferenceCs::new(level, 1.0),
+                    n: 0,
+                    sum: 0.0,
+                });
+            }
+        }
+        Self {
+            arms,
+            alpha,
+            consumed: 0,
+            pairs,
+        }
+    }
+
+    /// Take the next observation. One of a variant outside the arms, or one
+    /// drawn over another number of arms (its propensity is not 1/k), is
+    /// skipped.
+    fn push(&mut self, observation: &VariantObservation) {
+        self.consumed += 1;
+        let variant = observation.variant_id.as_str();
+        let Some(arm) = self.arms.iter().position(|id| id == variant) else {
+            return;
+        };
+        if (observation.propensity * self.arms.len() as f64 - 1.0).abs() > 1e-9 {
+            return;
+        }
+        let y = if observation.success { 1.0 } else { 0.0 };
+        for pair in &mut self.pairs {
+            if arm != pair.first && arm != pair.second {
+                continue;
+            }
+            // Uniform draws give both arms the logged propensity, so within
+            // the pair each arm has conditional propensity 1/2.
+            let first = arm == pair.first;
+            pair.cs.push(y, first, 0.5);
+            pair.n += 1;
+            pair.sum += if first { 2.0 * y } else { -2.0 * y };
+        }
+    }
+
+    /// The arm whose CS against every other arm lies above 0, with an
+    /// estimated lead of at least `min_effect` over each.
+    fn winner(&self, min_effect: f64) -> Option<&str> {
+        if self.pairs.is_empty() {
+            return None;
+        }
+        (0..self.arms.len())
+            .find(|arm| {
+                self.pairs
+                    .iter()
+                    .filter(|pair| pair.first == *arm || pair.second == *arm)
+                    .all(|pair| pair.leads(*arm, min_effect))
+            })
+            .map(|arm| self.arms[arm].as_str())
+    }
+}
+
+impl ArmPair {
+    /// Whether `arm`, one of the pair, leads the other: the CS on its lead
+    /// lies above 0, and the estimated lead is at least `min_effect`.
+    fn leads(&self, arm: usize, min_effect: f64) -> bool {
+        let Some((low, high)) = self.cs.interval() else {
+            return false;
+        };
+        if self.n == 0 {
+            return false;
+        }
+        let estimate = self.sum / self.n as f64;
+        let (low, estimate) = if arm == self.first {
+            (low, estimate)
+        } else {
+            (-high, -estimate)
+        };
+        low > 0.0 && estimate >= min_effect
+    }
+}
+
 /// Pearson chi-squared test for two binary-outcome variants.
 ///
 /// Returns `(statistic, p_value)` with one degree of freedom. Degenerate
@@ -710,6 +895,26 @@ impl ExperimentStore {
         self.experiments
             .entry(experiment.experiment_id.clone())
             .or_insert(experiment);
+        self.split_alpha();
+    }
+
+    /// Split [`EXPERIMENT_ALPHA`] over the running experiments: each share
+    /// drops to α over their count and never rises again, so the experiments
+    /// running at once share α. The retired retrieval-strategy experiment
+    /// takes no share.
+    fn split_alpha(&mut self) {
+        let running = self
+            .experiments
+            .values()
+            .filter(|experiment| experiment.status == ExperimentStatus::Running)
+            .filter(|experiment| experiment.experiment_id != Self::RETRIEVAL_STRATEGY_EXPERIMENT_ID)
+            .count();
+        let share = EXPERIMENT_ALPHA / running.max(1) as f64;
+        for experiment in self.experiments.values_mut() {
+            if experiment.status == ExperimentStatus::Running {
+                experiment.alpha = experiment.alpha.min(share);
+            }
+        }
     }
 
     /// Look up an experiment by id.
@@ -765,8 +970,12 @@ impl ExperimentStore {
 
     /// Prepare deterministic role/section treatments for one durable attempt.
     ///
-    /// Preparation reserves running-experiment arms without counting a trial.
-    /// Repeating the identical request returns the same content snapshots.
+    /// Preparation draws each running experiment's variant from the attempt
+    /// key ([`PromptExperiment::draw_variant`]), logs the draw's propensity on
+    /// the assignment, and counts no trial. Prepared and dispatched
+    /// assignments reserve their treatment until settlement, but they never
+    /// steer a later draw. Repeating the identical request returns the same
+    /// content snapshots.
     /// Multiple applicable experiments for one role/section are rejected
     /// instead of selecting by hash-map iteration order. Concluded experiments
     /// return their persisted winner as a sticky, non-learning treatment.
@@ -1001,8 +1210,10 @@ impl ExperimentStore {
             };
 
             let learning_eligible = experiment.status == ExperimentStatus::Running;
-            let variant = if learning_eligible {
-                self.select_variant_with_reservations(experiment, &attempt_key.run_id)
+            let (variant, propensity) = if learning_eligible {
+                experiment
+                    .draw_variant(attempt_key)
+                    .map(|(variant, propensity)| (variant.clone(), propensity))
                     .ok_or_else(|| {
                         PromptAssignmentError::Conflict(format!(
                             "running experiment {:?} has no active variant",
@@ -1010,7 +1221,7 @@ impl ExperimentStore {
                         ))
                     })?
             } else {
-                experiment
+                let winner = experiment
                     .winner_id
                     .as_deref()
                     .and_then(|winner_id| {
@@ -1025,7 +1236,8 @@ impl ExperimentStore {
                             "concluded experiment {:?} has no persisted winner variant",
                             experiment.experiment_id
                         ))
-                    })?
+                    })?;
+                (winner, 1.0)
             };
             if variant.section_name != *section_name {
                 return Err(PromptAssignmentError::Conflict(format!(
@@ -1052,6 +1264,7 @@ impl ExperimentStore {
                 prompt_hash: None,
                 state: PromptAssignmentState::Prepared,
                 success: None,
+                propensity: Some(propensity),
                 learning_eligible,
             });
         }
@@ -1081,88 +1294,6 @@ impl ExperimentStore {
             },
         );
         Ok(assignments)
-    }
-
-    fn select_variant_with_reservations(
-        &self,
-        experiment: &PromptExperiment,
-        current_run_id: &str,
-    ) -> Option<PromptVariant> {
-        let mut variants = experiment
-            .variants
-            .iter()
-            .filter(|variant| variant.active)
-            .collect::<Vec<_>>();
-        variants.sort_by(|left, right| left.id.cmp(&right.id));
-        let effective_trials = variants
-            .iter()
-            .map(|variant| {
-                experiment
-                    .stats
-                    .get(&variant.id)
-                    .map_or(0, |stats| stats.trials)
-                    + self.outstanding_reservations(
-                        current_run_id,
-                        &experiment.experiment_id,
-                        &variant.id,
-                    )
-            })
-            .sum::<u64>();
-
-        variants
-            .into_iter()
-            .map(|variant| {
-                let stats = experiment
-                    .stats
-                    .get(&variant.id)
-                    .cloned()
-                    .unwrap_or_default();
-                let reserved = self.outstanding_reservations(
-                    current_run_id,
-                    &experiment.experiment_id,
-                    &variant.id,
-                );
-                let effective_variant_trials = stats.trials + reserved;
-                let score = if effective_variant_trials == 0 {
-                    f64::MAX
-                } else {
-                    let exploration = (2.0 * (effective_trials.max(1) as f64).ln()
-                        / effective_variant_trials as f64)
-                        .sqrt();
-                    stats.success_rate() + exploration
-                };
-                (variant, score)
-            })
-            .max_by(|(left_variant, left_score), (right_variant, right_score)| {
-                left_score
-                    .total_cmp(right_score)
-                    // `max_by` keeps the greater item; reverse the id tie-break
-                    // so deterministic preparation chooses the lower id.
-                    .then_with(|| right_variant.id.cmp(&left_variant.id))
-            })
-            .map(|(variant, _)| variant.clone())
-    }
-
-    fn outstanding_reservations(
-        &self,
-        current_run_id: &str,
-        experiment_id: &str,
-        variant_id: &str,
-    ) -> u64 {
-        self.attempt_assignments
-            .values()
-            .filter(|bucket| bucket.attempt_key.run_id == current_run_id)
-            .flat_map(|bucket| &bucket.assignments)
-            .filter(|assignment| assignment.learning_eligible)
-            .filter(|assignment| assignment.experiment_id == experiment_id)
-            .filter(|assignment| assignment.variant_id == variant_id)
-            .filter(|assignment| {
-                matches!(
-                    assignment.state,
-                    PromptAssignmentState::Prepared | PromptAssignmentState::Dispatched
-                )
-            })
-            .count() as u64
     }
 
     fn settle_attempt_unlocked(
@@ -1202,6 +1333,7 @@ impl ExperimentStore {
                         assignment.experiment_id.clone(),
                         assignment.variant_id.clone(),
                         success,
+                        assignment.propensity,
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -1209,7 +1341,7 @@ impl ExperimentStore {
         };
 
         // Validate every scoped target before changing any statistics.
-        for (experiment_id, variant_id, _) in &observations {
+        for (experiment_id, variant_id, _, _) in &observations {
             let experiment = self.experiments.get(experiment_id).ok_or_else(|| {
                 PromptAssignmentError::Conflict(format!(
                     "assignment references missing experiment {experiment_id:?}"
@@ -1221,8 +1353,18 @@ impl ExperimentStore {
                 )));
             }
         }
-        for (experiment_id, variant_id, success) in &observations {
-            if !self.record_outcome_for_experiment(experiment_id, variant_id, *success) {
+        for (experiment_id, variant_id, success, propensity) in &observations {
+            let recorded = match propensity {
+                Some(propensity) => self.record_observation_for_experiment(
+                    experiment_id,
+                    variant_id,
+                    *success,
+                    *propensity,
+                ),
+                // Receipts written before backlog 5118 logged no propensity.
+                None => self.record_outcome_for_experiment(experiment_id, variant_id, *success),
+            };
+            if !recorded {
                 return Err(PromptAssignmentError::Conflict(format!(
                     "could not settle {experiment_id:?}/{variant_id:?}"
                 )));
@@ -1381,6 +1523,7 @@ impl ExperimentStore {
 
     /// Record an outcome by `variant_id` (searches all experiments).
     pub fn record_outcome(&mut self, variant_id: &str, success: bool) {
+        self.split_alpha();
         for experiment in self.experiments.values_mut() {
             if experiment.stats.contains_key(variant_id) {
                 experiment.record_outcome(variant_id, success);
@@ -1400,6 +1543,7 @@ impl ExperimentStore {
         variant_id: &str,
         success: bool,
     ) -> bool {
+        self.split_alpha();
         let Some(experiment) = self.experiments.get_mut(experiment_id) else {
             return false;
         };
@@ -1407,6 +1551,29 @@ impl ExperimentStore {
             return false;
         }
         experiment.record_outcome(variant_id, success);
+        true
+    }
+
+    /// Record a randomized observation for a variant in one experiment, at
+    /// the propensity its assignment logged
+    /// ([`PromptExperiment::record_observation`]).
+    ///
+    /// Returns `false` when either identifier is unknown.
+    pub fn record_observation_for_experiment(
+        &mut self,
+        experiment_id: &str,
+        variant_id: &str,
+        success: bool,
+        propensity: f64,
+    ) -> bool {
+        self.split_alpha();
+        let Some(experiment) = self.experiments.get_mut(experiment_id) else {
+            return false;
+        };
+        if !experiment.stats.contains_key(variant_id) {
+            return false;
+        }
+        experiment.record_observation(variant_id, success, propensity);
         true
     }
 
@@ -1658,6 +1825,7 @@ fn write_static_overrides(path: &Path, overrides: &BTreeMap<String, String>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::loop_audit::sim::SplitMix64;
 
     fn make_variants(section: &str) -> Vec<PromptVariant> {
         vec![
@@ -1685,25 +1853,37 @@ mod tests {
     }
 
     #[test]
-    fn experiment_selects_unsampled_first() {
-        let exp = PromptExperiment::new("test-1", "constraints", make_variants("constraints"));
-        // Both unsampled — should return first variant.
-        let v = exp.assign_variant().unwrap();
-        assert!(v.id == "a" || v.id == "b");
+    fn unkeyed_assignment_serves_the_control_then_the_winner() {
+        let mut exp = PromptExperiment::new("test-1", "constraints", make_variants("constraints"));
+        assert_eq!(exp.assign_variant().map(|v| v.id.as_str()), Some("a"));
+        exp.status = ExperimentStatus::Concluded;
+        exp.winner_id = Some("b".into());
+        assert_eq!(exp.assign_variant().map(|v| v.id.as_str()), Some("b"));
     }
 
     #[test]
-    fn experiment_concludes_when_gap_sufficient() {
+    fn experiment_concludes_when_the_sequence_separates_the_arms() {
         let mut exp = PromptExperiment::new("test-2", "style", make_variants("style"));
         exp.min_trials_per_variant = 5;
         exp.min_effect_size = 0.1;
 
-        // Give variant "a" 100% success, "b" 0%.
-        for _ in 0..5 {
-            exp.record_outcome("a", true);
-            exp.record_outcome("b", false);
+        // Variant "a" always succeeds and "b" always fails, drawn 50/50.
+        let mut concluded_at = None;
+        for observation in 1..=40_u32 {
+            let (variant, success) = if observation % 2 == 1 {
+                ("a", true)
+            } else {
+                ("b", false)
+            };
+            if exp.record_observation(variant, success, 0.5) {
+                concluded_at = Some(observation);
+                break;
+            }
         }
 
+        // Ten successes against nine failures first put the sequence's
+        // lower bound above 0.
+        assert_eq!(concluded_at, Some(19));
         assert_eq!(exp.status, ExperimentStatus::Concluded);
         assert_eq!(exp.winner_id.as_deref(), Some("a"));
         assert!(
@@ -1713,8 +1893,23 @@ mod tests {
         );
     }
 
+    /// An outcome without a logged propensity counts a trial, but the
+    /// conclusion rule never sees it: a one-sided record of 50 outcomes per
+    /// variant leaves the experiment running.
     #[test]
-    fn chi_squared_significance_and_early_stopping_identify_winner() {
+    fn unlogged_outcomes_count_trials_but_never_conclude() {
+        let mut exp = PromptExperiment::new("unlogged", "style", make_variants("style"));
+        for _ in 0..50 {
+            assert!(!exp.record_outcome("a", true));
+            assert!(!exp.record_outcome("b", false));
+        }
+        assert_eq!(exp.status, ExperimentStatus::Running);
+        assert_eq!(exp.stats["a"].trials, 50);
+        assert!(exp.observations.is_empty());
+    }
+
+    #[test]
+    fn chi_squared_test_flags_a_large_gap() {
         let strong = VariantStats {
             trials: 50,
             successes: 48,
@@ -1726,11 +1921,137 @@ mod tests {
         let (statistic, p_value) = chi_squared_test(&strong, &weak);
         assert!(statistic > 10.0);
         assert!(p_value < 0.05);
+    }
 
-        let mut experiment = PromptExperiment::new("early", "style", make_variants("style"));
-        experiment.stats.insert("a".into(), strong);
-        experiment.stats.insert("b".into(), weak);
-        assert_eq!(experiment.early_stopping_check().as_deref(), Some("a"));
+    /// S03 T8: over 10³ simulated A/A experiments (two variants with one pass
+    /// rate, 400 attempts each, drawn and judged by the rule itself) at most
+    /// 5% declare a winner. The legacy rule declared one in about a third
+    /// (`loop_audit::sim::legacy_false_winners`).
+    #[test]
+    fn prompt_experiment_aa_false_winner_rate_below_alpha() {
+        const EXPERIMENTS: u64 = 1_000;
+        const ATTEMPTS: u32 = 400;
+        let mut winners = 0_u64;
+        for rep in 0..EXPERIMENTS {
+            let mut experiment = PromptExperiment::new("aa", "aa", make_variants("aa"));
+            let mut outcomes = SplitMix64::new(rep);
+            for task in 1..=ATTEMPTS {
+                let key = PromptAttemptKey::new(format!("aa-{rep}"), "p", format!("t{task}"), 1);
+                let (variant, propensity) = experiment
+                    .draw_variant(&key)
+                    .map(|(variant, propensity)| (variant.id.clone(), propensity))
+                    .expect("a running experiment draws a variant");
+                let success = outcomes.next_f64() < 0.5;
+                if experiment.record_observation(&variant, success, propensity) {
+                    winners += 1;
+                    break;
+                }
+            }
+        }
+        let rate = winners as f64 / EXPERIMENTS as f64;
+        println!("prompt experiments: A/A false-winner rate {rate:.3} ({winners}/{EXPERIMENTS})");
+        assert!(
+            rate <= 0.05,
+            "{winners} of {EXPERIMENTS} A/A experiments declared a winner"
+        );
+    }
+
+    /// Every assignment logs its draw's propensity: 1/k for a running
+    /// experiment's k active variants, 1 for a concluded experiment's winner.
+    /// Settlement carries it into the observation the rule counts, and the
+    /// draws spread evenly over the variants.
+    #[test]
+    fn prompt_assignment_logs_propensity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "pair",
+            "constraints",
+            make_variants("constraints"),
+        ));
+        let mut triple = make_variants("style");
+        triple.push(PromptVariant {
+            id: "c".into(),
+            name: "Variant C".into(),
+            section_name: "style".into(),
+            content: "Be playful.".into(),
+            slug: None,
+            active: true,
+        });
+        store.register(PromptExperiment::new("triple", "style", triple));
+        let mut done = PromptExperiment::new("done", "tone", make_variants("tone"));
+        done.status = ExperimentStatus::Concluded;
+        done.winner_id = Some("b".into());
+        store.register(done);
+        store.save(&path).unwrap();
+
+        let key = attempt("run-logged", 1);
+        let prepared = ExperimentStore::prepare_attempt_assignments(
+            &path,
+            &key,
+            None,
+            &["constraints", "style", "tone"],
+        )
+        .unwrap();
+        let logged = |experiment_id: &str| {
+            prepared
+                .iter()
+                .find(|assignment| assignment.experiment_id == experiment_id)
+                .unwrap()
+        };
+        assert_eq!(logged("pair").propensity, Some(0.5));
+        assert_eq!(logged("triple").propensity, Some(1.0 / 3.0));
+        assert_eq!(logged("done").propensity, Some(1.0));
+        assert_eq!(logged("done").variant_id, "b");
+        for experiment_id in ["pair", "triple"] {
+            let drawn = store
+                .get(experiment_id)
+                .and_then(|experiment| experiment.draw_variant(&key))
+                .map(|(variant, _)| variant.id.clone());
+            assert_eq!(drawn.as_ref(), Some(&logged(experiment_id).variant_id));
+        }
+
+        let mut ids = prepared
+            .iter()
+            .map(|assignment| assignment.assignment_id.as_str())
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ExperimentStore::mark_attempt_dispatched(&path, &key, "logged-prompt", &ids).unwrap();
+        ExperimentStore::settle_attempt(
+            &path,
+            &key,
+            AssignmentSettlement::Observed { success: true },
+        )
+        .unwrap();
+        let reopened = ExperimentStore::load_strict(&path).unwrap();
+        let observed =
+            |experiment_id: &str| reopened.get(experiment_id).unwrap().observations.clone();
+        assert_eq!(
+            observed("triple"),
+            [VariantObservation {
+                variant_id: logged("triple").variant_id.clone(),
+                success: true,
+                propensity: 1.0 / 3.0,
+            }]
+        );
+        assert_eq!(observed("pair")[0].propensity, 0.5);
+        assert!(
+            observed("done").is_empty(),
+            "a sticky winner is not observed"
+        );
+
+        let experiment = reopened.get("triple").unwrap();
+        let mut counts = HashMap::new();
+        for task in 0..3_000 {
+            let key = PromptAttemptKey::new("uniform", "p", format!("t{task}"), 1);
+            let (variant, _) = experiment.draw_variant(&key).unwrap();
+            *counts.entry(variant.id.clone()).or_insert(0_u32) += 1;
+        }
+        for id in ["a", "b", "c"] {
+            let share = f64::from(counts[id]) / 3_000.0;
+            assert!((0.30..0.37).contains(&share), "{id}: {share}");
+        }
     }
 
     #[test]
@@ -1944,17 +2265,24 @@ mod tests {
     }
 
     #[test]
-    fn preparation_is_idempotent_and_outstanding_reservations_spread_arms() {
+    fn preparation_is_idempotent_and_draws_from_the_attempt_key() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("experiments.json");
         let mut store = ExperimentStore::new();
         let mut experiment =
             PromptExperiment::new("exp", "constraints", make_variants("constraints"));
         experiment.role = Some("implementer".into());
+        let drawn = |key: &PromptAttemptKey| {
+            experiment
+                .draw_variant(key)
+                .map(|(variant, _)| variant.id.clone())
+        };
+        let first_key = attempt("run-1", 1);
+        let second_key = attempt("run-1", 2);
+        let (first_draw, second_draw) = (drawn(&first_key), drawn(&second_key));
         store.register(experiment);
         store.save(&path).unwrap();
 
-        let first_key = attempt("run-1", 1);
         let first = ExperimentStore::prepare_attempt_assignments(
             &path,
             &first_key,
@@ -1967,6 +2295,8 @@ mod tests {
         assert_eq!(first[0].content_hash.len(), 64);
         assert!(first[0].content_snapshot.is_some());
         assert_eq!(first[0].section_name, "constraints");
+        assert_eq!(first[0].propensity, Some(0.5));
+        assert_eq!(Some(&first[0].variant_id), first_draw.as_ref());
 
         let replay = ExperimentStore::prepare_attempt_assignments(
             &path,
@@ -1977,15 +2307,16 @@ mod tests {
         .unwrap();
         assert_eq!(replay, first);
 
+        // The first attempt's reservation does not steer the second draw.
         let second = ExperimentStore::prepare_attempt_assignments(
             &path,
-            &attempt("run-1", 2),
+            &second_key,
             Some("implementer"),
             &["constraints"],
         )
         .unwrap();
         assert_eq!(second.len(), 1);
-        assert_ne!(second[0].variant_id, first[0].variant_id);
+        assert_eq!(Some(&second[0].variant_id), second_draw.as_ref());
 
         let reopened = ExperimentStore::load_strict(&path).unwrap();
         assert_eq!(
@@ -1997,44 +2328,33 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_reservations_from_an_older_run_do_not_bias_a_new_run() {
+    fn outstanding_reservations_never_change_a_draw() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("experiments.json");
+        let experiment = PromptExperiment::new("exp", "constraints", make_variants("constraints"));
         let mut store = ExperimentStore::new();
-        store.register(PromptExperiment::new(
-            "exp",
-            "constraints",
-            make_variants("constraints"),
-        ));
+        store.register(experiment.clone());
         store.save(&path).unwrap();
 
-        let old = ExperimentStore::prepare_attempt_assignments(
-            &path,
-            &attempt("old-run", 1),
-            None,
-            &["constraints"],
-        )
-        .unwrap();
-        let first_in_new_run = ExperimentStore::prepare_attempt_assignments(
-            &path,
-            &attempt("new-run", 1),
-            None,
-            &["constraints"],
-        )
-        .unwrap();
-        assert_eq!(first_in_new_run[0].variant_id, old[0].variant_id);
-
-        let second_in_new_run = ExperimentStore::prepare_attempt_assignments(
-            &path,
-            &attempt("new-run", 2),
-            None,
-            &["constraints"],
-        )
-        .unwrap();
-        assert_ne!(
-            second_in_new_run[0].variant_id,
-            first_in_new_run[0].variant_id
-        );
+        for index in 1..=5 {
+            ExperimentStore::prepare_attempt_assignments(
+                &path,
+                &attempt("old-run", index),
+                None,
+                &["constraints"],
+            )
+            .unwrap();
+        }
+        for index in 1..=5 {
+            let key = attempt("new-run", index);
+            let prepared =
+                ExperimentStore::prepare_attempt_assignments(&path, &key, None, &["constraints"])
+                    .unwrap();
+            let drawn = experiment
+                .draw_variant(&key)
+                .map(|(variant, _)| variant.id.clone());
+            assert_eq!(Some(&prepared[0].variant_id), drawn.as_ref());
+        }
 
         let reopened = ExperimentStore::load_strict(&path).unwrap();
         assert_eq!(

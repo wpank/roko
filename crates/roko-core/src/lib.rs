@@ -125,6 +125,7 @@ pub mod defaults;
 
 pub mod demurrage;
 pub mod dispatch_plan;
+pub mod disturbance;
 /// Canonical single-unit duration parser (`ms`, `s`, `m`, `h`, `d`).
 pub mod duration;
 /// Backward-compatible re-export module — canonical definitions live in [`signal`].
@@ -422,7 +423,7 @@ pub use signal_kinds::*;
 pub use task::{
     GlobalTaskId, PlanStatus, Task, TaskCategory, TaskComplexityBand, TaskContextWeight,
     TaskDomain, TaskHints, TaskMeta, TaskQualityProfile, TaskReasoningLevel, TaskSpeedPriority,
-    TaskStatus, TaskTier,
+    TaskStatus, TaskTier, WorkspaceKind,
 };
 pub use usage::{UsageObservation, UsageSource};
 // Note: tool::FailureKind (for tool-call failures) is NOT re-exported here to avoid

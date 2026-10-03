@@ -12,7 +12,7 @@ use crate::budget::{Complexity, adjusted_adaptive_budget_for};
 use crate::prompt::estimate_tokens;
 use crate::prompt::{
     COMPOSITION_MANIFEST_TAG, CompositionManifest, ContextStrategy, PromptBuild, PromptComposer,
-    PromptSection,
+    PromptSection, SectionPriority,
 };
 use crate::scorer::{GoalDirectedHeuristicScorer, SectionScorer};
 use crate::system_prompt_builder::SystemPromptBuilder;
@@ -48,6 +48,83 @@ const DEFAULT_ANTI_PATTERNS: [&str; 3] = [
     "Do not use git checkout, git switch, or git branch -m.",
     "Do not push branches directly.",
 ];
+
+/// The canonical sections no randomisation leaves out of a prompt (S02
+/// §4.4, L9).
+///
+/// They are the role's identity, the task spec, the runner context that
+/// carries the verify commands, the gate's feedback on a retry, the tool
+/// policy, and the safety rules (never check out, never push). `[sections]
+/// pinned` adds to them.
+pub const PINNED_SECTIONS: [&str; 6] = [
+    "role_identity",
+    "task_context",
+    "context_layer",
+    "gate_feedback",
+    "tool_instructions",
+    "anti_patterns",
+];
+
+/// The canonical sections the section bandit may leave out of a prompt (S02
+/// L9): those the builder puts in the High, Normal or Low band, less the
+/// pinned ones. A section in neither list is never left out.
+pub const DROPPABLE_SECTIONS: [&str; 7] = [
+    "conventions",
+    "model_format",
+    "domain_context",
+    "pheromone_signals",
+    "relevant_techniques",
+    "tool_hints",
+    "affect_guidance",
+];
+
+// The safety line holds at build time: no pinned section is droppable.
+const _: () = assert!(
+    names_disjoint(&PINNED_SECTIONS, &DROPPABLE_SECTIONS),
+    "a pinned prompt section is in DROPPABLE_SECTIONS"
+);
+
+/// Whether no name is in both `left` and `right`.
+const fn names_disjoint(left: &[&str], right: &[&str]) -> bool {
+    let mut i = 0;
+    while i < left.len() {
+        let mut j = 0;
+        while j < right.len() {
+            if names_equal(left[i], right[j]) {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// `left == right`, in a const context.
+const fn names_equal(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < left.len() {
+        if left[i] != right[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Whether the section bandit may leave `section` out of a prompt (S02 L9):
+/// it is one of [`DROPPABLE_SECTIONS`], it sits below the Critical band, and
+/// `pinned` (`[sections] pinned`) does not name it.
+#[must_use]
+pub fn is_droppable_section(section: &PromptSection, pinned: &[String]) -> bool {
+    DROPPABLE_SECTIONS.contains(&section.name.as_str())
+        && section.priority < SectionPriority::Critical
+        && !pinned.contains(&section.name)
+}
 
 /// Runtime source metadata for a built-in role prompt.
 ///
@@ -1349,5 +1426,68 @@ mod tests {
 
         assert!(prompt.contains("Goal: reduce routing latency"));
         assert!(prompt.contains("context assembly is too slow"));
+    }
+
+    /// S02 L9: the pinned and droppable lists split every canonical section
+    /// in two. Every Critical section is pinned, and every droppable one sits
+    /// below the Critical band; `[sections] pinned` keeps a droppable section
+    /// in, and so does raising it to Critical.
+    #[test]
+    fn droppable_sections_are_the_optional_bands_minus_pinned() {
+        let chunk = ContextChunk {
+            content: "- [Threat] context assembly is too slow.".to_string(),
+            source: crate::ContextSource::RecentSignal {
+                signal_id: "pheromone-1".to_string(),
+                plan_id: "plan-x".to_string(),
+                kind: "pheromone".to_string(),
+            },
+            relevance: 0.95,
+            track_record: Some(0.9),
+            confidence: Some(0.8),
+            recency: Some(0.95),
+            emotional_tag: None,
+        };
+        let raw = "noise\nerror[E0425]: cannot find value\n --> src/lib.rs:7:5";
+        let sections = SystemPromptBuilder::new("You are the Implementer.")
+            .with_conventions("Use snake_case")
+            .with_model_hint("claude-sonnet-4-6")
+            .with_tools("Use the Read tool")
+            .with_domain("Domain notes")
+            .with_context("Files in scope")
+            .with_pheromones(&[chunk])
+            .with_task("Implement feature X")
+            .with_raw_gate_feedback(raw, 3)
+            .with_playbooks(&[Playbook::new("pb-feature", "Implement feature X")])
+            .with_tool_hints("Read a file before you edit it")
+            .add_anti_pattern("Do not push branches directly.")
+            .with_affect_state(Some(PadState::new(0.0, 0.8, 0.0)))
+            .build_sections();
+        let built: HashSet<&str> = sections
+            .iter()
+            .map(|section| section.name.as_str())
+            .collect();
+        let listed: HashSet<&str> = PINNED_SECTIONS
+            .iter()
+            .chain(&DROPPABLE_SECTIONS)
+            .copied()
+            .collect();
+        assert_eq!(built, listed, "every canonical section is in one list");
+        for section in &sections {
+            let pinned = PINNED_SECTIONS.contains(&section.name.as_str());
+            assert_ne!(is_droppable_section(section, &[]), pinned, "{section:?}");
+            if section.priority == SectionPriority::Critical {
+                assert!(pinned, "{section:?}");
+            }
+        }
+
+        let conventions = sections
+            .iter()
+            .find(|section| section.name == "conventions")
+            .expect("the conventions section");
+        assert!(is_droppable_section(conventions, &[]));
+        let pinned = ["conventions".to_string()];
+        assert!(!is_droppable_section(conventions, &pinned));
+        let raised = conventions.clone().with_priority(SectionPriority::Critical);
+        assert!(!is_droppable_section(&raised, &[]));
     }
 }

@@ -460,6 +460,31 @@ impl<'de> Deserialize<'de> for TaskDomain {
     }
 }
 
+/// Where an attempt at a task works (9134): a git worktree of the
+/// repository, or a scratch copy of the task's data files outside git, for
+/// large or binary data and data git does not hold.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceKind {
+    /// A git worktree on the task's branch, merged back by git.
+    #[default]
+    GitWorktree,
+    /// A copy of the task's `files` outside git, cloned copy-on-write where
+    /// the file system can, hashed before and after the attempt (9135).
+    ScratchDir,
+}
+
+impl WorkspaceKind {
+    /// The kind's name in `tasks.toml`: `git_worktree` or `scratch_dir`.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::GitWorktree => "git_worktree",
+            Self::ScratchDir => "scratch_dir",
+        }
+    }
+}
+
 /// How much inline/file context the prompt should preload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -659,7 +684,7 @@ const fn default_exclusive_files() -> bool {
 
 /// The optional routing, gate, prompt and scheduling hints of a `tasks.toml`
 /// task: the fields of [`Task`] beyond its core ones, with the same keys and
-/// value types, plus `rung`.
+/// value types, plus `rung` and `workspace`.
 ///
 /// `roko-cli` flattens it into its task definition, so each field is a
 /// top-level `[[task]]` key. A default `TaskHints` sets none of them, and
@@ -742,6 +767,10 @@ pub struct TaskHints {
     pub research_before_edit: Option<bool>,
 
     // ── Scheduling and infrastructure ──────────────────────────────
+    /// Where the task's attempts work: `git_worktree`, the default, or
+    /// `scratch_dir`, a scratch copy of its data `files` outside git (9134).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceKind>,
     /// Tasks sharing a `parallel_group` value can run simultaneously.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_group: Option<String>,

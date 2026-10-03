@@ -160,7 +160,10 @@ impl Matrix {
         let mut paths: Vec<_> = std::fs::read_dir(dir)?
             .filter_map(Result::ok)
             .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
             .collect();
         paths.sort();
         let mut text = String::new();
@@ -494,7 +497,9 @@ impl LcbAciPolicy {
 
     /// Choose an arm for attempt `self.attempt` of `task`.
     fn choose(&mut self, task: &RouteTask) -> Option<String> {
-        let forecasts = self.model.forecast(&features(task, self.attempt), &self.keys);
+        let forecasts = self
+            .model
+            .forecast(&features(task, self.attempt), &self.keys);
         let recovery = forecasts.iter().map(expected_cost).fold(0.0, f64::max);
         let choice = self.policy.choose(&forecasts, None, None, recovery);
         let RouteAction::Dispatch { arm, .. } = choice.action else {
@@ -519,8 +524,10 @@ impl RoutingPolicy for LcbAciPolicy {
     fn next(&mut self, task: &RouteTask, arm: &str, result: &AttemptResult) -> Option<String> {
         let key = arm_key(arm);
         let unit = replayed_unit(task, &key, self.attempt, result);
-        self.model.observe_with(&unit, &features(task, self.attempt), 1.0);
-        self.policy.update(Some(result.passed), result.passed, self.last_p_fg);
+        self.model
+            .observe_with(&unit, &features(task, self.attempt), 1.0);
+        self.policy
+            .update(Some(result.passed), result.passed, self.last_p_fg);
         if result.passed || self.attempt > K_MAX {
             return None;
         }
@@ -556,7 +563,8 @@ impl CascadePolicy {
     }
 
     fn forecasts(&self, task: &RouteTask) -> Vec<CandidateForecast> {
-        self.model.forecast(&features(task, self.attempt), &self.keys)
+        self.model
+            .forecast(&features(task, self.attempt), &self.keys)
     }
 }
 
@@ -575,7 +583,8 @@ impl RoutingPolicy for CascadePolicy {
     fn next(&mut self, task: &RouteTask, arm: &str, result: &AttemptResult) -> Option<String> {
         let key = arm_key(arm);
         let unit = replayed_unit(task, &key, self.attempt, result);
-        self.model.observe_with(&unit, &features(task, self.attempt), 1.0);
+        self.model
+            .observe_with(&unit, &features(task, self.attempt), 1.0);
         if result.passed || self.attempt >= MAX_ATTEMPTS {
             return None;
         }
@@ -647,9 +656,8 @@ mod tests {
     fn two_runs_with_seed_7_write_identical_bytes() {
         let matrix = fixture();
         let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
-        let make = || -> Box<dyn RoutingPolicy> {
-            Box::new(CascadePolicy::new(rungs(), &snapshot))
-        };
+        let make =
+            || -> Box<dyn RoutingPolicy> { Box::new(CascadePolicy::new(rungs(), &snapshot)) };
         let (mut first, mut second) = (Vec::new(), Vec::new());
         let a = replay(&matrix, &make, 3, 7, &mut first).expect("replay");
         let b = replay(&matrix, &make, 3, 7, &mut second).expect("replay");
@@ -696,8 +704,9 @@ mod tests {
                 "mid_direct"
             };
             let make = || -> Box<dyn RoutingPolicy> { Box::new(StaticArm::new(arm)) };
-            replay(training, &make, 1, 7, &mut std::io::sink())
-                .map_or(f64::INFINITY, |summary| summary.cpr.unwrap_or(f64::INFINITY))
+            replay(training, &make, 1, 7, &mut std::io::sink()).map_or(f64::INFINITY, |summary| {
+                summary.cpr.unwrap_or(f64::INFINITY)
+            })
         });
         assert!(best.is_some());
         assert!(!seen.contains("F2"), "{seen:?}");
@@ -709,12 +718,19 @@ mod tests {
         let matrix = fixture();
         let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
         let make = || -> Box<dyn RoutingPolicy> {
-            Box::new(LcbAciPolicy::new(rungs(), LcbAciConfig::default(), &snapshot))
+            Box::new(LcbAciPolicy::new(
+                rungs(),
+                LcbAciConfig::default(),
+                &snapshot,
+            ))
         };
         let summary = replay(&matrix, &make, 2, 7, &mut std::io::sink()).expect("replay");
         assert_eq!(summary.policy, "lcb_aci");
         assert_eq!(summary.runs, 24);
         assert!(summary.attempts > 0, "{summary:?}");
-        assert!(summary.resolved <= 20, "two tasks are unsolvable: {summary:?}");
+        assert!(
+            summary.resolved <= 20,
+            "two tasks are unsolvable: {summary:?}"
+        );
     }
 }

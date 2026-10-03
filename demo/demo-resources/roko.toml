@@ -22,6 +22,3 @@ max_iterations = 1
 
 [timeouts]
 task_attempt_secs = 60
-
-[learning]
-replan_on_gate_failure = false

@@ -258,13 +258,39 @@ impl TrustBook {
 
     /// Replace each pair's estimate with its `fresh` one from `window`.
     pub fn update(&mut self, window: &str, fresh: &[TrustEstimate]) {
+        self.merge(fresh);
+        self.window = Some(window.to_string());
+    }
+
+    /// DP6's trust downgrade (S05 §4.6): one more confirmed false green or
+    /// gaming finding against (`model`, `harness`), on its estimate or on
+    /// the prior Beta(1, 19). Returns the posterior mean before and after;
+    /// the next window's estimate replaces it.
+    pub fn downgrade(&mut self, model: &str, harness: &str) -> (f64, f64) {
+        let kept = self
+            .estimates
+            .iter()
+            .find(|estimate| estimate.model == model && estimate.harness == harness)
+            .cloned();
+        let mut estimate =
+            kept.unwrap_or_else(|| TrustEstimate::from_estimate(model, harness, 0.0, 0.0));
+        let before = estimate.mean();
+        estimate.alpha += 1.0;
+        estimate.n_eff += 1.0;
+        let after = estimate.mean();
+        self.merge(&[estimate]);
+        (before, after)
+    }
+
+    /// Replace each pair's estimate with its one in `fresh`, keeping the
+    /// book ordered by model and harness.
+    fn merge(&mut self, fresh: &[TrustEstimate]) {
         let mut pairs = BTreeMap::new();
         for estimate in self.estimates.drain(..).chain(fresh.iter().cloned()) {
             let pair = (estimate.model.clone(), estimate.harness.clone());
             pairs.insert(pair, estimate);
         }
         self.estimates = pairs.into_values().collect();
-        self.window = Some(window.to_string());
     }
 }
 

@@ -33,7 +33,9 @@
 //! due (`roko_gate::audit::feedback`, 7131): each stratum's estimates, the
 //! strictness ladder's steps and the routing trust estimates. Each result
 //! with a label also writes the attempt's `vs.label` row, which teaches the
-//! run's self-model (DP5, [`super::labels`]).
+//! run's self-model (DP5, [`super::labels`]), and a confirmed false green or
+//! gaming finding, or a gate-gaming alert, opens an incident in the vault
+//! (DP6, [`report_incidents`]).
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -49,10 +51,12 @@ use roko_gate::attempt_diff::{
     scripts_run_by,
 };
 use roko_gate::audit::canary::{CanaryScanner, scan_diff};
-use roko_gate::audit::feedback::close_due_windows;
+use roko_gate::audit::feedback::{TrustBook, close_due_windows, trust_path};
+use roko_gate::audit::incident::{Evidence, Incident, IncidentDraft, IncidentKind, IncidentStore};
 use roko_gate::audit::hidden::HiddenStore;
 use roko_gate::audit::ledger::{AuditEvent, AuditLedger, LedgerRecord, records};
 use roko_gate::audit::policy::{EPS_FLOOR, RunKey, select};
+use roko_learn::cascade_router::AUDIT_HARNESS;
 use roko_learn::gate_gaming::{GamingAlert, GateGamingDetector};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -707,6 +711,7 @@ impl Worker {
             cost_usd: audit.cost_usd,
         };
         let row = vs_label(unit, &report);
+        let evidence = evidence_of(unit, &audit.checks, &audit.findings);
         let id = unit.sel_id.strip_prefix("sel-").unwrap_or(&unit.sel_id);
         let event = AuditEvent::Result {
             sel_id: unit.sel_id.clone(),
@@ -731,6 +736,8 @@ impl Worker {
         if let Err(error) = record_label(&mut self.ledger, workdir, &row, learner) {
             tracing::warn!(sel_id = %unit.sel_id, %error, "vs.label not written");
         }
+        // DP6: a confirmed false green or gaming finding opens an incident.
+        report_incidents(&self.context.vault, &mut self.ledger, unit, labels, &evidence);
     }
 
     /// F1 (7128): count the unit's audited Y in the gate-gaming detector,
@@ -756,6 +763,22 @@ impl Worker {
         if let Err(error) = self.ledger.append(event) {
             tracing::warn!(%error, "a gate-gaming alert was not logged");
         }
+        // DP6: the alert opens an incident about the model.
+        let draft = IncidentDraft {
+            kind: IncidentKind::SpecGaming,
+            attempt_key: "-".to_string(),
+            run_id: unit.run_id.clone(),
+            task_id: unit.task_id.clone(),
+            model: alert.model_slug.clone(),
+            harness: AUDIT_HARNESS.to_string(),
+            files: Vec::new(),
+            evidence: Evidence {
+                sel_id: Some(unit.sel_id.clone()),
+                note: Some(alert.summary()),
+                ..Evidence::default()
+            },
+        };
+        report_incident(&self.context.vault, &mut self.ledger, draft);
     }
 
     /// Close every window that is due (7131). An active M1 floor applies
@@ -792,6 +815,144 @@ impl Worker {
         if let Err(error) = CanaryScanner::new(store).sweep(&mut self.ledger, &paths) {
             tracing::warn!(%error, "the run-close canary sweep failed");
         }
+    }
+}
+
+/// What an incident about `unit`'s audit holds as evidence: its ids and
+/// trees, A1's findings, B1's suite and how many of its tests failed, and
+/// B3's verdict; never a hidden test's body or name.
+pub(crate) fn evidence_of(
+    unit: &AuditUnit,
+    checks: &Map<String, Value>,
+    findings: &[String],
+) -> Evidence {
+    let id = unit.sel_id.strip_prefix("sel-").unwrap_or(&unit.sel_id);
+    let b1 = checks.get("b1");
+    Evidence {
+        sel_id: Some(unit.sel_id.clone()),
+        res_id: Some(format!("res-{id}")),
+        base_tree: unit.base_tree.clone(),
+        result_tree: unit.result_tree.clone(),
+        findings: findings.to_vec(),
+        hidden_suite: b1.and_then(|b1| b1["suite_id"].as_str()).map(str::to_string),
+        hidden_failed: b1.and_then(|b1| b1["y"].as_bool()).map(u32::from),
+        b3: checks.get("b3").filter(|b3| !b3.is_null()).cloned(),
+        note: None,
+        immune_link: None,
+    }
+}
+
+/// DP6 (S05 §4.6, §4.7; 7135): an incident for each finding `labels`
+/// confirms, a false green or gaming, with its fix proposal. Each new one
+/// downgrades the pair's routing trust, and repeated gaming proposes
+/// isolating the pair. Returns the incidents it opened: one already open is
+/// not opened again.
+pub(crate) fn report_incidents(
+    vault: &AuditVault,
+    ledger: &mut AuditLedger,
+    unit: &AuditUnit,
+    labels: AuditLabels,
+    evidence: &Evidence,
+) -> Vec<Incident> {
+    let found = [
+        (labels.y, IncidentKind::FalseGreen),
+        (labels.g, IncidentKind::SpecGaming),
+    ];
+    let mut opened = Vec::new();
+    for (label, kind) in found {
+        if label != Some(true) {
+            continue;
+        }
+        let draft = IncidentDraft {
+            kind,
+            attempt_key: unit.attempt_key.clone(),
+            run_id: unit.run_id.clone(),
+            task_id: unit.task_id.clone(),
+            model: unit.model.clone(),
+            harness: AUDIT_HARNESS.to_string(),
+            files: unit.task.files.clone(),
+            evidence: evidence.clone(),
+        };
+        opened.extend(report_incident(vault, ledger, draft));
+    }
+    opened
+}
+
+/// Open `draft`'s incident; when it is new, downgrade its pair's routing
+/// trust and, for gaming, propose isolating the pair once it has gamed
+/// repeatedly. Returns the incident when it is new.
+fn report_incident(
+    vault: &AuditVault,
+    ledger: &mut AuditLedger,
+    draft: IncidentDraft,
+) -> Option<Incident> {
+    let (model, harness) = (draft.model.clone(), draft.harness.clone());
+    let store = match IncidentStore::open(vault) {
+        Ok(store) => store,
+        Err(error) => {
+            tracing::warn!(%error, "the audit incident store cannot be opened");
+            return None;
+        }
+    };
+    let (incident, new) = match store.open_incident(ledger, draft) {
+        Ok(opened) => opened,
+        Err(error) => {
+            tracing::warn!(%error, "an audit incident was not opened");
+            return None;
+        }
+    };
+    if !new {
+        return None;
+    }
+    tracing::warn!(
+        incident = %incident.incident_id,
+        kind = incident.kind.label(),
+        model = %model,
+        "audit incident opened"
+    );
+    downgrade_trust(vault, ledger, &incident);
+    if incident.kind == IncidentKind::SpecGaming {
+        match store.propose_isolation(&model, &harness) {
+            Ok(Some(path)) => tracing::warn!(
+                proposal = %path.display(),
+                "repeated gaming: an isolation proposal waits for an operator"
+            ),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(%error, "the isolation proposal was not written"),
+        }
+    }
+    Some(incident)
+}
+
+/// DP6's trust downgrade (S05 §4.6): `incident`'s pair loses routing trust
+/// at once, logged as `audit.policy_change`. DP4 reads it at the next plan
+/// start, and the next window's estimate replaces it.
+fn downgrade_trust(vault: &AuditVault, ledger: &mut AuditLedger, incident: &Incident) {
+    let path = trust_path(vault);
+    let mut book = match TrustBook::load(&path) {
+        Ok(book) => book,
+        Err(error) => {
+            tracing::warn!(%error, "routing trust was not downgraded: its file is unreadable");
+            return;
+        }
+    };
+    let (before, after) = book.downgrade(&incident.model, &incident.harness);
+    if let Err(error) = book.save(&path) {
+        tracing::warn!(%error, "routing trust was not downgraded");
+        return;
+    }
+    let event = AuditEvent::PolicyChange {
+        knob: format!("trust:{}/{}", incident.model, incident.harness),
+        from: json!(before),
+        to: json!(after),
+        reason: format!(
+            "trust_downgrade: incident {} ({})",
+            incident.incident_id,
+            incident.kind.label()
+        ),
+    };
+    if let Err(error) = ledger.append(event) {
+        tracing::warn!(%error, "the trust downgrade was not logged");
     }
 }
 
@@ -1015,5 +1176,101 @@ mod tests {
         // none.
         let clean = rounds(&GamingWatch::new(&vault), false);
         assert!(clean.is_empty(), "{clean:?}");
+    }
+
+    /// DP6 (7135): an audit that confirms a false green opens an incident in
+    /// the vault, logged, with a fix proposal that says only "audit failed:
+    /// false_green" and names no hidden test, and the pair loses routing
+    /// trust at once. The same finding again opens nothing.
+    #[test]
+    fn a_confirmed_false_green_opens_an_incident_with_a_fix_proposal() {
+        use roko_gate::audit::incident::IncidentStatus;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("repo");
+        std::fs::create_dir_all(&workspace).expect("mkdir");
+        let home = temp.path().join("vault");
+        let vault = AuditVault::resolve_with(&workspace, Some(&home), None).expect("a vault");
+        let mut ledger = AuditLedger::open(&vault).expect("a ledger");
+        let unit = AuditUnit {
+            sel_id: "sel-0a1b2c3d4e5f".to_string(),
+            attempt_key: "run-1:plan:t1:1".to_string(),
+            run_id: "run-1".to_string(),
+            plan_id: "plan".to_string(),
+            task_id: "t1".to_string(),
+            pi: 0.25,
+            base_tree: Some("base".to_string()),
+            result_tree: Some("result".to_string()),
+            model: "glm-4.7".to_string(),
+            task: AuditTask {
+                files: vec!["src/lib.rs".to_string()],
+                ..AuditTask::default()
+            },
+        };
+        // B1's hidden suite failed the attempt. The failing test's name stays
+        // in the vault's check detail, and nowhere an incident shows.
+        let mut checks = Map::new();
+        let b1 = json!({ "suite_id": "hs-7f2c", "y": true, "failing": ["two_is_two"] });
+        checks.insert("b1".into(), b1);
+        let findings = vec![
+            "test_weakened `tests/a.rs`: an assertion was removed".to_string(),
+        ];
+        let labels = AuditLabels {
+            y: Some(true),
+            g: Some(false),
+            w: None,
+        };
+        let evidence = evidence_of(&unit, &checks, &findings);
+
+        let opened = report_incidents(&vault, &mut ledger, &unit, labels, &evidence);
+        assert_eq!(opened.len(), 1, "a false green, and G is 0");
+        let incident = &opened[0];
+        assert_eq!(incident.kind, IncidentKind::FalseGreen);
+        assert_eq!(incident.status(), IncidentStatus::Open);
+        assert_eq!(incident.evidence.res_id.as_deref(), Some("res-0a1b2c3d4e5f"));
+        assert_eq!(incident.evidence.hidden_failed, Some(1));
+        let record = vault
+            .incidents_dir()
+            .join(format!("{}.json", incident.incident_id));
+        let record = std::fs::read_to_string(record).expect("the incident record");
+        assert!(!record.contains("two_is_two"), "{record}");
+
+        // The fix proposal is a ready task that says only what failed.
+        let name = incident.fix_proposal.as_deref().expect("a fix proposal");
+        let path = vault.incidents_dir().join(name);
+        let proposal = std::fs::read_to_string(path).expect("the proposal");
+        let parsed: toml::Value = toml::from_str(&proposal).expect("a TOML task");
+        let task = &parsed["task"][0];
+        assert_eq!(task["title"].as_str(), Some("audit failed: false_green"));
+        assert_eq!(task["description"].as_str(), Some("audit failed: false_green"));
+        assert_eq!(task["files"][0].as_str(), Some("src/lib.rs"));
+        for hidden in ["two_is_two", "hs-7f2c", "tests/a.rs"] {
+            assert!(!proposal.contains(hidden), "{hidden} in {proposal}");
+        }
+
+        // It is logged, and the pair's routing trust falls at once.
+        let all = records(ledger.dir()).expect("records");
+        let opens = all
+            .iter()
+            .filter(|record| {
+                matches!(&record.event, AuditEvent::Incident { status, .. } if status == "open")
+            })
+            .count();
+        assert_eq!(opens, 1);
+        let downgraded = all.iter().any(|record| {
+            matches!(
+                &record.event,
+                AuditEvent::PolicyChange { knob, .. } if knob == "trust:glm-4.7/roko"
+            )
+        });
+        assert!(downgraded);
+        let trust = TrustBook::load(&trust_path(&vault)).expect("the trust book");
+        let glm = &trust.estimates[0];
+        assert_eq!(glm.model, "glm-4.7");
+        assert!(glm.mean() > 0.05, "below the prior's 5%: {glm:?}");
+
+        // The same finding again opens nothing.
+        let again = report_incidents(&vault, &mut ledger, &unit, labels, &evidence);
+        assert!(again.is_empty());
     }
 }

@@ -15,7 +15,9 @@
 //! - [`window`]: window close, each stratum's estimates of false greens,
 //!   gaming and weak oracles (S05 §4.5);
 //! - [`feedback`]: DP3's strictness ladder and the routing trust estimates
-//!   DP4 reads, updated as each window closes (S05 §4.6).
+//!   DP4 reads, updated as each window closes (S05 §4.6);
+//! - [`incident`]: DP6's incident records, their status history, fix
+//!   proposals and isolation proposals (S05 §4.7).
 //!
 //! Plain types other crates read (verify depth, labels, strata, the
 //! `vs.label` row) live in `roko_core::audit_types`, and the vault in
@@ -25,6 +27,7 @@ pub mod canary;
 pub mod estimate;
 pub mod feedback;
 pub mod hidden;
+pub mod incident;
 pub mod ledger;
 pub mod policy;
 pub mod window;

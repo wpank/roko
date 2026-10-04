@@ -81,3 +81,7 @@ Unfixed. The `relay` feature exists and gates one module (`relay.rs`) correctly;
 
 - I did not run cargo; this is read from source only. Confirm the exact boundary of what needs
   `#[cfg]` by trying a no-features build once the gates are added.
+
+## Progress
+
+- gap-e7a3d4: implemented at ee25bc7e5. `subscription_relay`, `AppState.subscription_relay` (field, construction, and the `anyhow::Context` import only it used) and `dispatch_relay_subscription` are `#[cfg(feature = "relay")]`; without it `GET /api/subscriptions/relay/status` is parked (501, `required_feature: relay`) like the `/relay` proxy, and the OpenAPI document holds no relay schema (they join only through the relay build's status path). The route snapshot is unchanged (`--check-snapshot` passes); showcase mode's root unmount concerns the `/relay` proxy and is unchanged. The verify's grep passes; cargo verification (the default build and `--features relay`) is deferred to the batch gate.

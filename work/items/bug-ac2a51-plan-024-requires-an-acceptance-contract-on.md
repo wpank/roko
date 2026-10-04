@@ -85,3 +85,7 @@ One of:
 - Decision 3205 (contract evaluator retirement) and PLAN_046's wording are the source of truth for the *intended*
   replacement pattern; option 1 above likely matches that intent best.
 - Don't weaken PLAN_024's other requirements (PLAN_020/021/022/023/025) — only its acceptance-contract clause.
+
+## Progress
+
+- bug-ac2a51: implemented at 23074c40a, options 1 and 2 together. PLAN_024 now asks an architecture-queue task for checked acceptance (criteria in `acceptance` that a verify step `covers`, or a pinned `[task.accept]` test), and PLAN_046 warns only when an `acceptance_contract` is the task's only acceptance. Option 1 alone was not enough: PLAN_025 still reads a packet's parity rows from its contract, so a clean packet keeps one. The contract's shape checks and PLAN_020-023, 025 and 026 are unchanged. The two architecture fixtures in `tests/plan_validate.rs` that expected the PLAN_046 warning now state covered criteria and expect no diagnostics, and the roko-gate module doc says when PLAN_046 fires. Side effect: `plans/archive/architecture-defi-critical-path`, which passes today with warnings, now fails PLAN_024 when validated by hand (CI skips `plans/archive/`; the other two archived queues already fail on PLAN_CONCURRENT_OVERLAP and PLAN_CONTEXT_SYMBOL). The verify's grep passes; cargo verification is deferred to the batch gate (`architecture_queue_task_with_acceptance_criteria_has_no_contract_warning`).

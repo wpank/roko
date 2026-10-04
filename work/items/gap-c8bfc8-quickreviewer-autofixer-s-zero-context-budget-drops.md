@@ -93,3 +93,7 @@ anyone considered that `build_runner_context`'s payload would ride the same fiel
   list/summary, not full file bodies).
 - `AutoFixer`'s `plan`, `workspace_map`, `brief` and `reviews` are also 0 — out of scope here unless the same
   "two concerns, one budget field" pattern applies to one of them too; this item only confirms `context`.
+
+## Progress
+
+- gap-c8bfc8: implemented at 0c9a3c96b, option 1. `PromptBudget` gains `runner_context`, the cap of the `context_layer` and `gate_feedback` sections; `context` now caps only cross-plan context (domain context, pheromone signals). Every role's `runner_context` equals its old `context`, except QuickReviewer and AutoFixer, which get 2,000 and keep `context: 0`; a trivial task keeps its runner context and a complex one doubles it. The CLI prompt builder gives a role with no cross-plan context only its verify commands and, on a retry, the failing gate's feedback; it still builds the full block, so a task's declared context is checked as before. The Notes' question: AutoFixer's `plan: 0` also drops the system prompt's `task_context` section, but the task's title, details and TSS sections still reach it in the user prompt, so nothing is lost there. The verify's grep passes; cargo verification is deferred to the batch gate (`quick_reviewer_prompt_includes_verify_commands_and_gate_feedback`, `review_and_fix_roles_keep_a_runner_context`, `trivial_keeps_the_runner_context`).

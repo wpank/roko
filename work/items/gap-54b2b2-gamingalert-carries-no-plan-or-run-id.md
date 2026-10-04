@@ -92,3 +92,17 @@ add is available; it is just not threaded into the struct.
   is append-only and not rewritten retroactively elsewhere in this codebase's conventions).
 - Related: gap-a0043b (PK08's own open package; task 2125 built `run_gaming_alerts` with this approximation
   already documented in its own doc comment, but filed no follow-up to make it exact).
+
+## Progress
+
+- 2026-10-04 (w4-length): implemented on `work/bug-19ae56` at 8cdd92e7a; cargo verification deferred to the batch
+  gate. `GamingAlert` carries optional `plan_id`/`run_id` (serde defaults, skipped when unset, so old rows parse),
+  filled by `GamingAlert::raised_by`. The audit worker attributes each alert to the unit whose audited label tipped
+  the window. `summary()` names the plan and run. `run_gaming_alerts` keeps an alert that names its plan only for
+  this plan and run, and keeps the model+time fallback for older alerts. Tests:
+  `gaming_alerts_are_attributed_by_plan_id_not_model_alone` and
+  `gaming_alert_rows_with_and_without_plan_and_run_parse`.
+- Finding: nothing in production writes `.roko/learn/gate-gaming-alerts.jsonl` any more. Decision 4108 removed
+  the judge feed (helper_calls.rs pins that no file is written), and the audit worker logs its alerts to the
+  audit vault's ledger and incidents. So `roko diagnose` lists only alerts that older runs wrote, unless the audit
+  worker also appends there. Whether audit alerts may leave the vault is a design call.

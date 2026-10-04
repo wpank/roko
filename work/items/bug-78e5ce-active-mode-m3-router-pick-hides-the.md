@@ -95,3 +95,11 @@ can change post-construction is not yet confirmed either way.
   When fixing (2), confirm the fix restores `post_pass` and its `spec.refine_requested` event, not just the
   forecast call. Related: gap-2b0575 (S07's plan-load gate not reading that event at all yet, a separate,
   consumer-side gap even once it's produced).
+- 2026-10-04 (wave-17b follow-up, work/backlog-batch-17b not yet merged): on that branch, facet
+  (2) (streaming forecast) is done and facet (3) (early-climb eligibility) is resolved as
+  intentionally fixed-at-start. Facet (1) (`router_pick`) is confirmed still not done, and
+  implementing (2) surfaced a new residual: the streaming `DispatchContext` still passes
+  `attempt: 0`, so the self-model's `has_prior_failure` is always false there. Both are filed
+  separately — `bug-7dff88` (facet 1) and `bug-b087ea` (the `attempt: 0` residual) — since this
+  item's single named `[[verify]]` command covers only the original facet 2 and could close
+  before either lands.

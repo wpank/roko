@@ -115,3 +115,13 @@ that it should dominate the floor instead of being replaced by it.
   (which surfaced QA7 again on re-read) is held for an in-progress paper rewrite by another session — leave it alone.
 - `gap-460230`'s own fix is not wrong; don't revert the ladder floor, only how it composes with the adaptive
   suggestion.
+- 2026-10-04 (wave-17b follow-up, bug-35a738): related but distinct overlap, filed as
+  `q-85792e`. `bug-35a738`'s facet 2 reports B2 (M1's `retry_delta` move) has no room to move on
+  a ladder-routed task at default gates, because `adaptive_max_retries` defaults to 5
+  (`roko-core/config/gates.rs`) and the ladder's own floor (`LADDER_MIN_RETRIES`,
+  `graph_task_dispatch/ladder.rs`) is also 5 — the budget is already at B2's own ceiling before
+  any delta applies. Fixing this item's attribution bug (the ladder relabeling `source` to
+  `Ladder` even when the adaptive number was already correct) would not by itself give B2 any
+  numeric room to move; `q-85792e` is a separate decision (raise the default, or amend decision
+  8101's clamp for ladder-routed tasks) that should be made alongside, not instead of, this
+  item's fix.

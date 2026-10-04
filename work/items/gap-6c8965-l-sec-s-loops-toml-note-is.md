@@ -108,3 +108,10 @@ All four confirmed at HEAD as described. None is yet tracked.
 - These four are grouped in one item because they're all small, same-area (PK38's own knowledge/section wiring)
   findings; a worker may close them independently (e.g. one commit per facet) if that's cleaner, but they don't
   need four separate work-graph items.
+- 2026-10-04 (wave-17b follow-up): facet 4 (the 4131 fixture needs a seeded knowledge store to
+  show L-know reinforcement) is split out as `gap-5b8767`, since it needs the real binary to
+  check and couldn't be verified in the same static-only round as facets 1-3. On
+  `work/backlog-batch-17b` (tip `00a28ea0c`, not yet merged), facets 1-3 are done (`census.rs`,
+  `loops.toml` and `docs/v3/depth/21-config/01-schema-sections.md` are all in that branch's
+  diff); `learning_wiring_census.rs` (facet 4) is untouched there. This item can close on
+  facets 1-3 alone; track facet 4 via `gap-5b8767` instead of this item's own "Done when".

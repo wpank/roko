@@ -93,3 +93,7 @@ general scope table is actively wrong for this one route.
 - 2026-10-04 (gate-13c follow-up, PK85 gap-fcb44c, task 9328): confirmed at main HEAD
   `908f7ec40`. Both `[[verify]]` commands are grep-based checks over doc/comment text (no code
   behavior changes), since the fix is documentation-only.
+
+## Progress
+
+- gap-489023: implemented at c4a306d92. docs/v3/26-HTTP-API.md §3.2 lists the share route as `admin` and corrects the catch-all and hierarchy; §8.4 documents the body, the TTL and the loopback-only `no_expire`. `create_share` has its own `#[utoipa::path]` (200/400/403/404) in place of the `doc_post_value!` stub. Both verifies pass; cargo verification is deferred to the batch gate (the OpenAPI completeness test covers the moved path).

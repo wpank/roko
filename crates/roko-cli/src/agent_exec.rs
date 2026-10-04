@@ -12,7 +12,7 @@ use crate::agent_episode::build_capture_episode;
 use crate::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use crate::learning_helpers::{
     capture_runtime_model_slugs, distillation_model_caller, install_capture_distillation,
-    provider_id_for_model, record_persisted_provider_health, resolve_capture_model_slug,
+    provider_id_for_model, record_persisted_provider_outcome, resolve_capture_model_slug,
 };
 use anyhow::{Context as _, Result};
 use roko_core::agent::ProviderKind;
@@ -381,7 +381,8 @@ pub async fn persist_capture_episode(
         .record_completed_run(completed)
         .await
         .map_err(|e| anyhow::anyhow!("record learning feedback: {e}"))?;
-    record_persisted_provider_health(workdir, &provider, success)?;
+    // A failed run's output says why it failed (bug-9ca6d7).
+    record_persisted_provider_outcome(workdir, &provider, (!success).then_some(output))?;
     Ok(())
 }
 
@@ -522,12 +523,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn persist_capture_episode_resolves_model_key_to_slug_and_provider() {
-        let tmp = TempDir::new().expect("tempdir");
-        std::fs::write(
-            tmp.path().join("roko.toml"),
-            r#"
+    /// A workspace config whose model key `glm-mini` is `glm-5.1` on the
+    /// OpenAI-compatible provider `zai`.
+    const GLM_MINI_CONFIG: &str = r#"
 [agent]
 default_model = "glm-mini"
 command = "claude"
@@ -542,9 +540,12 @@ provider = "zai"
 slug = "glm-5.1"
 context_window = 131072
 tool_format = "openai_json"
-"#,
-        )
-        .expect("write roko.toml");
+"#;
+
+    #[tokio::test]
+    async fn persist_capture_episode_resolves_model_key_to_slug_and_provider() {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::write(tmp.path().join("roko.toml"), GLM_MINI_CONFIG).expect("write roko.toml");
 
         persist_capture_episode(
             tmp.path(),
@@ -599,6 +600,54 @@ tool_format = "openai_json"
                 .and_then(serde_json::Value::as_u64),
             Some(1)
         );
+    }
+
+    /// bug-9ca6d7: a failed agent run records its provider's health under
+    /// the class the shared failure classifier reads from its output, the
+    /// one Graph dispatch's provider health uses, not `Unknown`. An
+    /// OpenAI-compatible 401 reaches it as "provider error: authentication
+    /// failed", an auth failure (bug-0b7695); text no rule names stays
+    /// unknown.
+    #[tokio::test]
+    async fn classified_failure_through_agent_exec_is_not_recorded_as_unknown() {
+        use roko_learn::provider_health::{ErrorClass, ProviderHealthRegistry};
+
+        for (output, class) in [
+            (
+                "agent error (zai): provider error: authentication failed",
+                ErrorClass::AuthFailure,
+            ),
+            ("HTTP 429 Too Many Requests", ErrorClass::RateLimit),
+            ("request timed out after 30s", ErrorClass::Timeout),
+            ("the agent stopped", ErrorClass::Unknown),
+        ] {
+            let tmp = TempDir::new().expect("tempdir");
+            std::fs::write(tmp.path().join("roko.toml"), GLM_MINI_CONFIG).expect("write roko.toml");
+
+            persist_capture_episode(
+                tmp.path(),
+                "claude",
+                Some("glm-mini"),
+                "plan-generate",
+                "plan:generate:glm",
+                "prompt body",
+                output,
+                false,
+                42,
+                None,
+            )
+            .await
+            .expect("persist capture episode");
+
+            let health_path = tmp.path().join(".roko/learn/provider-health.json");
+            let health = ProviderHealthRegistry::load_or_new(&health_path).get("zai");
+            let classes: Vec<ErrorClass> = health
+                .failure_window
+                .iter()
+                .map(|failure| failure.error_class)
+                .collect();
+            assert_eq!(classes, [class], "{output}");
+        }
     }
 
     #[test]

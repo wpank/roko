@@ -81,3 +81,7 @@ route's happy path is untested against the actual builder's output.
   session `coordinator-session-roko-90`, branch `work/gap-dbe8e7`) and also edits
   `build_bundle.py`; this item does not touch that file and should be picked up only after
   `gap-dbe8e7` merges.
+
+## Progress
+
+- gap-d8382b: implemented at b59d1a150. The builder copies M3's report from `--econ` or `.roko/econ/<id>/econ-report.json`, byte for byte, to `econ/<id>/econ-report.json`, listed in `files` and SHA256SUMS; verify_bundle.py has an `econ` rule. Bench venv pytest showcase/ 29/29 (the verify included); a bundle built with a report and served by a copy of the batch binary answers `GET /api/showcase/economics?experiment_id=FIXTURE-P1` 200 byte for byte, and 404 for another experiment.

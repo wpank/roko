@@ -1527,11 +1527,6 @@ fn is_read_only_method(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
-/// Check whether the caller's scope is sufficient for the required scope.
-///
-/// `"write:unclassified"` is treated identically to `"write"` so that the
-/// fallback sentinel does not change runtime behaviour — it is only detectable
-/// by the regression test.
 /// Whether `path` is a run's share route, `/api/runs/{id}/share`, with or without the nest
 /// prefix.
 fn is_share_creation(path: &str) -> bool {
@@ -1540,6 +1535,11 @@ fn is_share_creation(path: &str) -> bool {
     matches!(segments.as_slice(), ["", "runs", id, "share"] if !id.is_empty())
 }
 
+/// Check whether the caller's scope is sufficient for the required scope.
+///
+/// `"write:unclassified"` is treated identically to `"write"` so that the
+/// fallback sentinel does not change runtime behaviour — it is only detectable
+/// by the regression test.
 pub(crate) fn is_scope_sufficient(has: &str, required: &str) -> bool {
     if matches!(has, "owner" | "admin") {
         return true;

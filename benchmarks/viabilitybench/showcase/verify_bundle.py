@@ -17,7 +17,10 @@ A bundle passes only when every rule holds:
 - `transcripts`: no transcript file and no transcript field with a value;
 - `hidden`: every prompt and hidden-test value, the names of failed truth-suite checks included, is `sha256:<hex>`;
 - `timeline`: when `timeline/events.jsonl` is there, its rows are `showcase-event/1` replay events of the bundle's
-  runs, by increasing `seq`.
+  runs, by increasing `seq`;
+- `econ`: every file under `econ/` is `econ/<experiment>/econ-report.json` for an experiment of the bundle, listed in
+  `bundle.json`'s `files`, and M3's `vb.econ_report/1` report of that experiment alone, priced from the bundle's
+  snapshot.
 
 Problems print one per line as `<rule>: <detail>`. Exit status: 0 when the bundle passes, 1 when a rule fails, 2 on a
 usage error. `build_bundle.py` writes bundles that pass; the server loader (9324) applies the same rules.
@@ -34,8 +37,10 @@ from typing import Any, Iterator
 import build_bundle
 from build_bundle import (
     BUNDLE_SCHEMA,
+    ECON_REPORT,
     EVENT_SCHEMA,
     HASHED,
+    econ_report_problem,
     is_hidden_key,
     is_prompt_key,
     project_views,
@@ -205,6 +210,25 @@ def check(bundle: Path) -> list[tuple[str, str]]:
             if not isinstance(seq, int) or (last is not None and seq <= last):
                 problems.append(("timeline", f"event {number} does not follow the one before it in seq"))
             last = seq if isinstance(seq, int) else last
+
+    listed = {entry.get("path") for entry in manifest.get("files") or []}
+    experiments = manifest.get("experiment_ids") or []
+    for file in sorted(path for path in (bundle / "econ").rglob("*") if path.is_file()):
+        relative = file.relative_to(bundle).as_posix()
+        parts = relative.split("/")
+        if len(parts) != 3 or parts[1] not in experiments or parts[2] != ECON_REPORT:
+            problems.append(("econ", f"{relative} is not econ/<experiment>/{ECON_REPORT} for an experiment it lists"))
+            continue
+        if relative not in listed:
+            problems.append(("econ", f"{relative} is not in bundle.json's files"))
+        try:
+            report = json.loads(file.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            problems.append(("econ", f"{relative} is not JSON"))
+            continue
+        problem = econ_report_problem(report, parts[1], manifest.get("price_snapshot_id"))
+        if problem:
+            problems.append(("econ", f"{relative}: {problem}"))
 
     for entry in manifest.get("files") or []:
         file = bundle / str(entry.get("path"))

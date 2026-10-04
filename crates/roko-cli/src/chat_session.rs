@@ -45,7 +45,7 @@ use tokio::signal;
 
 use crate::config::Config;
 use crate::learning_helpers::{
-    capture_runtime_model_slugs, provider_id_for_model, record_persisted_provider_health,
+    capture_runtime_model_slugs, provider_id_for_model, record_persisted_provider_outcome,
 };
 use crate::model_selection::EffectiveModelSelection;
 
@@ -814,11 +814,12 @@ impl ChatAgentSession {
         let mut stream = match stream_result {
             Ok(stream) => stream,
             Err(error) => {
-                self.record_chat_provider_health(&config, &model_slug, false);
+                let message = error.to_string();
+                self.record_chat_provider_health(&config, &model_slug, Some(&message));
                 feedback.flush("chat stream setup failure").await;
                 return Err(SessionError::NetworkError {
                     provider: provider_kind.clone(),
-                    message: error.to_string(),
+                    message,
                 });
             }
         };
@@ -846,7 +847,7 @@ impl ChatAgentSession {
                     return Ok(TurnResult::cancelled(started.elapsed()));
                 }
                 ModelStreamEvent::Failed { error } => {
-                    self.record_chat_provider_health(&config, &response_model, false);
+                    self.record_chat_provider_health(&config, &response_model, Some(&error));
                     feedback.flush("chat model-call failed").await;
                     return Err(SessionError::NetworkError {
                         provider: provider_kind,
@@ -869,7 +870,7 @@ impl ChatAgentSession {
             content: response_text.clone(),
         });
 
-        self.record_chat_provider_health(&config, &response_model, true);
+        self.record_chat_provider_health(&config, &response_model, None);
         feedback.flush("chat model-call completed").await;
 
         Ok(TurnResult {
@@ -884,7 +885,11 @@ impl ChatAgentSession {
         })
     }
 
-    fn record_chat_provider_health(&self, config: &RokoConfig, model: &str, success: bool) {
+    /// Persist the provider health of a chat model call: a success when
+    /// `failure` is `None`, else a failure classified from its text
+    /// (bug-9ca6d7).
+    fn record_chat_provider_health(&self, config: &RokoConfig, model: &str, failure: Option<&str>) {
+        let success = failure.is_none();
         let Some(provider) = provider_id_for_model(config, model) else {
             tracing::debug!(
                 model,
@@ -894,7 +899,7 @@ impl ChatAgentSession {
             return;
         };
 
-        if let Err(error) = record_persisted_provider_health(&self.workdir, &provider, success) {
+        if let Err(error) = record_persisted_provider_outcome(&self.workdir, &provider, failure) {
             tracing::warn!(
                 provider = %provider,
                 model,

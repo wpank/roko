@@ -226,29 +226,13 @@ fn guard_mode(config: &RokoConfig) -> Option<GuardMode> {
     }
 }
 
-/// The settled attempts of the runs `run_ids`, in order: the model each ran
-/// on and whether its learning label passed.
+/// The settled attempts of the runs `run_ids`, in order, each marked where it
+/// ran on M2's holdout arm of the router loop (gap-a47d07).
 fn settled_outcomes(layout: &RokoLayout, run_ids: &[String]) -> Vec<SettledOutcome> {
     let mut settled = Vec::new();
     for run_id in run_ids {
-        let Ok(records) = RunRecords::load(&layout.run_dir(run_id)) else {
-            continue;
-        };
-        for verdict in records.verdicts {
-            let record = verdict.record;
-            let executed = record.executed;
-            let model = executed
-                .model_dispatched
-                .or(executed.model_reported)
-                .or(executed.model_requested);
-            if let (Some(model), Some(label)) = (model, record.learning_label) {
-                settled.push(SettledOutcome {
-                    model,
-                    category: None,
-                    success: label == 1,
-                    holdout: false,
-                });
-            }
+        if let Ok(records) = RunRecords::load(&layout.run_dir(run_id)) {
+            settled.extend(router_commit::settled_outcomes(&records));
         }
     }
     settled

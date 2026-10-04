@@ -17,6 +17,7 @@ use roko_core::runtime_event::{RuntimeEvent, RuntimeEventEnvelope, WorkflowOutco
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::openapi::ApiErrorResponse;
 use crate::state::AppState;
 
 /// A persisted run transcript for sharing.
@@ -134,6 +135,16 @@ pub async fn get_shared_run(
 }
 
 /// `POST /api/runs/{id}/share` — create a shared run token.
+///
+/// Anyone holding the link can read the share, so minting one needs the `admin` scope (9328): a
+/// `write` key gets 403. A share expires after `serve.share_ttl_days` unless the body asks for
+/// `no_expire`, which only a server bound to loopback grants; elsewhere that is a 400.
+#[utoipa::path(post, path = "/runs/{id}/share", tag = "shared_runs", request_body = Value,
+    params(("id" = String, Path, description = "The run to share")), responses(
+        (status = 200, description = "The token, url, metadata and transcript", body = Value),
+        (status = 400, description = "A bad id, or no_expire off a loopback bind", body = Value),
+        (status = 403, description = "The key lacks the admin scope", body = ApiErrorResponse),
+        (status = 404, description = "No run with that id, and no prompt to run")))]
 pub async fn create_share(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

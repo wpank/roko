@@ -246,33 +246,10 @@ impl ModelCallFeedbackRecorder {
     }
 }
 
-/// Persist one provider-health outcome under a workspace `.roko/learn` tree.
-///
-/// # Errors
-///
-/// Returns an error when the health registry directory or JSON file cannot be
-/// written.
-pub fn record_provider_health_for_workdir(
-    workdir: &Path,
-    provider: &str,
-    success: bool,
-) -> Result<()> {
-    record_provider_health_at(&workdir.join(".roko").join("learn"), provider, success)
-}
-
 /// Persist one provider-health outcome under a `.roko/learn` directory, a
-/// failure as [`ErrorClass::Unknown`].
-///
-/// # Errors
-///
-/// Returns an error when the health registry directory or JSON file cannot be
-/// written.
-pub fn record_provider_health_at(learn_dir: &Path, provider: &str, success: bool) -> Result<()> {
-    record_provider_outcome_at(learn_dir, provider, success, ErrorClass::Unknown)
-}
-
-/// Persist one provider-health outcome under a `.roko/learn` directory, a
-/// failure under the class `error`.
+/// failure under the class `error`. A caller with only the failure's text
+/// classifies it with [`ErrorClass::from_failure_text`]; there is no wrapper
+/// that records every failure as [`ErrorClass::Unknown`] (bug-9ca6d7).
 ///
 /// # Errors
 ///

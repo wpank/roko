@@ -95,3 +95,18 @@ can change post-construction is not yet confirmed either way.
   When fixing (2), confirm the fix restores `post_pass` and its `spec.refine_requested` event, not just the
   forecast call. Related: gap-2b0575 (S07's plan-load gate not reading that event at all yet, a separate,
   consumer-side gap even once it's produced).
+
+## Progress
+
+- (2) streaming forecast: implemented at 2155352e3 on `work/bug-78e5ce`; cargo verification deferred to the batch
+  gate. `dispatch_streaming` calls `forecast_attempt` where the batch path does, which also restores 6133's
+  refine/abandon reports, 6130's active start rung and the cached forecast that 6132's post-pass step and 6129's
+  sink read. Test: `streaming_dispatch_forecasts_through_the_self_model` (`graph_task_dispatch/streaming.rs`).
+  The streaming `DispatchContext` still passes `attempt: 0` (the batch path passes the attempt number), so a
+  streaming retry's features say first attempt.
+- (3) eligibility: documented as fixed at the run's start (`SelfModelRuntime::settings`, `post_failure_step`).
+  The plan runner loads `[self_model]` once, nothing writes it, and the breaker is the live re-check.
+- (1) router_pick: not done. Proposed fix: in `ladder.rs::record_attempt_ladder`, take `router_pick` from the
+  route decision only when its `audit.loop_id` is not L-M3 (`SELF_MODEL_LOOP` in `dispatch/model_routing.rs`,
+  which would need to become `pub(crate)`), since L-M3 rows carry the self-model's pick (a^L) as
+  `proposals.learned`. Its pick stays in the prediction row and the route decision row.

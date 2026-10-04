@@ -109,6 +109,9 @@ const SPEC_REFINE_EVENT: &str = "spec.refine_requested";
 /// settled verdict and saves it when the run ends (6129).
 #[derive(Debug)]
 pub struct SelfModelRuntime {
+    /// `[self_model]` as the plan run loaded it, fixed for the runtime's life: nothing in roko
+    /// writes the section, and a person's change to the mode takes effect at the next run
+    /// (bug-78e5ce). The calibration gate's breaker is what each step re-checks live.
     settings: SelfModelConfig,
     state_path: PathBuf,
     model: parking_lot::RwLock<SelfModel>,
@@ -487,7 +490,8 @@ impl SelfModelRuntime {
     /// started (6131): it re-forecasts the chain's rungs knowing the attempt failed, with the
     /// failure's class, and takes the cheapest step to VS (S04 §4.4), at most `K_MAX` climbs.
     /// `None` outside active mode, for a chain the ladder started by itself (held out, or never
-    /// the self-model's), and once the breaker has tripped: the two-failure rule stands.
+    /// the self-model's), and once the breaker has tripped: the two-failure rule stands. The
+    /// mode is the run's, fixed at its start; the breaker is re-checked here, live.
     fn post_failure_step(
         &self,
         chain_key: &str,

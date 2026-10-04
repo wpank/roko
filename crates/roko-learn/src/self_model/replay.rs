@@ -2,8 +2,11 @@
 //!
 //! H4 (S09 R-H4) and S09.E6's `vb replay` replay the routing policies prequentially over the
 //! benchmark's log-once matrix. [`Matrix`] reads `vb.run_record/1` lines into one cell per
-//! (task, arm): the outcome and cost at the arm's lowest recorded seed. An arm whose cost
-//! source is `unknown` is left out and counted. [`replay`] runs a fresh policy over each of
+//! (task, arm, model): the outcome and cost at the lowest recorded seed. An arm that ran several
+//! models (S09's LOG1 block A runs `roko_fixed` on four) becomes one arm per model,
+//! [`arm_label`], so no model's runs stand in for another's; econ.py's join labels them the same
+//! way. An arm whose cost source is `unknown` is left out and counted. [`replay`] runs a fresh
+//! policy over each of
 //! several seeded orderings of the tasks with bandit feedback: only the chosen arm's cell is
 //! revealed, and the matrix counts what it reveals. Each (ordering, task) writes one trace
 //! line: the arms tried, the outcome and the cost, which the economics report (6123) reads.
@@ -92,7 +95,8 @@ pub struct Cell {
     pub model_requested: Option<String>,
 }
 
-/// The (task, arm) matrix of a benchmark's run records.
+/// The (task, arm) matrix of a benchmark's run records, an arm that ran several models split
+/// into one arm per model ([`arm_label`], gap-b10978).
 #[derive(Debug, Default)]
 pub struct Matrix {
     cells: BTreeMap<(String, String), Cell>,
@@ -105,11 +109,13 @@ pub struct Matrix {
 }
 
 impl Matrix {
-    /// The matrix of the run records in `text`, one JSON object a line. Each (task, arm) keeps
-    /// its lowest seed.
+    /// The matrix of the run records in `text`, one JSON object a line. Each (task, arm, model)
+    /// keeps its lowest seed: an arm whose runs asked for more than one model has one arm per
+    /// model ([`arm_label`]), an arm with one model keeps its own name.
     #[must_use]
     pub fn from_records(text: &str) -> Self {
         let mut matrix = Self::default();
+        let mut runs = Vec::new();
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
             let Ok(record) = serde_json::from_str::<RunRecordLine>(line) else {
                 matrix.unreadable += 1;
@@ -143,7 +149,25 @@ impl Matrix {
                     .first()
                     .and_then(|attempt| attempt.model_requested.clone()),
             };
-            let key = (task, record.arm);
+            runs.push((task, record.arm, cell));
+        }
+        let mut models: BTreeMap<&str, BTreeSet<Option<&str>>> = BTreeMap::new();
+        for (_, arm, cell) in &runs {
+            let model = cell.model_requested.as_deref();
+            models.entry(arm.as_str()).or_default().insert(model);
+        }
+        let split: BTreeSet<String> = models
+            .into_iter()
+            .filter(|(_, models)| models.len() > 1)
+            .map(|(arm, _)| arm.to_string())
+            .collect();
+        for (task, arm, cell) in runs {
+            let arm = if split.contains(&arm) {
+                arm_label(&arm, cell.model_requested.as_deref())
+            } else {
+                arm
+            };
+            let key = (task, arm);
             let earlier = matrix
                 .cells
                 .get(&key)
@@ -153,6 +177,27 @@ impl Matrix {
             }
         }
         matrix
+    }
+
+    /// Each arm's model: the one its cells' runs asked for, the most frequent, ties by name. An
+    /// arm none of whose runs recorded a model is left out.
+    #[must_use]
+    pub fn arm_models(&self) -> BTreeMap<String, String> {
+        let mut counts: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
+        for ((_, arm), cell) in &self.cells {
+            if let Some(model) = cell.model_requested.as_deref() {
+                *counts.entry(arm).or_default().entry(model).or_default() += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .filter_map(|(arm, models)| {
+                let model = models
+                    .into_iter()
+                    .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))?;
+                Some((arm.to_string(), model.0.to_string()))
+            })
+            .collect()
     }
 
     /// The matrix of every `*.jsonl` file in `dir`, in name order.
@@ -418,6 +463,14 @@ pub fn cross_fit<P: Clone>(
         .map(|(parameters, _)| parameters.clone())
 }
 
+/// The matrix arm of `arm`'s runs of `model` when the arm ran several models: `<arm>[<model>]`,
+/// or `<arm>[?]` for a run that recorded no model (gap-b10978). econ.py's `_matrix` labels them
+/// the same way, so its rows join the replay's traces.
+#[must_use]
+pub fn arm_label(arm: &str, model: Option<&str>) -> String {
+    format!("{arm}[{}]", model.unwrap_or("?"))
+}
+
 /// The arm key the self-model reads for a matrix arm: the arm itself when it is a key, else a
 /// Roko stand-in named after it.
 #[must_use]
@@ -634,6 +687,57 @@ mod tests {
         // F1-03's cheap arm failed at seed 1 and passed at seed 2: seed 1 stands.
         let cell = &matrix.cells[&("F1-03".to_string(), "cheap_direct".to_string())];
         assert!(!cell.passed && cell.seed == 1);
+    }
+
+    /// gap-b10978: a (task, arm) recorded under two models keeps one cell per model, each an
+    /// arm of its own (`roko_fixed[glm-4.7]`) at its lowest seed, while an arm that ran one
+    /// model keeps its name.
+    #[test]
+    fn matrix_keeps_one_cell_per_task_arm_and_model() {
+        fn cell<'a>(matrix: &'a Matrix, arm: &str) -> &'a Cell {
+            &matrix.cells[&("F1-01".to_string(), arm.to_string())]
+        }
+        let record = |arm: &str, model: &str, seed: u64, label: u8, cost: f64| {
+            serde_json::json!({
+                "schema_version": RUN_RECORD_SCHEMA,
+                "arm": arm,
+                "seed": seed,
+                "task": { "family": "F1", "instance_id": "F1-01" },
+                "vs": { "label": label },
+                "costs": { "api_equiv_usd": cost, "source": "provider_usage" },
+                "execution": { "attempts": [{ "model_requested": model }] },
+            })
+            .to_string()
+        };
+        let text = [
+            record("roko_fixed", "glm-4.7", 1, 1, 0.02),
+            record("roko_fixed", "gpt-oss-120b", 1, 0, 0.01),
+            record("roko_fixed", "glm-4.7", 2, 0, 0.03),
+            record("cheap_direct", "gpt-oss-120b", 1, 1, 0.005),
+        ]
+        .join("\n");
+        let matrix = Matrix::from_records(&text);
+        let glm = arm_label("roko_fixed", Some("glm-4.7"));
+        let oss = arm_label("roko_fixed", Some("gpt-oss-120b"));
+        assert_eq!(glm, "roko_fixed[glm-4.7]");
+        assert_eq!(oss, "roko_fixed[gpt-oss-120b]");
+        assert_eq!(matrix.arms(), ["cheap_direct", glm.as_str(), oss.as_str()]);
+
+        // Each model keeps its own outcome, at its lowest seed.
+        assert!(cell(&matrix, &glm).passed && cell(&matrix, &glm).seed == 1);
+        let oss_cell = cell(&matrix, &oss);
+        assert!(!oss_cell.passed && (oss_cell.cost_usd - 0.01).abs() < 1e-12);
+        assert!(cell(&matrix, "cheap_direct").passed);
+        let revealed = matrix.reveal("F1-01", &oss).expect("the gpt-oss-120b cell");
+        assert!(!revealed.passed);
+        assert!(
+            matrix.reveal("F1-01", "roko_fixed").is_none(),
+            "a split arm has no cell under its own name"
+        );
+        let models = matrix.arm_models();
+        assert_eq!(models[&glm], "glm-4.7");
+        assert_eq!(models[&oss], "gpt-oss-120b");
+        assert_eq!(models["cheap_direct"], "gpt-oss-120b");
     }
 
     #[test]

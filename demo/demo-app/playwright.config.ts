@@ -25,7 +25,7 @@ export default defineConfig({
       name: 'showcase-fixture',
       testDir: './e2e/showcase',
       // Specs against a running `roko serve` have their own config (and web server).
-      testIgnore: ['**/auth-gate.spec.ts'],
+      testIgnore: ['**/auth-gate.spec.ts', '**/serve-manifest.spec.ts'],
       use: { ...devices['Desktop Chrome'] },
     },
   ],

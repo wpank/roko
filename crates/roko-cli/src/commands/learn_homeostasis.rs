@@ -17,7 +17,6 @@ use chrono::SecondsFormat;
 use clap::Subcommand;
 use roko_cli::exit_codes::EXIT_SUCCESS;
 use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
-use roko_core::disturbance::DisturbanceKind;
 use roko_fs::RokoLayout;
 use roko_learn::guarded_commit::{COMMITS_DIR, GuardMode, GuardedStore};
 use roko_learn::homeostasis::controller::{Controller, ControllerState, operator_mode};
@@ -388,6 +387,7 @@ fn label<T: Serialize>(value: T) -> String {
 mod tests {
     use roko_core::config::harness_params::{HarnessLadders, HarnessParams, Knob, Step};
     use roko_core::config::schema::RokoConfig;
+    use roko_core::disturbance::DisturbanceKind;
     use roko_learn::homeostasis::detect::Baseline;
     use roko_learn::homeostasis::lkg::ThetaLkg;
     use roko_learn::homeostasis::policy::ViabilityPolicy;

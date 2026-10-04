@@ -19,13 +19,7 @@ parent = "spec-0b3a32"
 links = { depends_on = ["gap-5ebb4f", "gap-2ca903", "gap-5e9292", "gap-a63e3c"], blocks = [], related = ["gap-f30b8e"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "test -f benchmarks/viabilitybench/showcase/verify_bundle.py && python3 -m pytest -q benchmarks/viabilitybench/showcase/test_bundle.py"
-
-[[verify]]
-command = "python3 benchmarks/viabilitybench/showcase/verify_bundle.py .roko/showcase/bundles/b-pilot-p1 && grep -q '\"kind\": \"replay\"' .roko/showcase/bundles/b-pilot-p1/bundle.json"
-
-[[verify]]
-command = "test -f demo/demo-app/scripts/stage-showcase-bundle.mjs && test -f demo/demo-app/scripts/showcase-bundle-budget.mjs && cd demo/demo-app && npx playwright test -c playwright.showcase-static.config.ts && node scripts/showcase-bundle-budget.mjs"
+command = "test -f benchmarks/viabilitybench/showcase/verify_bundle.py && benchmarks/viabilitybench/.venv/bin/python -m pytest -q benchmarks/viabilitybench/showcase/test_bundle.py"
 
 [[verify]]
 command = "test -f demo/demo-app/e2e/showcase/copy-rules.spec.ts && test -f demo/demo-app/e2e/showcase/retired.spec.ts && cd demo/demo-app && npx playwright test --project=showcase-fixture e2e/showcase/copy-rules.spec.ts e2e/showcase/retired.spec.ts"
@@ -98,3 +92,4 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - 9319: implemented at 3fa7ee21a (cargo verification deferred to the batch gate; the bench route already graded tasks by executed check since 3343, so the change is `RunResult::verdict()` plus two tests)
 - 9320: implemented at f0bf3d36b (cargo verification deferred to the batch gate; config invariant 15)
 - 9321: implemented at a847660ea (cargo verification deferred to the batch gate; Cargo.lock must be regenerated there for the verify's argon2 grep)
+- 2026-10-04 (coordinator, gate 12b): 9315 (the first real showcase bundle from the pilot runs) and 9316 (the showcase-static Playwright specs against it) and their verifies left this item for a held follow-up: no pilot has run. 9314's verify now runs pytest with the bench venv (the system python3 has no pytest).

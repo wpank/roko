@@ -891,6 +891,10 @@ impl ListenerSecurity {
         self.protections.load(Ordering::Acquire) != 0
     }
 
+    fn bound_to_loopback(&self) -> bool {
+        (self.protections.load(Ordering::Acquire) & LISTENER_PROTECTED_BY_LOOPBACK) != 0
+    }
+
     fn protection_mask(bind: &str, auth_enabled: bool) -> u8 {
         (u8::from(crate::routes::bind_is_loopback(bind)) * LISTENER_PROTECTED_BY_LOOPBACK)
             | (u8::from(auth_enabled) * LISTENER_PROTECTED_BY_AUTH)
@@ -1121,6 +1125,10 @@ pub struct AppState {
     /// The showcase bundles the loader checked, loaded on first use and on an admin reload
     /// (S10 §4.5).
     pub(crate) showcase_bundles: crate::routes::showcase::bundles::BundleCache,
+
+    /// When the last request arrived, and what keeps a showcase serve from its idle exit
+    /// (S11 §4.6, G10).
+    pub showcase_idle: crate::showcase::idle::IdleTracker,
 
     /// Job execution service shared by `POST /api/jobs/{id}/cancel` and the
     /// job runner, so a cancel reaches the run it targets (gap-2a9ed7).
@@ -1727,6 +1735,7 @@ impl AppState {
             live_agent_output: AtomicBool::new(false),
             local_access: LocalAccess::new(None),
             showcase_bundles: crate::routes::showcase::bundles::BundleCache::default(),
+            showcase_idle: crate::showcase::idle::IdleTracker::new(chrono::Utc::now()),
             job_execution,
         })
     }
@@ -1804,6 +1813,11 @@ impl AppState {
     /// changes when `roko.toml` is reloaded.
     pub fn configure_listener_security(&self, bind: &str, auth_enabled: bool) {
         self.listener_security.configure(bind, auth_enabled);
+    }
+
+    /// Whether the listener is bound to a loopback address, as recorded at startup.
+    pub fn listener_is_loopback(&self) -> bool {
+        self.listener_security.bound_to_loopback()
     }
 
     /// Record the effective live-agent-output level chosen at startup.

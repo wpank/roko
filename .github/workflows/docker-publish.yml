@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/nunchi-trade
+  IMAGE_PREFIX: ghcr.io/wpank
 
 jobs:
   build-and-push:

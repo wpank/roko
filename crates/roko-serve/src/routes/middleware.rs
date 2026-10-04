@@ -1490,6 +1490,11 @@ pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
     if is_read_only_method(method) && !opens_interactive_session(path) {
         return "read";
     }
+    // 9328: anyone holding a share's link can read it without auth, so minting
+    // one publishes the run; that is an admin act, not a `write` one.
+    if is_share_creation(path) {
+        return "admin";
+    }
     // Middleware on the nested API router can observe `/registries/...`
     // rather than the externally visible `/api/registries/...`. Match both
     // forms so an admin route never falls back to the weaker generic write
@@ -1527,6 +1532,14 @@ fn is_read_only_method(method: &Method) -> bool {
 /// `"write:unclassified"` is treated identically to `"write"` so that the
 /// fallback sentinel does not change runtime behaviour — it is only detectable
 /// by the regression test.
+/// Whether `path` is a run's share route, `/api/runs/{id}/share`, with or without the nest
+/// prefix.
+fn is_share_creation(path: &str) -> bool {
+    let path = path.strip_prefix("/api").unwrap_or(path);
+    let segments: Vec<&str> = path.split('/').collect();
+    matches!(segments.as_slice(), ["", "runs", id, "share"] if !id.is_empty())
+}
+
 pub(crate) fn is_scope_sufficient(has: &str, required: &str) -> bool {
     if matches!(has, "owner" | "admin") {
         return true;
@@ -3170,7 +3183,9 @@ mod tests {
             (Method::POST, "/api/plans/generate", "plan:write"),
             (Method::POST, "/plans/generate", "plan:write"),
             (Method::POST, "/api/run", "write"),
-            (Method::POST, "/runs/abc/share", "write"),
+            (Method::POST, "/runs/abc/share", "admin"),
+            (Method::POST, "/api/runs/abc/share", "admin"),
+            (Method::POST, "/api/runs/abc/shares", "write"),
             (Method::POST, "/api/secretsx", SCOPE_WRITE_UNCLASSIFIED),
             (Method::POST, "/api/configure", SCOPE_WRITE_UNCLASSIFIED),
         ] {

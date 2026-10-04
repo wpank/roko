@@ -210,7 +210,8 @@ pub struct LegacyRows {
     pub efficiency: Vec<String>,
     /// Keys of the `learn/costs.jsonl` rows.
     pub costs: Vec<String>,
-    /// Keys of the `episodes.jsonl` rows (`extra.attempt_key`).
+    /// Keys of the `episodes.jsonl` rows (`extra.attempt_key`): the
+    /// workspace's, and a frozen run's own `runs/<run_id>/episodes.jsonl`.
     pub episodes: Vec<String>,
 }
 
@@ -223,6 +224,18 @@ impl LegacyRows {
     /// Returns an error when a log exists but cannot be read.
     pub fn load(layout: &RokoLayout, run_id: &str) -> Result<Self, LearnError> {
         let learn_dir = layout.learn_dir();
+        // A frozen run writes its episodes to its own run directory, not to
+        // the workspace's log (gap-127263).
+        let mut episodes = run_keys(
+            &layout.root_episodes_path(),
+            run_id,
+            &["extra", "attempt_key"],
+        )?;
+        episodes.extend(run_keys(
+            &layout.run_dir(run_id).join("episodes.jsonl"),
+            run_id,
+            &["extra", "attempt_key"],
+        )?);
         Ok(Self {
             efficiency: run_keys(
                 &learn_dir.join("efficiency.jsonl"),
@@ -230,11 +243,7 @@ impl LegacyRows {
                 &["attempt_key"],
             )?,
             costs: run_keys(&learn_dir.join("costs.jsonl"), run_id, &["attempt_key"])?,
-            episodes: run_keys(
-                &layout.root_episodes_path(),
-                run_id,
-                &["extra", "attempt_key"],
-            )?,
+            episodes,
         })
     }
 }
@@ -1420,6 +1429,25 @@ mod tests {
         assert_eq!(rows.costs, [ours.clone()]);
         assert_eq!(rows.episodes, [ours]);
         assert!(rows.efficiency.is_empty());
+    }
+
+    /// gap-127263: a frozen run writes its episodes to its own run
+    /// directory, where the check joins them as it joins the workspace's.
+    #[test]
+    fn legacy_rows_read_a_frozen_runs_own_episodes() {
+        let dir = TempDir::new().expect("tempdir");
+        let layout = RokoLayout::new(dir.path().join(".roko"));
+        let ours = identity("T1", 1).attempt_key;
+        std::fs::create_dir_all(layout.run_dir(RUN)).expect("run dir");
+        std::fs::write(
+            layout.run_dir(RUN).join("episodes.jsonl"),
+            format!("{{\"extra\":{{\"attempt_key\":\"{ours}\"}}}}\n"),
+        )
+        .expect("write the run's episodes");
+
+        let rows = LegacyRows::load(&layout, RUN).expect("load legacy rows");
+        assert_eq!(rows.episodes, [ours]);
+        assert!(!layout.root_episodes_path().exists());
     }
 
     /// `check` lists what the run's census has unwired, and only warns of a

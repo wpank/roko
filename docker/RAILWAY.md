@@ -87,7 +87,7 @@ roko deploy railway --workers code-implementer,pr-review,gate-fixer
 backend = "railway-api"
 # railway_api_token: never here. Set ROKO__DEPLOY__RAILWAY_API_TOKEN in
 # .roko/.env (`roko config set deploy.railway_api_token <token>` does).
-worker_image = "ghcr.io/nunchi-trade/roko-worker:latest"
+worker_image = "ghcr.io/wpank/roko-worker:latest"
 # project_id = "..."              # optional: reuse existing project
 # environment_id = "..."          # optional: reuse existing environment
 # default_region = "us-west1"     # optional
@@ -112,9 +112,9 @@ Published to GHCR on every push to `main` by `.github/workflows/docker-publish.y
 
 | Image | Dockerfile | Purpose |
 |---|---|---|
-| `ghcr.io/nunchi-trade/roko:latest` | `docker/roko.Dockerfile` | Control plane (`roko serve`) |
-| `ghcr.io/nunchi-trade/roko-worker:latest` | `docker/worker.Dockerfile` | Agent workers (Claude, OpenAI, Ollama) |
-| `ghcr.io/nunchi-trade/mirage:latest` | `docker/mirage.Dockerfile` | Chain relay (EVM fork + agent relay) |
+| `ghcr.io/wpank/roko:latest` | `docker/roko.Dockerfile` | Control plane (`roko serve`) |
+| `ghcr.io/wpank/roko-worker:latest` | `docker/worker.Dockerfile` | Agent workers (Claude, OpenAI, Ollama) |
+| `ghcr.io/wpank/mirage:latest` | `docker/mirage.Dockerfile` | Chain relay (EVM fork + agent relay) |
 
 Tags: `latest` (main only), `sha-<short>`, `v<version>` (on version tags).
 

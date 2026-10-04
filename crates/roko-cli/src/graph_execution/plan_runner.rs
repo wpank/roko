@@ -2555,13 +2555,21 @@ pub fn build_graph_feedback_facade(
     homeostasis: Option<&Arc<crate::runtime_feedback::HomeostasisSink>>,
     knowledge_batch: Option<&str>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
-    // A frozen run (decision 2218) registers no sink. Each learning sink
+    // A frozen run (decision 2218) registers no learning sink. Each one
     // writes learned state: episodes, hindsight, knowledge, error patterns,
     // the router, dreams and the daimon state. The theta and delta sinks
     // keep only in-memory state and wait for plan completion, which Graph
-    // runs never emit (q-6b7cca).
+    // runs never emit (q-6b7cca). Its episodes go to each run's own
+    // `runs/<run_id>/episodes.jsonl`, telemetry that no later run reads and
+    // the bench driver's attempt evidence (gap-127263).
     if config.learning.frozen {
-        return std::sync::Arc::new(crate::runtime_feedback::FeedbackFacade::new());
+        let runs_dir = RokoLayout::for_project(workdir).runs_dir();
+        let run_episodes = crate::runtime_feedback::EpisodeSink::per_run(runs_dir)
+            .with_hdc_fingerprint(config.learning.episode_hdc_fingerprint);
+        return std::sync::Arc::new(
+            crate::runtime_feedback::FeedbackFacade::new()
+                .with_sink(std::sync::Arc::new(run_episodes)),
+        );
     }
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
@@ -5639,6 +5647,21 @@ max_retries = 0
             .collect();
         assert_eq!(settled, ["T1", "T2", "T2", "T3"], "every attempt settled");
         assert_eq!(run.verdicts[3].record.outcome, AttemptOutcome::Unverified);
+        // Each attempt's episode is the run's own telemetry, beside its
+        // attempt log, and not learned state (gap-127263): the workspace's
+        // `episodes.jsonl` holds only the seeded episode, as checked above.
+        // The reflex that served T3 made no call, so it has no episode, as
+        // in a live run.
+        let episodes_path = run_dir.join("episodes.jsonl");
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(&episodes_path)
+            .await
+            .expect("read the run's episodes");
+        let mut episode_tasks: Vec<&str> = episodes
+            .iter()
+            .map(|episode| episode.task_id.as_str())
+            .collect();
+        episode_tasks.sort_unstable();
+        assert_eq!(episode_tasks, ["T1", "T2", "T2"]);
         // T1 routed once and T2 twice; the reflex that served T3 routed
         // nothing, so the frozen run read its rule.
         assert_eq!(run.decisions.len(), 3, "{:?}", run.decisions);
@@ -5717,7 +5740,8 @@ max_retries = 0
     /// Decision 2218: a frozen run's dispatcher has no learning sink, and
     /// none of the paths that only write learned state (playbook outcomes,
     /// prompt treatments). Its telemetry, the state it also reads, and its
-    /// chains' arm sets and placebo rows stay. A live run has them all.
+    /// chains' arm sets and placebo rows stay. A live run has them all. The
+    /// frozen facade's one sink is the run's own episode log (gap-127263).
     #[tokio::test]
     async fn frozen_run_registers_no_learning_sinks() {
         const LEARNING: [&str; 8] = [
@@ -5754,7 +5778,7 @@ max_retries = 0
             assert!(wired(&live, id), "a live run has {id}");
             assert!(!wired(&frozen, id), "a frozen run has {id}");
         }
-        assert!(frozen.facade_sinks.is_empty(), "{:?}", frozen.facade_sinks);
+        assert_eq!(frozen.facade_sinks, ["run_episodes"]);
         for id in KEPT {
             assert!(wired(&live, id) && wired(&frozen, id), "{id}");
         }

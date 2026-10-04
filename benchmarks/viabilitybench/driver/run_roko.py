@@ -41,7 +41,9 @@ families; a family that fetches its dependencies needs them vendored first (F7, 
 **The model check** (W10 rec 5, bug-35379d, bug-31438d). Every record Roko writes must name the pinned model and the
 arm's provider, as the model it dispatched and, when the provider reported one, as the model that served:
 - each episode (`.roko/episodes.jsonl`, one per dispatch): `model` and `backend`, and in `extra` the served
-  `model_reported`, Roko's own `model_mismatch` mark and a failover's `substituted_from`;
+  `model_reported`, Roko's own `model_mismatch` mark and a failover's `substituted_from`. A run with learning frozen
+  (planemit's pinned mode, decision 2218) keeps its episodes in its own `.roko/runs/<run_id>/episodes.jsonl`
+  instead, which is read when the workspace's log holds none of the plan's (gap-127263);
 - the cost rows (`.roko/learn/costs.jsonl`), the agent run's and each helper call's (role `helper`);
 - every model-call and efficiency row (`.roko/learn/efficiency.jsonl`), helper calls included;
 - S01's `roko.verdict/1` lines (`.roko/runs/*/attempts.jsonl`, gap-528762): `executed.model_requested`,
@@ -505,10 +507,16 @@ def read_evidence(workspace: Path, slug: str, *, proxy_rows: list[dict] | None =
     def this_plan(row: dict) -> bool:
         return (row.get("extra") or {}).get("plan_id", row.get("plan_id")) == slug
 
-    episodes = _attempt_order([row for row in rows("episodes.jsonl")
-                               if this_plan(row) and row.get("task_id") == planemit.TASK_ID])
-    verdicts = []
+    def plan_episodes(relpath: str) -> list[dict]:
+        return [row for row in rows(relpath) if this_plan(row) and row.get("task_id") == planemit.TASK_ID]
+
     runs = root / "runs"
+    logged = plan_episodes("episodes.jsonl")
+    if not logged and runs.is_dir() and not runs.is_symlink():  # a frozen run's own logs (module docstring)
+        for path in sorted(runs.glob("*/episodes.jsonl")):
+            logged += plan_episodes(path.relative_to(root).as_posix())
+    episodes = _attempt_order(logged)
+    verdicts = []
     if runs.is_dir() and not runs.is_symlink():
         for path in sorted(runs.glob("*/attempts.jsonl")):
             verdicts += [row for row in rows(path.relative_to(root).as_posix())

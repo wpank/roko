@@ -2032,8 +2032,8 @@ fn deploy_fly_custom_app_and_region() {
         cmd: DeployCmd::Fly { app, region, .. },
     }) = cli.command
     {
-        assert_eq!(app, "my-app");
-        assert_eq!(region, "lhr");
+        assert_eq!(app.as_deref(), Some("my-app"));
+        assert_eq!(region.as_deref(), Some("lhr"));
     } else {
         panic!("expected Deploy Fly");
     }
@@ -2047,6 +2047,8 @@ fn deploy_fly_defaults() {
             DeployCmd::Fly {
                 app,
                 region,
+                fly_config,
+                build_target,
                 dockerfile,
                 health_path,
                 volume_source,
@@ -2057,8 +2059,11 @@ fn deploy_fly_defaults() {
             },
     }) = cli.command
     {
-        assert_eq!(app, "roko-agent");
-        assert_eq!(region, "iad");
+        // Unset flags leave the app and region to the --fly-config file, else roko-agent in iad.
+        assert_eq!(app, None);
+        assert_eq!(region, None);
+        assert_eq!(fly_config, None);
+        assert_eq!(build_target, None);
         assert_eq!(dockerfile, "Dockerfile");
         assert_eq!(health_path, "/health");
         assert_eq!(volume_source, "roko_data");
@@ -2068,6 +2073,40 @@ fn deploy_fly_defaults() {
     } else {
         panic!("expected Deploy Fly");
     }
+}
+
+#[test]
+fn deploy_fly_config_is_not_the_roko_config() {
+    // A subcommand `--config` would share the global flag's value both ways, and every config
+    // load would then read the Fly config as roko.toml: the Fly config is `--fly-config` (9336).
+    let cli = Cli::try_parse_from([
+        "roko",
+        "deploy",
+        "fly",
+        "--dry-run",
+        "--fly-config",
+        "fly.showcase.toml",
+    ])
+    .unwrap();
+    assert_eq!(cli.config, None);
+    assert!(matches!(
+        cli.command,
+        Some(Command::Deploy {
+            cmd: DeployCmd::Fly { fly_config: Some(ref path), .. }
+        }) if path.as_path() == Path::new("fly.showcase.toml")
+    ));
+
+    let cli = Cli::try_parse_from(["roko", "--config", "roko.toml", "deploy", "fly"]).unwrap();
+    assert_eq!(cli.config, Some(PathBuf::from("roko.toml")));
+    assert!(matches!(
+        cli.command,
+        Some(Command::Deploy {
+            cmd: DeployCmd::Fly {
+                fly_config: None,
+                ..
+            }
+        })
+    ));
 }
 
 #[test]

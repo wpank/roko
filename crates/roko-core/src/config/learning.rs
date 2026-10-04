@@ -195,7 +195,9 @@ pub struct LearningConfig {
     /// and `.roko/episodes.jsonl`. A frozen run assigns no prompt
     /// experiments. Telemetry stays on: the run's `.roko/runs/<run_id>/`
     /// files, `learn/costs.jsonl`, `learn/efficiency.jsonl` and
-    /// `learn/run-metrics.jsonl`. A frozen run's manifest records
+    /// `learn/run-metrics.jsonl`. A frozen run writes its episodes to its
+    /// own `.roko/runs/<run_id>/episodes.jsonl` instead, which no later run
+    /// reads (gap-127263). A frozen run's manifest records
     /// `ablation_flags = ["learning_frozen"]`.
     #[serde(default)]
     pub frozen: bool,

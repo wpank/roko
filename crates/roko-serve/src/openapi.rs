@@ -389,6 +389,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         showcase_overview,
         showcase_p1_head_to_head,
         showcase_m4_audits,
+        showcase_economics,
         showcase_reload_bundles,
         showcase_unlock_login,
         list_effects,
@@ -1642,6 +1643,22 @@ doc_get!(
     "showcase"
 );
 doc_get!(showcase_m4_audits, "/showcase/m4/audits", "showcase");
+#[utoipa::path(
+    get,
+    path = "/showcase/economics",
+    tag = "showcase",
+    params(
+        ("experiment_id" = String, Query, description = "The experiment whose report to serve")
+    ),
+    responses(
+        (status = 200, description = "Its econ-report.json, byte for byte, with the SHA-256 ETag"),
+        (status = 400, description = "No experiment_id", body = ApiErrorResponse),
+        (status = 401, description = "No showcase session", body = ApiErrorResponse),
+        (status = 404, description = "No verified bundle reports on it", body = ApiErrorResponse),
+        (status = 409, description = "The bundle was rejected", body = ApiErrorResponse)
+    )
+)]
+fn showcase_economics() {}
 doc_post_value!(
     showcase_reload_bundles,
     "/showcase/admin/bundles/reload",

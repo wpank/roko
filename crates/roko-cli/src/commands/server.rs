@@ -66,12 +66,21 @@ pub(crate) enum DeployCmd {
         /// Show the deploy plan without performing any mutations.
         #[arg(long)]
         dry_run: bool,
-        /// Fly.io app name (default: roko-agent).
-        #[arg(long, default_value = "roko-agent")]
-        app: String,
-        /// Fly.io primary region (default: iad).
-        #[arg(long, default_value = "iad")]
-        region: String,
+        /// Fly.io app name (default: the --fly-config file's, else roko-agent).
+        #[arg(long)]
+        app: Option<String>,
+        /// Fly.io primary region (default: the --fly-config file's, else iad).
+        #[arg(long)]
+        region: Option<String>,
+        /// An existing Fly config to deploy, such as fly.showcase.toml: its app, region, build
+        /// target and tables are used, and the flags given override them. No fly.toml is written.
+        /// It is not `--config`, which names roko's config: the posture check reads that one, so
+        /// `--config docker/showcase.roko.toml` checks the showcase image's own.
+        #[arg(long)]
+        fly_config: Option<PathBuf>,
+        /// The Dockerfile stage to build (default: the --fly-config file's, else the last stage).
+        #[arg(long)]
+        build_target: Option<String>,
         /// Path to the Dockerfile for the Fly build (default: Dockerfile).
         #[arg(long, default_value = "Dockerfile")]
         dockerfile: String,
@@ -536,8 +545,7 @@ fn check_security_posture(
     let auth = &config.serve.auth;
     let auth_ok = auth.enabled && (!auth.api_key.is_empty() || !auth.api_keys.is_empty());
     let cors_configured = !config.server.cors_origins.is_empty();
-    // Terminal is disabled when not explicitly set; treat absence as disabled.
-    let terminal_disabled = true; // terminal feature is not on by default
+    let checks = posture_checks(config);
 
     println!("  Security checklist:");
     println!(
@@ -557,10 +565,9 @@ fn check_security_posture(
         "  [{}] server.cors_origins configured",
         if cors_configured { "x" } else { " " }
     );
-    println!(
-        "  [{}] terminal disabled (not exposed)",
-        if terminal_disabled { "x" } else { " " }
-    );
+    for check in &checks {
+        println!("  [{}] {}", if check.ok { "x" } else { " " }, check.label);
+    }
     println!();
 
     if !auth_ok {
@@ -577,12 +584,94 @@ fn check_security_posture(
                  and set the key in the ROKO__SERVE__AUTH__API_KEY variable, not in \
                  roko.toml: `roko config set serve.auth.api_key <secret>` stores it in \
                  .roko/.env, and the deployed server needs the variable too.\n\
-                 Or bypass with: roko deploy railway --unsafe-public"
+                 Or bypass the check with --unsafe-public."
+            );
+        }
+    }
+
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|check| check.blocks && !check.ok)
+        .map(|check| check.label.as_str())
+        .collect();
+    if !failed.is_empty() {
+        if unsafe_public {
+            tracing::warn!(
+                failed = ?failed,
+                "proceeding despite the showcase posture (--unsafe-public)"
+            );
+        } else {
+            anyhow::bail!(
+                "deployment blocked: showcase mode needs every check of its posture:\n  - {}",
+                failed.join("\n  - ")
             );
         }
     }
 
     Ok(())
+}
+
+/// One line of the deploy posture checklist beyond auth (9336).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PostureCheck {
+    label: String,
+    ok: bool,
+    /// Whether a failure blocks the deploy (without `--unsafe-public`).
+    blocks: bool,
+}
+
+/// The terminal check and S11's G0–G2 (9336). Showcase mode makes each one blocking; elsewhere
+/// they are advice, since a normal deploy may want public webhooks.
+fn posture_checks(config: &roko_core::config::schema::RokoConfig) -> Vec<PostureCheck> {
+    let auth = &config.serve.auth;
+    let showcase = config.showcase.enabled;
+    let privy_limited = auth.privy_app_id.is_none()
+        || !auth.privy_allowed_roles.is_empty()
+        || auth.privy_workspace_id.is_some();
+    let extras: Vec<&str> = config
+        .serve
+        .public_routes
+        .iter()
+        .map(String::as_str)
+        .filter(|group| !matches!(*group, "health" | "ready"))
+        .collect();
+    let extra = if extras.is_empty() {
+        "none".to_string()
+    } else {
+        extras.join(", ")
+    };
+    let public_bind = !is_loopback_bind(&config.server.bind);
+    let mut checks = vec![
+        PostureCheck {
+            label: "terminal disabled (not exposed)".to_string(),
+            ok: !config.serve.terminal_enabled,
+            blocks: showcase,
+        },
+        PostureCheck {
+            label: "G0: Privy off, or limited by an allow-list or the sentinel".to_string(),
+            ok: privy_limited,
+            blocks: showcase,
+        },
+        PostureCheck {
+            label: format!("G1: only health and ready public on a public bind (extra: {extra})"),
+            ok: !public_bind || extras.is_empty(),
+            blocks: showcase,
+        },
+    ];
+    if showcase {
+        // Passphrase sessions need auth on in enforce mode, the public origin, and no Privy.
+        let enforced = auth.enforcement_mode == roko_core::config::EnforcementMode::Enforce;
+        let session_auth = auth.enabled
+            && enforced
+            && config.showcase.public_origin.is_some()
+            && auth.privy_app_id.is_none();
+        checks.push(PostureCheck {
+            label: "G2: showcase mode behind passphrase sessions".to_string(),
+            ok: session_auth,
+            blocks: true,
+        });
+    }
+    checks
 }
 
 pub(crate) async fn cmd_deploy(cli: &Cli, cmd: DeployCmd) -> Result<i32> {
@@ -600,6 +689,8 @@ pub(crate) async fn cmd_deploy(cli: &Cli, cmd: DeployCmd) -> Result<i32> {
             dry_run,
             app,
             region,
+            fly_config,
+            build_target,
             dockerfile,
             health_path,
             volume_source,
@@ -611,8 +702,10 @@ pub(crate) async fn cmd_deploy(cli: &Cli, cmd: DeployCmd) -> Result<i32> {
                 workdir,
                 unsafe_public,
                 dry_run,
-                &app,
-                &region,
+                app.as_deref(),
+                region.as_deref(),
+                fly_config,
+                build_target.as_deref(),
                 &dockerfile,
                 &health_path,
                 &volume_source,
@@ -799,8 +892,10 @@ pub(crate) async fn cmd_deploy_fly(
     workdir: Option<PathBuf>,
     unsafe_public: bool,
     dry_run: bool,
-    app: &str,
-    region: &str,
+    app: Option<&str>,
+    region: Option<&str>,
+    fly_config: Option<PathBuf>,
+    build_target: Option<&str>,
     dockerfile: &str,
     health_path: &str,
     volume_source: &str,
@@ -811,28 +906,155 @@ pub(crate) async fn cmd_deploy_fly(
     let config = roko_core::config::loader::load_config_unified(&workdir)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("Checking security posture...");
-    check_security_posture(&config, unsafe_public)?;
-
-    let fly_config = FlyTomlConfig {
-        app,
-        region,
-        dockerfile,
-        health_path,
-        volume_source,
-        volume_destination,
+    // A dry run still shows the plan when the posture blocks the deploy, and fails after it.
+    let blocked = match check_security_posture(&config, unsafe_public) {
+        Ok(()) => None,
+        Err(error) if dry_run => Some(error),
+        Err(error) => return Err(error),
     };
 
-    let path = write_fly_toml(&workdir, &fly_config, force)?;
-    println!("Wrote {}", path.display());
+    let plan = if let Some(path) = fly_config {
+        let path = if path.is_absolute() {
+            path
+        } else {
+            workdir.join(path)
+        };
+        fly_plan_from_config(&path, app, region, build_target)?
+    } else {
+        let generated = FlyTomlConfig {
+            app: app.unwrap_or(DEFAULT_FLY_APP),
+            region: region.unwrap_or(DEFAULT_FLY_REGION),
+            dockerfile,
+            health_path,
+            volume_source,
+            volume_destination,
+            build_target,
+        };
+        // A blocked deploy writes nothing.
+        let path = if blocked.is_some() {
+            workdir.join("fly.toml")
+        } else {
+            let path = write_fly_toml(&workdir, &generated, force)?;
+            println!("Wrote {}", path.display());
+            path
+        };
+        FlyPlan {
+            app: generated.app.to_string(),
+            region: generated.region.to_string(),
+            build_target: build_target.map(str::to_string),
+            config: path,
+            vm: None,
+            restart: None,
+        }
+    };
+    print_fly_plan(&plan);
 
+    if let Some(error) = blocked {
+        return Err(error);
+    }
     if dry_run {
         println!("Dry run: skipping flyctl deploy");
         return Ok(EXIT_SUCCESS);
     }
 
-    run_command_status(&workdir, "flyctl", &["deploy", "--remote-only"])?;
+    let args = fly_deploy_args(&plan);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_command_status(&workdir, "flyctl", &args)?;
 
     Ok(EXIT_SUCCESS)
+}
+
+/// The app `roko deploy fly` names when neither a flag nor a config file does.
+const DEFAULT_FLY_APP: &str = "roko-agent";
+/// The region `roko deploy fly` uses when neither a flag nor a config file names one.
+const DEFAULT_FLY_REGION: &str = "iad";
+
+/// What `roko deploy fly` deploys (9336): the app, region and build target, each from its flag
+/// or else the Fly config, and the config itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FlyPlan {
+    pub app: String,
+    pub region: String,
+    pub build_target: Option<String>,
+    /// The Fly config `flyctl deploy` reads: the `--fly-config` file or the generated `fly.toml`.
+    pub config: PathBuf,
+    /// The config's `[[vm]]` and `[[restart]]` tables, as TOML, for the plan.
+    pub vm: Option<String>,
+    pub restart: Option<String>,
+}
+
+/// The plan of a deploy from the existing Fly config at `path`; each flag that is given overrides
+/// the file's value.
+pub(crate) fn fly_plan_from_config(
+    path: &Path,
+    app: Option<&str>,
+    region: Option<&str>,
+    build_target: Option<&str>,
+) -> Result<FlyPlan> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let file: toml::Value =
+        toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+    let text_at =
+        |value: Option<&toml::Value>| value.and_then(toml::Value::as_str).map(str::to_string);
+    let app = app
+        .map(str::to_string)
+        .or_else(|| text_at(file.get("app")))
+        .with_context(|| format!("{} names no app; pass --app", path.display()))?;
+    let region = region
+        .map(str::to_string)
+        .or_else(|| text_at(file.get("primary_region")))
+        .unwrap_or_else(|| DEFAULT_FLY_REGION.to_string());
+    let file_target = file
+        .get("build")
+        .and_then(|build| build.get("build-target"));
+    let build_target = build_target
+        .map(str::to_string)
+        .or_else(|| text_at(file_target));
+    Ok(FlyPlan {
+        app,
+        region,
+        build_target,
+        config: path.to_path_buf(),
+        vm: file.get("vm").map(toml::Value::to_string),
+        restart: file.get("restart").map(toml::Value::to_string),
+    })
+}
+
+/// The `flyctl` arguments that deploy `plan`, naming every value so no default slips in.
+pub(crate) fn fly_deploy_args(plan: &FlyPlan) -> Vec<String> {
+    let mut args = vec![
+        "deploy".to_string(),
+        "--remote-only".to_string(),
+        "--config".to_string(),
+        plan.config.display().to_string(),
+        "--app".to_string(),
+        plan.app.clone(),
+        "--primary-region".to_string(),
+        plan.region.clone(),
+    ];
+    if let Some(target) = &plan.build_target {
+        args.push("--build-target".to_string());
+        args.push(target.clone());
+    }
+    args
+}
+
+fn print_fly_plan(plan: &FlyPlan) {
+    println!("Fly deploy plan:");
+    println!("  app:          {}", plan.app);
+    println!("  region:       {}", plan.region);
+    let target = plan
+        .build_target
+        .as_deref()
+        .unwrap_or("(the Dockerfile's last stage)");
+    println!("  build target: {target}");
+    println!("  config:       {}", plan.config.display());
+    if let Some(vm) = &plan.vm {
+        println!("  vm:           {vm}");
+    }
+    if let Some(restart) = &plan.restart {
+        println!("  restart:      {restart}");
+    }
 }
 
 pub(crate) async fn cmd_deploy_docker(
@@ -912,6 +1134,8 @@ pub(crate) struct FlyTomlConfig<'a> {
     pub health_path: &'a str,
     pub volume_source: &'a str,
     pub volume_destination: &'a str,
+    /// The Dockerfile stage to build; `None` builds the last stage.
+    pub build_target: Option<&'a str>,
 }
 
 pub(crate) fn write_fly_toml(
@@ -926,13 +1150,17 @@ pub(crate) fn write_fly_toml(
             path.display()
         );
     }
+    let build_target = config
+        .build_target
+        .map(|target| format!("build-target = \"{target}\"\n"))
+        .unwrap_or_default();
     let content = format!(
         r#"app = "{app}"
 primary_region = "{region}"
 
 [build]
 dockerfile = "{dockerfile}"
-
+{build_target}
 [http_service]
 internal_port = 6677
 force_https = true
@@ -1230,7 +1458,11 @@ fn is_loopback_bind(bind: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FlyTomlConfig, railway_worker_env, write_fly_toml};
+    use super::{
+        FlyTomlConfig, PostureCheck, cmd_deploy_fly, fly_deploy_args, fly_plan_from_config,
+        posture_checks, railway_worker_env, write_fly_toml,
+    };
+    use roko_core::config::schema::RokoConfig;
     use std::collections::HashMap;
 
     /// 9307: the entrypoint keeps state in `ROKO_STATE_ROOT`, whose default
@@ -1246,6 +1478,7 @@ mod tests {
             health_path: "/health",
             volume_source: "roko_data",
             volume_destination: "/mnt/roko-state",
+            build_target: None,
         };
         let path = write_fly_toml(dir.path(), &config, false).expect("write fly.toml");
         let text = std::fs::read_to_string(&path).expect("read fly.toml");
@@ -1260,6 +1493,126 @@ mod tests {
         let root: toml::Value = toml::from_str(root).expect("parse the root fly.toml");
         let (state_root, destination) = state_root_and_mount(&root);
         assert_eq!(state_root, destination, "root fly.toml");
+    }
+
+    /// 9336: `--fly-config` reads the app, region and build target from an existing Fly config, a
+    /// flag overrides only its own value, and a dry run writes no fly.toml.
+    #[tokio::test]
+    async fn deploy_fly_dry_run_reads_app_and_region_from_config() {
+        use clap::Parser as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fly.showcase.toml");
+        let showcase = include_str!("../../../../fly.showcase.toml");
+        std::fs::write(&path, showcase).expect("write the Fly config");
+
+        let plan = fly_plan_from_config(&path, None, None, None).expect("plan");
+        assert_eq!(plan.app, "roko-showcase");
+        assert_eq!(plan.region, "iad");
+        assert_eq!(plan.build_target.as_deref(), Some("showcase-replay"));
+        let vm = plan.vm.as_deref().unwrap_or_default();
+        assert!(vm.contains("shared-cpu-1x"), "{vm}");
+        let restart = plan.restart.as_deref().unwrap_or_default();
+        assert!(restart.contains("on-failure"), "{restart}");
+        let args = fly_deploy_args(&plan);
+        let value_of = |flag: &str| {
+            let at = args.iter().position(|arg| arg == flag)?;
+            args.get(at + 1).map(String::as_str)
+        };
+        assert_eq!(value_of("--app"), Some("roko-showcase"));
+        assert_eq!(value_of("--primary-region"), Some("iad"));
+        assert_eq!(value_of("--build-target"), Some("showcase-replay"));
+
+        let staging = fly_plan_from_config(&path, Some("roko-staging"), None, None).expect("plan");
+        assert_eq!(staging.app, "roko-staging");
+        assert_eq!(staging.region, "iad");
+
+        let cli = crate::Cli::try_parse_from(["roko"]).expect("parse");
+        let code = cmd_deploy_fly(
+            &cli,
+            Some(dir.path().to_path_buf()),
+            true,
+            true,
+            None,
+            None,
+            Some(path),
+            None,
+            "Dockerfile",
+            "/health",
+            "roko_data",
+            "/data/.roko",
+            false,
+        )
+        .await
+        .expect("dry run");
+        assert_eq!(code, crate::EXIT_SUCCESS);
+        assert!(!dir.path().join("fly.toml").exists());
+    }
+
+    /// The posture line whose label starts with `prefix`.
+    fn check<'a>(checks: &'a [PostureCheck], prefix: &str) -> &'a PostureCheck {
+        checks
+            .iter()
+            .find(|check| check.label.starts_with(prefix))
+            .expect(prefix)
+    }
+
+    #[test]
+    fn posture_terminal_check_reads_the_config() {
+        let mut config = RokoConfig::default();
+        assert!(check(&posture_checks(&config), "terminal").ok);
+        config.serve.terminal_enabled = true;
+        let checks = posture_checks(&config);
+        let terminal = check(&checks, "terminal");
+        assert!(!terminal.ok);
+        assert!(!terminal.blocks, "outside showcase mode it is advice");
+    }
+
+    #[test]
+    fn posture_g0_privy_needs_an_allow_list() {
+        let mut config = RokoConfig::default();
+        assert!(check(&posture_checks(&config), "G0").ok);
+        config.serve.auth.privy_app_id = Some("privy-app".to_string());
+        assert!(!check(&posture_checks(&config), "G0").ok);
+        let sentinel = "roko-showcase-privy-disabled-2e0c24bbd6947906d0c5ae1ec054763a";
+        config.serve.auth.privy_workspace_id = Some(sentinel.to_string());
+        assert!(check(&posture_checks(&config), "G0").ok);
+    }
+
+    #[test]
+    fn posture_g1_public_routes_on_a_public_bind() {
+        let mut config = RokoConfig::default();
+        config.server.bind = "127.0.0.1".to_string();
+        assert!(check(&posture_checks(&config), "G1").ok);
+        config.server.bind = "0.0.0.0".to_string();
+        assert!(!check(&posture_checks(&config), "G1").ok);
+        config.serve.public_routes = vec!["health".to_string(), "ready".to_string()];
+        assert!(check(&posture_checks(&config), "G1").ok);
+    }
+
+    /// The showcase image's own config passes every posture check, so checking it (`roko --config
+    /// docker/showcase.roko.toml deploy fly --fly-config fly.showcase.toml`) blocks nothing.
+    #[test]
+    fn posture_passes_for_the_showcase_image_config() {
+        let text = include_str!("../../../../docker/showcase.roko.toml");
+        let config: RokoConfig = toml::from_str(text).expect("parse the showcase config");
+        let checks = posture_checks(&config);
+        let failed: Vec<&PostureCheck> = checks.iter().filter(|check| !check.ok).collect();
+        assert!(failed.is_empty(), "{failed:?}");
+        assert!(check(&checks, "G2").blocks);
+    }
+
+    #[test]
+    fn posture_g2_showcase_mode_needs_session_auth() {
+        let mut config = RokoConfig::default();
+        let checks = posture_checks(&config);
+        assert!(checks.iter().all(|check| !check.label.starts_with("G2")));
+        config.showcase.enabled = true;
+        let checks = posture_checks(&config);
+        assert!(!check(&checks, "G2").ok, "no public origin yet");
+        assert!(checks.iter().all(|check| check.blocks));
+        config.showcase.public_origin = Some("https://roko-showcase.fly.dev".to_string());
+        assert!(check(&posture_checks(&config), "G2").ok);
     }
 
     /// `env.ROKO_STATE_ROOT` and the mount destination of a parsed `fly.toml`,

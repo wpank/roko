@@ -70,6 +70,9 @@ roko = repo / ".roko"
 models, succeeded = behaviour["models"], behaviour["status"] == "succeeded"
 verdict = behaviour.get("verdict")  # S01's outcome of the passing attempt, in its episode; an older Roko writes none
 completed = behaviour.get("completed") or [f"2026-09-29T15:00:0{number}Z" for number in range(len(models))]
+# With learning frozen, Roko keeps each run's episodes in the run's own log (gap-127263).
+episodes = roko / "runs" / f"graph-{slug}-1" / "episodes.jsonl" if behaviour.get("frozen") else roko / "episodes.jsonl"
+episodes.parent.mkdir(parents=True, exist_ok=True)
 for number, model in enumerate(models):
     passed = succeeded and number == len(models) - 1
     usage = {"input_tokens": 1200, "output_tokens": 80, "cache_read_tokens": 0, "cache_write_tokens": 0,
@@ -81,7 +84,7 @@ for number, model in enumerate(models):
         episode["extra"]["outcome"] = verdict if passed else "gate_failed"
     if "durations" in behaviour:  # the Graph path's dispatch time, in seconds
         episode["duration_secs"] = behaviour["durations"][number]
-    with open(roko / "episodes.jsonl", "a") as handle:
+    with open(episodes, "a") as handle:
         handle.write(json.dumps(episode) + "\n")
     with open(roko / "learn" / "costs.jsonl", "a") as handle:
         handle.write(json.dumps({"model": model, "provider": "cerebras", "plan_id": slug, "task_id": "T01"}) + "\n")
@@ -321,7 +324,7 @@ def test_roko_full_arm_overlay_reaches_the_emitted_config(tmp_path, monkeypatch)
         assert not {"spec_quality", "audit", "self_model", "homeostasis"} & set(config)
         # Byte-identical to before the overlay existed: nothing is appended after CONFIG_TAIL's own last line.
         assert emitted.config_text.endswith("[learning.dreams]\ntrigger_on_plan_complete = false\n")
-    assert planemit.TEMPLATE_SHA256 == "24d5db33665a3537449708ff920e53ec0e182d9fd77c411c1feefd1eae4b8007"
+    assert planemit.TEMPLATE_SHA256 == "1b7b9906dd846ef598602bee770d0b6d3270e885f6262f76c3fbdd9e97b87f2b"
 
 
 def test_vb_run_refuses_a_binary_that_rejects_the_emitted_plan(places, tmp_path, capsys):
@@ -473,6 +476,41 @@ def model_truth_records(workspace: Path, order: tuple[int, ...] = (1, 2, 3), hel
         (roko / relpath).parent.mkdir(parents=True, exist_ok=True)
         (roko / relpath).write_text("".join(json.dumps(line) + "\n" for line in rows))
     return run_roko.read_evidence(workspace, SLUG)
+
+
+def test_frozen_run_reads_attempts_from_the_runs_own_episodes(places, tmp_path, monkeypatch):
+    # gap-127263: with learning frozen (planemit's pinned mode, decision 2218), Roko keeps its episodes in the run's
+    # own `.roko/runs/<run_id>/episodes.jsonl`, not the workspace's log. The driver reads its attempts there, and the
+    # S01 copy keeps the run's log.
+    monkeypatch.setattr(vb.secret, "KEYS_IN_ENV_OK", True)  # the tests' escape hatch (bug-979a06) for the next line
+    monkeypatch.setenv("CEREBRAS_API_KEY", "sk-driver-only-9d1e")
+    binary, _ = fake_roko(tmp_path, [PIN, PIN], frozen=True)
+    assert run_vb(places, arm_with(tmp_path, binary)) == 0
+    out = places["results"] / "TEST-ROKO" / "run-1"
+    [record] = read_jsonl(out / "records.jsonl")
+    assert (record["execution"]["status"], record["execution"]["reason"]) == ("completed", "gate_passed")
+    assert [attempt["model_dispatched"] for attempt in record["execution"]["attempts"]] == [PIN] * 2
+    s01 = out / "s01" / "F1-l1-0001.s1"
+    [run_log] = s01.glob("runs/*/episodes.jsonl")
+    assert [episode["model"] for episode in read_jsonl(run_log)] == [PIN] * 2
+    assert not (s01 / "episodes.jsonl").exists()
+
+
+def test_read_evidence_takes_a_runs_own_episodes_only_when_the_workspace_log_has_none(tmp_path):
+    # gap-127263: a run's own episode log stands in for the workspace's log only when that log holds none of the
+    # plan's episodes, as with learning frozen.
+    roko = tmp_path / ".roko"
+    (roko / "runs" / "graph-vb-x-1").mkdir(parents=True)
+
+    def episode(model: str, plan: str = "vb-x") -> str:
+        return json.dumps({"task_id": "T01", "model": model, "extra": {"plan_id": plan}}) + "\n"
+
+    (roko / "runs" / "graph-vb-x-1" / "episodes.jsonl").write_text(episode("from-the-run"))
+    (roko / "episodes.jsonl").write_text(episode("another-plan", plan="vb-y"))
+    assert [row["model"] for row in run_roko.read_evidence(tmp_path, "vb-x").episodes] == ["from-the-run"]
+    with open(roko / "episodes.jsonl", "a") as handle:
+        handle.write(episode("from-the-workspace"))
+    assert [row["model"] for row in run_roko.read_evidence(tmp_path, "vb-x").episodes] == ["from-the-workspace"]
 
 
 def test_run_roko_reads_the_model_truth_fields(tmp_path):

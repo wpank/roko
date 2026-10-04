@@ -370,6 +370,34 @@ fn git_command(workspace: &Path) -> tokio::process::Command {
     git
 }
 
+/// Default commit author/committer name for a cloud worker's own commits
+/// (decision 9305: a neutral default, not tied to a specific domain).
+const DEFAULT_WORKER_GIT_AUTHOR_NAME: &str = "roko";
+/// Default commit author/committer email: GitHub's own no-reply convention,
+/// not roko's former `nunchi.dev` domain (decision 9305).
+const DEFAULT_WORKER_GIT_AUTHOR_EMAIL: &str = "roko@users.noreply.github.com";
+
+/// `name`/`email`, when set, override [`DEFAULT_WORKER_GIT_AUTHOR_NAME`] and
+/// [`DEFAULT_WORKER_GIT_AUTHOR_EMAIL`] (decision 9305). A pure function of
+/// its arguments so the default and override paths are testable without
+/// touching the process environment.
+fn resolve_worker_git_identity(name: Option<String>, email: Option<String>) -> (String, String) {
+    (
+        name.unwrap_or_else(|| DEFAULT_WORKER_GIT_AUTHOR_NAME.to_string()),
+        email.unwrap_or_else(|| DEFAULT_WORKER_GIT_AUTHOR_EMAIL.to_string()),
+    )
+}
+
+/// The cloud worker's commit identity: [`DEFAULT_WORKER_GIT_AUTHOR_NAME`] and
+/// [`DEFAULT_WORKER_GIT_AUTHOR_EMAIL`], each overridable by its own
+/// `ROKO_WORKER_GIT_AUTHOR_*` variable (decision 9305; `env_registry.rs`).
+fn worker_git_identity() -> (String, String) {
+    resolve_worker_git_identity(
+        std::env::var("ROKO_WORKER_GIT_AUTHOR_NAME").ok(),
+        std::env::var("ROKO_WORKER_GIT_AUTHOR_EMAIL").ok(),
+    )
+}
+
 /// Stage and commit the current workspace state.
 ///
 /// Queries `git diff` for exact changed pathspecs and stages only those,
@@ -439,12 +467,13 @@ pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
         bail!("nothing to commit (working tree clean)");
     }
 
+    let (author_name, author_email) = worker_git_identity();
     let output = git_command(workspace)
         .args(["commit", "-m", message])
-        .env("GIT_AUTHOR_NAME", "roko")
-        .env("GIT_AUTHOR_EMAIL", "roko@nunchi.dev")
-        .env("GIT_COMMITTER_NAME", "roko")
-        .env("GIT_COMMITTER_EMAIL", "roko@nunchi.dev")
+        .env("GIT_AUTHOR_NAME", &author_name)
+        .env("GIT_AUTHOR_EMAIL", &author_email)
+        .env("GIT_COMMITTER_NAME", &author_name)
+        .env("GIT_COMMITTER_EMAIL", &author_email)
         .output()
         .await
         .context("spawn git commit")?;
@@ -718,6 +747,34 @@ mod tests {
                 .contains("x-access-token:token@github.com/nunchi/roko.git")
         );
         assert_eq!(execution.repo_url(), "https://github.com/nunchi/roko.git");
+    }
+
+    /// Decision 9305: a neutral default identity (no `nunchi` domain), each
+    /// half overridable on its own.
+    #[test]
+    fn worker_git_identity_defaults_are_neutral_and_overridable() {
+        assert_eq!(
+            resolve_worker_git_identity(None, None),
+            (
+                DEFAULT_WORKER_GIT_AUTHOR_NAME.to_string(),
+                DEFAULT_WORKER_GIT_AUTHOR_EMAIL.to_string()
+            )
+        );
+        assert!(!DEFAULT_WORKER_GIT_AUTHOR_EMAIL.contains("nunchi"));
+        assert_eq!(
+            resolve_worker_git_identity(Some("ci-bot".into()), None),
+            (
+                "ci-bot".to_string(),
+                DEFAULT_WORKER_GIT_AUTHOR_EMAIL.to_string()
+            )
+        );
+        assert_eq!(
+            resolve_worker_git_identity(None, Some("ci@example.com".into())),
+            (
+                DEFAULT_WORKER_GIT_AUTHOR_NAME.to_string(),
+                "ci@example.com".to_string()
+            )
+        );
     }
 
     #[test]

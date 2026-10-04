@@ -21,13 +21,24 @@ use roko_learn::telemetry::{AttemptVerdictRecord, VerifyStepVerdict};
 
 use super::{FeedbackEvent, FeedbackSink};
 
-/// Sink that appends `task_completed` events to `.roko/episodes.jsonl`.
+/// Sink that appends `task_completed` events to `.roko/episodes.jsonl`, or,
+/// in a frozen run, to each run's own episode log ([`EpisodeSink::per_run`]).
 #[derive(Debug, Clone)]
 pub struct EpisodeSink {
-    logger: Arc<EpisodeLogger>,
+    log: EpisodeLog,
     /// Whether episodes carry an `hdc_fingerprint`: `[learning]
     /// episode_hdc_fingerprint`, off by default (9226).
     hdc_fingerprint: bool,
+}
+
+/// Where an [`EpisodeSink`] appends its episodes.
+#[derive(Debug, Clone)]
+enum EpisodeLog {
+    /// One log, `.roko/episodes.jsonl`: learned state later runs read.
+    Shared(Arc<EpisodeLogger>),
+    /// The attempt's own run, `<runs_dir>/<run_id>/episodes.jsonl`: a frozen
+    /// run's telemetry, which no later run reads back (decision 2218).
+    PerRun(PathBuf),
 }
 
 impl EpisodeSink {
@@ -35,7 +46,7 @@ impl EpisodeSink {
     #[must_use]
     pub fn at(path: impl Into<PathBuf>) -> Self {
         Self {
-            logger: Arc::new(EpisodeLogger::new(path.into())),
+            log: EpisodeLog::Shared(Arc::new(EpisodeLogger::new(path.into()))),
             hdc_fingerprint: false,
         }
     }
@@ -44,7 +55,20 @@ impl EpisodeSink {
     #[must_use]
     pub fn from_logger(logger: Arc<EpisodeLogger>) -> Self {
         Self {
-            logger,
+            log: EpisodeLog::Shared(logger),
+            hdc_fingerprint: false,
+        }
+    }
+
+    /// Construct a sink writing each episode to its attempt's own run,
+    /// `<runs_dir>/<run_id>/episodes.jsonl` beside the run's attempt log,
+    /// never to `.roko/episodes.jsonl`. A frozen run's episodes are telemetry
+    /// (decision 2218): the bench driver reads them, and no later run learns
+    /// from them (gap-127263).
+    #[must_use]
+    pub fn per_run(runs_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            log: EpisodeLog::PerRun(runs_dir.into()),
             hdc_fingerprint: false,
         }
     }
@@ -61,7 +85,12 @@ impl EpisodeSink {
 #[async_trait]
 impl FeedbackSink for EpisodeSink {
     fn name(&self) -> &'static str {
-        "episodes"
+        // A run's own log is telemetry, not the learning census's `episodes`
+        // sink (decision 2218).
+        match &self.log {
+            EpisodeLog::Shared(_) => "episodes",
+            EpisodeLog::PerRun(_) => "run_episodes",
+        }
     }
 
     fn interested(&self, event: &FeedbackEvent) -> bool {
@@ -246,10 +275,24 @@ impl FeedbackSink for EpisodeSink {
             );
         }
 
-        self.logger
-            .append(&episode)
-            .await
-            .map_err(|err| anyhow::anyhow!("episode append failed: {err}"))?;
+        let appended = match &self.log {
+            EpisodeLog::Shared(logger) => logger.append(&episode).await,
+            EpisodeLog::PerRun(runs_dir) => {
+                let Some(settled) = settled else {
+                    tracing::debug!(
+                        %plan_id,
+                        %task_id,
+                        "an episode with no settled attempt names no run to log it under"
+                    );
+                    return Ok(());
+                };
+                let path = runs_dir
+                    .join(&settled.identity.run_id)
+                    .join("episodes.jsonl");
+                EpisodeLogger::new(path).append(&episode).await
+            }
+        };
+        appended.map_err(|err| anyhow::anyhow!("episode append failed: {err}"))?;
         Ok(())
     }
 }
@@ -790,6 +833,46 @@ mod tests {
         assert_eq!(lasted(&episodes[0]), 1_500);
         // `outcome()` took 1234 ms.
         assert_eq!(lasted(&episodes[1]), 1_234);
+    }
+
+    /// gap-127263: a frozen run's sink writes each episode to its attempt's
+    /// own run, beside that run's attempt log, and none to the workspace's
+    /// `episodes.jsonl`. An episode with no settled attempt names no run, so
+    /// it is not written. The sink is not the census's `episodes` sink.
+    #[tokio::test]
+    async fn per_run_sink_writes_each_episode_to_its_runs_own_log() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let dir = tempdir().expect("tempdir");
+        let runs = dir.path().join("runs");
+        let sink = EpisodeSink::per_run(&runs);
+        assert_eq!(sink.name(), "run_episodes");
+        let settled_in = |run: &str| {
+            let key = AttemptKey::new(run, "plan-1", "task-1", 1);
+            AttemptVerdictRecord::settle(AttemptIdentity::new(&key), AttemptOutcome::Passed, true)
+        };
+        for run in ["run-1", "run-2"] {
+            sink.on_event(&completed(Some(settled_in(run))))
+                .await
+                .expect("settled episode");
+        }
+        sink.on_event(&completed(None))
+            .await
+            .expect("unsettled episode");
+
+        for run in ["run-1", "run-2"] {
+            let episodes = EpisodeLogger::read_all(runs.join(run).join("episodes.jsonl"))
+                .await
+                .expect("the run's episodes");
+            assert_eq!(episodes.len(), 1, "{run}");
+            let key = format!("{run}:plan-1:task-1:1");
+            assert_eq!(episodes[0].extra["attempt_key"], key.as_str(), "{run}");
+        }
+        assert!(!dir.path().join("episodes.jsonl").exists());
+        assert_eq!(
+            EpisodeSink::at(dir.path().join("episodes.jsonl")).name(),
+            "episodes"
+        );
     }
 
     /// A settled verdict of `outcome` whose verify steps did `steps`.

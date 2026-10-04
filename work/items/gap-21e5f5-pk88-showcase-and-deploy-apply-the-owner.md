@@ -57,3 +57,20 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK83 (gap-4119fb).
 - Suggested model: sonnet.
+
+## Progress
+
+- 9341: implemented at 06480e5db. docker-publish.yml's IMAGE_PREFIX, serve.rs's default worker_image
+  (+ doc comment), and the three published image names in docker/README.md and docker/RAILWAY.md
+  now read `ghcr.io/wpank` instead of `ghcr.io/nunchi-trade` (decision 9305). New test
+  `worker_image_default_matches_the_published_prefix` (serve.rs) reads docker-publish.yml with
+  `include_str!` so the two can't drift apart silently again. cloud.rs's hardcoded
+  `roko`/`roko@nunchi.dev` commit identity is now `resolve_worker_git_identity()`, overridable via
+  `ROKO_WORKER_GIT_AUTHOR_NAME`/`_EMAIL` (neutral default email: GitHub's own
+  `roko@users.noreply.github.com` no-reply convention), catalogued in env_registry.rs's
+  server_deploy() category. No RokoConfig field: cloud.rs's only caller
+  (`run_code_implementer_cloud`) has no RokoConfig in scope, and a config field would need deeper,
+  uncompilable-for-me threading through the call chain; a pure env-var default/override matches
+  env_registry.rs's own stated purpose (a catalog of direct env::var reads) at much lower risk, so
+  loader.rs's schema tree is unaffected. `authors` in Cargo.toml and the relay domain left alone
+  (bug-911361's, per the brief). Verify's static grep passes; `cargo test` deferred to the gate.

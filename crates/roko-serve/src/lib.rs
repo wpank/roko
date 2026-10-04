@@ -452,6 +452,9 @@ impl ServerBuilder {
         }
         let _gateway_batch_loop = state.gateway_http.spawn_batch_loop();
         let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
+        let _calibration_mirror =
+            routes::showcase::economics::start_calibration_mirror(Arc::clone(&state));
+        crate::showcase::idle::start_idle_timer(&state);
         let _feedback_loop = feedback::start_feedback_loop(Arc::clone(&state));
         let bridge_dedup = BridgeDedup::new();
         let _state_hub_bridge = start_state_hub_bridge(Arc::clone(&state), bridge_dedup.clone());
@@ -1061,6 +1064,9 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     start_builtin_event_sources(Arc::clone(&state), roko_config.clone());
     let _trigger_runtime = trigger_runtime::ensure_trigger_runtime(&state).await;
     let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
+    let _calibration_mirror =
+        routes::showcase::economics::start_calibration_mirror(Arc::clone(&state));
+    crate::showcase::idle::start_idle_timer(&state);
     // Both bridges share a BridgeDedup so they can run simultaneously without
     // creating a feedback loop (EventBus -> StateHub -> EventBus -> ...).
     let bridge_dedup = BridgeDedup::new();
@@ -1128,10 +1134,12 @@ fn build_server_router(
     // `routes::build_router` currently installs only the top-level SPA fallback.
     // Reset it here so the final fallback can distinguish API/WS typos from browser routes.
     let auth_enabled = api_auth.enabled;
+    let showcase_mode = state.load_roko_config().showcase.enabled;
+    let activity_state = Arc::clone(&state);
     let api_router =
         routes::build_router(Arc::clone(&state), cors_origins, api_auth).reset_fallback();
     let fallback_router = axum::Router::new()
-        .fallback(serve_api_or_spa_fallback)
+        .fallback(serve_fallback)
         .layer(TraceLayer::new_for_http())
         .layer(routes::cors_layer(&routes::CorsPolicy {
             origins: cors_origins.to_vec(),
@@ -1140,7 +1148,16 @@ fn build_server_router(
         }))
         .with_state(state);
 
-    api_router.merge(fallback_router)
+    let router = api_router.merge(fallback_router);
+    if showcase_mode {
+        // Every request but the health checks keeps a showcase serve awake (G10).
+        router.layer(axum::middleware::from_fn_with_state(
+            activity_state,
+            crate::showcase::idle::track_activity,
+        ))
+    } else {
+        router
+    }
 }
 
 fn api_or_ws_path_requires_json_404(path: &str) -> bool {
@@ -1166,6 +1183,44 @@ pub(crate) async fn serve_api_or_spa_fallback(
     }
 
     crate::embedded::serve_embedded(req).await
+}
+
+/// The router's fallback: [`serve_api_or_spa_fallback`], with showcase mode's rules first.
+pub(crate) async fn serve_fallback(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    showcase_or_spa_fallback(&state, req).await
+}
+
+/// [`serve_api_or_spa_fallback`], except in showcase mode with the portal off (S11 §4.2, 9329):
+/// `/` answers `302` to `/demo/`, and a browser path outside the demo app, or under its legacy
+/// `/demo/lab/`, is not found, so the portal and the lab pages are never served.
+pub(crate) async fn showcase_or_spa_fallback(
+    state: &AppState,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    let config = state.load_roko_config();
+    let showcase = &config.showcase;
+    if showcase.enabled && !showcase.portal_mounted {
+        let path = req.uri().path();
+        if path == "/" {
+            let location = [(axum::http::header::LOCATION, "/demo/")];
+            return (axum::http::StatusCode::FOUND, location).into_response();
+        }
+        let demo = crate::embedded::is_demo_path(path) && !crate::embedded::is_demo_lab_path(path);
+        if !demo && !api_or_ws_path_requires_json_404(path) {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({
+                    "error": "not_found",
+                    "message": format!("No route matches {path}"),
+                })),
+            )
+                .into_response();
+        }
+    }
+    serve_api_or_spa_fallback(req).await
 }
 
 fn log_provider_credential_status(config: &RokoConfig) {
@@ -2366,6 +2421,7 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::LoopTransition { .. }
         | DashboardEvent::EvUpdate { .. }
         | DashboardEvent::M1Episode { .. }
+        | DashboardEvent::SelfModelCalibration { .. }
         | DashboardEvent::SnapshotRebased { .. } => None,
     }
 }

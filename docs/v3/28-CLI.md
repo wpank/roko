@@ -1689,11 +1689,18 @@ roko deploy railway [--workdir <path>] [--with-mirage] [--workers <templates>]
 
 #### `roko deploy fly`
 
-Generate `fly.toml` and deploy with Fly.io.
+Generate `fly.toml` and deploy with Fly.io, or deploy an existing Fly config, such as
+`fly.showcase.toml`, with `--fly-config`: its app, primary region and build target are used unless
+a flag overrides them, and nothing is written. Besides auth, the security checklist covers the
+terminal and S11's G0–G2 (Privy, public routes, passphrase sessions); in showcase mode each one
+blocks the deploy unless `--unsafe-public` is given. The checklist reads roko's own config, so
+`roko --config docker/showcase.roko.toml deploy fly --fly-config fly.showcase.toml` checks the
+showcase image's. A dry run prints the plan even when the checklist blocks, then exits non-zero.
 
 ```
 roko deploy fly [--workdir <path>] [--unsafe-public] [--dry-run]
-                [--app <name>] [--region <region>] [--dockerfile <path>]
+                [--app <name>] [--region <region>] [--fly-config <path>]
+                [--build-target <stage>] [--dockerfile <path>]
                 [--health-path <path>] [--volume-source <name>]
                 [--volume-destination <path>] [--force]
 ```

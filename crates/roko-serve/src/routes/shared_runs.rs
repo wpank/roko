@@ -154,6 +154,15 @@ pub async fn create_share(
         .as_ref()
         .map(|Json(request)| request.no_expire)
         .unwrap_or(false);
+    // A share that never expires stays readable by anyone with the link, so
+    // only a server bound to loopback may mint one (9328).
+    if no_expire && !state.listener_is_loopback() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "a share that never expires needs a loopback bind"})),
+        )
+            .into_response();
+    }
     let workspace_config = state.load_roko_config();
     let shared_dir = state.workdir.join(".roko").join("shared");
     if let Err(e) = std::fs::create_dir_all(&shared_dir) {
@@ -1179,6 +1188,58 @@ mod tests {
         assert_eq!(transcript["prompt"], "say hello");
         assert_eq!(transcript["output"], "ran: say hello");
         assert_eq!(transcript["input_tokens"], 12);
+    }
+
+    /// 9328: a permanent share is refused on a public bind before any work, and still allowed on
+    /// a loopback one.
+    #[tokio::test]
+    async fn permanent_share_is_refused_on_a_public_bind() {
+        use crate::deploy::manual::ManualBackend;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(EchoRuntime),
+                RokoConfig::default(),
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+        let permanent = || CreateShareRequest {
+            prompt: Some("say hello".to_string()),
+            no_expire: true,
+            ..CreateShareRequest::default()
+        };
+
+        state.configure_listener_security("0.0.0.0", true);
+        let response = create_share(
+            State(Arc::clone(&state)),
+            Path("public-run".to_string()),
+            Some(Json(permanent())),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let stored = std::fs::read_dir(dir.path().join(".roko").join("shared"))
+            .map(|entries| {
+                entries.filter_map(Result::ok).any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("public-run")
+                })
+            })
+            .unwrap_or(false);
+        assert!(!stored, "a refused share must store nothing");
+
+        state.configure_listener_security("127.0.0.1", true);
+        let response = create_share(
+            State(Arc::clone(&state)),
+            Path("local-run".to_string()),
+            Some(Json(permanent())),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     /// Writer (JsonlLogger) and route readers must resolve to the same path.

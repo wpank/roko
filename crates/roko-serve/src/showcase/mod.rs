@@ -3,9 +3,11 @@
 //! A passphrase login mints a session with the narrow [`SHOWCASE_SCOPE`]; its record lives in
 //! [`crate::state::LocalAccess`], with the passphrase generation that minted it. [`auth`] checks
 //! the passphrase and the CSRF header and origin of every session request; [`lockout`] counts
-//! failed logins and blocks bursts; [`scope`] keeps a session to the showcase routes.
+//! failed logins and blocks bursts; [`scope`] keeps a session to the showcase routes; [`idle`]
+//! exits a quiet showcase serve so the Machine stops.
 
 pub mod auth;
+pub mod idle;
 pub mod lockout;
 pub mod scope;
 

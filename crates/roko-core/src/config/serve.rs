@@ -537,6 +537,24 @@ mod tests {
         assert!(partial.worker_image.is_some());
     }
 
+    /// 9341 (decision 9305): the registry and owner the default `worker_image` names must be the
+    /// one `docker-publish.yml`'s `IMAGE_PREFIX` actually publishes to, or `roko deploy railway
+    /// --workers` would pull a stale or foreign image.
+    #[test]
+    fn worker_image_default_matches_the_published_prefix() {
+        let workflow = include_str!("../../../../.github/workflows/docker-publish.yml");
+        let prefix = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("IMAGE_PREFIX:"))
+            .map(str::trim)
+            .expect("docker-publish.yml sets IMAGE_PREFIX");
+        let default_image = default_worker_image().expect("worker_image has a default");
+        assert!(
+            default_image.starts_with(prefix),
+            "default worker_image {default_image:?} must start with published prefix {prefix:?}"
+        );
+    }
+
     #[test]
     fn default_share_ttl_days_is_seven() {
         assert_eq!(ServeConfig::default().share_ttl_days, 7);
@@ -828,7 +846,7 @@ pub struct DeployConfig {
     pub environment_id: Option<String>,
 
     /// Docker image for worker containers. Defaults to the published
-    /// `ghcr.io/nunchi-trade/roko-worker:latest`, whether `[deploy]` is
+    /// `ghcr.io/wpank/roko-worker:latest`, whether `[deploy]` is
     /// absent or leaves the key out.
     #[serde(default = "default_worker_image")]
     pub worker_image: Option<String>,
@@ -843,7 +861,7 @@ fn default_deploy_backend() -> String {
 }
 
 fn default_worker_image() -> Option<String> {
-    Some("ghcr.io/nunchi-trade/roko-worker:latest".into())
+    Some("ghcr.io/wpank/roko-worker:latest".into())
 }
 
 impl Default for DeployConfig {

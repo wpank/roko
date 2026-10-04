@@ -98,9 +98,9 @@ Three images are published to GHCR by `.github/workflows/docker-publish.yml` on 
 
 | Image | Dockerfile |
 | --- | --- |
-| `ghcr.io/nunchi-trade/roko:latest` | `roko.Dockerfile` |
-| `ghcr.io/nunchi-trade/roko-worker:latest` | `worker.Dockerfile` |
-| `ghcr.io/nunchi-trade/mirage:latest` | `mirage.Dockerfile` |
+| `ghcr.io/wpank/roko:latest` | `roko.Dockerfile` |
+| `ghcr.io/wpank/roko-worker:latest` | `worker.Dockerfile` |
+| `ghcr.io/wpank/mirage:latest` | `mirage.Dockerfile` |
 
 Tags: `latest` (main only), `sha-<short>`, `v<version>` (semver from git tag).
 

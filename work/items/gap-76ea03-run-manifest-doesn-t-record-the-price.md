@@ -67,3 +67,19 @@ Decided but not implemented. The manifest closes with no price-snapshot provenan
 - Depends conceptually on gap-ceffb3 only in that both touch pricing-snapshot provenance; they are independent
   fixes (one adds a missing dated snapshot, this one records which snapshot a run used) and can land in either
   order.
+
+## Progress
+
+- Implemented at 61af488ed. `RunProvenanceManifest` already had a `prices: PriceProvenance` field
+  (`roko-learn/src/telemetry/records.rs`), but nothing ever wrote it. `RunManifests::capture` now
+  resolves the snapshot id with `PriceSnapshot::shared(&config.pricing, workdir)` (the same
+  resolution bug-1809d7 fixed for the Claude CLI agent); `RunManifests::open` writes it into
+  `manifest.prices.snapshot_id` alongside the existing `ablation_flags` write, so it is captured
+  once per invocation, independent of whatever is newest when the manifest is read back later.
+  New test `run_manifest_records_the_price_snapshot_id`: two snapshot files in a temp workspace,
+  the older one pinned; confirms the manifest records that id, not the newer file's.
+- Checked whether the bench driver's G-checks want the field: `benchmarks/viabilitybench/
+  analysis/gates.py`'s only S01-manifest read is `_frozen_loops`/`_ablation_flags`
+  (`experiment.ablation_flags`); it does not read `prices`/`snapshot_id`, so no change there is
+  needed for this item. Verify's static grep passes; `cargo test` deferred to the coordinator's
+  gate.

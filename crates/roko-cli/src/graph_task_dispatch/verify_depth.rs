@@ -22,10 +22,12 @@
 //!
 //! The checks run in that order and fail fast, within `[audit]
 //! per_audit_cpu_secs`; B1's and B3's model calls stay within
-//! `per_audit_usd`. A check that cannot tell (clippy outside a Cargo
-//! workspace, a flaky or cut-short re-run, no model of another family) is
-//! recorded as skipped and fails nothing. An empty diff is the pre-verify
-//! screen's to judge, so V1 does not call it vacuous.
+//! `per_audit_usd`, and their spend goes on the task's and the plan's
+//! budgets, with a cost row each (`role = "audit"`). A check that cannot
+//! tell (clippy outside a Cargo workspace, a flaky or cut-short re-run, no
+//! model of another family) is recorded as skipped and fails nothing. An
+//! empty diff is the pre-verify screen's to judge, so V1 does not call it
+//! vacuous.
 //!
 //! Depth never decreases within an attempt or a window: an attempt reads its
 //! depth once, and a task type keeps, in this process, the deepest depth it
@@ -50,15 +52,21 @@ use serde_json::Value;
 
 use super::audit_select::{audit_task, task_type};
 use super::diff_snapshot::AttemptDiff;
+use super::helper_calls::SideCall;
 use super::red_flags::finding_list;
 use super::verification::{verify_cancelled, verify_step_locked};
 use super::*;
 use crate::audit::rerun::{ServiceContext, checks_for, prepare_build, rerun, target_dir};
-use crate::audit::worker::{AuditUnit, CheckOutcome, UnitAudit, b3_counts, open_worktree};
+use crate::audit::worker::{
+    AuditUnit, CheckCall, CheckOutcome, UnitAudit, b3_counts, open_worktree,
+};
 use crate::audit::worktree::AuditWorktree;
 
 /// Lines of a failed check's output its failure quotes, from the end.
 const OUTPUT_TAIL_LINES: usize = 30;
+
+/// `role` of an inline audit check's cost and efficiency rows.
+const AUDIT_ROLE: &str = "audit";
 
 /// Why a check did not run: the depth's time ran out.
 const OUT_OF_TIME: &str = "the verify depth's [audit] per_audit_cpu_secs ran out";
@@ -519,6 +527,10 @@ impl GraphTaskDispatcher {
         };
         let outcome = hook.check(&view).await;
         run.usd_left = (run.usd_left - outcome.cost_usd).max(0.0);
+        // gap-73c98e: the check's model calls cost the audited task.
+        let (spec, task, attempt_key) = (run.spec, run.task, run.unit.attempt_key.as_str());
+        self.settle_check_calls(spec, task, attempt_key, check.name(), &outcome.calls)
+            .await;
         tracing::info!(
             plan_id = %run.spec.plan_id,
             task_id = %run.task.id,
@@ -531,6 +543,42 @@ impl GraphTaskDispatcher {
             Check::B1 => b1_checked(&outcome),
             Check::B2 => b2_checked(&outcome),
             _ => b3_checked(&outcome),
+        }
+    }
+
+    /// Account the model calls of `check`, an inline phase-B check of the
+    /// attempt `attempt_key` at `task`, like a dispatch (gap-73c98e). Their
+    /// spend goes on the audited task's budget and the plan's, since the
+    /// check is part of the attempt's verification, and each call writes a
+    /// cost row and an efficiency row (`role = "audit"`) keyed by the
+    /// attempt.
+    pub(super) async fn settle_check_calls(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_key: &str,
+        check: &str,
+        calls: &[CheckCall],
+    ) {
+        let models = &self.config.models;
+        let snapshot = self.pricing_snapshot();
+        for (index, call) in calls.iter().enumerate() {
+            let cost_usd = call.cost_usd();
+            self.record_task_spend(&spec.plan_id, &task.id, &call.usage);
+            if let Err(error) = self.budget_ledger.settle(&spec.plan_id, 0, cost_usd) {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    %error,
+                    "audit check spend not recorded on the plan's cost ledger"
+                );
+            }
+            let profile = models.values().find(|profile| profile.slug == call.model);
+            let provider = profile.map_or("unknown", |profile| profile.provider.as_str());
+            let side = SideCall::of_check(provider, profile, call, snapshot.as_deref());
+            let attempt_id = format!("{attempt_key}/audit-{check}-{}", index + 1);
+            self.write_side_call_rows(spec, &task.id, attempt_key, &attempt_id, AUDIT_ROLE, &side)
+                .await;
         }
     }
 
@@ -786,8 +834,8 @@ mod tests {
     use super::*;
     use crate::graph_task_dispatch::diff_snapshot::tests::commit_repo;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix,
-        verify_step,
+        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, model, no_auto_fix,
+        recording_feedback, verify_step,
     };
     use crate::runtime_feedback::HomeostasisSink;
 
@@ -1033,6 +1081,81 @@ mod tests {
             let expected = if held_out { [V1, V3] } else { [V2, V3] };
             assert_eq!(depths, expected, "held out: {held_out}");
         }
+    }
+
+    /// gap-73c98e: an inline phase-B check's model calls are accounted like
+    /// a dispatch. Their spend goes on the audited task's budget and the
+    /// plan's, and each writes a cost row and an efficiency row, role
+    /// `audit`, keyed by the attempt and naming its model's provider.
+    #[tokio::test]
+    async fn inline_audit_check_spend_reaches_a_cost_row() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (dispatcher, task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                let reviewer = model("stream-cli", "glm-4.7", None);
+                config.models.insert("reviewer".to_string(), reviewer);
+            },
+            recording_feedback(temp.path()),
+        )
+        .await;
+        let spec = make_spec(&task);
+        let attempt_key = format!("{RUN}:{}:{}:1", spec.plan_id, task.id);
+        let call = |input_tokens: u32, cost_usd: f32| CheckCall {
+            model: "glm-4.7".to_string(),
+            usage: roko_core::Usage {
+                input_tokens,
+                output_tokens: 10,
+                cost_usd,
+                ..roko_core::Usage::default()
+            },
+            success: true,
+        };
+        let calls = [call(100, 0.25), call(200, 0.5)];
+        dispatcher
+            .settle_check_calls(&spec, &task, &attempt_key, "b3", &calls)
+            .await;
+
+        let spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+        assert!((spent - 0.75).abs() < 1e-9, "{spent}");
+        let task_key = format!("{}/{}", spec.plan_id, task.id);
+        assert_eq!(dispatcher.task_spend.task_total(&task_key), 750_000);
+        drop(dispatcher);
+
+        let is_audit = |row: &serde_json::Value| row["role"] == AUDIT_ROLE;
+        let costs =
+            jsonl_rows_where(&temp.path().join(".roko/learn/costs.jsonl"), 2, is_audit).await;
+        let tokens: Vec<u64> = costs
+            .iter()
+            .filter_map(|row| row["input_tokens"].as_u64())
+            .collect();
+        assert_eq!(tokens, [100, 200]);
+        for row in &costs {
+            assert_eq!(row["attempt_key"], attempt_key.as_str());
+            assert_eq!(row["plan_id"], spec.plan_id.as_str());
+            assert_eq!(row["task_id"], task.id.as_str());
+            assert_eq!(row["model"], "glm-4.7");
+            assert_eq!(row["provider"], "stream-cli");
+        }
+        let efficiency = jsonl_rows_where(
+            &temp.path().join(".roko/learn/efficiency.jsonl"),
+            2,
+            is_audit,
+        )
+        .await;
+        let ids: Vec<&str> = efficiency
+            .iter()
+            .filter_map(|row| row["attempt_id"].as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                format!("{attempt_key}/audit-b3-1"),
+                format!("{attempt_key}/audit-b3-2"),
+            ]
+        );
     }
 
     /// An M1 sink whose controller is on and holds every chain on its

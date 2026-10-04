@@ -113,6 +113,7 @@ impl PhaseBCheck for B2 {
                 ..AuditLabels::default()
             },
             cost_usd: 0.0,
+            calls: Vec::new(),
             detail: json!({ "w": w, "mutants": mutants }),
         }
     }

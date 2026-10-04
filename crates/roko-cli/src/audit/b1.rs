@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 
 use super::git;
 use super::rerun::{Check, rerun, target_dir};
-use super::worker::{AuditTask, CheckOutcome, PhaseBCheck, UnitAudit};
+use super::worker::{AuditTask, CheckCall, CheckOutcome, PhaseBCheck, UnitAudit};
 use super::worktree::AuditWorktree;
 use crate::dispatch::SharedAgentFactory;
 use crate::dispatch_v2::AgentDispatchRequest;
@@ -41,12 +41,12 @@ pub trait SuiteAuthor: Send + Sync {
     /// The model's name, which names its family.
     fn model(&self) -> &str;
 
-    /// Answer `prompt`: the reply's text and what the call cost, in USD.
+    /// Answer `prompt`: the reply's text and what the call used and cost.
     ///
     /// # Errors
     ///
     /// The call failed.
-    async fn write(&self, prompt: &str) -> anyhow::Result<(String, f64)>;
+    async fn write(&self, prompt: &str) -> anyhow::Result<(String, roko_core::Usage)>;
 }
 
 /// A suite author that calls a configured model through the agent factory,
@@ -83,7 +83,7 @@ impl SuiteAuthor for FactoryAuthor {
         &self.slug
     }
 
-    async fn write(&self, prompt: &str) -> anyhow::Result<(String, f64)> {
+    async fn write(&self, prompt: &str) -> anyhow::Result<(String, roko_core::Usage)> {
         let scratch = tempfile::tempdir()?;
         let request = AgentDispatchRequest {
             model_key: self.model_key.clone(),
@@ -107,11 +107,11 @@ impl SuiteAuthor for FactoryAuthor {
             attempt_key: None,
         };
         let dispatch = self.factory.run_shared_agent_bridge(request).await?;
-        let cost_usd = f64::from(dispatch.result.usage.cost_usd);
+        let usage = dispatch.result.usage;
         anyhow::ensure!(dispatch.result.success, "the suite author's call failed");
         let text = dispatch.result.output.body.as_text();
         let text = text.map_err(|_| anyhow::anyhow!("the suite author's reply is not text"))?;
-        Ok((text.to_string(), cost_usd))
+        Ok((text.to_string(), usage))
     }
 }
 
@@ -149,12 +149,12 @@ impl B1 {
         let reusable = store
             .active_for(&unit.task_id)?
             .filter(|meta| meta.author_family != implementer);
-        let (meta, cost_usd) = if let Some(meta) = reusable {
+        let (meta, call) = if let Some(meta) = reusable {
             (meta, None)
         } else {
             let authored = self.author(audit, &store, &mut ledger, &layout, implementer, base);
             match authored.await? {
-                Ok((meta, cost)) => (meta, Some(cost)),
+                Ok((meta, call)) => (meta, Some(call)),
                 Err(outcome) => return Ok(outcome),
             }
         };
@@ -174,11 +174,11 @@ impl B1 {
                 y: outcome.y,
                 ..AuditLabels::default()
             },
-            cost_usd: cost_usd.unwrap_or(0.0),
+            cost_usd: call.as_ref().map_or(0.0, CheckCall::cost_usd),
             detail: json!({
                 "suite_id": meta.suite_id,
                 "state": meta.state.label(),
-                "reused": cost_usd.is_none(),
+                "reused": call.is_none(),
                 "author_model": meta.author_model,
                 "author_family": meta.author_family,
                 "implementer_family": implementer,
@@ -186,12 +186,13 @@ impl B1 {
                 "flaky": outcome.flaky,
                 "passes": outcome.passes,
             }),
+            calls: call.into_iter().collect(),
         })
     }
 
     /// Have a model of another family than `implementer` write a suite for
     /// the unit's task, and validate it on `base`: the active suite and the
-    /// call's cost, or B1's null outcome.
+    /// author's call, or B1's null outcome.
     async fn author(
         &self,
         audit: &UnitAudit<'_>,
@@ -200,7 +201,7 @@ impl B1 {
         layout: &Layout,
         implementer: &str,
         base: &str,
-    ) -> anyhow::Result<Result<(SuiteMeta, f64), CheckOutcome>> {
+    ) -> anyhow::Result<Result<(SuiteMeta, CheckCall), CheckOutcome>> {
         let unit = audit.unit;
         let author = self.authors.iter().find_map(|author| {
             let family = self.config.family_of(author.model())?;
@@ -214,7 +215,12 @@ impl B1 {
         }
         let interface = signatures(audit.repo, base, &unit.task.files);
         let spec = prompt(&unit.task, &interface, layout);
-        let (reply, cost_usd) = author.write(&spec).await?;
+        let (reply, usage) = author.write(&spec).await?;
+        let call = CheckCall {
+            model: author.model().to_string(),
+            usage,
+            success: true,
+        };
         let (file_name, comment) = layout.store_file();
         let draft = SuiteDraft {
             task_id: unit.task_id.clone(),
@@ -230,7 +236,8 @@ impl B1 {
         if let Err(why) = validate(audit, store, &meta, layout, base).await {
             store.transition(ledger, &meta.suite_id, SuiteState::Rejected, &why)?;
             return Ok(Err(CheckOutcome {
-                cost_usd,
+                cost_usd: call.cost_usd(),
+                calls: vec![call],
                 detail: json!({
                     "suite_id": meta.suite_id,
                     "state": SuiteState::Rejected.label(),
@@ -243,7 +250,7 @@ impl B1 {
         let id = meta.suite_id;
         store.transition(ledger, &id, SuiteState::Validated, "on_base")?;
         let meta = store.transition(ledger, &id, SuiteState::Active, "in_use")?;
-        Ok(Ok((meta, cost_usd)))
+        Ok(Ok((meta, call)))
     }
 }
 
@@ -587,7 +594,7 @@ mod tests {
             self.model
         }
 
-        async fn write(&self, prompt: &str) -> anyhow::Result<(String, f64)> {
+        async fn write(&self, prompt: &str) -> anyhow::Result<(String, roko_core::Usage)> {
             assert!(
                 !prompt.contains("echo 43"),
                 "the author never sees the attempt"
@@ -595,7 +602,11 @@ mod tests {
             self.calls.fetch_add(1, Ordering::Relaxed);
             let suite = self.suites.lock().pop_front();
             let suite = suite.ok_or_else(|| anyhow::anyhow!("no suite left"))?;
-            Ok((format!("Here it is:\n```sh\n{suite}\n```\n"), 0.01))
+            let usage = roko_core::Usage {
+                cost_usd: 0.01,
+                ..roko_core::Usage::default()
+            };
+            Ok((format!("Here it is:\n```sh\n{suite}\n```\n"), usage))
         }
     }
 

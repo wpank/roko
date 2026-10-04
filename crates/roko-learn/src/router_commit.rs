@@ -208,7 +208,10 @@ impl CommitCheck for RouterChecks {
                 return failed(CHECK, &problem);
             }
         }
-        let reason = format!("{} router anchors hold, and the invariants", self.anchors.len());
+        let reason = format!(
+            "{} router anchors hold, and the invariants",
+            self.anchors.len()
+        );
         CheckOutcome::pass(CHECK, reason)
     }
 }

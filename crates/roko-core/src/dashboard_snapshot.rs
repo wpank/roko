@@ -5978,6 +5978,9 @@ mod tests {
         let quiet: DashboardEvent =
             serde_json::from_str(r#"{"type":"m1.episode","episode_id":"ep-1","phase":"idle"}"#)
                 .expect("an episode move without a change");
-        assert!(matches!(quiet, DashboardEvent::M1Episode { change: None, .. }));
+        assert!(matches!(
+            quiet,
+            DashboardEvent::M1Episode { change: None, .. }
+        ));
     }
 }

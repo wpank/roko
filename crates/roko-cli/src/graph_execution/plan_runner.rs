@@ -1335,8 +1335,11 @@ async fn run_graph_plan_body(
     // run's batch until the run's end proposes it to the store's guard; an
     // unguarded or frozen run adds straight to the store.
     let guarded = roko_config.learning.guarded_commit != GuardedCommitMode::Off;
-    let knowledge_batch = (guarded && !roko_config.learning.frozen)
-        .then(|| run_id.clone().unwrap_or_else(super::batch::new_batch_run_id));
+    let knowledge_batch = (guarded && !roko_config.learning.frozen).then(|| {
+        run_id
+            .clone()
+            .unwrap_or_else(super::batch::new_batch_run_id)
+    });
     let mut graph_feedback = build_graph_feedback_context(
         workdir,
         &roko_config,

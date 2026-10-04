@@ -1582,7 +1582,11 @@ doc_post_value!(
 
 // ── homeostat (backlog 8131) ───────────────────────────────────────────────────────
 doc_get!(learn_homeostasis, "/learn/homeostasis", "learning");
-doc_post_value!(learn_homeostasis_mode, "/learn/homeostasis/mode", "learning");
+doc_post_value!(
+    learn_homeostasis_mode,
+    "/learn/homeostasis/mode",
+    "learning"
+);
 doc_post_value!(learn_homeostasis_ack, "/learn/homeostasis/ack", "learning");
 doc_get!(
     showcase_m1_essential_variables,

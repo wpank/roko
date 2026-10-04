@@ -1061,7 +1061,8 @@ impl GraphTaskDispatcher {
         };
         let runs_dir = self.feedback.runs_dir.as_deref();
         let run_id = self.attempts.run_id(ctx);
-        self.cut_ground_truth.record(runs_dir, run_id, &cut, position);
+        self.cut_ground_truth
+            .record(runs_dir, run_id, &cut, position);
         factor
     }
 
@@ -2084,7 +2085,9 @@ exit 1
         let admitted = |task: &TaskDef| {
             let spec = make_spec(task);
             let key = format!("{}/{}", spec.plan_id, task.id);
-            dispatcher.admit_task_budget(&spec, task, &key, &ctx).is_ok()
+            dispatcher
+                .admit_task_budget(&spec, task, &key, &ctx)
+                .is_ok()
         };
 
         assert!(admitted(&tasks[0]) && admitted(&tasks[1]));

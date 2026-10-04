@@ -104,8 +104,14 @@ fn disk_demo_dir() -> Option<&'static PathBuf> {
 /// Returns `true` when the URL path belongs to the demo app mount point.
 ///
 /// `/demo` and `/demo/anything` are demo paths; `/demon` or `/demos` are not.
-fn is_demo_path(path: &str) -> bool {
+pub(crate) fn is_demo_path(path: &str) -> bool {
     path == "/demo" || path.starts_with("/demo/")
+}
+
+/// Whether `path` is a legacy lab page of the demo app (`/demo/lab` and below), which calls
+/// operator APIs; showcase mode refuses these deep links (S11 §4.2).
+pub(crate) fn is_demo_lab_path(path: &str) -> bool {
+    path == "/demo/lab" || path.starts_with("/demo/lab/")
 }
 
 /// Strip the `/demo` prefix from a demo path, returning the relative asset

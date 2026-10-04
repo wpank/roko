@@ -559,7 +559,7 @@ pub fn build_router(
         router.merge(ws).merge(relay).merge(mcp)
     };
     // API/WS typos are JSON 404s; browser routes retain the SPA fallback.
-    let router = router.fallback(crate::serve_api_or_spa_fallback);
+    let router = router.fallback(crate::serve_fallback);
 
     let rate_limiter = build_global_rate_limiter(roko_config.server.rate_limit_per_sec);
     let keyed_limiter = build_keyed_rate_limiter(roko_config.server.rate_limit_per_key_per_sec);
@@ -800,8 +800,7 @@ mod tests {
     }
 
     /// G1 (9327): showcase mode with `public_routes = ["health", "ready"]` mounts no other public
-    /// group, no socket and no terminal answer. (Until 9329 turns the portal off in showcase
-    /// mode, its SPA fallback still answers browser paths such as `/metrics`.)
+    /// group, no socket and no terminal answer; with the portal off (9329) each is a 404.
     #[tokio::test]
     async fn showcase_router_mounts_no_public_extras() {
         let mut config = RokoConfig::default();
@@ -812,7 +811,9 @@ mod tests {
         let (status, _) = get_text(&router, "/health").await;
         assert_eq!(status, StatusCode::OK);
         for uri in [
+            "/metrics",
             "/api/shared/x",
+            "/runs/x",
             "/ws/terminal/x",
             "/api/terminal/sessions",
             "/ws",
@@ -821,8 +822,47 @@ mod tests {
             assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
             assert_eq!(body["error"], "not_found", "{uri}");
         }
-        let (_, metrics) = get_text(&router, "/metrics").await;
-        assert!(!metrics.contains("roko_uptime_seconds"), "{metrics}");
+    }
+
+    /// 9329: in showcase mode with the portal off, `/` redirects to the showcase at `/demo/`;
+    /// outside showcase mode `/` still serves the portal.
+    #[tokio::test]
+    async fn showcase_mode_redirects_root_to_demo() {
+        let mut config = RokoConfig::default();
+        config.showcase.enabled = true;
+        let (_dir, router) = build_test_router(config);
+        let request = Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = router.oneshot(request).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers()["location"], "/demo/");
+
+        let (_dir, router) = build_test_router(RokoConfig::default());
+        let (status, _) = get_text(&router, "/").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// 9329: showcase mode serves no portal path and no legacy lab deep link, while the demo app
+    /// is still served; default mode is unchanged.
+    #[tokio::test]
+    async fn showcase_mode_serves_no_portal_assets() {
+        let mut config = RokoConfig::default();
+        config.showcase.enabled = true;
+        let (_dir, router) = build_test_router(config);
+        for uri in ["/index.html", "/dashboard", "/demo/lab", "/demo/lab/bench"] {
+            let (status, body) = get_json(&router, uri).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+        }
+        let (status, _) = get_text(&router, "/demo/").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (_dir, router) = build_test_router(RokoConfig::default());
+        for uri in ["/dashboard", "/demo/lab/bench"] {
+            let (status, _) = get_text(&router, uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+        }
     }
 
     async fn get_json(router: &axum::Router, uri: &str) -> (StatusCode, Value) {

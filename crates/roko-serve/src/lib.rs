@@ -1131,7 +1131,7 @@ fn build_server_router(
     let api_router =
         routes::build_router(Arc::clone(&state), cors_origins, api_auth).reset_fallback();
     let fallback_router = axum::Router::new()
-        .fallback(serve_api_or_spa_fallback)
+        .fallback(serve_fallback)
         .layer(TraceLayer::new_for_http())
         .layer(routes::cors_layer(&routes::CorsPolicy {
             origins: cors_origins.to_vec(),
@@ -1166,6 +1166,44 @@ pub(crate) async fn serve_api_or_spa_fallback(
     }
 
     crate::embedded::serve_embedded(req).await
+}
+
+/// The router's fallback: [`serve_api_or_spa_fallback`], with showcase mode's rules first.
+pub(crate) async fn serve_fallback(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    showcase_or_spa_fallback(&state, req).await
+}
+
+/// [`serve_api_or_spa_fallback`], except in showcase mode with the portal off (S11 §4.2, 9329):
+/// `/` answers `302` to `/demo/`, and a browser path outside the demo app, or under its legacy
+/// `/demo/lab/`, is not found, so the portal and the lab pages are never served.
+pub(crate) async fn showcase_or_spa_fallback(
+    state: &AppState,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    let config = state.load_roko_config();
+    let showcase = &config.showcase;
+    if showcase.enabled && !showcase.portal_mounted {
+        let path = req.uri().path();
+        if path == "/" {
+            let location = [(axum::http::header::LOCATION, "/demo/")];
+            return (axum::http::StatusCode::FOUND, location).into_response();
+        }
+        let demo = crate::embedded::is_demo_path(path) && !crate::embedded::is_demo_lab_path(path);
+        if !demo && !api_or_ws_path_requires_json_404(path) {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({
+                    "error": "not_found",
+                    "message": format!("No route matches {path}"),
+                })),
+            )
+                .into_response();
+        }
+    }
+    serve_api_or_spa_fallback(req).await
 }
 
 fn log_provider_credential_status(config: &RokoConfig) {

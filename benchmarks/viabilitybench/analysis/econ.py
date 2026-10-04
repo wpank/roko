@@ -29,6 +29,14 @@ within-task mean of p(1 - p)·n/(n - 1), the SD across seeds of the suite VS rat
 unequal task sizes, and per task the cost's CV and p90/p50 across seeds); the envelope by family and level; regret
 against the cross-seed oracle; and bootstrap intervals.
 
+**MetricRecords** (`cc_metrics`, gap-889682): `cc_<k>` = pass^k / pass@k per arm (pooled cell), with a percentile
+interval from resampling tasks (not `bootstrap.paired_bootstrap`'s row-level scheme, which cannot recover a
+nonlinear per-task ratio once two draws of one task collapse into the same rows; see `_cc_ci`); and `cost_cv`, one
+task's coefficient of variation of `costs.api_equiv_usd` across its seeds, per arm and task (the same per-task
+values `variance`'s `cost_by_task` aggregates into `cost_cv_median`), with no interval of its own -- a description
+of spread. `report.metric_record` turns each into a `vb.metric_record/1` row the way `envelope.envelope_metrics`'s
+records are, for `fig_f4_passk.py`'s panels c and d and `tab_t3_headline.py`'s `cc_<k>` column.
+
 **Per policy** (`policies`, from the traces): the same rates and costs, the attempts per task run and the envelope. A
 trace line joins the run records the way the replay's matrix reads them (6120's `Matrix::from_records`: per task and
 arm, the labelled run of known cost with the lowest seed). A line on the plan-level slice, or one whose attempts used
@@ -64,6 +72,7 @@ API:
     pass_at_k(labels, k) -> passk.PassK
     independent_runs(rows) -> (runs, repeats_left_out)
     variance(runs) -> dict; icc1(groups) -> float | None
+    cc_metrics(records, experiment_id, ks=KS, b=B, seed=0, alpha=0.05) -> list[metrics.Metric]
     beta(rows) -> dict; cross_seed_oracle(runs) -> dict; pareto(points) -> dict
     build(records, traces=(), *, b=B, seed=0, alpha=0.05) -> dict
     dumps(report) -> str; write(report, path) -> Path; render(report) -> str
@@ -78,8 +87,10 @@ import statistics
 import sys
 from collections import Counter
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
+from random import Random
 
 import bootstrap
 import metrics
@@ -320,6 +331,87 @@ def _quantile(values: Sequence[float], q: float) -> float:
 def _task_name(task: tuple) -> str:
     instance, variant = task
     return instance if variant is None else f"{instance}/{variant}"
+
+
+# --- cc_<k> and per-task cost_cv (gap-889682) --------------------------------------------------------------------
+
+
+def cc_metrics(records: Iterable[dict], experiment_id: str, *, ks: Sequence[int] = KS, b: int = B, seed: int = 0,
+              alpha: float = 0.05) -> list[metrics.Metric]:
+    """`cc_<k>` and `cost_cv` per cell (module docstring), over the cell's independent runs only -- the same ones
+    `pass_hat_k`/`pass_at_k`/`variance` read in `_arm`. A cell with too few tasks, or whose pass@k is undefined for
+    a given k, gets no `cc_<k>` of that k; a task with fewer than two known-cost seeds gets no `cost_cv`."""
+    rows = metrics.with_models(records)
+    out: list[metrics.Metric] = []
+    for arm, model, harness in metrics.cells(records):
+        clauses = [metrics.Clause("experiment_id", "==", experiment_id), metrics.Clause("arm", "==", arm)]
+        if model is not None:
+            clauses.append(metrics.Clause("model", "==", model))
+        if harness is not None:
+            clauses.append(metrics.Clause("harness", "==", harness))
+        base = metrics.cut(rows, (*clauses, metrics.Clause("task.family", "!=", metrics.PLAN_SLICE),
+                                  metrics.Clause("task.is_honeypot", "==", False),
+                                  metrics.Clause("execution.status", "not in", list(metrics.EXCLUDED))))
+        runs, _ = independent_runs(base.rows)
+        if not runs:
+            continue
+        indep = replace(base, rows=tuple(runs))  # the cell's filter, but only the runs the numbers below use
+        name = metrics.cell_name(arm, model, harness)
+        labels = _labels(runs)
+        tasks = sorted(labels)
+        for k in ks:
+            point = _cc(labels, k)
+            ci = None if point is None else _cc_ci(labels, tasks, k, b=b, seed=seed, alpha=alpha)
+            if point is None or ci is None:
+                continue
+            out.append(metrics.Metric(
+                metric=f"cc_{k}", value=point, n=len(runs), cost_basis=None, cut=indep, cell="all", ladder=None,
+                ci=ci, ci_method="task_bootstrap_percentile", model=model,
+                estimator=f"CC_{k} = pass^{k} / pass@{k} of {name}, task bootstrap (B = {b})"))
+        by_task: dict[tuple, dict[int, Mapping]] = {}
+        for row in runs:
+            by_task.setdefault(metrics.task_key(row), {})[row["seed"]] = row
+        for (instance_id, _variant), by_seed in sorted(by_task.items(), key=lambda item: _task_name(item[0])):
+            amounts = [_spend(by_seed[seed_number]) for seed_number in sorted(by_seed)]
+            if len(amounts) < 2 or None in amounts:
+                continue
+            mean = math.fsum(amounts) / len(amounts)
+            if mean <= 0:
+                continue
+            out.append(metrics.Metric(
+                metric="cost_cv", value=statistics.stdev(amounts) / mean, n=len(amounts), cost_basis="api_equiv_usd",
+                cut=indep.narrow(metrics.Clause("task.instance_id", "==", instance_id)), cell="all", ladder=None,
+                model=model, estimator=f"the coefficient of variation of {name}'s costs.api_equiv_usd across "
+                                       f"{instance_id}'s seeds"))
+    return out
+
+
+def _cc(labels: Mapping[Hashable, Sequence[int]], k: int) -> float | None:
+    """CC_k = pass^k / pass@k, or None when either is undefined (fewer than k runs on every task, or pass@k is 0)."""
+    num, den = passk.pass_k(labels, k).value, pass_at_k(labels, k).value
+    return num / den if num is not None and den else None
+
+
+def _cc_ci(labels: Mapping[Hashable, Sequence[int]], tasks: Sequence[Hashable], k: int, *, b: int, seed: int,
+          alpha: float) -> tuple[float, float] | None:
+    """A percentile interval for CC_k, resampling tasks with replacement, each kept at its own observed seed
+    pattern: `pass_k`/`pass_at_k` are already means over tasks of a task-level statistic, so this is the standard
+    cluster-bootstrap simplification, not `bootstrap.paired_bootstrap`'s row-level resampling (which also resamples
+    seeds within a task, and so needs the replicate as a flat row sequence -- a shape a nonlinear per-task ratio
+    cannot be recovered from once two draws of the same task collapse into the same rows). Percentile, not BCa
+    (CPR's own ratio interval): this ratio has no bias/acceleration estimator here yet. None with fewer than two
+    tasks, or when too many replicates are undefined (`UNDEFINED_CPR`'s convention, reused for a ratio here) to
+    say anything."""
+    if len(tasks) < 2:
+        return None
+    rng = Random(seed)
+    replicates = []
+    for _ in range(b):
+        drawn = [tasks[rng.randrange(len(tasks))] for _ in range(len(tasks))]
+        value = _cc({(index, task): labels[task] for index, task in enumerate(drawn)}, k)
+        replicates.append(value if value is not None else UNDEFINED_CPR)
+    low, high = _bound(_quantile(replicates, alpha / 2)), _bound(_quantile(replicates, 1 - alpha / 2))
+    return None if low is None or high is None else (low, high)
 
 
 # --- ceilings and the frontier ----------------------------------------------------------------------------------

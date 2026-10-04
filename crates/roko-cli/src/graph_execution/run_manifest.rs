@@ -2,10 +2,11 @@
 //!
 //! Every checkpoint run keeps `.roko/runs/<run_id>/manifest.json` beside its
 //! `attempts.jsonl`. It says which harness build, which config (by its
-//! secret-redacted fingerprint) and which invocations produced the run's
-//! records. [`RunManifests::open`] records an invocation, with the build
-//! and config it runs under, when a plan's run starts or resumes; a resume
-//! under another build or config marks the run's provenance mixed.
+//! secret-redacted fingerprint), which price snapshot (decision 2113) and
+//! which invocations produced the run's records. [`RunManifests::open`]
+//! records an invocation, with the build and config it runs under, when a
+//! plan's run starts or resumes; a resume under another build or config
+//! marks the run's provenance mixed.
 //! [`RunManifests::close`] records how the run ended and how many attempts it
 //! opened, settled and abandoned, and [`RunManifests::record_budget_raise`]
 //! who raised a plan's budget ceiling, and to what.
@@ -18,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use roko_core::config::schema::RokoConfig;
+use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_fs::RokoLayout;
 use roko_learn::telemetry::records::{
     BudgetRaise, ConfigHashProvenance, HarnessProvenance, RunClosed, RunInvocation,
@@ -52,6 +54,10 @@ pub struct RunManifests {
     /// The loops this process's runs switch off, which their manifests
     /// record (`experiment.ablation_flags`).
     ablation_flags: Vec<String>,
+    /// The price snapshot this process's runs cost at (decision 2113),
+    /// which their manifests record (`prices.snapshot_id`); `None` when no
+    /// snapshot could be read (`PriceSnapshot::shared` already warned).
+    price_snapshot_id: Option<String>,
     /// Records an earlier close of a run counted as dropped, per run this
     /// process reopened: its close adds them to its own.
     carried_drops: parking_lot::Mutex<HashMap<String, u64>>,
@@ -64,6 +70,8 @@ impl RunManifests {
     #[must_use]
     pub fn capture(workdir: &Path, config: &RokoConfig) -> Self {
         let config_frozen = config.learning.frozen;
+        let price_snapshot_id = PriceSnapshot::shared(&config.pricing, workdir)
+            .map(|snapshot| snapshot.id().to_string());
         let config = match roko_core::config::fingerprint(config) {
             Ok(fingerprint) => ConfigHashProvenance {
                 hash: fingerprint.hash,
@@ -89,6 +97,7 @@ impl RunManifests {
             workspace: WorkspaceProvenance { base_commit },
             args_sha256: args_sha256(),
             ablation_flags,
+            price_snapshot_id,
             carried_drops: parking_lot::Mutex::default(),
         }
     }
@@ -128,6 +137,8 @@ impl RunManifests {
                 flags.push(flag.clone());
             }
         }
+        // The price snapshot this invocation costs at (decision 2113).
+        manifest.prices.snapshot_id = self.price_snapshot_id.clone();
         if let Some(closed) = &manifest.closed {
             self.carried_drops
                 .lock()
@@ -355,4 +366,60 @@ fn args_sha256() -> String {
 
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `[[model]]` row with every rate column, required and positive.
+    fn price_row(slug: &str) -> String {
+        format!(
+            "[[model]]\nslug = \"{slug}\"\nprovider = \"test\"\ninput = 1.0\n\
+             cache_read = 1.0\ncache_write_5m = 1.0\ncache_write_1h = 1.0\noutput = 1.0\n\
+             reasoning_in_output = true\nsource_url = \"https://example.test\"\n\
+             verified = \"test\"\n"
+        )
+    }
+
+    /// Write `<workdir>/config/prices/<date>.toml` with `id` and one model row.
+    fn write_price_snapshot(workdir: &Path, date: &str, id: &str) {
+        let dir = workdir.join("config").join("prices");
+        std::fs::create_dir_all(&dir).expect("create config/prices");
+        let text = format!(
+            "schema_version = \"roko.price_snapshot/1\"\nid = \"{id}\"\n\
+             fetched_at = \"2030-01-01\"\ncurrency = \"USD\"\nunit = \"per_1M_tokens\"\n{}",
+            price_row("manifest-test-model")
+        );
+        std::fs::write(dir.join(format!("{date}.toml")), text).expect("write a snapshot");
+    }
+
+    /// gap-76ea03 (decision 2113): the manifest records the price snapshot id a run costs at,
+    /// the one `[pricing] snapshot` pins, not whichever snapshot is newest when read back.
+    #[test]
+    fn run_manifest_records_the_price_snapshot_id() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        write_price_snapshot(workdir.path(), "2030-01-01", "prices-2030-01-01");
+        write_price_snapshot(workdir.path(), "2030-06-01", "prices-2030-06-01");
+
+        let mut config = RokoConfig::default();
+        config.pricing.snapshot = "prices-2030-01-01".to_string();
+        let manifests = RunManifests::capture(workdir.path(), &config);
+        assert!(
+            manifests.open("run-1", "plan-1").is_some(),
+            "the manifest should open"
+        );
+
+        let run_dir = RokoLayout::for_project(workdir.path())
+            .runs_dir()
+            .join("run-1");
+        let loaded = RunProvenanceManifest::load(&run_dir)
+            .expect("read the manifest")
+            .expect("the manifest exists");
+        assert_eq!(
+            loaded.prices.snapshot_id.as_deref(),
+            Some("prices-2030-01-01"),
+            "{loaded:?}"
+        );
+    }
 }

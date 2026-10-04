@@ -73,3 +73,7 @@ draws the badges and the negatives strip but no tiles.
 - 2026-10-04 (coordinator): widened after gap-fcb44c-fix (012c75cf1). w3-pk73 probed the fixture bundle: head-to-head
   and m4-audits crash the page once they pass the guard, and the provenance envelope lacks n, seeds, window,
   estimator, record_filter and ci, which the drawer reads. All of it must land before 9315 (gap-b7f99e).
+
+## Progress
+
+- gap-dbe8e7: implemented at 08879cfb2 and 36cd6730a. The overview is the R1 claims board; p1-head-to-head follows contracts.ts; m4-audits is left out until S05's audit records exist (the page shows "not yet measured"); the provenance envelope has the drawer's fields; claims stay NOT_YET_MEASURED until a results directory records S09 verdicts. Bench venv pytest showcase/ 24/24 (verify 0: 6 passed); fly-smoke A1-A4 (verify 1) and showcase-serve 6/6, with its new head-to-head, audits and drawer check, pass with a copy of the batch binary.

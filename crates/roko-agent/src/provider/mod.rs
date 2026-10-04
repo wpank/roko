@@ -59,6 +59,7 @@ use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::RokoConfig;
 use roko_core::config::schema::{DataLlmConfig, ModelProfile, ProviderConfig};
 use roko_core::defaults::{DEFAULT_MAX_TOOL_ITERATIONS, DEFAULT_REQUEST_TIMEOUT_MS};
+use roko_core::pricing_snapshot::PricingConfig;
 use roko_core::tool::{
     CorrelationEnvelope, MetricsSink, ToolDef, ToolFormat, ToolRegistry, TraceSink,
 };
@@ -237,6 +238,7 @@ pub fn create_agent_for_model(
     // Populate canonical fields so adapters can read them directly.
     options.safety_layer = Some(safety_layer.clone());
     options.temperament = Some(effective_temperament);
+    options.pricing = config.pricing.clone();
     let resolved = resolve_model(config, model_key);
     let profile = resolved
         .profile
@@ -1169,6 +1171,12 @@ pub struct AgentOptions {
     /// for a provider whose tool loop roko runs, and that loop sends untrusted
     /// tool output through it (gap-b0d514).
     pub data_llm: Option<Arc<DataLlmBoundary>>,
+    /// The operator's `[pricing]` snapshot pin (bug-1809d7).
+    ///
+    /// [`create_agent_for_model`] fills this from `RokoConfig.pricing` so every adapter that
+    /// prices usage itself (the Claude CLI's `priced_observation`) honours the pin instead of
+    /// always re-resolving the newest snapshot file.
+    pub pricing: PricingConfig,
 }
 
 impl std::fmt::Debug for AgentOptions {
@@ -1193,6 +1201,7 @@ impl std::fmt::Debug for AgentOptions {
                 &self.dangerously_skip_permissions,
             )
             .field("name", &self.name)
+            .field("pricing", &self.pricing)
             .field("cancel_token", &self.cancel_token.is_some())
             .field("tool_audit", &self.tool_audit.is_some())
             .field("trace_sink", &self.trace_sink.is_some())

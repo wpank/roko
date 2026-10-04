@@ -86,3 +86,17 @@ config knob.
 
 - Keep the "newest, else builtin" fallback for when `[pricing] snapshot` is unset — only the *pinned* case is
   broken today.
+
+## Progress
+
+- Implemented at ea1559fe2. `ClaudeCliAgent` gained a `pricing: PricingConfig` field
+  (`with_pricing()` builder); `priced_observation` now calls `PriceSnapshot::shared(&self.pricing,
+  ...)` instead of `&PricingConfig::default()`. `create_agent_for_model` (roko-agent's one factory
+  with the full `RokoConfig` in scope) copies `config.pricing` onto a new
+  `AgentOptions.pricing` field, alongside the `safety_layer`/`temperament` fields it already
+  populates there; `ClaudeCliAdapter::create_agent` threads it through
+  `.with_pricing(options.pricing.clone())`. New test
+  `claude_cli_prices_at_the_configured_snapshot_pin`: two snapshot files in a temp workspace (an
+  older pinned one at $1/M, a newer one at $1000/M, 1000x apart so a wrong resolution could not
+  pass by accident); confirms the pinned one prices the call. Verify's static grep passes; `cargo
+  test` deferred to the coordinator's gate.

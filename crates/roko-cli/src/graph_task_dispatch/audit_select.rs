@@ -33,12 +33,20 @@
 //!   cost- or verification-reducing move on its tier runs
 //!   ([`HomeostasisSink::audit_rate`]), within S5's bounds; π records the
 //!   rate it was drawn at, so the estimates stay unbiased.
+//! - The tilt (S05 §4.2, 6132): the self-model's `risk_fg` for a green
+//!   attempt's chain, r, weighs its π against r̄, the mean of r^α over the
+//!   units lately drawn with a risk (at most `[audit] window_units` of the
+//!   last `window_hours`). Without a risk, or at λ = 0, π is ρ.
+//! - The id of M3's forecast of an attempt (its prediction row, S01 §5.6) is
+//!   noted when the row is logged ([`AuditSelector::note_prediction`]); a
+//!   selected unit carries it, and so does the `vs.label` row its audit
+//!   writes.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use roko_core::audit_home::AuditVault;
 use roko_core::audit_types::Stratum;
@@ -85,6 +93,8 @@ pub(super) struct AuditSelector {
     tasks: parking_lot::Mutex<HashMap<String, AuditTask>>,
     /// Attempt key → its task's tier, the class M1's audit coupling names.
     classes: parking_lot::Mutex<HashMap<String, String>>,
+    /// Attempt key → the id of M3's forecast of it, from its prediction row.
+    predictions: parking_lot::Mutex<HashMap<String, String>>,
     runs: parking_lot::Mutex<HashMap<String, RunDraws>>,
     vault: AuditVault,
     config: AuditConfig,
@@ -93,8 +103,12 @@ pub(super) struct AuditSelector {
     phase_b: PhaseB,
     /// The workspace's gate-gaming detector (F1), fed every settled attempt.
     gaming: GamingWatch,
-    /// The self-model audited VS labels teach (DP5, 7134).
+    /// The self-model audited VS labels teach (DP5, 7134), whose `risk_fg`
+    /// tilts the draw (6132).
     learner: Option<Arc<dyn VsLearner>>,
+    /// r^α of the green units lately drawn with a risk, oldest first, each
+    /// with when it was drawn: the window of the tilt's mean r̄.
+    risk_window: parking_lot::Mutex<VecDeque<(Instant, f64)>>,
     /// M1's sink, whose audit boosts and couplings raise ρ (8127).
     m1: Option<Arc<HomeostasisSink>>,
     /// Draw every green unit at π = 1 ([`Self::census`]).
@@ -150,12 +164,14 @@ impl AuditSelector {
             trees: parking_lot::Mutex::new(HashMap::new()),
             tasks: parking_lot::Mutex::new(HashMap::new()),
             classes: parking_lot::Mutex::new(HashMap::new()),
+            predictions: parking_lot::Mutex::new(HashMap::new()),
             runs: parking_lot::Mutex::new(HashMap::new()),
             vault,
             config: config.clone(),
             gates: gates.clone(),
             phase_b: PhaseB::default(),
             learner: None,
+            risk_window: parking_lot::Mutex::new(VecDeque::new()),
             m1: None,
             census: AtomicBool::new(false),
         })
@@ -306,6 +322,13 @@ impl AuditSelector {
         self.trees.lock().insert(attempt_key.to_string(), trees);
     }
 
+    /// Note `prediction_id`, the id of M3's forecast of the attempt
+    /// `attempt_key`, which the attempt's `vs.label` row names.
+    pub(super) fn note_prediction(&self, attempt_key: &str, prediction_id: &str) {
+        let id = prediction_id.to_string();
+        self.predictions.lock().insert(attempt_key.to_string(), id);
+    }
+
     /// DP1: draw `verdict`'s attempt when it is green, and scan its output
     /// for canaries; a selected unit goes to the run's audit worker. The
     /// attempt ran θ's audit `boost` (1 without M1). Logs and returns; never
@@ -315,6 +338,7 @@ impl AuditSelector {
         let trees = self.trees.lock().remove(&identity.attempt_key);
         let task = self.tasks.lock().remove(&identity.attempt_key);
         let class = self.classes.lock().remove(&identity.attempt_key);
+        let prediction_id = self.predictions.lock().remove(&identity.attempt_key);
         if let Some(output) = output {
             self.scan(output);
         }
@@ -341,7 +365,9 @@ impl AuditSelector {
         let pi = if census || self.census.load(Ordering::Relaxed) {
             Ok(1.0)
         } else {
-            inclusion_probability(&self.params_for(class.as_deref(), boost), None, None)
+            let params = self.params_for(class.as_deref(), boost);
+            let (risk, mean_risk) = self.risk_terms(&identity.chain_key, params.alpha);
+            inclusion_probability(&params, risk, mean_risk)
         };
         let (base_tree, result_tree) =
             trees.map_or((None, None), |(base, result)| (Some(base), Some(result)));
@@ -376,6 +402,7 @@ impl AuditSelector {
             base_tree: base_tree.clone(),
             result_tree: result_tree.clone(),
             model: model.clone(),
+            prediction_id,
             task,
         });
         let event = AuditEvent::Selection {
@@ -414,6 +441,32 @@ impl AuditSelector {
         let class = class.unwrap_or(ALL_CLASSES);
         let rho = sink.audit_rate(self.params.rho, boost, class).min(RHO_MAX);
         InclusionParams { rho, ..self.params }
+    }
+
+    /// The tilt's terms for a green attempt of the chain `chain_key` (S05
+    /// §4.2, 6132): r, the self-model's `risk_fg` for the chain, and r̄, the
+    /// mean of r^`alpha` over the window, this attempt included. Both are
+    /// `None` without a risk in [0, 1], and the attempt is drawn at ρ.
+    fn risk_terms(&self, chain_key: &str, alpha: f64) -> (Option<f64>, Option<f64>) {
+        let Some(risk) = self
+            .learner
+            .as_deref()
+            .and_then(|learner| learner.false_green_risk(chain_key))
+            .filter(|risk| (0.0..=1.0).contains(risk))
+        else {
+            return (None, None);
+        };
+        let now = Instant::now();
+        let span = Duration::from_secs(u64::from(self.config.window_hours) * 3_600);
+        let units = self.config.window_units.max(1) as usize;
+        let stale = |at: &Instant| now.duration_since(*at) > span;
+        let mut window = self.risk_window.lock();
+        window.push_back((now, risk.powf(alpha)));
+        while window.len() > units || window.front().is_some_and(|(at, _)| stale(at)) {
+            window.pop_front();
+        }
+        let total: f64 = window.iter().map(|(_, weighted)| weighted).sum();
+        (Some(risk), Some(total / window.len() as f64))
     }
 
     /// Hand a selected unit to its run's worker, once its task inputs are
@@ -574,12 +627,17 @@ fn stratum_of(tag: GateVerdictTag) -> (&'static str, bool) {
 
 #[cfg(test)]
 mod tests {
+    use roko_core::audit_types::AuditLabels;
     use roko_gate::audit::feedback::{TrustBook, trust_path};
     use roko_gate::audit::ledger::{LedgerRecord, records, verify_chain};
     use roko_gate::audit::policy::{Selection, verify_reveal};
     use roko_graph::cells::NoopAttemptRecorder;
+    use roko_learn::telemetry::records::AttemptPredictionRecord;
+    use roko_learn::telemetry::{AttemptIdentity, AttemptKey};
 
     use super::*;
+    use crate::audit::labels::{AuditReport, vs_label};
+    use crate::audit::worker::queue_dir;
     use crate::graph_task_dispatch::diff_snapshot::tests::commit_repo;
     use crate::graph_task_dispatch::tests::{
         VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, recording_feedback,
@@ -990,5 +1048,136 @@ mod tests {
             assert!(close(rho("focused", 1), 0.20), "pass {pass}");
         }
         assert!(close(rho("focused", 1), 0.10));
+    }
+
+    /// A self-model that knows each chain's `risk_fg` and learns nothing.
+    struct Risks(HashMap<String, f64>);
+
+    impl VsLearner for Risks {
+        fn learn_vs(&self, _attempt_key: &str, _vs: bool, _weight: f64) -> bool {
+            false
+        }
+
+        fn false_green_risk(&self, chain_key: &str) -> Option<f64> {
+            self.0.get(chain_key).copied()
+        }
+    }
+
+    /// The lottery of a fresh workspace at ρ = `rho`, with run [`RUN`] open
+    /// and no audit worker, so a selected unit waits in the vault's queue.
+    fn worker_less_lottery(rho: f64) -> (tempfile::TempDir, AuditSelector) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("repo");
+        std::fs::create_dir_all(&workspace).expect("mkdir");
+        let config = AuditConfig {
+            enabled: true,
+            home: Some(temp.path().join("vault")),
+            rho,
+            ..AuditConfig::default()
+        };
+        let gates = GatesConfig::default();
+        let selector = AuditSelector::for_config(&config, &gates, &workspace).expect("a lottery");
+        let key = RunKey::derive(&selector.secret, RUN).expect("a run key");
+        let run = RunDraws {
+            key,
+            strata: BTreeMap::new(),
+            spend: Arc::new(parking_lot::Mutex::new(0.0)),
+            worker: None,
+        };
+        selector.runs.lock().insert(RUN.to_string(), run);
+        (temp, selector)
+    }
+
+    /// The passed first attempt of task `task` in run [`RUN`].
+    fn green(task: &str) -> AttemptVerdictRecord {
+        let identity = AttemptIdentity::new(&AttemptKey::new(RUN, "plan", task, 1));
+        let mut verdict = AttemptVerdictRecord::settle(identity, AttemptOutcome::Passed, true);
+        verdict.gate_verdict = Some(GateVerdictTag::Passed);
+        verdict
+    }
+
+    /// gap-3cd890 (S05 §4.2, 6132): the tilt weighs the self-model's
+    /// `risk_fg` for a green attempt's chain against r̄, the window's mean
+    /// of r^α. At ρ = 0.2 and λ = 0.8, T1 (r = 0.6) opens the window and
+    /// draws at ρ; T2 (r = 0.1) draws below it, at 3/35 = 0.2·(0.2 +
+    /// 0.8·0.1/0.35), and T3 (r = 0.6) above it, at 17/65 = 0.2·(0.2 +
+    /// 0.8·0.6/(1.3/3)). T4's chain has no risk, so it draws at ρ, the
+    /// untilted rate.
+    #[test]
+    fn tilted_selection_uses_the_chain_s_risk_fg() {
+        let chain = |task: &str| AttemptKey::new(RUN, "plan", task, 1).chain_key();
+        let risks = [("T1", 0.6), ("T2", 0.1), ("T3", 0.6)]
+            .into_iter()
+            .map(|(task, risk)| (chain(task), risk))
+            .collect();
+        let learner: Arc<dyn VsLearner> = Arc::new(Risks(risks));
+        let (_temp, selector) = worker_less_lottery(0.2);
+        let mut selector = selector.with_learner(Some(learner));
+        // λ follows M3's calibration on audited labels (S05 §4.2); the test
+        // sets it.
+        selector.params.lam = 0.8;
+        for task in ["T1", "T2", "T3", "T4"] {
+            selector.draw(&green(task), None, 1);
+        }
+
+        let pis: HashMap<String, f64> = records(&selector.vault().ledger_dir())
+            .expect("the ledger")
+            .into_iter()
+            .filter_map(|record| match record.event {
+                AuditEvent::Selection { task_id, pi, .. } => Some((task_id, pi)),
+                _ => None,
+            })
+            .collect();
+        let close = |task: &str, expected: f64| (pis[task] - expected).abs() < 1e-9;
+        assert!(close("T1", 0.2), "{pis:?}");
+        assert!(close("T2", 3.0 / 35.0), "{pis:?}");
+        assert!(close("T3", 17.0 / 65.0), "{pis:?}");
+        assert!(close("T4", 0.2), "{pis:?}");
+    }
+
+    /// gap-45c8fe (S05 §5): M3 logged a forecast of T1 and none of T2, and
+    /// both are selected. T1's unit carries the forecast's id through the
+    /// vault's queue, so its `vs.label` row names it; T2's row names none.
+    #[test]
+    fn vs_label_carries_the_attempt_s_prediction_id() {
+        let (_temp, selector) = worker_less_lottery(0.10);
+        selector.census();
+        let forecast = AttemptKey::new(RUN, "plan", "T1", 1).attempt_key();
+        let prediction_id = AttemptPredictionRecord::prediction_id(&forecast, "m3-v1");
+        selector.note_prediction(&forecast, &prediction_id);
+        for task in ["T1", "T2"] {
+            selector.draw(&green(task), None, 1);
+        }
+
+        let checks = serde_json::Map::new();
+        let report = AuditReport {
+            labels: AuditLabels {
+                y: Some(false),
+                g: Some(false),
+                w: None,
+            },
+            checks: &checks,
+            findings: &[],
+            pi_eff: None,
+            cost_usd: 0.0,
+        };
+        let queue = queue_dir(selector.vault());
+        let rows: BTreeMap<String, Option<String>> = std::fs::read_dir(&queue)
+            .expect("the queue")
+            .filter_map(Result::ok)
+            .map(|entry| {
+                let text = std::fs::read_to_string(entry.path()).expect("a queued unit");
+                let unit: AuditUnit = serde_json::from_str(&text).expect("a unit");
+                let row = vs_label(&unit, &report);
+                (row.task_id, row.prediction_id)
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            BTreeMap::from([
+                ("T1".to_string(), Some(prediction_id)),
+                ("T2".to_string(), None),
+            ])
+        );
     }
 }

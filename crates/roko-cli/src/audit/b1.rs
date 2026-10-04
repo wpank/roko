@@ -621,6 +621,7 @@ mod tests {
             base_tree: Some(base),
             result_tree: Some(result),
             model: "claude-sonnet-4-6".to_string(),
+            prediction_id: None,
             task: AuditTask {
                 title: "`sh src/answer.sh` prints the answer".to_string(),
                 acceptance: vec!["it prints 42".to_string()],

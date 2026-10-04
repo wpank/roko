@@ -11,6 +11,7 @@ use roko_agent::model_call_service::ModelCallService;
 use roko_core::agent::resolve_model;
 use roko_core::config::schema::RokoConfig;
 use roko_core::foundation::ModelCaller;
+use roko_learn::provider_health::ErrorClass;
 use roko_learn::runtime_feedback::LearningRuntime;
 
 /// Resolve a configured model key or slug into the API slug learning stores use.
@@ -57,18 +58,26 @@ pub(crate) fn capture_runtime_model_slugs(config: &RokoConfig, episode_model: &s
     model_slugs
 }
 
-/// Persist one provider-health outcome to `.roko/learn/provider-health.json`.
+/// Persist one provider-call outcome to `.roko/learn/provider-health.json`: a
+/// success when `failure` is `None`, else a failure under the class the
+/// shared failure classifier reads from its text, as Graph dispatch records
+/// its calls' (bug-9ca6d7). Text the classifier does not know is
+/// [`ErrorClass::Unknown`].
 ///
 /// This writes the serialized registry used by config and TUI surfaces; it is
 /// intentionally separate from the short-lived in-memory `ProviderHealthTracker`
 /// used by `LearningRuntime` during a process.
-pub(crate) fn record_persisted_provider_health(
+pub(crate) fn record_persisted_provider_outcome(
     workdir: &Path,
     provider: &str,
-    success: bool,
+    failure: Option<&str>,
 ) -> Result<()> {
-    roko_learn::model_call_feedback::record_provider_health_for_workdir(
-        workdir, provider, success,
+    let error = failure.map_or(ErrorClass::Unknown, ErrorClass::from_failure_text);
+    roko_learn::model_call_feedback::record_provider_outcome_at(
+        &roko_fs::RokoLayout::for_project(workdir).learn_dir(),
+        provider,
+        failure.is_none(),
+        error,
     )?;
     Ok(())
 }

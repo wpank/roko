@@ -34,9 +34,7 @@ use crate::provider::ProviderError;
 use crate::retry::{ErrorClass, RetryPolicy};
 use crate::safety::Taint;
 use crate::safety::data_llm::{DataLlmBoundary, tool_source_taint};
-use crate::translate::{
-    BackendResponse, FinishReason, RenderedTools, SessionState, Translator, normalize_finish_reason,
-};
+use crate::translate::{BackendResponse, RenderedTools, SessionState, Translator};
 use crate::usage::Usage;
 
 /// Per-turn progress information emitted by [`ToolLoop`] via its `on_turn` callback.
@@ -1380,10 +1378,9 @@ impl ToolLoop {
                 });
                 let finish_reason_raw = response.extract_finish_reason_raw();
                 // Read through the canonical mapping, so every spelling of a
-                // length finish counts (bug-e3940b).
-                let hit_length_limit = finish_reason_raw
-                    .as_deref()
-                    .is_some_and(|r| normalize_finish_reason(r) == FinishReason::Length);
+                // length finish counts (bug-e3940b), as every collector reads
+                // it (gap-fd0c0b).
+                let hit_length_limit = response.hit_length_limit();
                 tracing::info!(
                     iterations,
                     final_text_len = final_text.len(),

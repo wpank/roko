@@ -784,6 +784,7 @@ where
         let mut candidate = match model_failover.start(&provider_health, &model_key_for_dispatch) {
             Ok(candidate) => candidate,
             Err(why) => {
+                let why = failover::no_usable_provider_reason(&why, &model_failover);
                 emit_dispatch_failure(&event_sender, format!("Error: {why}")).await;
                 return Err(anyhow::anyhow!("no usable provider for the prompt: {why}").into());
             }

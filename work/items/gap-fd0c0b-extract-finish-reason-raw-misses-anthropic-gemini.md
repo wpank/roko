@@ -127,3 +127,19 @@ nothing ever asks the question at all (Hermes adapter, safety data-LLM).
   backend, plus two auxiliary callers), not the main graph-dispatch hot path every attempt goes through.
 - Do not weaken `asks_for_tools`' own early-return in `data_llm.rs`; the finish-reason check belongs alongside it,
   not in place of it.
+
+## Progress
+
+- 2026-10-04 (w4-length): implemented on `work/gap-fd0c0b` at 0967833dc; cargo verification deferred to the batch
+  gate.
+  - `extract_finish_reason_raw`'s `Json` arm falls back from `choices[0].finish_reason` to the top-level
+    `stop_reason` (Anthropic native, which `normalize_response` already keeps), then to Gemini's
+    `candidates[0].finishReason`, lower-cased. A non-streaming Gemini turn does reach it: `send_turn` returns the
+    raw body as `BackendResponse::Json`.
+  - `BackendResponse::hit_length_limit` is the shared length check. The tool loop uses it (its now-unused
+    imports dropped), and so do the two collectors that never asked. The Hermes HTTP adapter fails a cut-off turn,
+    streaming and non-streaming, and keeps its usage. The data LLM withholds a cut-off answer as the new
+    `DataLlmWithheld::Truncated`, checked beside `asks_for_tools`, not in its place.
+  - Tests: `anthropic_native_stop_reason_reaches_extract_finish_reason`,
+    `hermes_adapter_flags_a_length_truncated_turn`, `data_llm_boundary_withholds_a_truncated_answer`, and a Gemini
+    case in the finish-reason test.

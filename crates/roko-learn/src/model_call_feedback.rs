@@ -18,10 +18,12 @@ use crate::cascade::types::OVERRIDE_LEARNING_RATE;
 use crate::cascade_router::{CascadeRouter, normalized_cost_and_latency, outcome_reward};
 use crate::error::LearnError;
 use crate::feedback_service::FeedbackService;
+use crate::guarded_commit::CommitDecision;
 use crate::model_router::{
     CONTEXT_DIM, RewardWeights, RoutingContext, compute_routing_reward_with_weights,
 };
 use crate::provider_health::{ErrorClass, ProviderHealthRegistry};
+use crate::router_commit::RouterGuard;
 use crate::runtime_feedback::LearningPaths;
 use crate::wal::{self, WalEntry, WalSegment};
 
@@ -597,16 +599,42 @@ impl ModelCallJournal {
     pub fn save(&self, router: &CascadeRouter) -> std::result::Result<(), LearnError> {
         let mut segment = self.segment.lock();
         router.save(&self.snapshot_path)?;
-        if let Some(segment) = segment.as_mut()
-            && let Err(error) = segment.truncate()
-        {
-            tracing::warn!(
-                path = %segment.path().display(),
-                %error,
-                "[wal] segment not truncated -- a replay may count these observations twice"
-            );
-        }
+        truncate_segment(&mut segment);
         Ok(())
+    }
+
+    /// [`Self::save`] under guard (P21, 8136): the merge is proposed to the
+    /// router's guarded store under the snapshot's lock, and a rollback
+    /// writes the last-known-good version back, into the snapshot and into
+    /// `router`. Decision 8103 runs it once per run, at the run's end.
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::router_commit::save_guarded`]; the segment then keeps the
+    /// observations, as after a failed [`Self::save`].
+    pub fn save_guarded(
+        &self,
+        router: &CascadeRouter,
+        guard: &RouterGuard,
+    ) -> std::result::Result<CommitDecision, LearnError> {
+        let mut segment = self.segment.lock();
+        let decision = crate::router_commit::save_guarded(router, &self.snapshot_path, guard)?;
+        truncate_segment(&mut segment);
+        Ok(decision)
+    }
+}
+
+/// Truncate a journal's segment once the snapshot holds its observations,
+/// or a rollback dropped them.
+fn truncate_segment(segment: &mut Option<WalSegment>) {
+    if let Some(segment) = segment.as_mut()
+        && let Err(error) = segment.truncate()
+    {
+        tracing::warn!(
+            path = %segment.path().display(),
+            %error,
+            "[wal] segment not truncated -- a replay may count these observations twice"
+        );
     }
 }
 

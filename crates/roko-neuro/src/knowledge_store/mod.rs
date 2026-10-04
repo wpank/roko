@@ -7,6 +7,7 @@
 
 mod anti_pattern;
 mod backup;
+pub mod commit;
 mod crud;
 mod gc;
 pub mod memory_index;
@@ -17,7 +18,7 @@ pub(crate) mod scoring;
 mod tests;
 pub mod types;
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -45,6 +46,11 @@ pub use types::{
     RESURRECTION_CONFIDENCE,
 };
 
+/// The batches this process's runs write (P21, 8137): every store in the
+/// process sees their uncommitted entries, which other processes' stores
+/// skip until the batches commit.
+static PROCESS_BATCHES: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
 /// Persistent knowledge store backed by an append-only JSONL file.
 ///
 /// The store is cheap to clone: it holds the path and a process-local
@@ -61,6 +67,9 @@ pub struct KnowledgeStore {
     pub(crate) confirmations_path: PathBuf,
     pub(crate) write_gate: Arc<Mutex<()>>,
     temporal_index: Option<Arc<Mutex<TemporalIndex>>>,
+    /// The run whose batch this store's ingests join, and whose
+    /// uncommitted entries its retrieval sees (P21, 8137).
+    commit_batch: Option<String>,
 }
 
 impl KnowledgeStore {
@@ -80,7 +89,41 @@ impl KnowledgeStore {
             confirmations_path,
             write_gate: Arc::new(Mutex::new(())),
             temporal_index: None,
+            commit_batch: None,
         }
+    }
+
+    /// This store for the run `batch` (P21, 8137): the entries it ingests
+    /// carry `commit_batch = batch` until a guarded commit clears it
+    /// ([`commit::propose_batch`]). Every store of this process sees them;
+    /// other runs' retrieval skips every uncommitted entry.
+    #[must_use]
+    pub fn with_commit_batch(mut self, batch: impl Into<String>) -> Self {
+        let batch = batch.into();
+        PROCESS_BATCHES.lock().insert(batch.clone());
+        self.commit_batch = Some(batch);
+        self
+    }
+
+    /// The run whose batch this store's ingests join.
+    #[must_use]
+    pub fn commit_batch(&self) -> Option<&str> {
+        self.commit_batch.as_deref()
+    }
+
+    /// Whether this store's retrieval sees `entry`: a committed entry, or
+    /// one of a batch this process writes.
+    pub(crate) fn visible(&self, entry: &KnowledgeEntry) -> bool {
+        let Some(batch) = entry.commit_batch.as_deref() else {
+            return true;
+        };
+        self.commit_batch.as_deref() == Some(batch) || PROCESS_BATCHES.lock().contains(batch)
+    }
+
+    /// Stop seeing the uncommitted entries of `batch` from this process's
+    /// other stores: the batch has committed or rolled back.
+    pub(crate) fn release_batch(batch: &str) {
+        PROCESS_BATCHES.lock().remove(batch);
     }
 
     /// Construct a store from a `.roko/` root.

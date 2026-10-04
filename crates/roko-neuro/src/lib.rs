@@ -506,6 +506,11 @@ pub struct KnowledgeEntry {
     /// P3-30: Activation conditions controlling when this entry is surfaced.
     #[serde(default)]
     pub activation_conditions: Vec<ActivationCondition>,
+    /// The run whose uncommitted batch the entry belongs to (P21, 8137):
+    /// other runs' retrieval skips it until the batch commits, which clears
+    /// it, and a rolled-back batch is deleted. `None` once committed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_batch: Option<String>,
 }
 
 impl Default for KnowledgeEntry {
@@ -545,6 +550,7 @@ impl Default for KnowledgeEntry {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         }
     }
 }
@@ -1657,6 +1663,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         assert_eq!(entry.effective_half_life_days(), 100.0);

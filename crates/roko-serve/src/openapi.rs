@@ -376,6 +376,11 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         showcase_m2_loops,
         showcase_m2_loop_ledger,
         showcase_m2_loop_break,
+        learn_homeostasis,
+        learn_homeostasis_mode,
+        learn_homeostasis_ack,
+        showcase_m1_essential_variables,
+        showcase_m1_episodes,
         list_effects,
         decide_effect,
         sse_handler,
@@ -1574,6 +1579,21 @@ doc_post_value!(
     "/showcase/m2/loops/{id}/break",
     "learning"
 );
+
+// ── homeostat (backlog 8131) ───────────────────────────────────────────────────────
+doc_get!(learn_homeostasis, "/learn/homeostasis", "learning");
+doc_post_value!(
+    learn_homeostasis_mode,
+    "/learn/homeostasis/mode",
+    "learning"
+);
+doc_post_value!(learn_homeostasis_ack, "/learn/homeostasis/ack", "learning");
+doc_get!(
+    showcase_m1_essential_variables,
+    "/showcase/m1/essential-variables",
+    "learning"
+);
+doc_get!(showcase_m1_episodes, "/showcase/m1/episodes", "learning");
 
 // ── event_ingest (gap-c50b85) ──────────────────────────────────────────────────────
 doc_post_value!(ingest_event, "/events/ingest", "event_ingest");

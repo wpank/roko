@@ -20,11 +20,16 @@
 //!   the manifest's `experiment.disturbance_spec` ([`manifest_value`]). The
 //!   controller never reads either: a test in roko-learn holds its module to
 //!   that.
+//! - [`CeilingOverlay`] applies a `budget_cut` within a run, from a task
+//!   position on (8135).
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use arc_swap::ArcSwapOption;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -520,6 +525,72 @@ impl GroundTruthWriter {
             .open(&self.path)?
             .write_all(line.as_bytes())?;
         Ok(record)
+    }
+}
+
+/// S5's in-run ceiling overlay (8135): the `budget_cut` a showcase run is
+/// under, which the demo's disturbance route sets and every task budget
+/// admission reads. Its positions are the run's task positions, from 1, in
+/// the order the tasks are first admitted. Clones share one overlay.
+#[derive(Debug, Clone, Default)]
+pub struct CeilingOverlay {
+    cut: Arc<ArcSwapOption<DisturbanceSpec>>,
+    positions: Arc<Mutex<BTreeMap<String, u64>>>,
+}
+
+impl CeilingOverlay {
+    /// Put the run under `spec`, a `budget_cut`, in place of any cut before
+    /// it. A cut that starts at [`Self::next_position`] applies from the
+    /// next task the run admits for the first time.
+    ///
+    /// # Errors
+    ///
+    /// [`DisturbanceError::Invalid`] for another kind, and `spec`'s
+    /// [`DisturbanceSpec::check`] error.
+    pub fn set(&self, spec: DisturbanceSpec) -> Result<(), DisturbanceError> {
+        if spec.kind != DisturbanceKind::BudgetCut {
+            return Err(DisturbanceError::Invalid {
+                kind: spec.kind.name(),
+                problem: "only a budget_cut applies within a run".to_string(),
+            });
+        }
+        spec.check()?;
+        self.cut.store(Some(Arc::new(spec)));
+        Ok(())
+    }
+
+    /// Lift the cut.
+    pub fn clear(&self) {
+        self.cut.store(None);
+    }
+
+    /// The cut the run is under.
+    #[must_use]
+    pub fn cut(&self) -> Option<Arc<DisturbanceSpec>> {
+        self.cut.load_full()
+    }
+
+    /// The position the next task the run admits for the first time takes.
+    #[must_use]
+    pub fn next_position(&self) -> u64 {
+        self.positions.lock().len() as u64 + 1
+    }
+
+    /// The position of the task `task_key`: the one it took when the run
+    /// first admitted it, else the next one.
+    pub fn position(&self, task_key: &str) -> u64 {
+        let mut positions = self.positions.lock();
+        let next = positions.len() as u64 + 1;
+        *positions.entry(task_key.to_string()).or_insert(next)
+    }
+
+    /// The cut that covers `position`, with its `factor`: the share of a
+    /// per-task ceiling it leaves, in (0, 1], so it never raises one.
+    #[must_use]
+    pub fn cut_at(&self, position: u64) -> Option<(Arc<DisturbanceSpec>, f64)> {
+        let cut = self.cut().filter(|cut| cut.covers(position))?;
+        let factor = cut.number("factor").unwrap_or(0.5);
+        Some((cut, factor))
     }
 }
 

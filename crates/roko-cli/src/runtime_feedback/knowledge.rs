@@ -90,6 +90,15 @@ impl NeuroKnowledgeIngestor {
     pub fn new(store: KnowledgeStore) -> Self {
         Self { store }
     }
+
+    /// Add what this ingestor writes to the run `run_id`'s batch, which a
+    /// guarded commit at the run's end commits or rolls back, and which
+    /// other runs' retrieval skips until then (P21, 8137).
+    #[must_use]
+    pub fn with_commit_batch(mut self, run_id: impl Into<String>) -> Self {
+        self.store = self.store.with_commit_batch(run_id);
+        self
+    }
 }
 
 #[async_trait]

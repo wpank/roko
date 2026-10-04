@@ -95,3 +95,18 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK04 (gap-198c9c), PK09 (gap-cc5051), PK32 (gap-b5caf3), PK38 (gap-894977), PK42 (gap-2b3c1b), PK43 (gap-c1d920), PK44 (gap-85d176), PK61 (gap-8b67de), PK62 (gap-f7bab8), PK63 (gap-eb39c1), PK65 (gap-4cbd80).
 - Suggested model: opus.
+
+## Progress
+
+Implemented by w4-pk02 on `work/gap-099513`; cargo verification deferred to the batch gate.
+
+- 8128: implemented at e28eae0b2. The sink reads M2's L-M1 state at run open (the audit tick runs at run close, so a demotion takes effect from the next run); a demotion forces shadow with an `m2` `controller.mode` row, and B4 `on` needs L-know live.
+- 8129: implemented at 0ea7069c2. `tests/homeostat_on_mode.rs` runs 64 tasks through the real binary; the policy holds out 25% (not 90/10) so every draw gives both arms, and whether M1 applies a change depends on its detection timing.
+- 8130: implemented at 5a2a91732. `ev.update` and `m1.episode` DashboardEvents, published through the dispatcher's TuiBridge; arms in serve, output_sink and health.
+- 8131: implemented at f78c1365e. Five routes (homeostasis, mode, ack, showcase EVs, episodes) in openapi.rs and the route snapshot; the mode route writes `learn/homeostat-mode.json`, which the sink applies at the next run open (M2 can still force shadow).
+- 8133: implemented at 3571b431a. `roko learn homeostasis status|replay`; replay runs the controller over a stream, without an `--arm` evaluator.
+- 8134: implemented at fb71c1fe7. Live slot resize from θ's B5 in On mode only (shadow keeps the cap); the pool is shared, so the limit reaches holdout chains too. Each change is an `agent_slots.resized` event-log entry.
+- 8135: implemented at a4bb2f503. `roko_core::disturbance::CeilingOverlay` (positions by first admission) read by `admit_task_budget`; the first covered admission writes the inject row with the position it took effect at. 8132's route still has to get the handle (`GraphTaskDispatcher::ceiling_overlay` / `with_ceiling_overlay`).
+- 8136: implemented at 725b34bf2. `roko_learn::router_commit`; `ModelCallJournal::save_guarded` decides inside the snapshot's lock (`CascadeRouter::save_deciding`).
+- 8137: implemented at a0c127b46. `KnowledgeEntry::commit_batch` (60 exhaustive literals across neuro, dreams and cli gained `commit_batch: None`), `knowledge_store::commit`; roko-neuro now depends on `toml` (Cargo.lock edited by hand: one line).
+- 8138: implemented at ed97d28c2. `[learning] guarded_commit` (default observe), `graph_execution::learning_commit::commit_run_learning` at run end; held-out attempts are the plans' last 20% (M2's holdout arm is not identified yet).

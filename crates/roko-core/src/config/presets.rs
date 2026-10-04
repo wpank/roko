@@ -117,6 +117,7 @@ fn minimal() -> RokoConfig {
             knowledge: Default::default(),
             frozen: false,
             audit: Default::default(),
+            guarded_commit: Default::default(),
         },
         ..RokoConfig::default()
     }
@@ -189,6 +190,7 @@ fn thorough() -> RokoConfig {
             knowledge: Default::default(),
             frozen: false,
             audit: Default::default(),
+            guarded_commit: Default::default(),
         },
         ..RokoConfig::default()
     }

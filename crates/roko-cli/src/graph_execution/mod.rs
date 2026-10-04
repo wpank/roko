@@ -37,6 +37,7 @@ pub mod event_log;
 pub mod failure_issues;
 pub mod fast_lane;
 pub mod identity_map;
+pub mod learning_commit;
 pub mod loop_audit;
 pub mod plan_runner;
 pub mod plan_set;

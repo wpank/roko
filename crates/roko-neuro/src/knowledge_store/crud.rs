@@ -146,9 +146,17 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the directory cannot be created, an entry
     /// cannot be serialized, or the write fails.
-    pub fn ingest(&self, entries: Vec<KnowledgeEntry>) -> Result<()> {
+    pub fn ingest(&self, mut entries: Vec<KnowledgeEntry>) -> Result<()> {
         if entries.is_empty() {
             return Ok(());
+        }
+        // A run's store adds its entries to the run's batch (P21, 8137).
+        if let Some(batch) = &self.commit_batch {
+            for entry in &mut entries {
+                if entry.commit_batch.is_none() {
+                    entry.commit_batch = Some(batch.clone());
+                }
+            }
         }
 
         if let Some(parent) = self.path.parent() {

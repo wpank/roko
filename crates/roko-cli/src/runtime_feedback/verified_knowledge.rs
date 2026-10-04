@@ -158,6 +158,14 @@ impl VerifiedKnowledgeSink {
             serial: Arc::new(Mutex::new(())),
         }
     }
+
+    /// Add what this sink admits to the run `batch`'s knowledge batch, which
+    /// the run's end proposes to the knowledge store's guard (P21, 8138).
+    #[must_use]
+    pub fn with_commit_batch(mut self, batch: impl Into<String>) -> Self {
+        self.lifecycle = self.lifecycle.with_commit_batch(batch);
+        self
+    }
 }
 
 #[async_trait]

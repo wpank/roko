@@ -311,6 +311,16 @@ impl RuntimeKnowledgeLifecycle {
         self
     }
 
+    /// Add the entries this lifecycle admits to the run `batch`'s batch,
+    /// which a guarded commit at the run's end commits or rolls back (P21,
+    /// 8137, [`KnowledgeStore::with_commit_batch`]).
+    #[must_use]
+    pub fn with_commit_batch(mut self, batch: impl Into<String>) -> Self {
+        self.knowledge_store = self.knowledge_store.with_commit_batch(batch);
+        self.admission_store = KnowledgeAdmissionStore::new(self.knowledge_store.clone());
+        self
+    }
+
     /// Path of the append-only lifecycle receipt file.
     #[must_use]
     pub fn lifecycle_path(&self) -> &Path {
@@ -774,6 +784,7 @@ fn build_runtime_entry(observation: &RuntimeEpisodeObservation) -> Option<Knowle
         last_accessed: None,
         contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     })
 }
 

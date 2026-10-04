@@ -2063,6 +2063,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add knowledge");
 
@@ -2178,6 +2179,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add knowledge");
 
@@ -2248,6 +2250,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add strategy fragment");
         knowledge_store
@@ -2289,6 +2292,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add anti-knowledge");
         knowledge_store
@@ -2330,6 +2334,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add insight");
 
@@ -2551,6 +2556,7 @@ mod tests {
                     last_accessed: None,
                     contradiction_count: 0,
                     activation_conditions: Vec::new(),
+                    commit_batch: None,
                 })
                 .expect("add anti-knowledge");
         }
@@ -2594,6 +2600,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add strategy");
 
@@ -2684,6 +2691,7 @@ mod tests {
                     last_accessed: None,
                     contradiction_count: 0,
                     activation_conditions: Vec::new(),
+                    commit_batch: None,
                 })
                 .expect("add heuristic");
         }
@@ -2727,6 +2735,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add warning");
 

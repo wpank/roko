@@ -300,6 +300,12 @@ pub struct GraphTaskDispatcher {
     /// What the operator sent each running plan with `roko inject`, for its
     /// next task's prompt ([`Self::operator_directives`]).
     operator_directives: OperatorDirectives,
+    /// S5's in-run ceiling overlay, which every task budget admission reads
+    /// ([`Self::ceiling_overlay`], 8135).
+    ceiling_overlay: roko_core::disturbance::CeilingOverlay,
+    /// The ground truth of the overlay's cuts, for each run's
+    /// `disturbances.jsonl` (8135).
+    cut_ground_truth: budget::CutGroundTruth,
 }
 
 impl GraphTaskDispatcher {
@@ -356,6 +362,8 @@ impl GraphTaskDispatcher {
             metrics: None,
             operator_stops: OperatorStops::default(),
             operator_directives: OperatorDirectives::default(),
+            ceiling_overlay: roko_core::disturbance::CeilingOverlay::default(),
+            cut_ground_truth: budget::CutGroundTruth::default(),
         }
     }
 
@@ -748,8 +756,10 @@ impl GraphTaskDispatcher {
 
     /// Per-task spend admission against [`task_budget_ceiling_usd`], mirroring
     /// the plan ceiling: a policy that continues on exhaustion only warns, and
-    /// `--no-budget` disables the check. M1's B8 knob scales the ceiling down
-    /// for the attempt `ctx` is about to open (8125); no ceiling stays none.
+    /// `--no-budget` disables the check. S5's in-run budget cut lowers the
+    /// ceiling from the task's position on (8135), and M1's B8 knob scales it
+    /// down for the attempt `ctx` is about to open (8125); no ceiling stays
+    /// none.
     fn admit_task_budget(
         &self,
         spec: &TaskExecutionSpec,
@@ -762,7 +772,8 @@ impl GraphTaskDispatcher {
             return Ok(());
         }
         let scale = self.task_budget_scale(spec, task, ctx);
-        let ceiling_usd = task_budget_ceiling_usd(&self.config.budget, task) * scale;
+        let cut = self.budget_cut(task_spend_key, ctx);
+        let ceiling_usd = task_budget_ceiling_usd(&self.config.budget, task) * cut * scale;
         let Err(error) = self.task_spend.admit(task_spend_key, ceiling_usd) else {
             return Ok(());
         };
@@ -780,10 +791,12 @@ impl GraphTaskDispatcher {
             plan_id = %spec.plan_id,
             task_id = %task.id,
             ceiling_usd,
+            budget_cut = cut,
             task_budget_scale = scale,
             %error,
             "per-task budget exhausted (budget.max_task_usd x tier multiplier, \
-             budget.max_task_retry_usd; x M1's task_budget_scale); refusing another attempt"
+             budget.max_task_retry_usd; x S5's budget cut x M1's task_budget_scale); \
+             refusing another attempt"
         );
         Err(error)
     }

@@ -161,6 +161,7 @@ pub fn threat_warning_entries_with_floor(
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         });
     }
     out

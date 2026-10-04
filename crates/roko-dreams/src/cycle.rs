@@ -1819,6 +1819,7 @@ impl DreamDistillationCandidate {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         })
     }
 }
@@ -1985,6 +1986,7 @@ fn playbook_knowledge_entry(
         last_accessed: None,
         contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -2069,6 +2071,7 @@ fn build_regression_entry(cluster: &DreamCluster, created_at: DateTime<Utc>) -> 
         last_accessed: None,
         contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -2224,6 +2227,7 @@ fn generate_cross_domain_strategy_hypotheses(
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         });
     }
 
@@ -2529,6 +2533,7 @@ fn build_mistake_insight_entry(
         last_accessed: None,
         contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -2597,6 +2602,7 @@ fn review_insights_from_heuristics(
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
             }
         })
         .collect()

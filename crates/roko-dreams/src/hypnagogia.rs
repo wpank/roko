@@ -350,6 +350,7 @@ fn loosened_association(
         last_accessed: None,
         contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -415,6 +416,7 @@ fn interrupt_to_insight(
         last_accessed: None,
         contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -473,6 +475,7 @@ fn dali_insight(episode: &Episode, created_at: DateTime<Utc>) -> KnowledgeEntry 
         last_accessed: None,
         contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -582,6 +585,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             },
             KnowledgeEntry {
                 id: "sig-2".to_string(),
@@ -621,6 +625,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             },
             KnowledgeEntry {
                 id: "sig-3".to_string(),
@@ -660,6 +665,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             },
             KnowledgeEntry {
                 id: "sig-4".to_string(),
@@ -699,6 +705,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             },
         ];
         let output = engine.run(&signals, &[], Utc::now());

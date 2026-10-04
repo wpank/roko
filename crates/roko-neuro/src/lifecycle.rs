@@ -774,6 +774,7 @@ fn build_runtime_entry(observation: &RuntimeEpisodeObservation) -> Option<Knowle
         last_accessed: None,
         contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     })
 }
 

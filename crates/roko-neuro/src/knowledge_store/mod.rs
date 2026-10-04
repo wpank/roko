@@ -7,6 +7,7 @@
 
 mod anti_pattern;
 mod backup;
+pub mod commit;
 mod crud;
 mod gc;
 pub mod memory_index;
@@ -61,6 +62,9 @@ pub struct KnowledgeStore {
     pub(crate) confirmations_path: PathBuf,
     pub(crate) write_gate: Arc<Mutex<()>>,
     temporal_index: Option<Arc<Mutex<TemporalIndex>>>,
+    /// The run whose batch this store's ingests join, and whose
+    /// uncommitted entries its retrieval sees (P21, 8137).
+    commit_batch: Option<String>,
 }
 
 impl KnowledgeStore {
@@ -80,7 +84,33 @@ impl KnowledgeStore {
             confirmations_path,
             write_gate: Arc::new(Mutex::new(())),
             temporal_index: None,
+            commit_batch: None,
         }
+    }
+
+    /// This store for the run `batch` (P21, 8137): the entries it ingests
+    /// carry `commit_batch = batch` until a guarded commit clears it
+    /// ([`commit::propose_batch`]), and its retrieval sees them, where other
+    /// runs' retrieval skips every uncommitted entry.
+    #[must_use]
+    pub fn with_commit_batch(mut self, batch: impl Into<String>) -> Self {
+        self.commit_batch = Some(batch.into());
+        self
+    }
+
+    /// The run whose batch this store's ingests join.
+    #[must_use]
+    pub fn commit_batch(&self) -> Option<&str> {
+        self.commit_batch.as_deref()
+    }
+
+    /// Whether this store's retrieval sees `entry`: a committed entry, or
+    /// one of its own run's batch.
+    pub(crate) fn visible(&self, entry: &KnowledgeEntry) -> bool {
+        entry
+            .commit_batch
+            .as_deref()
+            .is_none_or(|batch| self.commit_batch.as_deref() == Some(batch))
     }
 
     /// Construct a store from a `.roko/` root.

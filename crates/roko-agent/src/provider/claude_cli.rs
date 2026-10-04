@@ -67,7 +67,8 @@ impl ProviderAdapter for ClaudeCliAdapter {
             .with_settings_json(build_settings_json())
             .with_bare_mode(options.bare_mode)
             .with_dangerously_skip_permissions(options.dangerously_skip_permissions)
-            .with_credential_scrub(provider_credential_scrub(provider, options));
+            .with_credential_scrub(provider_credential_scrub(provider, options))
+            .with_pricing(options.pricing.clone());
 
         if let Some(limits) = configured_resource_limits(provider)? {
             agent = agent.with_resource_limits(limits);

@@ -71,3 +71,16 @@ Confirmed as described on both the Rust and Python sides; unaddressed.
 ## Notes
 
 - Discovered during PK49's M3 self-model work (gap-7ec3ef, done).
+
+## Progress
+
+- gap-b10978: implemented at a3123051f on `work/bug-78e5ce`; cargo verification deferred to the batch gate.
+  `Matrix::from_records` keeps one cell per (task, arm, model): an arm whose runs asked for more than one model
+  becomes one arm per model, labelled `<arm>[<model>]` (`replay::arm_label`, `<arm>[?]` for a run with no
+  model). An arm with one model keeps its name, so existing fixtures and policies are unchanged.
+  `Matrix::arm_models` replaces the CLI's own file re-read, so split arms keep their model in
+  `roko learn self-model replay`. econ.py's `_matrix` labels the same way and keeps only VS-labelled runs, as
+  Rust does, so trace rows join. Aggregation decision: the replay keeps each (arm, model) separate as its own
+  routing arm; econ.py's per-arm tables still pool an arm's runs across its models. Tests:
+  `matrix_keeps_one_cell_per_task_arm_and_model` (Rust, `replay.rs`) and its Python namesake in `test_econ.py`.
+  The analysis suite passes in a worktree venv: 101 passed, 1 skipped.

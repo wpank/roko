@@ -14,6 +14,13 @@
 //! operator's display. It also says up front which disturbances M1 cannot
 //! regulate (`flaky_verify`, every provider slowed), so the controller
 //! holds instead of thrashing.
+//!
+//! Two kinds of move stay in the catalog and the matrix as S06 lists them
+//! but act on no dispatch, so the `SafetyBox` refuses them as search moves
+//! (bug-35a738): B6's, since a verify run stops at its first failed step
+//! and the promise tracker never sees two low readings in a row, and a tier
+//! floor below θ₀'s, since the floor only raises the ladder's start rung
+//! (8101).
 
 use roko_core::config::harness_params::{Block, HarnessParams, Knob, KnobKind, Step};
 use serde::{Deserialize, Serialize};

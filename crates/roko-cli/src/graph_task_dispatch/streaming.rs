@@ -196,6 +196,12 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             self_model_rung: None,
             skip_enrichment: self.plan_skips_enrichment(spec),
         };
+        // M3, as on the batch path (bug-78e5ce): the self-model forecasts the
+        // attempt before it is routed (6128), surfaces a refine-spec or
+        // abandon forecast (6133), and in active mode proposes its start rung
+        // (6130). The forecast it keeps serves the attempt's post-pass step
+        // (6132) and its verdict (6129).
+        dispatch_ctx.self_model_rung = self.forecast_attempt(spec, &task, &dispatch_ctx, &attempt);
         // M1's B1 (8124): the attempt's θ may raise the task's start rung.
         let routed_task = self.routed_task(&task, &attempt);
         let dispatch_plan = match self.plan_dispatch(spec, &routed_task, &mut dispatch_ctx) {
@@ -1308,5 +1314,93 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
             matches!(error, RokoError::BudgetExceeded { .. }),
             "error must be BudgetExceeded, got: {error:?}"
         );
+    }
+
+    /// bug-78e5ce: the streaming path forecasts each attempt through the self-model, as the
+    /// batch path does (6128): a shadow-mode attempt writes its `roko.prediction/1` row,
+    /// naming both ladder rungs, and its forecast waits, by attempt key, for the attempt's
+    /// verdict and post-pass step.
+    #[tokio::test]
+    async fn streaming_dispatch_forecasts_through_the_self_model() {
+        use roko_core::config::routing::LadderRung;
+        use roko_core::config::self_model::{SelfModelConfig, SelfModelMode};
+        use roko_core::pricing_snapshot::PriceSnapshot;
+        use roko_learn::self_model::model::SelfModel;
+
+        use crate::graph_task_dispatch::self_model::SelfModelRuntime;
+        use crate::graph_task_dispatch::tests::{jsonl_rows_where, model};
+
+        const RUN: &str = "streaming-self-model-run";
+
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Shadow,
+            ..SelfModelConfig::default()
+        };
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let state = roko.join("learn/self-model/state-v1.json");
+        let fresh = SelfModel::new(&snapshot);
+        let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            self_model: Some(Arc::clone(&runtime)),
+            ..GraphFeedbackContext::default()
+        };
+        // Two ladder rungs on the scripted provider. A rung runs only on a model that can call
+        // tools, which the fixture's own `stream-model` cannot, so both are set up here, as the
+        // batch path's shadow test sets them up.
+        let ladder = |config: &mut RokoConfig| {
+            no_auto_fix(config);
+            for (key, slug) in [
+                ("cheap-model", "claude-haiku-4-5"),
+                ("stream-model", "claude-sonnet-4-6"),
+            ] {
+                config
+                    .models
+                    .insert(key.to_string(), model("stream-cli", slug, None));
+            }
+            let rung = |name: &str, model: &str| LadderRung {
+                name: name.to_string(),
+                model: model.to_string(),
+            };
+            config.routing.ladder.rungs =
+                vec![rung("cheap", "cheap-model"), rung("strong", "stream-model")];
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, ladder, feedback).await;
+        task.model_hint = None;
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "test-fingerprint".to_string(),
+        };
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let ctx = CellContext::new()
+            .with_run_id(RUN.to_string())
+            .with_cell_id("T-STREAM".to_string());
+        // Only the forecast made before the route matters here.
+        let _ = dispatcher
+            .dispatch_streaming(
+                &make_spec(&task),
+                Vec::new(),
+                &ctx,
+                &lease,
+                event_tx,
+                &NoopAttemptRecorder,
+            )
+            .await;
+        drop(dispatcher);
+
+        let path = roko.join("runs").join(RUN).join("predictions.jsonl");
+        let predictions =
+            jsonl_rows_where(&path, 1, |row| row["schema_version"] == "roko.prediction/1").await;
+        let row = &predictions[0];
+        assert_eq!(row["task_id"], "T-STREAM", "{row}");
+        assert_eq!(row["precedes"], "route", "{row}");
+        assert_eq!(row["predictor"]["mode"], "shadow", "{row}");
+        let candidates = row["candidates"].as_array().expect("candidates");
+        assert_eq!(candidates.len(), 2, "{row}");
+        let key = row["attempt_key"].as_str().expect("an attempt key");
+        assert!(runtime.take_forecast(key).is_some(), "{key}");
     }
 }

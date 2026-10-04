@@ -255,6 +255,39 @@ impl Refusal {
     }
 }
 
+/// What to do about provider `provider_id`, of `kind`, rejecting roko's
+/// credentials, and how to use it again before its skip ends (backlog
+/// 1115): the hint `roko run` and ACP both give.
+#[must_use]
+pub fn credentials_hint(provider_id: &str, kind: ProviderKind, key_env: Option<&str>) -> String {
+    format!(
+        "`{provider_id}` rejected its credentials: {}, then run `roko config providers \
+         reset-health {provider_id}` to use it before its skip ends.",
+        credentials_fix(kind, key_env)
+    )
+}
+
+/// How to restore credentials a provider of `kind` rejected (backlog 1115): a
+/// CLI agent's login, which needs USER and HOME in its environment, or a valid
+/// key in the variable its config names.
+#[must_use]
+pub fn credentials_fix(kind: ProviderKind, key_env: Option<&str>) -> String {
+    let login = match kind {
+        ProviderKind::ClaudeCli => Some("claude /login"),
+        ProviderKind::CodexCli => Some("codex login"),
+        ProviderKind::GeminiCli => Some("gemini /auth"),
+        ProviderKind::CursorCli | ProviderKind::CursorAcp => Some("cursor-agent login"),
+        _ => None,
+    };
+    match (login, key_env) {
+        (Some(login), _) => format!("run `{login}`; under `env -i` also pass USER and HOME"),
+        (None, Some(env)) => {
+            format!("put a valid key in {env} (~/.roko/.env is loaded automatically at startup)")
+        }
+        (None, None) => "log its CLI in or give it valid credentials".to_string(),
+    }
+}
+
 /// What a model key resolves to under a config.
 struct Target {
     provider_id: String,
@@ -352,6 +385,32 @@ impl Failover {
     #[must_use]
     pub fn refusals(&self) -> &[Refusal] {
         &self.refusals
+    }
+
+    /// What to do about each provider among the refusals that rejected
+    /// roko's credentials ([`credentials_hint`]), once per provider: a
+    /// login, which waiting does not bring (backlog 1115, gap-ade918).
+    #[must_use]
+    pub fn credentials_hints(&self) -> Vec<String> {
+        let providers = self.config.effective_providers();
+        let mut hinted: Vec<&str> = Vec::new();
+        let mut hints = Vec::new();
+        for refusal in &self.refusals {
+            if refusal.class != "auth_failure" || hinted.contains(&refusal.provider_id.as_str()) {
+                continue;
+            }
+            let Some(provider) = providers.get(&refusal.provider_id) else {
+                continue;
+            };
+            hinted.push(&refusal.provider_id);
+            let key_env = provider.api_key_env.as_deref();
+            hints.push(credentials_hint(
+                &refusal.provider_id,
+                provider.kind,
+                key_env,
+            ));
+        }
+        hints
     }
 
     /// The candidate a call starts on: `planned`, unless its provider is

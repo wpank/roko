@@ -25,7 +25,12 @@
 //! 5. search, relaxation and rollback change one notch of one knob (an
 //!    adjacent provider swap counts as one), and relaxation moves toward θ₀;
 //! 6. a holdout row runs θ₀;
-//! 7. a search move switches the knowledge section on only for a live loop.
+//! 7. a search move switches the knowledge section on only for a live loop;
+//! 8. a search move never turns a knob that acts on no dispatch
+//!    (bug-35a738): B6, since a verify run stops at its first failed step
+//!    and the promise tracker never sees two low readings in a row, and a
+//!    tier's floor below θ₀'s, since the floor only raises the ladder's
+//!    start rung (8101).
 //!
 //! Restoring a last-known-good θ may change several blocks at once; every
 //! other rule still applies to it.
@@ -412,6 +417,12 @@ pub enum Violation {
     /// A search move switched the knowledge section on while the loop is
     /// not live (§4.6.8).
     SectionOnForInactiveLoop,
+    /// A search move turned a knob that acts on no dispatch: B6, or a tier's
+    /// floor below θ₀'s (bug-35a738).
+    InertMove {
+        /// The knob.
+        knob: Knob,
+    },
 }
 
 /// The validator's answer.
@@ -484,6 +495,7 @@ impl SafetyBox {
         let search = context.kind == ChangeKind::Search;
         if search {
             check_add_only(old, new, &mut violations);
+            self.check_inert(old, new, &mut violations);
         }
         self.check_budget(old, new, context, &mut violations);
         self.check_audit(new, &mut violations);
@@ -552,6 +564,39 @@ impl SafetyBox {
                 floor: new.extra_rungs,
                 max: self.max_floor,
             });
+        }
+    }
+
+    /// A search move never turns a knob that acts on no dispatch
+    /// (bug-35a738). B6's promise tracker reads each step of a verify run,
+    /// and the run stops at its first failed step, so the tracker never sees
+    /// two low readings in a row and no B6 notch changes a run. A tier's
+    /// floor only raises the ladder's start rung (8101), so below θ₀'s it
+    /// binds nothing. Rollback, relaxation and restore may still undo either.
+    fn check_inert(
+        &self,
+        old: &HarnessParams,
+        new: &HarnessParams,
+        violations: &mut Vec<Violation>,
+    ) {
+        for knob in old.changed_knobs(new) {
+            let inert = match knob {
+                Knob::PromiseMin | Knob::PromiseConsecutive => true,
+                Knob::TierFloor(_) => self.below_theta0(new, knob),
+                _ => false,
+            };
+            if inert {
+                violations.push(Violation::InertMove { knob });
+            }
+        }
+    }
+
+    /// Whether `new` puts `knob` on a lower notch than θ₀ does.
+    fn below_theta0(&self, new: &HarnessParams, knob: Knob) -> bool {
+        let notch = |params: &HarnessParams| params.notch(knob, &self.ladders).ok();
+        match (notch(new), notch(&self.theta0)) {
+            (Some(after), Some(home)) => after < home,
+            _ => false,
         }
     }
 
@@ -639,6 +684,7 @@ mod tests {
     use rand_chacha::ChaCha8Rng;
     use roko_core::config::ProviderConfig;
     use roko_core::config::harness_params::Step;
+    use roko_core::task::TaskTier;
 
     use super::*;
 
@@ -909,6 +955,55 @@ audit = { p_floor = 0.10, p_max = 0.25 }
         assert!(open.validate(&v3, &v4, &search).passed());
         let bad = POLICY.replace("max_floor = \"V3\"", "max_floor = \"V9\"");
         assert!(ViabilityPolicy::parse(&bad).is_err());
+    }
+
+    /// bug-35a738: a search never turns a knob that acts on no dispatch. B6
+    /// changes no verify run, since the run stops at its first failed step,
+    /// and a floor below θ₀'s binds nothing, since the floor only raises the
+    /// ladder's start rung (8101). A floor M1 raised still steps back down
+    /// to θ₀'s, and rollback and relaxation undo either.
+    #[test]
+    fn search_never_turns_an_inert_knob() {
+        let (safety, theta0, ladders, _) = fixture();
+        let search = context(ChangeKind::Search);
+        let rules = |old: &HarnessParams, new: &HarnessParams, context: &SafetyContext| {
+            safety.validate(old, new, context).violations
+        };
+        let integrative = Knob::TierFloor(TaskTier::Integrative);
+        assert_eq!(theta0.tier_floor[&TaskTier::Integrative], "mid");
+        let below = theta0
+            .step(integrative, Step::Down, &ladders)
+            .expect("mid -> cheap");
+        assert_eq!(
+            rules(&theta0, &below, &search),
+            [Violation::InertMove { knob: integrative }]
+        );
+        assert!(rules(&below, &theta0, &context(ChangeKind::Rollback)).is_empty());
+        let raised = theta0
+            .step(integrative, Step::Up, &ladders)
+            .expect("mid -> strong");
+        assert!(rules(&theta0, &raised, &search).is_empty());
+        assert!(rules(&raised, &theta0, &search).is_empty());
+
+        let promise = theta0
+            .step(Knob::PromiseMin, Step::Up, &ladders)
+            .expect("0.2 -> 0.3");
+        assert_eq!(
+            rules(&theta0, &promise, &search),
+            [Violation::InertMove {
+                knob: Knob::PromiseMin
+            }]
+        );
+        assert!(rules(&promise, &theta0, &context(ChangeKind::Relax)).is_empty());
+        let fewer = theta0
+            .step(Knob::PromiseConsecutive, Step::Down, &ladders)
+            .expect("2 -> 3");
+        assert_eq!(
+            rules(&theta0, &fewer, &search),
+            [Violation::InertMove {
+                knob: Knob::PromiseConsecutive
+            }]
+        );
     }
 
     /// A candidate θ: usually one notch, sometimes several knobs or

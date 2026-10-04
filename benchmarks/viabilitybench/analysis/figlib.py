@@ -103,9 +103,12 @@ H3_STREAM = "p1_h3"  # task 3328's stream ids
 PASS5_STREAM = "p1_pass5"  # the 30-task pass^5 subset's stream (FIGURES-TABLES F4: stream.id separates it)
 # The filter fields that place a record in a report.py cell. Any other `==` or `in` clause narrows the cell further
 # (a stream, a spec variant, one task, a rung ...), so `Inputs.where` returns such a record only when asked for that
-# field. `policy` only names the policy a live arm ran, and the P1-core stream is the default stream.
-BASE_FIELDS = frozenset({"experiment_id", "arm", "model", "task.family", "task.ladder", "task.is_honeypot",
-                         "execution.status", "policy"})
+# field. `policy` only names the policy a live arm ran, and the P1-core stream is the default stream. `harness`
+# (3317) is every cell's clause since bug-40de03: "" for the arm's own, usual one, so every record report.py or
+# econ.py produces, of every arm, carries it -- without it here, a plain pooled query would never find any of
+# them, since each would look narrowed on a field the query never asked about (reg-cc50d3).
+BASE_FIELDS = frozenset({"experiment_id", "arm", "model", "harness", "task.family", "task.ladder",
+                         "task.is_honeypot", "execution.status", "policy"})
 BASE_STREAMS = (None, "p1_core")
 # Spec-owned row types (FIGURES-TABLES "Data") that MetricRecords name by run id. A row is read only through
 # `Output.take_row`, so a script never shows a row that no record it drew names.
@@ -234,9 +237,16 @@ class Rec:
         return self.eq("model")
 
     @property
+    def harness(self) -> str:
+        """3317: "" for the arm's own, usual harness, else the marker `metrics.harness_of` reads off a record."""
+        return self.eq("harness", "")
+
+    @property
     def series(self) -> str:
-        """The cell as report.py names it: the arm, with its model when it has one; joined arms for a contrast."""
-        return metrics.cell_name(self.arms[0], self.model) if len(self.arms) == 1 else " / ".join(self.arms)
+        """The cell as report.py names it: the arm, with its model and harness when it has them; joined arms for a
+        contrast."""
+        return (metrics.cell_name(self.arms[0], self.model, self.harness) if len(self.arms) == 1
+               else " / ".join(self.arms))
 
 
 @dataclass

@@ -1842,6 +1842,7 @@ async fn dispatch_agent(
 /// Execute one relay-selected subscription and return only after its terminal
 /// episode is durable. The relay journal calls this instead of the background
 /// event loop so ACK ordering remains explicit and testable.
+#[cfg(feature = "relay")]
 pub(crate) async fn dispatch_relay_subscription(
     state: Arc<AppState>,
     subscription: Subscription,

@@ -37,6 +37,7 @@ use roko_learn::telemetry::{
 
 use super::attempt::AttemptContext;
 use super::prompt_experiment::dispatch_prompt_hash;
+use super::verification::error_pattern_limit;
 use super::*;
 use crate::dispatch::RunnerDispatchPlan;
 use crate::dispatch::prompt_builder::PromptItemDiagnostic;
@@ -112,7 +113,9 @@ impl GraphTaskDispatcher {
     /// One content decision per decision point at which `plan`'s prompt
     /// retrieved an item (S01 §4.5): the retrieved items are the candidates,
     /// the included ones the choice, made by a fixed ranking. Each row
-    /// carries the digests of the learned state the candidates came from.
+    /// carries the digests of the learned state the candidates came from,
+    /// and the error-pattern row's policy names how many patterns the θ the
+    /// attempt runs shows (gap-26c055).
     fn record_content_decisions(&self, attempt: &AttemptContext, plan: &RunnerDispatchPlan) {
         let mut points: BTreeMap<ContentDecisionPoint, Vec<&PromptItemDiagnostic>> =
             BTreeMap::new();
@@ -131,9 +134,10 @@ impl GraphTaskDispatcher {
         let request_hash = dispatch_prompt_hash(&prompt.system_prompt, &prompt.user_prompt);
         let times = decision_times(attempt.timing());
         let arm_set = attempt.arm_set();
+        let shown = error_pattern_limit(attempt.harness_params());
         for (point, items) in points {
             let identity = attempt.identity();
-            let mut decision = content_decision(identity, point, &items, &state, draws);
+            let mut decision = content_decision(identity, point, &items, &state, draws, shown);
             let draw = (arm_set.as_deref(), times);
             if let Some((proposals, audit)) =
                 content_audit(point, &items, identity, draw, &request_hash)
@@ -181,20 +185,25 @@ struct LearnedState {
     thresholds: Option<String>,
 }
 
-/// The ranking that chooses a content decision point's candidates.
-const fn content_policy(point: ContentDecisionPoint) -> &'static str {
+/// The ranking that chooses a content decision point's candidates. The
+/// error-pattern summary names as many patterns as the attempt's prompt
+/// shows at most, `shown`: the `error_patterns_k` of the θ it runs (M1's
+/// B4), which a fixed number would misstate (gap-26c055).
+fn content_policy(point: ContentDecisionPoint, shown: usize) -> String {
     match point {
         // The three entries holding the most task keywords; episodes join
         // them at this decision point.
-        ContentDecisionPoint::Knowledge => "keyword_overlap_top3",
+        ContentDecisionPoint::Knowledge => "keyword_overlap_top3".to_string(),
         // The three playbooks holding the most task keywords, then the best
         // record.
-        ContentDecisionPoint::Playbooks => "keyword_outcome_top3",
+        ContentDecisionPoint::Playbooks => "keyword_outcome_top3".to_string(),
         // The sections that fit the prompt's token budget.
-        ContentDecisionPoint::Sections => "token_budget_composer",
-        // The store's five leading patterns, in a bounded summary.
-        ContentDecisionPoint::ErrorPatterns => "error_pattern_summary_top5",
-        ContentDecisionPoint::Reflections | ContentDecisionPoint::DreamAdvice => "unranked",
+        ContentDecisionPoint::Sections => "token_budget_composer".to_string(),
+        // The store's leading patterns, in a bounded summary.
+        ContentDecisionPoint::ErrorPatterns => format!("error_pattern_summary_top{shown}"),
+        ContentDecisionPoint::Reflections | ContentDecisionPoint::DreamAdvice => {
+            "unranked".to_string()
+        }
     }
 }
 
@@ -206,13 +215,14 @@ const SECTION_BANDIT_POLICY: &str = "section_bandit_token_budget";
 /// `state`. An item the role's prompt has no place for was never eligible.
 /// At the sections point, `draws` are the section bandit's: the row gives
 /// each drawn section its odds of staying in, and the propensity of the
-/// bandit's draws.
+/// bandit's draws. `shown` is the most error patterns the prompt shows.
 fn content_decision(
     identity: &AttemptIdentity,
     point: ContentDecisionPoint,
     items: &[&PromptItemDiagnostic],
     state: &LearnedState,
     draws: &[SectionDecision],
+    shown: usize,
 ) -> ContentDecisionRecord {
     let draws: &[SectionDecision] = if point == ContentDecisionPoint::Sections {
         draws
@@ -241,16 +251,20 @@ fn content_decision(
     };
     let (policy, chosen_propensity, source) = if draws.is_empty() {
         // A fixed ranking chooses its set with certainty.
-        (content_policy(point), 1.0, DecisionSource::Default)
+        (content_policy(point, shown), 1.0, DecisionSource::Default)
     } else {
         // Given the bandit's draws, the token budget's cut is fixed.
         let propensity: f64 = draws.iter().map(|draw| draw.propensity).product();
-        (SECTION_BANDIT_POLICY, propensity, DecisionSource::Explore)
+        (
+            SECTION_BANDIT_POLICY.to_string(),
+            propensity,
+            DecisionSource::Explore,
+        )
     };
     ContentDecisionRecord {
         identity: identity.clone(),
         decision_point: point,
-        policy: policy.to_string(),
+        policy,
         candidates,
         chosen,
         chosen_propensity: Some(chosen_propensity),
@@ -1080,5 +1094,25 @@ mod tests {
         }
         let share = f64::from(learned) / f64::from(learned + withheld);
         assert!((0.45..=0.55).contains(&share), "learned share {share}");
+    }
+
+    /// gap-26c055: the error-pattern policy names as many patterns as the
+    /// attempt's prompt may show: θ₀'s five, or the `error_patterns_k` of
+    /// the θ it runs (M1's B4).
+    #[test]
+    fn error_pattern_policy_names_the_live_pattern_count() {
+        let point = ContentDecisionPoint::ErrorPatterns;
+        let theta0 = error_pattern_limit(None);
+        assert_eq!(content_policy(point, theta0), "error_pattern_summary_top5");
+        let config = RokoConfig::default();
+        let mut theta = roko_core::config::harness_params::HarnessParams::baseline(&config);
+        assert_eq!(error_pattern_limit(Some(&theta)), theta0);
+        theta.error_patterns_k = 10;
+        let shown = error_pattern_limit(Some(&theta));
+        assert_eq!(content_policy(point, shown), "error_pattern_summary_top10");
+        assert_eq!(
+            content_policy(ContentDecisionPoint::Knowledge, shown),
+            "keyword_overlap_top3"
+        );
     }
 }

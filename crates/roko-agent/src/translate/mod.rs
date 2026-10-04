@@ -462,18 +462,24 @@ impl BackendResponse {
 
     /// Extract the raw finish reason string from this response.
     ///
+    /// For `Json`, reads the OpenAI / Ollama `choices[0].finish_reason`,
+    /// else the top-level `stop_reason` of an Anthropic Messages body (which
+    /// the native tool loop's normalized response keeps), else the
+    /// `candidates[0].finishReason` of a Gemini body, lower-cased
+    /// (`MAX_TOKENS` reads as `max_tokens`; gap-fd0c0b).
+    ///
     /// For `StreamJson` (Claude CLI), scans the events in reverse for the
     /// `result` event and derives a finish reason from `is_error` and the
     /// presence of tool-use blocks.
     #[must_use]
     pub fn extract_finish_reason_raw(&self) -> Option<String> {
         match self {
-            Self::Json(v) => {
-                // OpenAI / Ollama style
-                v.pointer("/choices/0/finish_reason")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            }
+            Self::Json(v) => nonempty_str_at(v, "/choices/0/finish_reason")
+                .or_else(|| nonempty_str_at(v, "/stop_reason"))
+                .map(str::to_string)
+                .or_else(|| {
+                    nonempty_str_at(v, "/candidates/0/finishReason").map(str::to_ascii_lowercase)
+                }),
             Self::StreamJson(events) => {
                 for ev in events.iter().rev() {
                     if ev.get("type").and_then(|t| t.as_str()) == Some("result") {
@@ -520,6 +526,26 @@ impl BackendResponse {
             Self::Text(_) => None,
         }
     }
+
+    /// Whether the model stopped at its output token limit, so this response
+    /// is cut off: its finish reason ([`Self::extract_finish_reason_raw`])
+    /// reads canonically as [`FinishReason::Length`] (bug-e3940b). The tool
+    /// loop and every caller that collects a turn ask this one question
+    /// (gap-fd0c0b).
+    #[must_use]
+    pub fn hit_length_limit(&self) -> bool {
+        self.extract_finish_reason_raw()
+            .as_deref()
+            .is_some_and(|raw| normalize_finish_reason(raw) == FinishReason::Length)
+    }
+}
+
+/// The non-empty string at JSON `pointer` in `value`, if any.
+fn nonempty_str_at<'a>(value: &'a serde_json::Value, pointer: &str) -> Option<&'a str> {
+    value
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| !text.is_empty())
 }
 
 fn extract_reasoning_from_value(value: &serde_json::Value) -> Option<String> {
@@ -888,6 +914,18 @@ mod tests {
         assert_eq!(normalize_finish_reason("end_turn"), FinishReason::Stop);
         assert_eq!(normalize_finish_reason("length"), FinishReason::Length);
         assert_eq!(normalize_finish_reason("max_tokens"), FinishReason::Length);
+        // gap-fd0c0b: a Gemini body's `finishReason` reads lower-cased.
+        let gemini = BackendResponse::Json(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [{"text": "partial"}]},
+                "finishReason": "MAX_TOKENS",
+            }],
+        }));
+        assert_eq!(
+            gemini.extract_finish_reason_raw().as_deref(),
+            Some("max_tokens")
+        );
+        assert!(gemini.hit_length_limit());
         assert_eq!(
             normalize_finish_reason("tool_calls"),
             FinishReason::ToolCalls

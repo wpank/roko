@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "relay")]
 use anyhow::Context as _;
 use arc_swap::ArcSwap;
 use base64::Engine;
@@ -949,6 +950,7 @@ pub struct AppState {
     /// Event subscriptions loaded at startup.
     pub subscriptions: SubscriptionRegistry,
     /// Restart-safe relay subscription cursor, dispatch journal, and status.
+    #[cfg(feature = "relay")]
     pub(crate) subscription_relay: Arc<crate::subscription_relay::SubscriptionRelayRuntime>,
     /// Runtime bridge to CLI operations (run_once, status, dashboard).
     pub runtime: Arc<dyn CliRuntime>,
@@ -1428,11 +1430,12 @@ impl AppState {
         let cancel = CancelToken::new();
         let supervisor = Arc::new(ProcessSupervisor::new(cancel.child()));
         let subscriptions = SubscriptionRegistry::load_from_project(&workdir, &roko_config);
-        // Without `relay` no bridge connects, so the status says so (9220).
+        // The bridge connects when a relay URL is configured (9220).
+        #[cfg(feature = "relay")]
         let subscription_relay = Arc::new(
             crate::subscription_relay::SubscriptionRelayRuntime::open(
                 &workdir,
-                cfg!(feature = "relay") && roko_config.relay.url.is_some(),
+                roko_config.relay.url.is_some(),
             )
             .context("open relay subscription journal")?,
         );
@@ -1653,6 +1656,7 @@ impl AppState {
             sse_adapter: Arc::new(crate::adapters::SseAdapter::new(256)),
             runtime_event_logger,
             subscriptions,
+            #[cfg(feature = "relay")]
             subscription_relay,
             runtime,
             model_call_service,

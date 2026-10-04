@@ -187,7 +187,8 @@ pub(crate) enum LearnCmd {
         /// measured audit (backlog 5123) lands.
         #[arg(long)]
         census: bool,
-        /// Trace a loop's canary, or break a loop (S03 §5; backlog 5134).
+        /// Trace a loop's canary, break a loop (S03 §5; backlog 5134), or
+        /// clear a tripped audit.
         #[command(subcommand)]
         cmd: Option<roko_cli::commands::learn_loops::LoopsCmd>,
     },

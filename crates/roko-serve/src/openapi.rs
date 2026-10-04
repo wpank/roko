@@ -25,9 +25,8 @@ use crate::agent_lifecycle::{
     ObservedVitalityPhase,
 };
 use crate::state::AppState;
-use crate::subscription_relay::{
-    ReconciliationRecord, RelayStreamBinding, ServeRelayConnectionStatus, SubscriptionRelayStatus,
-};
+#[cfg(feature = "relay")]
+use crate::subscription_relay::SubscriptionRelayStatus;
 
 /// Build the OpenAPI routes served under `/api`.
 pub fn routes() -> Router<Arc<AppState>> {
@@ -557,10 +556,6 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         ConfigUpdateRequest,
         SubscriptionCreateRequest,
         SubscriptionUpdateRequest,
-        ReconciliationRecord,
-        RelayStreamBinding,
-        ServeRelayConnectionStatus,
-        SubscriptionRelayStatus,
         DeploymentCallbackRequest,
         WebhookPayload,
         SearchQueryRequest
@@ -857,12 +852,27 @@ doc_put_value!(update_config, "/config", "config");
 doc_post_value!(reload_config, "/config/reload", "config");
 
 doc_get!(list_subscriptions, "/subscriptions", "subscriptions");
+// The relay status type and the types it holds join the document through this
+// path, so a build without `relay` (gap-e7a3d4) carries none of them.
+#[cfg(feature = "relay")]
 #[utoipa::path(
     get,
     path = "/subscriptions/relay/status",
     tag = "subscriptions",
     responses(
         (status = 200, description = "Durable relay subscription consumer status", body = SubscriptionRelayStatus),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Insufficient scope", body = ApiErrorResponse)
+    )
+)]
+fn relay_subscription_status() {}
+#[cfg(not(feature = "relay"))]
+#[utoipa::path(
+    get,
+    path = "/subscriptions/relay/status",
+    tag = "subscriptions",
+    responses(
+        (status = 501, description = "Parked: it needs the relay feature", body = Value),
         (status = 401, description = "Unauthorized", body = ApiErrorResponse),
         (status = 403, description = "Insufficient scope", body = ApiErrorResponse)
     )
@@ -2201,7 +2211,10 @@ mod tests {
         }
         assert!(payload["components"]["schemas"]["AgentRuntimeObservation"].is_object());
         assert!(payload["components"]["schemas"]["AgentObservationCommit"].is_object());
-        assert!(payload["components"]["schemas"]["SubscriptionRelayStatus"].is_object());
+        assert_eq!(
+            payload["components"]["schemas"]["SubscriptionRelayStatus"].is_object(),
+            cfg!(feature = "relay")
+        );
     }
 
     /// Registered routes the document does not describe yet (gap-c50b85).

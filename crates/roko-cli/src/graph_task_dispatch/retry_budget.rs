@@ -21,7 +21,13 @@
 //! M1 moves these budgets during a run (B2, decision 8101, 8126): the Graph
 //! executor reads [`LiveRetryBudgets`] before each retry decision, which add
 //! the `retry_delta` of the θ the task's chain runs to a budget the task does
-//! not author ([`TaskRetryBudgets::max_retries_with_delta`]).
+//! not author ([`TaskRetryBudgets::max_retries_with_delta`]). The delta stays
+//! within S5's box (`[gates] adaptive_min_retries..=adaptive_max_retries`) and
+//! never takes a task below what climbing the ladder takes, so on a task the
+//! ladder routes it has room only when the box reaches above that floor. The
+//! default box ends at it (five retries), so there the delta moves only the
+//! tasks the ladder does not route, by design: widening the box is S5's call,
+//! not M1's (bug-35a738).
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -161,7 +167,9 @@ impl TaskRetryBudgets {
     /// within `[gates] adaptive_min_retries..=adaptive_max_retries`, a budget
     /// already outside that range moving no further out, and an unpinned
     /// task keeps what climbing the model ladder takes. θ₀'s `delta` of 0
-    /// changes nothing.
+    /// changes nothing. An unpinned task on the ladder therefore moves only
+    /// when `adaptive_max_retries` exceeds the ladder's floor, which the
+    /// default box does not (bug-35a738).
     pub(crate) fn max_retries_with_delta(&self, task: &TaskDef, delta: i32) -> u32 {
         let budget = self.for_task(task);
         if delta == 0 || budget.source == RetryBudgetSource::Authored {
@@ -621,6 +629,48 @@ command = "true"
 
     fn budgets_with(dir: &Path, gates: &GatesConfig, ladder_min: u32) -> TaskRetryBudgets {
         budgets(dir, gates).with_ladder_min_retries(ladder_min)
+    }
+
+    /// bug-35a738: B2 on the tasks the model ladder routes. Decision 8101
+    /// keeps `retry_delta` within S5's box and never below what climbing the
+    /// ladder takes, and the default box ends at that floor, so there the
+    /// delta moves only a pinned task, by design. Once S5's box reaches past
+    /// the floor, a ladder-routed budget has room both ways: up to the box,
+    /// and down to the floor from a budget the thresholds raised above it.
+    #[test]
+    fn b2_retry_delta_has_room_to_move_on_a_ladder_routed_task() {
+        let dir = tempdir().expect("tempdir");
+        let floor = super::super::ladder::LADDER_MIN_RETRIES;
+        let moved = |budgets: &TaskRetryBudgets, task: &TaskDef| {
+            [-1, 0, 1, 2].map(|delta| budgets.max_retries_with_delta(task, delta))
+        };
+        let mut pinned = task("STRUCTURAL");
+        pinned.model_hint = Some("claude-sonnet-4-6".to_string());
+
+        // The default box tops out at the floor.
+        let narrow = budgets_with(dir.path(), &GatesConfig::default(), floor);
+        assert_eq!(GatesConfig::default().adaptive_max_retries, floor);
+        assert_eq!(moved(&narrow, &task("STRUCTURAL")), [floor; 4]);
+        assert_eq!(moved(&narrow, &pinned), [3, 3, 4, 5]);
+
+        let gates = GatesConfig {
+            adaptive_max_retries: floor + 2,
+            ..GatesConfig::default()
+        };
+        let wide = budgets_with(dir.path(), &gates, floor);
+        assert_eq!(
+            moved(&wide, &task("STRUCTURAL")),
+            [floor, floor, floor + 1, floor + 2]
+        );
+        // TEST's rung mostly fails, so the thresholds raise its budget past
+        // the floor, and a retry less still climbs the whole ladder.
+        let test = task("TEST");
+        let raised = wide.for_task(&test).max_retries;
+        assert!(raised > floor, "{raised}");
+        assert_eq!(
+            moved(&wide, &test),
+            [raised - 1, raised, floor + 2, floor + 2]
+        );
     }
 
     #[test]

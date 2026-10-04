@@ -34,6 +34,22 @@ pub(crate) fn failover_config(config: &RokoConfig) -> RokoConfig {
     failover
 }
 
+/// Why a prompt has no usable provider: `why`, the failover's own reason,
+/// then what to do about each provider that rejected roko's credentials, the
+/// login hint `roko run` gives. An editor user otherwise sees no cue that a
+/// login, not waiting or retrying, is what brings a provider back
+/// (gap-ade918).
+pub(crate) fn no_usable_provider_reason(
+    why: &str,
+    failover: &roko_learn::provider_failover::Failover,
+) -> String {
+    let hints = failover.credentials_hints();
+    if hints.is_empty() {
+        return why.to_string();
+    }
+    format!("{why}. {}", hints.join(" "))
+}
+
 /// Whether `event` shows the editor any of an attempt's answer, after which
 /// the attempt's failure is the turn's.
 fn shows_answer(event: &CognitiveEvent) -> bool {
@@ -135,6 +151,58 @@ mod tests {
         .await;
         assert_eq!(withheld, None);
         assert_eq!(forwarded.len(), 1);
+    }
+
+    /// gap-ade918: when the prompt's only provider is in an auth quarantine,
+    /// ACP's reason says to log in, as `roko run` does, besides the refusal
+    /// itself. A reason with no credentials refusal is left as it was.
+    #[test]
+    fn acp_auth_quarantine_message_includes_a_login_hint() {
+        use std::sync::Arc;
+
+        use roko_core::config::schema::{ModelProfile, ProviderConfig};
+        use roko_learn::provider_failover::Failover;
+        use roko_learn::provider_health::{ErrorClass, ProviderHealthRegistry};
+
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.routing.fallback_models.clear();
+        config.agent.fallback_model = None;
+        config.agent.default_model = "sonnet".to_string();
+        let cli = ProviderConfig {
+            kind: ProviderKind::ClaudeCli,
+            command: Some("/bin/sh".to_string()),
+            ..ProviderConfig::default()
+        };
+        config.providers.insert("claude_cli".to_string(), cli);
+        let sonnet = ModelProfile {
+            provider: "claude_cli".to_string(),
+            slug: "claude-sonnet-4-6".to_string(),
+            supports_tools: true,
+            ..ModelProfile::default()
+        };
+        config.models.insert("sonnet".to_string(), sonnet);
+        let registry = ProviderHealthRegistry::new();
+        registry.record_failure("claude_cli", ErrorClass::AuthFailure);
+
+        let mut failover = Failover::new(Arc::new(failover_config(&config)), false, false);
+        let why = failover
+            .start(&registry, "sonnet")
+            .expect_err("no provider can take the prompt");
+        let reason = no_usable_provider_reason(&why, &failover);
+
+        assert!(reason.starts_with(&why), "{reason}");
+        assert!(reason.contains("run `claude /login`"), "{reason}");
+        assert!(
+            reason.contains("roko config providers reset-health claude_cli"),
+            "{reason}"
+        );
+        let fresh = Failover::new(Arc::new(config), false, false);
+        assert_eq!(
+            no_usable_provider_reason("no usable provider", &fresh),
+            "no usable provider"
+        );
     }
 
     /// The Anthropic API provider a key in the environment synthesizes is

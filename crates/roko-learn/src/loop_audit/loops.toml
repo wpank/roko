@@ -267,13 +267,13 @@ opportunity = "at least one droppable section and the token budget binds"
 default_policy = "include every section by static priority"
 receipt = "included_ids"
 notes = [
-    "Not built: S02.P1-10. Graph-only (decision 4115): a droppable section is excluded with p ≤ 0.2 for its first 100 opportunities, then ≤ 0.5; pinned sections never.",
+    "Built (S02.P1-10). Graph-only (decision 4115): a droppable section is excluded with p in [0.05, 0.2] for its first 100 opportunities, then [0.05, 0.5]; the built-in pinned sections and [sections] pinned never.",
 ]
 
 [[loop.static_findings]]
-claim = "No section is ever excluded at random: prompt assembly only reads section effects through SectionEffectivenessSource."
-pointer = "crates/roko-cli/src/dispatch/prompt_builder.rs::SectionEffectivenessSource"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+claim = "Prompt assembly draws each droppable section's inclusion from the section bandit (SectionBandit::decide) on the chain's sections assignment; the arm that takes the default policy, and maximize mode, include every section. S03 v1.1's 'only reads section effects through SectionEffectivenessSource' is stale."
+pointer = "crates/roko-cli/src/dispatch/prompt_builder.rs::draw_sections"
+verified_at = "70fc09313468316f611f43b43c2297704a35ff49"
 
 # ── Gate thresholds and the retry budget ──────────────────────────────────
 

@@ -149,6 +149,31 @@ def test_policy_report_reuses_passk_and_cluster_bootstrap(monkeypatch, tmp_path)
     assert text == json.dumps(json.loads(text), sort_keys=True, indent=2, ensure_ascii=False) + "\n"
 
 
+def test_matrix_keeps_one_cell_per_task_arm_and_model():
+    """gap-b10978: a (task, arm) recorded under two models keeps one cell per model, labelled as the replay's
+    `arm_label` labels it, at its lowest seed; an arm that ran one model keeps its name."""
+    def ran(record: dict, model: str) -> dict:
+        record["execution"]["attempts"][0]["model_requested"] = model
+        return record
+
+    task = "F1-l1-0001"
+    records = [ran(run_record(task, 1, "roko_fixed", 1, 0.02), "glm-4.7"),
+               ran(run_record(task, 1, "roko_fixed", 0, 0.01), "gpt-oss-120b"),
+               ran(run_record(task, 2, "roko_fixed", 0, 0.03), "glm-4.7"),
+               run_record(task, 1, "cheap_direct", 1, 0.005)]
+    cells = econ._matrix(records)
+    glm, oss = econ.arm_label("roko_fixed", "glm-4.7"), econ.arm_label("roko_fixed", "gpt-oss-120b")
+    assert (glm, oss) == ("roko_fixed[glm-4.7]", "roko_fixed[gpt-oss-120b]")
+    assert sorted(cells) == [(task, "cheap_direct"), (task, glm), (task, oss)]
+    assert (cells[(task, glm)]["seed"], cells[(task, glm)]["vs"]["label"]) == (1, 1)
+    assert (cells[(task, oss)]["vs"]["label"], econ.attempt_usd(cells[(task, oss)])) == (0, 0.01)
+    assert econ.arm_label("roko_fixed", None) == "roko_fixed[?]"
+    # A trace naming the split arms joins their cells.
+    rows, counts = econ._trace_rows([trace("lcb_aci", 0, task, [oss, glm], True, 0.03)], records)
+    assert counts["kept"] == 1 and counts["unmatched"] == 0
+    assert len(rows["lcb_aci"]) == 1
+
+
 def test_variance_audit_spend_and_excluded_runs():
     golden = econ.build(golden_records(), b=200)["arms"]["golden"]
     # Within-task: (3/10 + 0 + 0 + 1/2) / 4; ICC(1) from the one-way ANOVA of the same four tasks.
@@ -166,6 +191,40 @@ def test_variance_audit_spend_and_excluded_runs():
     doc = econ.build(broken, golden_traces(), b=200)
     assert doc["runs"]["infra_error"] == 1 and doc["arms"]["golden"]["runs"] == len(broken) - 12 - 1
     assert doc["traces"]["touched_excluded"] == 4  # F1-l1-0001's line in two orderings of two golden policies
+
+
+def test_cc_k_metric_is_produced():
+    # gap-889682: cc_<k> = pass^k / pass@k and per-task cost_cv had no producer. Eight identical tasks (c = 3 of 5
+    # seeds each) make pass^k/pass@k closed forms, and keep every bootstrap replicate identical too -- no task is
+    # ever skipped or all-zero, so the interval is a clean, reproducible point: pass^1 == pass@1 == 0.6 (CC_1 = 1,
+    # the identity that always holds at k = 1, any data); pass^3 = C(3,3)/C(5,3) = 0.1, pass@3 = 1 - C(2,3)/C(5,3)
+    # = 1 (CC_3 = 0.1); pass^5 = C(3,5)/C(5,5) = 0, pass@5 = 1 - C(2,5)/C(5,5) = 1 (CC_5 = 0).
+    flat = [run_record(f"F1-l1-{index:04d}", seed, "flat", int(seed <= 3), cost=0.03)
+           for index in range(8) for seed in (1, 2, 3, 4, 5)]
+    produced = econ.cc_metrics(flat, EXPERIMENT, b=50, seed=0, alpha=0.05)
+    cc = {metric.metric: metric for metric in produced if metric.metric.startswith("cc_")}
+    assert set(cc) == {"cc_1", "cc_3", "cc_5"}
+    assert cc["cc_1"].value == pytest.approx(1.0) and cc["cc_1"].ci == pytest.approx((1.0, 1.0))
+    assert cc["cc_3"].value == pytest.approx(0.1) and cc["cc_3"].ci == pytest.approx((0.1, 0.1))
+    assert cc["cc_5"].value == pytest.approx(0.0) and cc["cc_5"].ci == pytest.approx((0.0, 0.0))
+    assert {metric.n for metric in cc.values()} == {40}  # 8 tasks x 5 seeds, all independent
+
+    cv = [metric for metric in produced if metric.metric == "cost_cv"]
+    assert len(cv) == 8 and {metric.value for metric in cv} == {0.0}  # cost 0.03 on every run: no spread
+
+    for metric in produced:
+        row = report.metric_record(metric, experiment_id=EXPERIMENT, snapshot="prices-2026-09-28",
+                                   analysis_commit="abc", computed_at="now")
+        assert validate.validate("metric-record", row) == [], row
+        if metric.metric == "cc_3":
+            assert row["ci_method"] == "task_bootstrap_percentile" and row["cost_basis"] is None
+        if metric.metric == "cost_cv":
+            assert row["cost_basis"] == "api_equiv_usd" and "ci" not in row
+            assert 'task.instance_id == "' in row["record_filter"]
+
+    # cheap_x (golden_records()'s always-failing arm) gets no cc_<k> at all: its pass@k is 0 at every k.
+    assert not [metric for metric in econ.cc_metrics(golden_records(), EXPERIMENT, b=50)
+               if metric.metric.startswith("cc_") and 'arm == "cheap_x"' in metric.cut.filter]
 
 
 def test_cli_writes_the_report(tmp_path, capsys):

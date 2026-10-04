@@ -8,8 +8,8 @@ use parking_lot::Mutex;
 use roko_core::agent::ProviderKind;
 use roko_core::config::harness_params::{HarnessLadders, HarnessParams};
 use roko_learn::provider_failover::{
-    FailoverCandidate as DispatchCandidate, format_local_ms, missing_credentials_reason,
-    provider_brings_own_tools, same_model_candidates,
+    FailoverCandidate as DispatchCandidate, credentials_fix, credentials_hint, format_local_ms,
+    missing_credentials_reason, provider_brings_own_tools, same_model_candidates,
 };
 
 use super::helper_calls::SideCall;
@@ -864,12 +864,8 @@ impl GraphTaskDispatcher {
         let key_env = providers
             .get(&refusal.provider_id)
             .and_then(|provider| provider.api_key_env.as_deref());
-        let provider_id = &refusal.provider_id;
-        format!(
-            "`{provider_id}` rejected its credentials: {}, then run `roko config providers \
-             reset-health {provider_id}` to use it before its skip ends.",
-            credentials_fix(refusal.provider_kind, key_env)
-        )
+        // The wording ACP gives too (gap-ade918).
+        credentials_hint(&refusal.provider_id, refusal.provider_kind, key_env)
     }
 
     /// " (e.g. kimi-k2-5 needs MOONSHOT_API_KEY, …)" for configured API-key models.
@@ -945,26 +941,6 @@ pub(super) fn permanent_provider_denial(
         retryable: false,
         message: format!("{denial}, which no retry can change: {recovery}"),
     })
-}
-
-/// How to restore credentials a provider of `kind` rejected (backlog 1115): a
-/// CLI agent's login, which needs USER and HOME in its environment, or a valid
-/// key in the variable its config names.
-fn credentials_fix(kind: ProviderKind, key_env: Option<&str>) -> String {
-    let login = match kind {
-        ProviderKind::ClaudeCli => Some("claude /login"),
-        ProviderKind::CodexCli => Some("codex login"),
-        ProviderKind::GeminiCli => Some("gemini /auth"),
-        ProviderKind::CursorCli | ProviderKind::CursorAcp => Some("cursor-agent login"),
-        _ => None,
-    };
-    match (login, key_env) {
-        (Some(login), _) => format!("run `{login}`; under `env -i` also pass USER and HOME"),
-        (None, Some(env)) => {
-            format!("put a valid key in {env} (~/.roko/.env is loaded automatically at startup)")
-        }
-        (None, None) => "log its CLI in or give it valid credentials".to_string(),
-    }
 }
 
 /// Why an agent of `kind` may not take an attempt in the operator's shared

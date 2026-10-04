@@ -1032,6 +1032,36 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    /// gap-fd0c0b: the native tool loop's response keeps Anthropic's
+    /// `stop_reason` beside its OpenAI-shaped `choices`, and the finish
+    /// reason reads it: a reply cut off at `max_tokens` is a length finish,
+    /// one that ended its turn is not.
+    #[test]
+    fn anthropic_native_stop_reason_reaches_extract_finish_reason() {
+        let reply = |stop_reason: &str| {
+            BackendResponse::Json(AnthropicMessagesBackend::normalize_response(json!({
+                "id": "msg_1",
+                "model": "claude-sonnet-4-6",
+                "stop_reason": stop_reason,
+                "content": [{"type": "text", "text": "The answer is"}],
+                "usage": {"input_tokens": 10, "output_tokens": 4},
+            })))
+        };
+
+        let truncated = reply("max_tokens");
+        assert_eq!(
+            truncated.extract_finish_reason_raw().as_deref(),
+            Some("max_tokens")
+        );
+        assert!(truncated.hit_length_limit());
+        let finished = reply("end_turn");
+        assert_eq!(
+            finished.extract_finish_reason_raw().as_deref(),
+            Some("end_turn")
+        );
+        assert!(!finished.hit_length_limit());
+    }
+
     #[derive(Clone, Debug)]
     struct RecordedRequest {
         url: String,

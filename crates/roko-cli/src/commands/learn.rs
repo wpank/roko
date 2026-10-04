@@ -213,6 +213,30 @@ pub(crate) enum LearnCmd {
         #[command(subcommand)]
         cmd: commands::learn_homeostasis::HomeostasisCmd,
     },
+    /// What the guarded stores (router, knowledge, harness) committed, rolled back and
+    /// restored, newest first: versions, parents, digests, checks, decisions, mode and
+    /// actor (P21; read-only).
+    Commits {
+        /// Only this store.
+        #[arg(long, value_enum)]
+        store: Option<commands::learn_commits::StoreName>,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Restore a guarded store to a version it keeps, with a `restored` row by `human`
+    /// (P21). Refused while a plan run holds the workspace.
+    Rollback {
+        /// The store.
+        #[arg(value_enum)]
+        store: commands::learn_commits::StoreName,
+        /// The version to restore.
+        #[arg(long)]
+        to: u64,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
     #[command(hide = true)]
     Tune {
@@ -347,6 +371,8 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         | LearnCmd::RoleCosts { workdir }
         | LearnCmd::Graduation { workdir }
         | LearnCmd::Loops { workdir, .. }
+        | LearnCmd::Commits { workdir, .. }
+        | LearnCmd::Rollback { workdir, .. }
         | LearnCmd::Sizing { workdir, .. } => {
             workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
         }
@@ -497,6 +523,14 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         LearnCmd::Graduation { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_learn_graduation(&wd, json).await
+        }
+        LearnCmd::Commits { store, workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            commands::learn_commits::cmd_commits(&wd, store, json)
+        }
+        LearnCmd::Rollback { store, to, workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            commands::learn_commits::cmd_rollback(&wd, store, to, json)
         }
         LearnCmd::Sizing {
             workdir,

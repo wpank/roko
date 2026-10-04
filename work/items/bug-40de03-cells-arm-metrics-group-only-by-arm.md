@@ -100,3 +100,36 @@ grouping/analysis functions need to read it.
   which already has the data it needs via `provenance.network_policy.harness`.
 - `test_analysis.py:433` must change in the same commit as `cells()`, or the suite will fail on an intentional
   contract change rather than a regression.
+
+## Progress
+
+- Took the "simpler" option from the Plan: `cells()` always emits a 3-tuple `(arm, model, harness)`, never a 2-tuple;
+  `harness_of()` (already existed, already used by `check_unique`'s dedup key) is now also threaded through
+  `with_models()` (adds a `"harness"` key alongside `"model"`), `cell_name()` (new `harness=""` param, appends
+  `[harness]` when non-empty) and `arm_metrics()` (new `harness=None` param; `None` pools every harness of the arm,
+  matching every pre-fix caller's behavior; a caller that cares passes the harness its own `cells()` 3-tuple named).
+- Updated every caller that destructures `cells()` or calls `cell_name()`/`arm_metrics()` on its result:
+  `report.py::build` (3-tuple destructure, `harness=harness` into `arm_metrics`), `report.py::render` (its `cells`
+  dict key now uses `metrics.cell_name(arm, model, metrics.harness_of(row))`, so two harnesses no longer collide
+  under one report-dict key), `envelope.py::level_table` (same pattern). Left `report.py::render`'s false-greens/
+  excluded listing (`_identity`-based, no provenance data) and `econ.py`/`tab_t7_envelope.py` untouched — out of this
+  task's anchors, cosmetic-only, no pooling/correctness issue.
+- Running the full `analysis` suite (not just the named verify) surfaced two *other* pinned assertions that the new
+  `harness == ""` clause in every non-`None`-harness `record_filter` broke:
+  `test_metric_records_validate_and_carry_provenance` (line ~292) and `test_an_arm_with_two_models_is_reported_per_model`
+  (line ~459) both pinned exact/prefix `record_filter` strings that predate the harness clause. Updated both to
+  include `and harness == ""` in the right position (right after `arm ==`/`model ==`, before `task.family !=`) —
+  an intentional contract change, same category as `test_analysis.py:433`/480/481, just not named in this item's
+  anchors. Caught by running the suite, not by the named `[[verify]]` alone, per this wave's instruction.
+- Added `test_cells_separates_harnesses_sharing_one_arm_id`: two `cheap_direct`-arm cells sharing one nominal arm id,
+  distinguished only by `run_record(..., harness=...)` (new test-helper kwarg, sets
+  `provenance.network_policy.harness`), asserts `cells()` returns two distinct 3-tuples, `arm_metrics(harness=...)`
+  filters to each one's own runs only, `arm_metrics()` with no `harness` arg still pools both (back-compat), and
+  `report.render()` prints them as two separate cells.
+- Corrected `cheap_direct_msa.toml`'s header comment: it previously claimed metrics.py already kept the two loops
+  apart; now it distinguishes `check_unique`'s (pre-existing) duplicate detection from `cells()`/`arm_metrics()`'s
+  (this fix's) cell separation, both of which are now actually true.
+- Verify: `grep -qw 'def test_cells_separates_harnesses_sharing_one_arm_id' .../test_analysis.py && .venv/bin/python
+  -m pytest .../test_analysis.py -k test_cells_separates_harnesses_sharing_one_arm_id -q` -> 1 passed. Full
+  `benchmarks/viabilitybench/analysis` suite (fresh venv, requirements.lock + requirements-analysis.lock): 105
+  passed, 0 failed.

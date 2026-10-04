@@ -3,8 +3,9 @@
 # loop (mini_loop.py). The runner is driver/run_msa.py, which runs mini-swe-agent's `mini` CLI as a subprocess (it is
 # never imported) from its own venv (.venv-msa/, requirements-msa.lock) and points it at the metering proxy. Records
 # keep [arm] id = "cheap_direct", the same arm as the bash-only loop's, with `provenance.network_policy.harness`
-# naming "mini-swe-agent" so analysis/metrics.py never pools the two loops' runs as one cell's duplicate. Pilot B's
-# optional "mini-swe" block (experiments/pilot_b.toml) runs this arm.
+# naming "mini-swe-agent" so analysis/metrics.py's check_unique never treats the two loops' runs as one cell's
+# duplicate, and cells()/arm_metrics() report them as two distinct cells rather than pooling their numbers together
+# (bug-40de03). Pilot B's optional "mini-swe" block (experiments/pilot_b.toml) runs this arm.
 schema_version = "vb.arm/1"
 
 [arm]

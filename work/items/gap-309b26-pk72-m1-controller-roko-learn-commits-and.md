@@ -57,3 +57,9 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK71 (gap-099513).
 - Suggested model: opus.
+
+## Progress
+
+Implemented by w4-pk02 on `work/gap-309b26` (from batch 13a, 004cb1b2f); cargo verification deferred to the batch gate.
+
+- 8139: implemented at 70c00ec2f. `roko learn commits [--store] [--json]` and `roko learn rollback <store> --to <version>` in the new `commands/learn_commits.rs`. A rollback goes through `GuardedStore::rollback` (a `restored` row, actor `human`) and is refused while a plan run holds the runner lock. Router: the version is written back into `cascade-router.json` under the file's lock. Knowledge: the entries of batches committed after the version are deleted. Harness: M1 adopts the version at its next start.

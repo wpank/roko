@@ -1182,14 +1182,6 @@ mod tests {
                 Log,
             ),
             (
-                "L-route",
-                Lifecycle::Active,
-                Some(Flagged),
-                R::Mask,
-                vec![],
-                Declared,
-            ),
-            (
                 "L-prompt-exp",
                 Lifecycle::Active,
                 Some(Flagged),
@@ -1246,6 +1238,11 @@ mod tests {
             linucb.facts,
             ["LinUCB learned from 1 of 275 router observations"]
         );
+        // gap-dadd56: the guards mask before the argmax and label a fallback
+        // as one, so no mask is declared for L-route any more.
+        let route = report.row("L-route").expect("L-route");
+        assert_eq!(route.reason, None, "{:?}", route.facts);
+        assert_eq!(route.state, Some(AuditState::Probation));
     }
 
     /// A commit no finding was verified at.
@@ -1257,9 +1254,9 @@ mod tests {
     fn census_qualifies_stale_declared_findings() {
         let registry = Registry::embedded().expect("the embedded registry");
         let report = run_in(&fixture(), &registry, Some(OTHER_SHA));
-        let route = report.row("L-route").expect("L-route");
-        assert!(route.findings.iter().all(|finding| finding.stale));
-        assert!(route.qualifiers.contains(&Qualifier::DeclaredStale));
+        let thresholds = report.row("L-gate-thr").expect("L-gate-thr");
+        assert!(thresholds.findings.iter().all(|finding| finding.stale));
+        assert!(thresholds.qualifiers.contains(&Qualifier::DeclaredStale));
         let linucb = report.row("L-linucb").expect("L-linucb");
         assert!(
             !linucb.qualifiers.contains(&Qualifier::DeclaredStale),

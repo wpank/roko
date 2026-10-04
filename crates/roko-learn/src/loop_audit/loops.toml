@@ -30,15 +30,14 @@ notes = [
 ]
 
 [[loop.static_findings]]
-claim = "The three default_slug fallbacks (unconfigured model, disabled provider, no tool support) return ModelChoiceSource::Router, so a guard's pick carries the router's label (G55)."
+claim = "The guards (unconfigured model, disabled provider, no tool support) mask the models that cannot run before the cascade's argmax (S02.P1-2, 4113), and when they reject every model the default runs labelled ModelChoiceSource::Fallback, with the guard's reason as the route row's fallback_reason. S03 v1.1's G55, a guard's pick under the router's label, is stale, so no mask is declared."
 pointer = "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
-reason = "dormant:mask"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop.static_findings]]
 claim = "With [routing.ladder] on by default (D11), ladder_choice routes a plan task to its ladder rung and only logs the cascade pick as router_pick, a shadow."
 pointer = "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::ladder_choice"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop]]
 id = "L-linucb"
@@ -53,7 +52,7 @@ receipt = "executed_model"
 [[loop.static_findings]]
 claim = "Settled router outcomes update LinUCB on failures as well as successes (bug-8da8ba), so S03 v1.1's 'learns only from successes' is stale."
 pointer = "crates/roko-cli/src/runtime_feedback/routing.rs::observe_router_outcome"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop]]
 id = "L-model-exp"
@@ -71,7 +70,7 @@ notes = [
 [[loop.static_findings]]
 claim = "Only the CLI (commands/experiment.rs, commands/learn.rs) reads or writes model-experiments.json; no dispatch path consults it."
 pointer = "crates/roko-cli/src/commands/experiment.rs::ModelExperimentStore"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 reason = "dormant:no_opportunity"
 
 [[loop]]
@@ -88,9 +87,9 @@ notes = [
 ]
 
 [[loop.static_findings]]
-claim = "RoutingLogger has no production caller: the Graph wiring census reports the decision writer off, so route decisions are traced, not written (S01 P0-8)."
+claim = "Route decisions are written: Graph dispatch appends one RoutingDecisionLog row per attempt that routes to the run's decisions.jsonl through its telemetry writer (S01 P0-8), and the wiring census reports store.decision_writer on whenever the dispatcher keeps run files. RoutingLogger itself still has no production caller."
 pointer = "crates/roko-cli/src/graph_task_dispatch/wiring.rs::decision_writer"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 # ── Knowledge, playbooks and recall ───────────────────────────────────────
 
@@ -109,7 +108,7 @@ notes = [
 [[loop.static_findings]]
 claim = "Graph feedback now carries the injected knowledge ids (diagnostics.knowledge_ids) into its TaskCompleted and TaskVerified events, so S03 v1.1's knowledge_ids: vec![] is stale; whether rows carry them is a log fact."
 pointer = "crates/roko-cli/src/graph_task_dispatch/feedback.rs::knowledge_ids"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop]]
 id = "L-rag11"
@@ -152,7 +151,7 @@ notes = [
 [[loop.static_findings]]
 claim = "Graph feedback passes the injected playbook ids and credits each with the attempt's learning label (W07)."
 pointer = "crates/roko-cli/src/graph_task_dispatch/feedback.rs::playbook_ids"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop]]
 id = "L-hdc"
@@ -164,15 +163,15 @@ default_policy = "no episode section"
 receipt = "artifact_hash_in_request"
 
 [[loop.static_findings]]
-claim = "An episode's HDC fingerprint is HdcVector::from_seed of the serialized prompt and outcome, one 64-bit FNV-1a hash expanded, so it identifies exact inputs and carries no similarity."
+claim = "An episode's HDC fingerprint is HdcVector::from_seed of the serialized prompt and outcome, one 64-bit FNV-1a hash expanded, so it identifies exact inputs and carries no similarity; episodes carry one only with [learning] episode_hdc_fingerprint, off by default (9226)."
 pointer = "crates/roko-primitives/src/hdc.rs::HdcVector::from_seed"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 reason = "dormant:degenerate"
 
 [[loop.static_findings]]
 claim = "Prompt assembly recalls episodes by keyword overlap, not by fingerprint."
 pointer = "crates/roko-cli/src/dispatch/prompt_builder.rs::collect_episode_knowledge_cached"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop]]
 id = "L-err"
@@ -190,7 +189,7 @@ notes = [
 [[loop.static_findings]]
 claim = "Graph runs write error patterns through ErrorPatternSink (gap-2ce86f, ed471a8c1) into the store dispatch reads."
 pointer = "crates/roko-cli/src/graph_execution/plan_runner.rs::ErrorPatternSink"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop.static_findings]]
 claim = "Graph dispatch selects the error patterns of the task or its verify commands (4209, 4210)."
@@ -209,12 +208,12 @@ receipt = "artifact_hash_in_request"
 [[loop.static_findings]]
 claim = "roko serve never starts the resident dream scheduler; only roko daemon calls start_dream_loop (gap-4d1bff)."
 pointer = "crates/roko-serve/src/dreams.rs::start_dream_loop"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop.static_findings]]
 claim = "Dream journal entries record hard-coded and fabricated fields (bug-7257cb)."
 pointer = "crates/roko-dreams/src/runner.rs::persist_journal_entry"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 # ── Prompt variants and sections ──────────────────────────────────────────
 
@@ -233,12 +232,12 @@ notes = [
 [[loop.static_findings]]
 claim = "Prompt experiments run on the Graph path: context builds an attempt's treatments whenever the store holds a prompt experiment (gap-fdd27f)."
 pointer = "crates/roko-cli/src/graph_task_dispatch/prompt_experiment.rs::context"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop.static_findings]]
 claim = "The live .roko/learn/experiments.json holds only the retrieval-strategy experiment, which context skips, so no prompt experiment runs today."
 pointer = "crates/roko-learn/src/prompt_experiment.rs::ExperimentStore::RETRIEVAL_STRATEGY_EXPERIMENT_ID"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop]]
 id = "L-bid"
@@ -293,18 +292,18 @@ notes = [
 [[loop.static_findings]]
 claim = "Graph verify runs write gate-thresholds.json, and none of it changes which verify steps run or what their verdicts mean."
 pointer = "crates/roko-cli/src/graph_task_dispatch/gate_learning.rs::GateThresholdWrites"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 reason = "dormant:no_opportunity"
 
 [[loop.static_findings]]
 claim = "The gate request the Graph runner builds carries adaptive_thresholds: None."
 pointer = "crates/roko-cli/src/runner/gate_adapter.rs::adaptive_thresholds"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop.static_findings]]
 claim = "retry_budget.rs now loads AdaptiveThresholds to set retry budgets (351aa5c8f, X08 L3), so S03 v1.1's 'never constructed on Graph' is stale."
 pointer = "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::AdaptiveThresholds"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop]]
 id = "L-retry-budget"
@@ -320,14 +319,14 @@ notes = [
 ]
 
 [[loop.static_findings]]
-claim = "For a task that does not author max_retries, the budget comes from the likeliest-to-fail rung's suggested_max_retries in gate-thresholds.json."
+claim = "For a task that does not author max_retries, the budget comes from the likeliest-to-fail rung's suggested_max_retries in gate-thresholds.json, which M1's B2 retry_delta may move within [gates] adaptive_min_retries..=adaptive_max_retries (8126); an authored budget never changes."
 pointer = "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets::max_retries"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 [[loop.static_findings]]
 claim = "The attempt-open record logs the budget in force as max_retries, the loop's receipt."
 pointer = "crates/roko-learn/src/telemetry/records.rs::AttemptOpenRecord::max_retries"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 
 # ── The legacy holdout ────────────────────────────────────────────────────
 
@@ -353,7 +352,7 @@ reason = "dormant:write_only"
 [[loop.static_findings]]
 claim = "The partition hashes each task key once with a seeded DefaultHasher, so a task never changes arm."
 pointer = "crates/roko-learn/src/holdout.rs::deterministic_partition"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
+verified_at = "00a28ea0c070164568261f9461853101d5f34e3f"
 qualifier = "misspecified"
 
 # ── The meta-loops (S03 §4.8) ─────────────────────────────────────────────

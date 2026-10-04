@@ -1374,6 +1374,15 @@ async fn run_graph_plan_body(
     // TUI itself) shares this one hub.
     let state_hub = state_hub.unwrap_or_else(crate::state_hub::shared_state_hub);
     let state_hub_sender = state_hub.sender();
+    // P21 (gap-6ff99a): a knowledge batch an earlier run left unproposed, as a
+    // run that crashed leaves it, goes through the guard now instead of staying
+    // hidden; this process holds the runner lock, so no other run owns one.
+    super::learning_commit::recover_orphaned_knowledge(
+        workdir,
+        &roko_config,
+        knowledge_batch.as_deref(),
+        Some(&state_hub),
+    );
     // Plans whose footprints overlap never share the working tree at the
     // same time. Only needed when more than one plan may run at once.
     let plan_conflicts = if max_parallel_plans > 1 && plans.len() > 1 {

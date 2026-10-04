@@ -18,6 +18,7 @@ use roko_learn::guarded_commit::{
     COMMITS_DIR, CommitRow, GuardError, GuardMode, GuardedState, GuardedStore, Proposer,
 };
 use roko_learn::homeostasis::lkg;
+use roko_learn::model_call_feedback::discard_unsaved_router_observations;
 use roko_learn::router_commit::ROUTER_STORE;
 use roko_neuro::KnowledgeStore;
 use roko_neuro::knowledge_store::commit::KNOWLEDGE_STORE;
@@ -195,7 +196,9 @@ pub(crate) fn rollback(workdir: &Path, store: StoreName, to: u64) -> Result<Opti
 }
 
 /// The router's live snapshot, `cascade-router.json`: a rollback writes the
-/// version's JSON back under the file's lock, as a save does.
+/// version's JSON back under the file's lock, as a save does, once the
+/// observations a gone writer journaled and never saved are dropped from the
+/// WAL: replayed at the next load, they would undo the rollback (gap-775aa6).
 struct RouterFile {
     path: PathBuf,
 }
@@ -211,6 +214,7 @@ impl GuardedState for RouterFile {
                 store: ROUTER_STORE.to_string(),
                 reason: error.to_string(),
             })?;
+        discard_unsaved_router_observations(&self.path);
         roko_fs::with_locked_json_transaction(&self.path, |file: &mut Value| {
             *file = version;
             Ok::<(), std::io::Error>(())
@@ -272,7 +276,7 @@ impl GuardedState for LaterBatches {
 mod tests {
     use roko_learn::cascade_router::CascadeRouter;
     use roko_learn::guarded_commit::CommitDecision;
-    use roko_learn::model_call_feedback::ModelCallJournal;
+    use roko_learn::model_call_feedback::{ModelCallJournal, load_recovered_router};
     use roko_learn::model_router::RoutingContext;
     use roko_learn::router_commit::{RouterChecks, RouterGuard};
 
@@ -287,6 +291,33 @@ mod tests {
             .expect("a count")
     }
 
+    /// The router models of these tests.
+    fn slugs() -> Vec<String> {
+        vec!["model-a".to_string(), "model-b".to_string()]
+    }
+
+    /// Three committed versions of the workspace's router, after 2, 6 and 12
+    /// observations of model-a, and the router that learned them.
+    fn three_versions(layout: &RokoLayout) -> CascadeRouter {
+        let journal = ModelCallJournal::for_snapshot(&layout.cascade_router_path());
+        let guard = RouterGuard {
+            learn_dir: layout.learn_dir(),
+            mode: GuardMode::Enforce,
+            checks: RouterChecks::default(),
+            proposer: Proposer::evolved("router", ROUTER_STORE, "router:test-run"),
+        };
+        let router = CascadeRouter::new(slugs());
+        let ctx = RoutingContext::default();
+        for observations in [2, 4, 6] {
+            for _ in 0..observations {
+                router.record_observation(&ctx, "model-a", 1.0, true);
+            }
+            let decision = journal.save_guarded(&router, &guard).expect("saved");
+            assert_eq!(decision, CommitDecision::Committed);
+        }
+        router
+    }
+
     /// P21 (8139): with three router versions, a rollback to the first puts
     /// its snapshot back in the router's file under a `restored` row by
     /// `human`, once no plan run holds the runner lock, and `roko learn
@@ -297,23 +328,7 @@ mod tests {
         let workdir = temp.path();
         let layout = RokoLayout::for_project(workdir);
         let path = layout.cascade_router_path();
-        let journal = ModelCallJournal::for_snapshot(&path);
-        let guard = RouterGuard {
-            learn_dir: layout.learn_dir(),
-            mode: GuardMode::Enforce,
-            checks: RouterChecks::default(),
-            proposer: Proposer::evolved("router", ROUTER_STORE, "router:test-run"),
-        };
-        let router = CascadeRouter::new(vec!["model-a".to_string(), "model-b".to_string()]);
-        let ctx = RoutingContext::default();
-        // Three versions, after 2, 6 and 12 observations of model-a.
-        for observations in [2, 4, 6] {
-            for _ in 0..observations {
-                router.record_observation(&ctx, "model-a", 1.0, true);
-            }
-            let decision = journal.save_guarded(&router, &guard).expect("saved");
-            assert_eq!(decision, CommitDecision::Committed);
-        }
+        three_versions(&layout);
         assert_eq!(trials(&path, "model-a"), 12);
 
         // A plan run holds the runner lock: the rollback is refused.
@@ -341,5 +356,29 @@ mod tests {
         assert_eq!(render(&[]), "no commits\n");
         // A version the store does not keep is refused.
         assert!(rollback(workdir, StoreName::Router, 9).is_err());
+    }
+
+    /// gap-775aa6: observations a crashed run journaled and never saved, still
+    /// in its WAL segment at the rollback, do not replay over the restored
+    /// version at the next load.
+    #[test]
+    fn router_rollback_survives_a_stale_wal_segment() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let layout = RokoLayout::for_project(workdir);
+        let path = layout.cascade_router_path();
+        let router = three_versions(&layout);
+        // A run journals five more observations, then dies before it saves them.
+        let crashed = ModelCallJournal::for_snapshot(&path);
+        for _ in 0..5 {
+            crashed.observe_model_call(&router, "model-a", "implementer", true, 1_000);
+        }
+        drop(crashed);
+
+        rollback(workdir, StoreName::Router, 1).expect("rolled back");
+        let loaded = load_recovered_router(&path, slugs());
+        let snapshot: Value = serde_json::from_str(&loaded.snapshot_json()).expect("JSON");
+        assert_eq!(snapshot["confidence_stats"]["model-a"]["trials"], 2);
+        assert_eq!(trials(&path, "model-a"), 2);
     }
 }

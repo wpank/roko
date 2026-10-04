@@ -394,7 +394,11 @@ mod tests {
         }
         let forced = &verdicts[2];
         assert_eq!(forced.outcome, AttemptOutcome::ForcedAccept);
-        assert_eq!(Label::of_verdict(forced), None, "a forced accept teaches nothing");
+        assert_eq!(
+            Label::of_verdict(forced),
+            None,
+            "a forced accept teaches nothing"
+        );
         assert_eq!(report.audit.labelled, 2);
         assert_eq!(report.audit.unlabelled, 2);
     }

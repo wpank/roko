@@ -92,7 +92,7 @@ pub struct DispatchResult {
 /// budget, cache, gateway event, and feedback behavior.
 pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<DispatchResult> {
     use crate::learning_helpers::{
-        capture_runtime_model_slugs, provider_id_for_model, record_persisted_provider_health,
+        capture_runtime_model_slugs, provider_id_for_model, record_persisted_provider_outcome,
     };
     use roko_agent::model_call_service::ModelCallService;
     use roko_core::agent::resolve_model;
@@ -193,15 +193,16 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
     let response = match call_result {
         Ok(response) => {
             if let Some(provider) = provider_id_for_model(&model_config, &response.model) {
-                record_persisted_provider_health(&workdir, &provider, true)
+                record_persisted_provider_outcome(&workdir, &provider, None)
                     .context("record direct ModelCallService provider success")?;
             }
             response
         }
         Err(err) => {
+            // The failure's text names its class (bug-9ca6d7).
             if let Some(provider) = provider_id_for_model(&model_config, &model)
                 && let Err(health_err) =
-                    record_persisted_provider_health(&workdir, &provider, false)
+                    record_persisted_provider_outcome(&workdir, &provider, Some(&err.to_string()))
             {
                 tracing::warn!(
                     provider = %provider,

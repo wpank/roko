@@ -1126,6 +1126,10 @@ pub struct AppState {
     /// (S10 §4.5).
     pub(crate) showcase_bundles: crate::routes::showcase::bundles::BundleCache,
 
+    /// When the last request arrived, and what keeps a showcase serve from its idle exit
+    /// (S11 §4.6, G10).
+    pub showcase_idle: crate::showcase::idle::IdleTracker,
+
     /// Job execution service shared by `POST /api/jobs/{id}/cancel` and the
     /// job runner, so a cancel reaches the run it targets (gap-2a9ed7).
     pub job_execution: roko_core::JobExecutionService,
@@ -1731,6 +1735,7 @@ impl AppState {
             live_agent_output: AtomicBool::new(false),
             local_access: LocalAccess::new(None),
             showcase_bundles: crate::routes::showcase::bundles::BundleCache::default(),
+            showcase_idle: crate::showcase::idle::IdleTracker::new(chrono::Utc::now()),
             job_execution,
         })
     }

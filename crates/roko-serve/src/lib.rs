@@ -452,6 +452,7 @@ impl ServerBuilder {
         }
         let _gateway_batch_loop = state.gateway_http.spawn_batch_loop();
         let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
+        crate::showcase::idle::start_idle_timer(&state);
         let _feedback_loop = feedback::start_feedback_loop(Arc::clone(&state));
         let bridge_dedup = BridgeDedup::new();
         let _state_hub_bridge = start_state_hub_bridge(Arc::clone(&state), bridge_dedup.clone());
@@ -1061,6 +1062,7 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     start_builtin_event_sources(Arc::clone(&state), roko_config.clone());
     let _trigger_runtime = trigger_runtime::ensure_trigger_runtime(&state).await;
     let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
+    crate::showcase::idle::start_idle_timer(&state);
     // Both bridges share a BridgeDedup so they can run simultaneously without
     // creating a feedback loop (EventBus -> StateHub -> EventBus -> ...).
     let bridge_dedup = BridgeDedup::new();
@@ -1128,6 +1130,8 @@ fn build_server_router(
     // `routes::build_router` currently installs only the top-level SPA fallback.
     // Reset it here so the final fallback can distinguish API/WS typos from browser routes.
     let auth_enabled = api_auth.enabled;
+    let showcase_mode = state.load_roko_config().showcase.enabled;
+    let activity_state = Arc::clone(&state);
     let api_router =
         routes::build_router(Arc::clone(&state), cors_origins, api_auth).reset_fallback();
     let fallback_router = axum::Router::new()
@@ -1140,7 +1144,16 @@ fn build_server_router(
         }))
         .with_state(state);
 
-    api_router.merge(fallback_router)
+    let router = api_router.merge(fallback_router);
+    if showcase_mode {
+        // Every request but the health checks keeps a showcase serve awake (G10).
+        router.layer(axum::middleware::from_fn_with_state(
+            activity_state,
+            crate::showcase::idle::track_activity,
+        ))
+    } else {
+        router
+    }
 }
 
 fn api_or_ws_path_requires_json_404(path: &str) -> bool {

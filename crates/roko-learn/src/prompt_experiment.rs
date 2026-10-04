@@ -1162,6 +1162,21 @@ impl ExperimentStore {
         (bucket.attempt_key == *attempt_key).then_some(bucket.assignments.as_slice())
     }
 
+    /// The attempt number after the last one prepared for task `task_id` of
+    /// plan `plan_id` in run `run_id`, or 1 when none was. A caller whose
+    /// turns carry no attempt number of their own (ACP) numbers each dispatch
+    /// this way, so that each one gets its own draw (bug-a3f005).
+    #[must_use]
+    pub fn next_attempt_for(&self, run_id: &str, plan_id: &str, task_id: &str) -> u32 {
+        self.attempt_assignments
+            .values()
+            .map(|bucket| &bucket.attempt_key)
+            .filter(|key| key.run_id == run_id && key.plan_id == plan_id && key.task_id == task_id)
+            .map(|key| key.attempt)
+            .max()
+            .map_or(1, |last| last.saturating_add(1))
+    }
+
     fn prepare_attempt_assignments_unlocked(
         &mut self,
         attempt_key: &PromptAttemptKey,
@@ -2674,6 +2689,32 @@ mod tests {
                 .values()
                 .all(|stats| stats.trials == 0)
         );
+    }
+
+    /// bug-a3f005: a caller without an attempt number of its own numbers each
+    /// turn after the last attempt prepared for its run, plan and task.
+    #[test]
+    fn next_attempt_for_follows_the_last_prepared_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "exp",
+            "constraints",
+            make_variants("constraints"),
+        ));
+        store.save(&path).unwrap();
+        assert_eq!(store.next_attempt_for("run-1", "plan-1", "task-1"), 1);
+
+        for number in [1, 2, 5] {
+            let key = attempt("run-1", number);
+            ExperimentStore::prepare_attempt_assignments(&path, &key, None, &["constraints"])
+                .unwrap();
+        }
+        let reopened = ExperimentStore::load_strict(&path).unwrap();
+        assert_eq!(reopened.next_attempt_for("run-1", "plan-1", "task-1"), 6);
+        assert_eq!(reopened.next_attempt_for("run-1", "plan-1", "task-2"), 1);
+        assert_eq!(reopened.next_attempt_for("run-2", "plan-1", "task-1"), 1);
     }
 
     #[test]

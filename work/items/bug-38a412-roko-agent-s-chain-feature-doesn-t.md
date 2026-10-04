@@ -69,3 +69,11 @@ Change `crates/roko-agent/Cargo.toml:21` from `chain = []` to `chain = ["roko-st
   isolation, not through `roko-cli`'s umbrella feature (the common case).
 - Related: `spec-c89168` (open, the broader chain/Alloy feature-gating epic) and `gap-425d9e` (done, PK79 — turned
   `roko-cli`'s `chain` default off, which is what let this gap go unnoticed until a test exercised it directly).
+
+## Progress
+
+- 2026-10-04 (w4-length): implemented on `work/bug-a3f005` at cc52b2729; cargo verification deferred to the
+  batch gate. `crates/roko-agent/Cargo.toml` now has `chain = ["roko-std/chain"]`. roko-serve/chain forwards the
+  same `roko-std/chain` (plus roko-agent-server/chain); it does not forward roko-agent/chain, which only gates
+  roko-agent's own test assertions. roko-cli/chain forwards both. roko-agent has no other chain-gated code. The
+  static verify passes.

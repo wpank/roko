@@ -69,3 +69,25 @@ same ACP turn.
 ## Notes
 
 - Discovered during PK42's work on the loop state machine (gap-2b3c1b, done).
+
+## Progress
+
+- 2026-10-04 (w4-length): implemented on `work/bug-a3f005` at c12e7e12b; cargo verification deferred to the
+  batch gate.
+  - Premise, refined: `assign_variant()` is not a second random draw. For a running experiment it always returns
+    the control, its first active variant, so ACP always served the control while the receipt drew uniformly from
+    the attempt key.
+  - The receipt's draw is now the only one. `assign_acp_experiment` prepares first, then serves the receipt's
+    experiment and variant with the content the receipt snapshotted, so it marks dispatched and settles that same
+    variant. With no receipt (preparation failed, or prepared nothing for the section), ACP serves the control and
+    takes the legacy direct-record path. Before, an empty preparation kept an attempt key with no ids, and its
+    outcome was lost at settlement (`AttemptNotFound`).
+  - Also fixed, since it broke "one draw per dispatch": every ACP dispatch used attempt 1 of its session and mode,
+    so a session's later turns got the first turn's settled receipt, and the conflicting `mark_attempt_dispatched`
+    dropped their outcomes. The new `ExperimentStore::next_attempt_for(run, plan, task)` numbers each dispatch
+    after the last attempt prepared for it.
+  - Tests: `acp_settles_the_same_variant_it_served` (40 dispatches of one session over four variants: every served
+    variant equals its receipt's settled variant, every attempt is distinct, the draws vary, and 40 trials
+    count) and `next_attempt_for_follows_the_last_prepared_attempt` (roko-learn).
+  - Left as it was: a dispatch that `applicable_acp_experiment` drops (a model variant beside an explicitly
+    selected model) leaves its receipt Prepared. That now happens once per such dispatch, not once per session.

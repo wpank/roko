@@ -1470,9 +1470,16 @@ pub(crate) async fn dispatch_bench_prompt(
             .join("provider-health.json"),
     );
     let mut failover = Failover::new(Arc::clone(&model_config), model_override.is_some(), false);
-    let mut candidate = failover
-        .start(&health, &model_key)
-        .map_err(|error| anyhow::anyhow!("ModelCallService bench dispatch failed: {error}"))?;
+    let mut candidate = match failover.start(&health, &model_key) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            // A provider that rejected roko's credentials needs a login
+            // (gap-ade918), as `roko run` and ACP say.
+            let mut reason = vec![error];
+            reason.extend(failover.credentials_hints());
+            anyhow::bail!("ModelCallService bench dispatch failed: {}", reason.join(" "));
+        }
+    };
     loop {
         let call_config = candidate
             .config

@@ -33,16 +33,26 @@ use crate::graph_task_dispatch::self_model::SelfModelRuntime;
 pub const LABELS_FILE: &str = "labels.jsonl";
 
 /// What learns audited VS labels: the run's self-model, through S04's
-/// late-label hook (6129).
+/// late-label hook (6129). Its false-green risk tilts the lottery (6132).
 pub trait VsLearner: Send + Sync {
     /// Teach the attempt `attempt_key`'s VS label `vs` with weight 1/π;
     /// `false` when the learner does not know the attempt.
     fn learn_vs(&self, attempt_key: &str, vs: bool, weight: f64) -> bool;
+
+    /// r, P(false green) of the chain `chain_key`'s last pass that stood:
+    /// the `risk_fg` S05's tilt draws by; `None` without one.
+    fn false_green_risk(&self, _chain_key: &str) -> Option<f64> {
+        None
+    }
 }
 
 impl VsLearner for SelfModelRuntime {
     fn learn_vs(&self, attempt_key: &str, vs: bool, weight: f64) -> bool {
         self.observe_label(attempt_key, vs, weight, LabelSource::Vs)
+    }
+
+    fn false_green_risk(&self, chain_key: &str) -> Option<f64> {
+        self.risk_fg(chain_key)
     }
 }
 

@@ -1358,6 +1358,7 @@ mod tests {
             state: Some(read_state()),
             thresholds_digest: None,
             arm_set: None,
+            section_draws: Vec::new(),
             proposals: Some(ContentProposals {
                 learned: Some(vec![item.to_string()]),
                 default: Some(Vec::new()),

@@ -852,7 +852,8 @@ fn telemetry_srm(
 
 /// The text form of a `check --srm` report: one line per layer with its
 /// units, its arms' expected and realised shares (learned/default/all-off)
-/// and its e-value.
+/// and its e-value, then one line per section the section bandit drew, with
+/// its expected and realised share of draws that left it out.
 fn render_srm_check(
     report: &roko_learn::telemetry::report::SrmReport,
     failures: &[String],
@@ -912,6 +913,27 @@ fn render_srm_check(
             expected.join("/"),
             realised.join("/"),
             layer.e_value
+        );
+    }
+    // The section bandit's draws, one row per section (bug-2410e1).
+    if !report.sections.is_empty() {
+        let _ = writeln!(
+            out,
+            "  {:<16} {:>6}  {:<17} {:<17} {:>10}  verdict",
+            "section", "n", "expected left out", "realised", "e-value"
+        );
+    }
+    for section in &report.sections {
+        let units = section.units.max(1) as f64;
+        let verdict = if section.mismatch { "MISMATCH" } else { "ok" };
+        let _ = writeln!(
+            out,
+            "  {:<16} {:>6}  {:<17.3} {:<17.3} {:>10.3e}  {verdict}",
+            section.section,
+            section.units,
+            section.expected_excluded / units,
+            section.excluded as f64 / units,
+            section.e_value
         );
     }
     if failures.is_empty() {
@@ -3687,6 +3709,7 @@ mod tests {
                         arms: [("knowledge".to_string(), draw)].into(),
                         condition_id: NORMAL_CONDITION.to_string(),
                     }),
+                    section_draws: Vec::new(),
                     proposals: None,
                     audit: Default::default(),
                 };

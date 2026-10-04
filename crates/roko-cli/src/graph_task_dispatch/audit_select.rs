@@ -36,7 +36,11 @@
 //! - The tilt (S05 §4.2, 6132): the self-model's `risk_fg` for a green
 //!   attempt's chain, r, weighs its π against r̄, the mean of r^α over the
 //!   units lately drawn with a risk (at most `[audit] window_units` of the
-//!   last `window_hours`). Without a risk, or at λ = 0, π is ρ.
+//!   last `window_hours`), and `audit.selection` logs it as `risk_r`. Its
+//!   strength λ = λ_max·max(0, 1 − ECE/ECE_ref) is measured from the vault
+//!   ledger when the lottery opens: the ECE is M3's IPW-ECE of P(false
+//!   green) on its latest audited labels, and λ is 0 below 50 of them.
+//!   Without a risk, or at λ = 0, π is ρ.
 //! - The id of M3's forecast of an attempt (its prediction row, S01 §5.6) is
 //!   noted when the row is logged ([`AuditSelector::note_prediction`]); a
 //!   selected unit carries it, and so does the `vs.label` row its audit
@@ -54,17 +58,18 @@ use roko_core::config::GatesConfig;
 use roko_core::config::audit::AuditConfig;
 use roko_gate::audit::canary::{CanaryHit, CanaryScanner, scan_text};
 use roko_gate::audit::hidden::HiddenStore;
-use roko_gate::audit::ledger::{AuditEvent, AuditLedger};
+use roko_gate::audit::ledger::{AuditEvent, AuditLedger, LedgerRecord, records};
 use roko_gate::audit::policy::{
-    InclusionParams, RHO_MAX, RunKey, inclusion_probability, select, workspace_secret,
+    InclusionParams, RHO_MAX, RunKey, inclusion_probability, select, tilt, workspace_secret,
 };
 use roko_learn::homeostasis::coupling::ALL_CLASSES;
+use roko_learn::self_model::metrics::{ECE_BINS, Scored, ece};
 use roko_learn::telemetry::records::{AttemptOutcome, AttemptVerdictRecord, GateVerdictTag};
 
 use crate::audit::b1::{B1, FactoryAuthor, SuiteAuthor};
 use crate::audit::b2::B2;
 use crate::audit::b3::{B3, Reviewer};
-use crate::audit::labels::VsLearner;
+use crate::audit::labels::{VsLearner, known_vs};
 use crate::audit::worker::{
     AuditTask, AuditUnit, AuditWorker, GamingWatch, PhaseB, WorkerContext, queue_unit,
 };
@@ -79,6 +84,12 @@ const STRATA: [&str; 5] = [
     "unverified",
     "forced_accept",
 ];
+
+/// How many of the latest audited labels M3's false-green ECE is measured
+/// on. S05 leaves it open; 100 is the window S04's calibration gate scores M3
+/// on, the more conservative of the specs' two windows (S05 estimates over
+/// 200 units): a recent window tilts less on stale or noisy calibration.
+const TILT_LABELS: usize = 100;
 
 /// The lottery of one workspace's runs.
 pub(super) struct AuditSelector {
@@ -151,11 +162,13 @@ impl AuditSelector {
         let ledger = AuditLedger::open(&vault)
             .map_err(|error| error.to_string())?
             .with_mirror(workdir.join(".roko/audit/audits.jsonl"));
+        let lam = audited_tilt(&ledger, config);
         Ok(Self {
             workdir: workdir.to_path_buf(),
             secret,
             params: InclusionParams {
                 rho: config.rho,
+                lam,
                 ..InclusionParams::default()
             },
             ledger: parking_lot::Mutex::new(ledger),
@@ -362,11 +375,12 @@ impl AuditSelector {
         let Some((stratum, census)) = verdict.gate_verdict.map(stratum_of) else {
             return;
         };
+        let risk = self.risk_of(&identity.chain_key);
         let pi = if census || self.census.load(Ordering::Relaxed) {
             Ok(1.0)
         } else {
             let params = self.params_for(class.as_deref(), boost);
-            let (risk, mean_risk) = self.risk_terms(&identity.chain_key, params.alpha);
+            let mean_risk = risk.map(|risk| self.window_mean(risk.powf(params.alpha)));
             inclusion_probability(&params, risk, mean_risk)
         };
         let (base_tree, result_tree) =
@@ -422,6 +436,7 @@ impl AuditSelector {
             selected: selection.selected,
             base_tree,
             result_tree,
+            risk_r: risk,
         };
         if let Err(error) = self.ledger.lock().append(event) {
             tracing::warn!(attempt_key = %attempt, %error, "audit.selection not written");
@@ -443,30 +458,30 @@ impl AuditSelector {
         InclusionParams { rho, ..self.params }
     }
 
-    /// The tilt's terms for a green attempt of the chain `chain_key` (S05
-    /// §4.2, 6132): r, the self-model's `risk_fg` for the chain, and r̄, the
-    /// mean of r^`alpha` over the window, this attempt included. Both are
-    /// `None` without a risk in [0, 1], and the attempt is drawn at ρ.
-    fn risk_terms(&self, chain_key: &str, alpha: f64) -> (Option<f64>, Option<f64>) {
-        let Some(risk) = self
-            .learner
+    /// r, the self-model's `risk_fg` for the chain `chain_key` (S05 §4.2,
+    /// 6132), when it has one in [0, 1]; without one the attempt is drawn at
+    /// ρ.
+    fn risk_of(&self, chain_key: &str) -> Option<f64> {
+        self.learner
             .as_deref()
             .and_then(|learner| learner.false_green_risk(chain_key))
             .filter(|risk| (0.0..=1.0).contains(risk))
-        else {
-            return (None, None);
-        };
+    }
+
+    /// r̄ once a unit drawn with r^α = `weighted` joins the window: the mean
+    /// of r^α over the units lately drawn with a risk, this one included.
+    fn window_mean(&self, weighted: f64) -> f64 {
         let now = Instant::now();
         let span = Duration::from_secs(u64::from(self.config.window_hours) * 3_600);
         let units = self.config.window_units.max(1) as usize;
         let stale = |at: &Instant| now.duration_since(*at) > span;
         let mut window = self.risk_window.lock();
-        window.push_back((now, risk.powf(alpha)));
+        window.push_back((now, weighted));
         while window.len() > units || window.front().is_some_and(|(at, _)| stale(at)) {
             window.pop_front();
         }
-        let total: f64 = window.iter().map(|(_, weighted)| weighted).sum();
-        (Some(risk), Some(total / window.len() as f64))
+        let total: f64 = window.iter().map(|(_, value)| value).sum();
+        total / window.len() as f64
     }
 
     /// Hand a selected unit to its run's worker, once its task inputs are
@@ -611,6 +626,75 @@ fn attempt_usd(verdict: &AttemptVerdictRecord) -> f64 {
         .max(0.0)
 }
 
+/// λ, the tilt M3's audited calibration earns (S05 §4.2), from `ledger` as
+/// the lottery opens: λ_max·max(0, 1 − ECE/ECE_ref) on M3's IPW-ECE of
+/// P(false green), and 0 below 50 audited labels or when the ledger cannot
+/// be read.
+fn audited_tilt(ledger: &AuditLedger, config: &AuditConfig) -> f64 {
+    let all = match records(ledger.dir()) {
+        Ok(all) => all,
+        Err(error) => {
+            tracing::warn!(%error, "the audit ledger is unreadable; the draw is not tilted");
+            return 0.0;
+        }
+    };
+    let (measured, labels) = false_green_calibration(&all);
+    match tilt(measured, labels, config.lambda_max, config.ece_ref) {
+        Ok(lam) => {
+            tracing::info!(
+                lambda = lam,
+                labels,
+                ece = ?measured,
+                "the audit tilt, from M3's calibration on audited labels"
+            );
+            lam
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the audit tilt is off");
+            0.0
+        }
+    }
+}
+
+/// M3's IPW-ECE of P(false green) on audited labels (S05 §4.2), and how many
+/// labels it was measured on. Each `vs.label` row with a known VS, whose
+/// unit was drawn with a risk r_i, scores r_i against a false green (VS 0)
+/// with weight 1/π; the latest [`TILT_LABELS`] such rows count.
+fn false_green_calibration(all: &[LedgerRecord]) -> (Option<f64>, u32) {
+    let mut risks: HashMap<&str, f64> = HashMap::new();
+    let mut scored: VecDeque<Scored> = VecDeque::new();
+    for record in all {
+        match &record.event {
+            AuditEvent::Selection {
+                attempt_key,
+                risk_r: Some(risk),
+                ..
+            } => {
+                risks.insert(attempt_key, *risk);
+            }
+            AuditEvent::VsLabel { attempt_key, row } => {
+                let risk = risks.get(attempt_key.as_str()).copied();
+                let (Some(p), Some(vs)) = (risk, known_vs(row)) else {
+                    continue;
+                };
+                if row.pi > 0.0 {
+                    scored.push_back(Scored {
+                        p,
+                        y: !vs,
+                        w: 1.0 / row.pi,
+                    });
+                }
+                if scored.len() > TILT_LABELS {
+                    scored.pop_front();
+                }
+            }
+            _ => {}
+        }
+    }
+    let labels = u32::try_from(scored.len()).unwrap_or(u32::MAX);
+    (ece(&Vec::from(scored), ECE_BINS), labels)
+}
+
 /// A green verdict's stratum, and whether it is a census stratum drawn at
 /// π = 1.
 fn stratum_of(tag: GateVerdictTag) -> (&'static str, bool) {
@@ -634,6 +718,7 @@ mod tests {
     use roko_graph::cells::NoopAttemptRecorder;
     use roko_learn::telemetry::records::AttemptPredictionRecord;
     use roko_learn::telemetry::{AttemptIdentity, AttemptKey};
+    use serde_json::json;
 
     use super::*;
     use crate::audit::labels::{AuditReport, vs_label};
@@ -1065,7 +1150,12 @@ mod tests {
 
     /// The lottery of a fresh workspace at ρ = `rho`, with run [`RUN`] open
     /// and no audit worker, so a selected unit waits in the vault's queue.
-    fn worker_less_lottery(rho: f64) -> (tempfile::TempDir, AuditSelector) {
+    /// Its ledger already holds the `audited` units, each M3's risk and
+    /// whether it was a false green ([`audit_unit`]).
+    fn worker_less_lottery(
+        rho: f64,
+        audited: &[(f64, bool)],
+    ) -> (tempfile::TempDir, AuditSelector) {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("repo");
         std::fs::create_dir_all(&workspace).expect("mkdir");
@@ -1075,6 +1165,11 @@ mod tests {
             rho,
             ..AuditConfig::default()
         };
+        let vault = config.vault(&workspace).expect("the vault");
+        let mut ledger = AuditLedger::open(&vault).expect("the ledger");
+        for (n, &(risk, false_green)) in audited.iter().enumerate() {
+            audit_unit(&mut ledger, n, risk, false_green);
+        }
         let gates = GatesConfig::default();
         let selector = AuditSelector::for_config(&config, &gates, &workspace).expect("a lottery");
         let key = RunKey::derive(&selector.secret, RUN).expect("a run key");
@@ -1086,6 +1181,62 @@ mod tests {
         };
         selector.runs.lock().insert(RUN.to_string(), run);
         (temp, selector)
+    }
+
+    /// Append audited unit `n` to `ledger`: task `A<n>`'s draw at π = 0.5
+    /// with M3's risk `risk`, and its `vs.label` row, whose VS is 0 (A2
+    /// fails) when the unit was a false green.
+    fn audit_unit(ledger: &mut AuditLedger, n: usize, risk: f64, false_green: bool) {
+        let task_id = format!("A{n}");
+        let attempt_key = AttemptKey::new(RUN, "plan", task_id.as_str(), 1).attempt_key();
+        let sel_id = format!("sel-{n:012}");
+        let selection = AuditEvent::Selection {
+            sel_id: sel_id.clone(),
+            attempt_key: attempt_key.clone(),
+            run_id: RUN.to_string(),
+            task_id: task_id.clone(),
+            stratum: Stratum::default(),
+            pi: 0.5,
+            prf_u: format!("0x{n:016x}"),
+            selected: true,
+            base_tree: None,
+            result_tree: Some("result".to_string()),
+            risk_r: Some(risk),
+        };
+        ledger.append(selection).expect("a selection");
+        let unit = AuditUnit {
+            sel_id,
+            attempt_key,
+            run_id: RUN.to_string(),
+            plan_id: "plan".to_string(),
+            task_id,
+            pi: 0.5,
+            base_tree: None,
+            result_tree: Some("result".to_string()),
+            model: "glm-4.7".to_string(),
+            prediction_id: None,
+            task: AuditTask::default(),
+        };
+        let mut checks = serde_json::Map::new();
+        checks.insert("a2".into(), json!({ "y": false_green }));
+        checks.insert("b1".into(), json!({ "suite_id": "hs-1", "y": false }));
+        let report = AuditReport {
+            labels: AuditLabels {
+                y: Some(false_green),
+                g: Some(false),
+                w: None,
+            },
+            checks: &checks,
+            findings: &[],
+            pi_eff: None,
+            cost_usd: 0.0,
+        };
+        let row = vs_label(&unit, &report);
+        let label = AuditEvent::VsLabel {
+            attempt_key: row.attempt_key.clone(),
+            row: Box::new(row),
+        };
+        ledger.append(label).expect("a label");
     }
 
     /// The passed first attempt of task `task` in run [`RUN`].
@@ -1111,7 +1262,7 @@ mod tests {
             .map(|(task, risk)| (chain(task), risk))
             .collect();
         let learner: Arc<dyn VsLearner> = Arc::new(Risks(risks));
-        let (_temp, selector) = worker_less_lottery(0.2);
+        let (_temp, selector) = worker_less_lottery(0.2, &[]);
         let mut selector = selector.with_learner(Some(learner));
         // λ follows M3's calibration on audited labels (S05 §4.2); the test
         // sets it.
@@ -1135,12 +1286,52 @@ mod tests {
         assert!(close("T4", 0.2), "{pis:?}");
     }
 
+    /// gap-a342a2 (S05 §4.2): the lottery measures λ when it opens, from
+    /// M3's IPW-ECE of P(false green) on the ledger's audited labels. With 49
+    /// labels λ is 0. From the 50th it is λ_max·(1 − ECE/ECE_ref): 0.4 for
+    /// 100 labels at r = 0.25 of which 30% were false greens (ECE 0.05), and
+    /// 0 again for 100 at r = 0.1 of which half were (ECE 0.4, past
+    /// ECE_ref). Only the tilted lottery draws U2 (r = 0.1, after U1 at 0.6)
+    /// off ρ, at 1/7 = 0.2·(0.6 + 0.4·0.1/0.35).
+    #[test]
+    fn audit_tilt_lambda_rises_with_measured_false_green_ece() {
+        let measured: Vec<(f64, bool)> = (0..100).map(|n| (0.25, n % 10 < 3)).collect();
+        let miscalibrated: Vec<(f64, bool)> = (0..100).map(|n| (0.1, n % 2 == 0)).collect();
+        let lam = |audited: &[(f64, bool)]| worker_less_lottery(0.2, audited).1.params.lam;
+        assert!(lam(&measured[..49]).abs() < f64::EPSILON, "49 labels");
+        let tilted = lam(&measured[..]);
+        assert!((tilted - 0.4).abs() < 1e-9, "lambda {tilted}");
+        let off = lam(&miscalibrated[..]);
+        assert!(off.abs() < f64::EPSILON, "lambda {off}");
+
+        let chain = |task: &str| AttemptKey::new(RUN, "plan", task, 1).chain_key();
+        let risks = HashMap::from([(chain("U1"), 0.6), (chain("U2"), 0.1)]);
+        let u2_pi = |audited: &[(f64, bool)]| {
+            let (_temp, selector) = worker_less_lottery(0.2, audited);
+            let learner: Arc<dyn VsLearner> = Arc::new(Risks(risks.clone()));
+            let selector = selector.with_learner(Some(learner));
+            for task in ["U1", "U2"] {
+                selector.draw(&green(task), None, 1);
+            }
+            records(&selector.vault().ledger_dir())
+                .expect("the ledger")
+                .into_iter()
+                .find_map(|record| match record.event {
+                    AuditEvent::Selection { task_id, pi, .. } if task_id == "U2" => Some(pi),
+                    _ => None,
+                })
+                .expect("U2's draw")
+        };
+        assert!((u2_pi(&measured[..49]) - 0.2).abs() < 1e-9, "untilted");
+        assert!((u2_pi(&measured[..]) - 1.0 / 7.0).abs() < 1e-9, "tilted");
+    }
+
     /// gap-45c8fe (S05 §5): M3 logged a forecast of T1 and none of T2, and
     /// both are selected. T1's unit carries the forecast's id through the
     /// vault's queue, so its `vs.label` row names it; T2's row names none.
     #[test]
     fn vs_label_carries_the_attempt_s_prediction_id() {
-        let (_temp, selector) = worker_less_lottery(0.10);
+        let (_temp, selector) = worker_less_lottery(0.10, &[]);
         selector.census();
         let forecast = AttemptKey::new(RUN, "plan", "T1", 1).attempt_key();
         let prediction_id = AttemptPredictionRecord::prediction_id(&forecast, "m3-v1");

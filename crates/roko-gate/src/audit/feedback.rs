@@ -530,6 +530,7 @@ mod tests {
                 selected: true,
                 base_tree: Some("base".to_string()),
                 result_tree: Some("result".to_string()),
+                risk_r: None,
             })
             .expect("a selection");
         ledger

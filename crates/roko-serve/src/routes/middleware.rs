@@ -628,7 +628,8 @@ fn expired_key_response() -> Response {
     resp
 }
 
-/// Extract the value of the `roko_session` cookie from the `Cookie` request header.
+/// Extract the value of the cookie called `name` from the `Cookie` request header
+/// (`roko_session` locally; showcase mode names its own cookie).
 ///
 /// Parses the cookie string naively (splits on `;`, trims whitespace) to avoid
 /// pulling in a cookie-parsing dependency. Returns `None` when the cookie is
@@ -636,12 +637,6 @@ fn expired_key_response() -> Response {
 ///
 /// The raw value is **never logged**; it is passed to [`crate::state::LocalAccess`]
 /// which hashes it before any comparison.
-fn extract_session_cookie(headers: &HeaderMap) -> Option<&str> {
-    extract_named_cookie(headers, "roko_session")
-}
-
-/// Extract the value of the cookie called `name` from the `Cookie` request header, as
-/// [`extract_session_cookie`] does for `roko_session`. Showcase mode names its own cookie.
 pub(crate) fn extract_named_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     let cookie_str = headers.get("Cookie")?.to_str().ok()?;
     for part in cookie_str.split(';') {
@@ -4683,27 +4678,33 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        assert_eq!(extract_session_cookie(&headers), Some("deadbeef0123"));
+        assert_eq!(
+            extract_named_cookie(&headers, "roko_session"),
+            Some("deadbeef0123")
+        );
     }
 
     #[test]
     fn cookie_parsing_returns_none_without_roko_session() {
         let mut headers = HeaderMap::new();
         headers.insert("Cookie", "other=foo; another=bar".parse().unwrap());
-        assert_eq!(extract_session_cookie(&headers), None);
+        assert_eq!(extract_named_cookie(&headers, "roko_session"), None);
     }
 
     #[test]
     fn cookie_parsing_returns_none_when_no_cookie_header() {
         let headers = HeaderMap::new();
-        assert_eq!(extract_session_cookie(&headers), None);
+        assert_eq!(extract_named_cookie(&headers, "roko_session"), None);
     }
 
     #[test]
     fn cookie_parsing_handles_session_as_sole_cookie() {
         let mut headers = HeaderMap::new();
         headers.insert("Cookie", "roko_session=only-cookie".parse().unwrap());
-        assert_eq!(extract_session_cookie(&headers), Some("only-cookie"));
+        assert_eq!(
+            extract_named_cookie(&headers, "roko_session"),
+            Some("only-cookie")
+        );
     }
 
     // --- Origin / same-origin rule unit tests --------------------------------
@@ -5031,7 +5032,10 @@ mod tests {
         );
         let sessions = [
             (access.create_session(), "admin"),
-            (access.create_scoped_session(&showcase, Utc::now()), "showcase"),
+            (
+                access.create_scoped_session(&showcase, Utc::now()),
+                "showcase",
+            ),
         ];
         let app = Router::new()
             .route(

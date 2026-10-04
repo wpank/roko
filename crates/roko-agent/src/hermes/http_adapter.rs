@@ -31,6 +31,11 @@ use crate::usage::Usage;
 use roko_core::{Body, Context, Kind, Provenance, Signal};
 
 use super::config::HermesConfig;
+
+/// Why a Hermes turn whose reply stopped at the output token limit fails:
+/// a cut-off reply is not an answer (gap-fd0c0b).
+const TRUNCATED_REPLY: &str =
+    "hermes: the model hit its output token limit (finish_reason=length); its reply was cut off";
 use super::gateway_service::HermesGatewayService;
 
 /// Hermes HTTP adapter.
@@ -367,6 +372,10 @@ impl Agent for HermesHttpAgent {
                     .await;
                 usage.wall_ms = wall_ms;
 
+                if response.hit_length_limit() {
+                    let output = self.build_error_output(input, TRUNCATED_REPLY);
+                    return AgentResult::fail(output).with_usage(usage);
+                }
                 let output = self.build_output(input, &content);
                 AgentResult::ok(output).with_usage(usage)
             }
@@ -465,6 +474,10 @@ impl Agent for HermesHttpAgent {
                     .await;
                 usage.wall_ms = wall_ms;
 
+                if response.hit_length_limit() {
+                    let output = self.build_error_output(input, TRUNCATED_REPLY);
+                    return AgentResult::fail(output).with_usage(usage);
+                }
                 let output = self.build_output(input, &content);
                 AgentResult::ok(output).with_usage(usage)
             }
@@ -558,6 +571,47 @@ mod tests {
         }
         assert_eq!(text, "Hello! I'm Hermes.");
         assert!(done, "the caller sees the turn end");
+    }
+
+    /// gap-fd0c0b: a Hermes turn whose reply stopped at the output token
+    /// limit fails, saying so, instead of passing off the cut-off text as an
+    /// answer. Its usage still counts.
+    #[tokio::test]
+    async fn hermes_adapter_flags_a_length_truncated_turn() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let sse = concat!(
+            "data: {\"id\":\"chatcmpl-hermes-2\",\"choices\":[{\"index\":0,",
+            "\"delta\":{\"role\":\"assistant\",\"content\":\"The answer is\"},",
+            "\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-hermes-2\",\"choices\":[{\"index\":0,\"delta\":{},",
+            "\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":12,",
+            "\"completion_tokens\":64,\"total_tokens\":76}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let response = ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream");
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+        let agent = HermesHttpAgent::new(HermesConfig {
+            endpoint: server.uri(),
+            ..HermesConfig::default()
+        });
+        let input = Signal::builder(Kind::Prompt)
+            .body(Body::text("hello"))
+            .build();
+        let (event_tx, _event_rx) = mpsc::channel(256);
+
+        let result = agent.run_streaming(&input, &Context::at(0), event_tx).await;
+
+        assert!(!result.success, "a cut-off reply is no answer");
+        let text = result.output.body.as_text().unwrap_or_default();
+        assert!(text.contains("output token limit"), "{text}");
+        assert!(result.usage.output_tokens > 0, "{:?}", result.usage);
     }
 
     #[test]

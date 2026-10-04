@@ -305,6 +305,10 @@ pub enum DataLlmWithheld {
     /// The output failed [`DataLlmRouter::validate_output`].
     #[error("the data LLM's output was rejected: {0}")]
     InvalidOutput(String),
+    /// The data LLM stopped at its output token limit, so its output is cut
+    /// off and is not trusted as complete (gap-fd0c0b).
+    #[error("the data LLM's output was cut off at its token limit")]
+    Truncated,
 }
 
 /// The most a [`DataLlmExtraction`] may hold.
@@ -434,6 +438,11 @@ impl DataLlmBoundary {
         };
         if asks_for_tools(&response) {
             return Err(DataLlmWithheld::ToolCall);
+        }
+        // An answer cut off at the token limit is withheld, however valid
+        // what came through looks (gap-fd0c0b).
+        if response.hit_length_limit() {
+            return Err(DataLlmWithheld::Truncated);
         }
         let output = self
             .router
@@ -852,6 +861,24 @@ mod tests {
         assert_eq!(
             silent.process("text").await,
             Err(DataLlmWithheld::Timeout(10))
+        );
+    }
+
+    /// gap-fd0c0b: an answer the data LLM cut off at its token limit is
+    /// withheld, though what came through reads as a valid extraction.
+    #[tokio::test]
+    async fn data_llm_boundary_withholds_a_truncated_answer() {
+        let reply = serde_json::json!({
+            "choices": [{
+                "message": {"content": r#"{"summary": "the weather", "facts": ["it rains"]}"#},
+                "finish_reason": "length",
+            }],
+        });
+        let (boundary, _) = scripted_boundary(Ok(reply), DataLlmConfig::default());
+
+        assert_eq!(
+            boundary.process("text").await,
+            Err(DataLlmWithheld::Truncated)
         );
     }
 

@@ -234,7 +234,9 @@ fn read_sums(dir: &Path) -> Option<BTreeMap<String, String>> {
     let mut sums = BTreeMap::new();
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         let (digest, path) = line.split_at_checked(64)?;
-        let path = path.strip_prefix("  ").or_else(|| path.strip_prefix(" *"))?;
+        let path = path
+            .strip_prefix("  ")
+            .or_else(|| path.strip_prefix(" *"))?;
         let hex = digest
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());

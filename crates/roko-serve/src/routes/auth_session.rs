@@ -772,7 +772,10 @@ mod tests {
             "Max-Age=259200",
             "Secure",
         ] {
-            assert!(cookie.contains(attribute), "{attribute} missing from {cookie}");
+            assert!(
+                cookie.contains(attribute),
+                "{attribute} missing from {cookie}"
+            );
         }
         let session_id = showcase_session_id(resp.headers()).expect("session cookie");
         let access = &state.local_access;

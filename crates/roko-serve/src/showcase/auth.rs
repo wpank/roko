@@ -97,7 +97,9 @@ pub fn check_csrf_and_origin(
     headers: &HeaderMap,
     public_origin: Option<&str>,
 ) -> Result<(), &'static str> {
-    let csrf = headers.get(CSRF_HEADER).and_then(|value| value.to_str().ok());
+    let csrf = headers
+        .get(CSRF_HEADER)
+        .and_then(|value| value.to_str().ok());
     if csrf != Some("1") {
         return Err("csrf_required");
     }
@@ -200,13 +202,28 @@ mod tests {
     fn csrf_and_origin_are_both_required() {
         let mut headers = HeaderMap::new();
         let origin = Some("https://showcase.test");
-        assert_eq!(check_csrf_and_origin(&headers, origin), Err("csrf_required"));
+        assert_eq!(
+            check_csrf_and_origin(&headers, origin),
+            Err("csrf_required")
+        );
         headers.insert(CSRF_HEADER, "1".parse().expect("header value"));
-        assert_eq!(check_csrf_and_origin(&headers, origin), Err("origin_mismatch"));
+        assert_eq!(
+            check_csrf_and_origin(&headers, origin),
+            Err("origin_mismatch")
+        );
         headers.insert(ORIGIN, "https://evil.test".parse().expect("header value"));
-        assert_eq!(check_csrf_and_origin(&headers, origin), Err("origin_mismatch"));
-        headers.insert(ORIGIN, "https://showcase.test".parse().expect("header value"));
+        assert_eq!(
+            check_csrf_and_origin(&headers, origin),
+            Err("origin_mismatch")
+        );
+        headers.insert(
+            ORIGIN,
+            "https://showcase.test".parse().expect("header value"),
+        );
         assert_eq!(check_csrf_and_origin(&headers, origin), Ok(()));
-        assert_eq!(check_csrf_and_origin(&headers, None), Err("origin_mismatch"));
+        assert_eq!(
+            check_csrf_and_origin(&headers, None),
+            Err("origin_mismatch")
+        );
     }
 }

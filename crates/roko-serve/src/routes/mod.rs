@@ -811,7 +811,12 @@ mod tests {
 
         let (status, _) = get_text(&router, "/health").await;
         assert_eq!(status, StatusCode::OK);
-        for uri in ["/api/shared/x", "/ws/terminal/x", "/api/terminal/sessions", "/ws"] {
+        for uri in [
+            "/api/shared/x",
+            "/ws/terminal/x",
+            "/api/terminal/sessions",
+            "/ws",
+        ] {
             let (status, body) = get_json(&router, uri).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
             assert_eq!(body["error"], "not_found", "{uri}");

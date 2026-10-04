@@ -350,7 +350,10 @@ mod tests {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body");
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     #[tokio::test]
@@ -387,8 +390,11 @@ mod tests {
     async fn showcase_bundle_checksum_mismatch_is_409() {
         let root = tempfile::tempdir().expect("bundle root");
         let tampered = write_bundle(root.path(), "b-tampered", METRICS, RECORDS);
-        std::fs::write(tampered.join("data/metrics.jsonl"), METRICS.replace("r1", "r2"))
-            .expect("tamper");
+        std::fs::write(
+            tampered.join("data/metrics.jsonl"),
+            METRICS.replace("r1", "r2"),
+        )
+        .expect("tamper");
         let late = write_bundle(root.path(), "b-late", METRICS, RECORDS);
         let (_workdir, state, app) = app(root.path());
 
@@ -437,7 +443,10 @@ mod tests {
             .iter()
             .map(|bundle| {
                 let reason = bundle["reason"].as_str().unwrap_or("none");
-                (bundle["id"].as_str().expect("id").to_string(), reason.to_string())
+                (
+                    bundle["id"].as_str().expect("id").to_string(),
+                    reason.to_string(),
+                )
             })
             .collect();
         let expected: BTreeMap<String, String> = [

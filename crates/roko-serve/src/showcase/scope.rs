@@ -31,7 +31,10 @@ pub fn session_may_access(method: &Method, path: &str, live_enabled: bool) -> bo
         return false;
     }
     if path == "/auth/session" {
-        return matches!(*method, Method::GET | Method::HEAD | Method::POST | Method::DELETE);
+        return matches!(
+            *method,
+            Method::GET | Method::HEAD | Method::POST | Method::DELETE
+        );
     }
     let showcase = path == "/showcase" || path.starts_with("/showcase/");
     let admin = path == "/showcase/admin" || path.starts_with("/showcase/admin/");
@@ -48,10 +51,11 @@ pub fn session_may_access(method: &Method, path: &str, live_enabled: bool) -> bo
 fn is_live_post(path: &str) -> bool {
     LIVE_POSTS.iter().any(|pattern| {
         let mut segments = path.split('/');
-        pattern
-            .split('/')
-            .all(|want| segments.next().is_some_and(|got| want == "*" || want == got))
-            && segments.next().is_none()
+        pattern.split('/').all(|want| {
+            segments
+                .next()
+                .is_some_and(|got| want == "*" || want == got)
+        }) && segments.next().is_none()
     })
 }
 
@@ -64,7 +68,10 @@ mod tests {
         let allowed = [
             (Method::GET, "/api/showcase/manifest"),
             (Method::GET, "/showcase/p1/head-to-head"),
-            (Method::HEAD, "/showcase/bundles/b-1/files/data/metrics.jsonl"),
+            (
+                Method::HEAD,
+                "/showcase/bundles/b-1/files/data/metrics.jsonl",
+            ),
             (Method::GET, "/api/showcase/stream"),
             (Method::DELETE, "/api/auth/session"),
         ];

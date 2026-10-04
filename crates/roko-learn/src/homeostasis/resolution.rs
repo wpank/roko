@@ -320,6 +320,9 @@ struct EfficiencyRow {
     gate_passed: Option<bool>,
     outcome: Option<String>,
     cost_usd: Option<f64>,
+    /// The attempt's cost priced at API rates, which a subscription-billed
+    /// row's `cost_usd` (about $0) is not; read first (gap-e73a26).
+    api_equiv_usd: Option<f64>,
     wall_time_ms: Option<u64>,
     timestamp: Option<String>,
 }
@@ -333,6 +336,9 @@ struct CostRow {
     task_id: Option<String>,
     timestamp: Option<String>,
     cost_usd: Option<f64>,
+    /// The call's cost priced at API rates; read before `cost_usd`
+    /// (gap-e73a26).
+    api_equiv_usd: Option<f64>,
     cost_source: Option<CostSource>,
 }
 
@@ -367,7 +373,7 @@ impl HistoricalRow {
             at_ms,
             gate,
             gate_passed: row.gate_passed,
-            cost_usd: row.cost_usd.unwrap_or(0.0),
+            cost_usd: row.api_equiv_usd.or(row.cost_usd).unwrap_or(0.0),
             wall_ms: row
                 .wall_time_ms
                 .and_then(|ms| i64::try_from(ms).ok())
@@ -608,7 +614,7 @@ where
                 .find(|&index| chains[index].covers(at_ms))?;
             Some((
                 index,
-                row.cost_usd.unwrap_or(0.0),
+                row.api_equiv_usd.or(row.cost_usd).unwrap_or(0.0),
                 row.cost_source.unwrap_or_default(),
             ))
         });
@@ -829,5 +835,31 @@ mod tests {
         let (resolutions, _) = fold_historical_dir(dir.path()).expect("one row");
         assert_eq!(resolutions.len(), 1);
         assert!(resolutions[0].verified_success() && resolutions[0].pre_instrumentation);
+    }
+
+    /// gap-e73a26: the fold reads a historical row's `api_equiv_usd`, the
+    /// API-rate price of a subscription-billed attempt whose `cost_usd` is $0,
+    /// from efficiency and cost rows alike; a row with `cost_usd` alone still
+    /// folds from that.
+    #[test]
+    fn historical_fold_prefers_api_equiv_usd_over_cost_usd() {
+        let efficiency = [
+            // T1: subscription-billed, with no cost row.
+            r#"{"plan_id":"p","task_id":"T1","timestamp":"2026-09-01T10:00:00Z","cost_usd":0.0,"api_equiv_usd":0.42,"wall_time_ms":1000,"gate_passed":true}"#,
+            // T2: an older row that has `cost_usd` alone.
+            r#"{"plan_id":"p","task_id":"T2","timestamp":"2026-09-01T11:00:00Z","cost_usd":0.3,"wall_time_ms":1000,"gate_passed":true}"#,
+            // T3: priced by its cost row, which has both.
+            r#"{"plan_id":"p","task_id":"T3","timestamp":"2026-09-01T12:00:00Z","cost_usd":0.0,"wall_time_ms":60000,"gate_passed":true}"#,
+        ];
+        let costs = [
+            r#"{"timestamp":"2026-09-01T11:59:30Z","plan_id":"p","task_id":"T3","cost_usd":0.0,"api_equiv_usd":0.17,"cost_source":"cli_usage"}"#,
+        ];
+        let (resolutions, report) = fold_historical(efficiency, costs);
+        assert_eq!(report.unmatched_cost_rows, 0);
+        let usd: Vec<Option<f64>> = resolutions
+            .iter()
+            .map(|resolution| resolution.api_equiv_usd)
+            .collect();
+        assert_eq!(usd, [Some(0.42), Some(0.3), Some(0.17)]);
     }
 }

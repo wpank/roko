@@ -97,3 +97,14 @@ a structured refusal list out to ACP the way `GraphTaskDispatcher`'s own failove
   recording).
 - `roko-serve`'s own exposure (if any) is unconfirmed — step 3 above should resolve that before this item is
   closed, not as a precondition to filing it.
+
+## Progress
+
+- 2026-10-04 (w4-length): implemented on `work/gap-fd0c0b` at 0c553f792; cargo verification deferred to the batch
+  gate. `credentials_fix` and `credentials_hint` moved from the CLI's Graph failover to
+  `roko_learn::provider_failover`, and the CLI now calls them, so one wording serves every path.
+  `Failover::credentials_hints` gives one hint per auth-refused provider. ACP's `no_usable_provider_reason`
+  appends those hints to the failover's reason. Test `acp_auth_quarantine_message_includes_a_login_hint`.
+- Step 3: roko-serve's `dispatch.rs` has no failover start of its own. The other `Failover::start` caller,
+  serve's one-shot bench dispatch (`roko-cli/src/serve_runtime.rs::dispatch_bench_prompt`), had the same bare
+  message and now appends the same hints.

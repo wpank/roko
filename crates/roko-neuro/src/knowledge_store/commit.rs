@@ -360,11 +360,13 @@ pub fn orphaned_batches(
     Ok(batches.into_iter().collect())
 }
 
-/// Propose every batch `store` holds besides `live` through the guard, as
-/// [`propose_batch`] proposes a run's own batch at its end (gap-6ff99a): a
-/// batch whose run ended before proposing it, as a crashed run's, is committed
-/// or rolled back under the same checks and mode, instead of staying hidden
-/// from every other run. Returns each orphan with its decision.
+/// Propose every batch `store` holds besides `live` through the guard.
+///
+/// This works as [`propose_batch`] does for a run's own batch at its end
+/// (gap-6ff99a): a batch whose run ended before proposing it, as a crashed
+/// run's, is committed or rolled back under the same checks and mode, instead
+/// of staying hidden from every other run. Returns each orphan with its
+/// decision.
 ///
 /// The caller holds the workspace's runner lock, so no other run is writing a
 /// batch.

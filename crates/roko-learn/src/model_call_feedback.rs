@@ -655,6 +655,21 @@ pub fn load_recovered_router(snapshot_path: &Path, model_slugs: Vec<String>) -> 
     CascadeRouter::load_or_new(snapshot_path, model_slugs)
 }
 
+/// Drop what the learning WAL beside the router saved at `snapshot_path`
+/// journaled for the router and no snapshot saved, after a rollback put a
+/// kept version back in `snapshot_path` (gap-775aa6). A crashed writer's
+/// segment would otherwise replay those observations over the restored file
+/// at the next [`load_recovered_router`]. The WAL's other entries are
+/// replayed as a load replays them, and a live writer's segment is left to
+/// that writer.
+pub fn discard_unsaved_router_observations(snapshot_path: &Path) {
+    if let Some(learn_dir) = snapshot_path.parent() {
+        let mut paths = LearningPaths::under(learn_dir);
+        paths.cascade_router_json = snapshot_path.to_path_buf();
+        crate::runtime_feedback::discard_router_wal(&paths);
+    }
+}
+
 /// A settled task's routing reward: the multi-objective reward of a success
 /// at its cost and latency, and 0 for a failure, whose cost and latency
 /// bought nothing (bug-8da8ba).

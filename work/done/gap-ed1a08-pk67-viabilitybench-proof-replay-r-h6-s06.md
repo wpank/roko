@@ -2,7 +2,7 @@
 id = "gap-ed1a08"
 kind = "gap"
 title = "PK67 ViabilityBench proof: Replay R-H6: S06's controllers A0-A5 plus A3-gated and A3-mis (+2 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -10,8 +10,9 @@ rank = 67
 size = "L"
 subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "0174ea3e9"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK67"
 anchors = ["benchmarks/viabilitybench/driver/planemit.py"]
 lane = "bench"
@@ -26,6 +27,17 @@ command = "grep -qw 'def test_closure_replays_emit_their_preregistered_estimands
 
 [[verify]]
 command = "grep -qw 'def test_roko_full_overlay_turns_on_gate_routing_audits_and_holdout' benchmarks/viabilitybench/driver/test_planemit.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_planemit.py -k test_roko_full_overlay_turns_on_gate_routing_audits_and_holdout -q"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T00:04:35Z"
+commit = "0174ea3e9"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T23:12:34Z"
+forced = false
+evidence = "Gate 12a (work/backlog-batch-12a, merged into main as 0174ea3e9; Python only, no Rust changed): the ViabilityBench suite 702 passed, 2 skipped; every [[verify]] passes. PK67 3/3: replay_h6.py (R-H6, evaluated:false until 8117's evaluator has an entry point), replay_closure.py (X1 computed with a bootstrap CI; X2-X4 report why not), arms/roko_full.toml with planemit's overlay, now passed through run_roko._plan_spec (e9738240f)."
 +++
 
 ## Problem

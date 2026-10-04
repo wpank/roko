@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 113 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 115 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -40,11 +40,11 @@ _1 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRI
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- **P1** [gap-ed1a08](items/gap-ed1a08-pk67-viabilitybench-proof-replay-r-h6-s06.md) PK67 ViabilityBench proof: Replay R-H6: S06's controllers A0-A5 plus A3-gated and A3-mis (+2 more) · size L · verified 2026-10-02
 - **P2** [gap-9ecd37](items/gap-9ecd37-pk82-showcase-and-deploy-showcase-bundle-builder.md) PK82 Showcase and deploy: Showcase bundle builder and verifier (Python, in ViabilityBench) (+7 more) · size L · verified 2026-10-02
 - **P1** [dec-20744e](items/dec-20744e-accept-same-uid-keychain-risk-for-subscription.md) Accept same-uid keychain risk for subscription arms, or containerize them (S08 decision 4) [decision] · size S · verified 2026-10-02
+- **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-03
 
-_14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_13 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 

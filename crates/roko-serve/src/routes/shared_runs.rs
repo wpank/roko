@@ -1222,9 +1222,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let stored = std::fs::read_dir(dir.path().join(".roko").join("shared"))
             .map(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .any(|entry| entry.file_name().to_string_lossy().starts_with("public-run"))
+                entries.filter_map(Result::ok).any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("public-run")
+                })
             })
             .unwrap_or(false);
         assert!(!stored, "a refused share must store nothing");

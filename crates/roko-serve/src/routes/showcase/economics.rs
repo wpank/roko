@@ -162,7 +162,10 @@ mod tests {
         let files = [
             ("bundle.json".to_string(), manifest.to_string()),
             ("data/metrics.jsonl".to_string(), METRICS.to_string()),
-            (format!("econ/{experiment}/{ECON_REPORT}"), REPORT.to_string()),
+            (
+                format!("econ/{experiment}/{ECON_REPORT}"),
+                REPORT.to_string(),
+            ),
         ];
         let mut sums = String::new();
         for (path, contents) in &files {
@@ -262,7 +265,10 @@ mod tests {
         let mut events = state.state_hub.subscribe_events();
         let mut seen = None;
 
-        assert!(!mirror_calibration(&state, &path, &mut seen), "no export yet");
+        assert!(
+            !mirror_calibration(&state, &path, &mut seen),
+            "no export yet"
+        );
         std::fs::create_dir_all(path.parent().expect("parent")).expect("self-model dir");
         std::fs::write(&path, "{\"eligible\": false}").expect("export");
         assert!(mirror_calibration(&state, &path, &mut seen));

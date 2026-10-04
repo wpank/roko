@@ -2101,7 +2101,10 @@ fn deploy_fly_config_is_not_the_roko_config() {
     assert!(matches!(
         cli.command,
         Some(Command::Deploy {
-            cmd: DeployCmd::Fly { fly_config: None, .. }
+            cmd: DeployCmd::Fly {
+                fly_config: None,
+                ..
+            }
         })
     ));
 }

@@ -71,10 +71,7 @@ impl IdleTracker {
 
     /// What keeps serve up at `now`: a registered blocker, or a fresh `hold_file`.
     pub fn blocked(&self, hold_file: &Path, now: DateTime<Utc>) -> Option<String> {
-        let blockers = self
-            .blockers
-            .read()
-            .unwrap_or_else(PoisonError::into_inner);
+        let blockers = self.blockers.read().unwrap_or_else(PoisonError::into_inner);
         if let Some(reason) = blockers.iter().find_map(|blocker| blocker.blocking()) {
             return Some(reason);
         }
@@ -125,7 +122,10 @@ pub async fn run_idle_timer(state: Arc<AppState>) {
         let now = Utc::now();
         if should_exit(&state, now).await {
             let idle = state.showcase_idle.idle_for(now).num_seconds();
-            info!(idle_secs = idle, "showcase idle: no request and nothing running; exiting");
+            info!(
+                idle_secs = idle,
+                "showcase idle: no request and nothing running; exiting"
+            );
             state.cancel.cancel();
             return;
         }
@@ -247,7 +247,11 @@ mod tests {
             cancel: None,
             handle,
         };
-        state.active_runs.write().await.insert("r-1".to_string(), run);
+        state
+            .active_runs
+            .write()
+            .await
+            .insert("r-1".to_string(), run);
         assert!(!should_exit(&state, quiet).await);
         let finished = state.active_runs.write().await.remove("r-1").expect("run");
         finished.handle.abort();

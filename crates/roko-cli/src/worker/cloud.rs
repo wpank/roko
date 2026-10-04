@@ -763,11 +763,17 @@ mod tests {
         assert!(!DEFAULT_WORKER_GIT_AUTHOR_EMAIL.contains("nunchi"));
         assert_eq!(
             resolve_worker_git_identity(Some("ci-bot".into()), None),
-            ("ci-bot".to_string(), DEFAULT_WORKER_GIT_AUTHOR_EMAIL.to_string())
+            (
+                "ci-bot".to_string(),
+                DEFAULT_WORKER_GIT_AUTHOR_EMAIL.to_string()
+            )
         );
         assert_eq!(
             resolve_worker_git_identity(None, Some("ci@example.com".into())),
-            (DEFAULT_WORKER_GIT_AUTHOR_NAME.to_string(), "ci@example.com".to_string())
+            (
+                DEFAULT_WORKER_GIT_AUTHOR_NAME.to_string(),
+                "ci@example.com".to_string()
+            )
         );
     }
 

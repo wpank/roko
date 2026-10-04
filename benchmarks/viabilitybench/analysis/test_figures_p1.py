@@ -365,6 +365,20 @@ def test_p1_figures_dry_run_reads_report_filters():
         figlib.parse_filter("task.ladder => 3")
 
 
+def test_p1_figures_find_a_record_whose_only_extra_clause_is_its_own_harness(tmp_path):
+    """BASE_FIELDS must name every field report.py's own records carry unconditionally, or Inputs.where() treats a
+    record as narrowed on a field the query never asked about and never returns it. harness (bug-40de03) is one:
+    every record carries it, "" for the arm's own, usual one, so a plain pooled query must still find it."""
+    record = figlib.synthetic_record("vs_rate", 0.5, arms=["roko_full"], experiment_id="LOG1",
+                                     record_filter='experiment_id == "LOG1" and arm == "roko_full" and harness == '
+                                                   '"" and task.family != "PL"')
+    path = tmp_path / "metrics.jsonl"
+    path.write_text(json.dumps(record) + "\n")
+    inputs = figlib.load([path], dry_run=True, p1=False)
+    found = inputs.where("vs_rate", experiment="LOG1", arm="roko_full")
+    assert len(found) == 1 and found[0].series == "roko_full" and found[0].harness == ""
+
+
 def test_p1_figures_dry_run_axes_and_ids():
     axis = figlib.log_axis([0.013, 0.4], "usd")
     assert (axis.lo, axis.hi) == (0.01, 1.0)

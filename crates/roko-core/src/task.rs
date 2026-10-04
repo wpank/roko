@@ -329,16 +329,21 @@ impl TaskReasoningLevel {
     }
 }
 
-/// Latency vs correctness tradeoff dial.
+/// How a task weighs turnaround against depth: a pacing hint.
+///
+/// It picks no models: backlog 3109 (decision 3108) removed the routing bias
+/// it once asked for, and `roko plan validate` warns about `latency` with
+/// PLAN_047. roko-daimon's affect engine reads it as the task's deadline
+/// proximity, and a composition `SkillSelector` can branch on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum TaskSpeedPriority {
-    /// Optimize for turnaround (pick faster models).
+    /// Turnaround matters most: a high deadline proximity.
     Latency,
-    /// Default blend.
+    /// The default: deadline proximity follows the task's size.
     Balanced,
-    /// Optimize for correctness (pick deeper models).
+    /// Depth matters most: a low deadline proximity.
     Accuracy,
 }
 
@@ -579,7 +584,8 @@ pub struct Task {
     /// How much multi-step reasoning this task needs.
     #[serde(default)]
     pub reasoning_level: Option<TaskReasoningLevel>,
-    /// Whether to optimize for latency or correctness depth.
+    /// How the task weighs turnaround against depth: a pacing hint, not a
+    /// routing one ([`TaskSpeedPriority`]).
     #[serde(default)]
     pub speed_priority: Option<TaskSpeedPriority>,
     /// Expected implementation rigor.

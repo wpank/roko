@@ -19,7 +19,8 @@
   room for every retry; retries fixed at
   `max_retries`; the task in the shared working tree (`[runner] worktree_per_task = false`), so Roko's edits land in
   the workdir the driver checks and exports, not on a batch branch (gap-4ec59f made per-task worktrees the default);
-  force-accept, cargo fix, replanning, playbook refresh and dreams off. `plan run` runs a workspace's
+  force-accept, cargo fix, replanning, playbook refresh and dreams off; `[learning] frozen` (gap-b001ca, decision
+  2218), true unless `PlanSpec.learning_frozen` says otherwise. `plan run` runs a workspace's
   required rungs after each task's own `[[task.verify]]` steps, but not a rung whose command a step already runs
   (gap-3506f1), so the visible check, which is both the verify step and the rung, runs once per attempt.
 
@@ -29,9 +30,18 @@ use and one model table per rung (its key is its slug, quoted in TOML), `[routin
 rungs in order and every tier starting on the arm's start rung, `fallback_models = []`, and no frontier rung
 (`FRONTIER_MODELS`). The task carries no `model_hint`, so `plan validate --strict` has nothing for PLAN_041 to flag;
 the runner must not pass `--model` either, which would pin a model past the ladder. The rest of roko.toml (gates,
-budget, turns, runner, learning) is the pinned mode's. `_check` accepts it only when every rung's model is in the
-arm's allowlist (`allow`) in the allowlist's order, each once, and the start rung is a rung whose model is `model`.
-Without rungs, the files are byte for byte the pinned mode's (`testdata/planemit/`).
+budget, turns, runner) is the pinned mode's, `[learning]`'s `frozen` value aside (below). `_check` accepts it only
+when every rung's model is in the arm's allowlist (`allow`) in the allowlist's order, each once, and the start rung
+is a rung whose model is `model`. Without rungs, the files are byte for byte the pinned mode's (`testdata/planemit/`).
+
+**Freezing learning** (gap-b001ca, decision 2218). `[learning] frozen` is `true` unless `PlanSpec.learning_frozen`
+is set explicitly: a pinned-mode spec (no `rungs`) freezes by default, since G2's frozen-loop census
+(`analysis/gates.py::_frozen_loops`) reads `ablation_flags` for exactly `roko_fixed` and `fr_claude`, today's only
+pinned Roko arms; a routed arm's ladder is itself a learning mechanism, so a ladder-mode spec (`roko_ladder`,
+`roko_plan`, `roko_full`) does not freeze by default. `learning_frozen=True`/`False` overrides either default, for
+an arm that must learn despite running pinned, or must not despite being routed; no arm needs this today.
+`config.learning.frozen` (`crates/roko-core/src/config/learning.rs`) is what a real run's S01 manifest reads into
+`ablation_flags = ["learning_frozen"]` when it is set.
 
 **The overlay** (3360). A spec with `overlay` appends extra tables after the rest of roko.toml, once per table so a
 later field never duplicates one: `gate_mode` -> `[spec_quality] mode` (D14); `audit_floor` -> `[audit] enabled =
@@ -64,6 +74,7 @@ API:
     CLAUDE_CLI_TEMPLATE_SHA256                        # the pinned mode's, provider_kind claude_cli (3318)
     SUPPORTED_OVERLAY_KEYS, HOMEOSTASIS_LOOP          # the overlay (3360)
     resolve_overlay(overlay: Mapping[str, object]) -> dict        # raises PlanEmitError on an unknown key
+    is_frozen(spec: PlanSpec) -> bool                 # [learning] frozen's resolved value (gap-b001ca)
 """
 
 from __future__ import annotations
@@ -187,6 +198,7 @@ max_task_retry_usd = {usd_cap}
 max_turn_usd = {turn_usd}
 
 [learning]
+frozen = {frozen}
 auto_playbook_refresh = false
 dream_on_completion = false
 
@@ -307,6 +319,9 @@ class PlanSpec:
     allow: tuple[str, ...] = ()
     # The overlay (module docstring, 3360): extra mechanism tables, empty for every arm but roko_full.
     overlay: Mapping[str, object] = field(default_factory=dict)
+    # Freezing learning (module docstring, gap-b001ca): None resolves from `rungs` (is_frozen); True/False is an
+    # explicit override, for an arm that needs the opposite of its mode's default.
+    learning_frozen: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -358,8 +373,9 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
         raise PlanEmitError(f"the dollar cap must be a finite number above 0, not {spec.usd_cap!r}")
     slug = plan_slug(spec.key)
     overlay = resolve_overlay(spec.overlay)
+    frozen = is_frozen(spec)
     if spec.rungs:
-        tasks_text, config_text = _ladder_texts(spec, slug, files, visible)
+        tasks_text, config_text = _ladder_texts(spec, slug, files, visible, frozen)
         config_text += _overlay_text(overlay)
         _check_ladder(tasks_text, config_text, spec, slug, files, visible, overlay)
         return _write(workspace, slug, tasks_text, config_text, visible)
@@ -372,7 +388,7 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
                  tier_key=spec.tier, max_turns=spec.max_turns, usd_cap=round(spec.usd_cap, 6),
                  turn_usd=max(round(spec.usd_cap / 10, 6), 1e-06), model=_s(spec.model), model_key=spec.model,
                  provider_key=spec.provider, provider=_s(spec.provider), context_window=spec.context_window,
-                 max_output=spec.max_output)
+                 max_output=spec.max_output, frozen=_b(frozen))
     if spec.provider_kind == "claude_cli":  # 3318: the CLI signs in by itself, no base_url or api_key_env
         config_text = CLAUDE_CLI_CONFIG_TEMPLATE.format(version=TEMPLATE_VERSION, **common)
     else:
@@ -394,7 +410,7 @@ def _write(workspace: Path, slug: str, tasks_text: str, config_text: str, visibl
                    tasks_text=tasks_text, config_text=config_text, visible_command=visible)
 
 
-def _ladder_texts(spec: PlanSpec, slug: str, files: list[str], visible: str) -> tuple[str, str]:
+def _ladder_texts(spec: PlanSpec, slug: str, files: list[str], visible: str, frozen: bool) -> tuple[str, str]:
     """Ladder mode's tasks.toml and roko.toml (module docstring)."""
     for rung in spec.rungs:
         for name, value in (("rung name", rung.name), ("model", rung.model), ("provider", rung.provider)):
@@ -419,7 +435,7 @@ def _ladder_texts(spec: PlanSpec, slug: str, files: list[str], visible: str) -> 
         rungs="".join(f"  {{ name = {_s(rung.name)}, model = {_s(rung.model)} }},\n" for rung in spec.rungs),
         start=start, max_retries=spec.max_retries, visible=_s(visible), verify_timeout_s=spec.verify_timeout_s,
         tier_key=spec.tier, max_turns=spec.max_turns, usd_cap=round(spec.usd_cap, 6),
-        turn_usd=max(round(spec.usd_cap / 10, 6), 1e-06))
+        turn_usd=max(round(spec.usd_cap / 10, 6), 1e-06), frozen=_b(frozen))
     return tasks_text, config_text
 
 
@@ -436,6 +452,12 @@ def resolve_overlay(overlay: Mapping[str, object]) -> dict:
         rows = {row.get("loop"): row for row in report.get("rows", []) if isinstance(row, dict)}
         resolved["homeostasis"] = "on" if campaign.is_loop_live(rows.get(HOMEOSTASIS_LOOP, {})) else "shadow"
     return resolved
+
+
+def is_frozen(spec: PlanSpec) -> bool:
+    """`[learning] frozen`'s resolved value for `spec` (module docstring, gap-b001ca): `spec.learning_frozen`
+    when the arm overrides it explicitly, else pinned mode (no `rungs`) freezes and ladder mode does not."""
+    return (not spec.rungs) if spec.learning_frozen is None else spec.learning_frozen
 
 
 def _overlay_text(resolved: Mapping[str, object]) -> str:
@@ -522,6 +544,8 @@ def _check_ladder(tasks_text: str, config_text: str, spec: PlanSpec, slug: str, 
                             "rungs in order from the start rung, and no fallbacks")
     if config["runner"] != {"worktree_per_task": False}:
         raise PlanEmitError("roko.toml must run the task in the shared working tree, where the driver reads it")
+    if config["learning"]["frozen"] is not is_frozen(spec):
+        raise PlanEmitError("[learning].frozen must match the resolved frozen value (gap-b001ca)")
     _check_overlay(config, overlay)
 
 
@@ -552,6 +576,8 @@ def _check(tasks_text: str, config_text: str, spec: PlanSpec, slug: str, files: 
                             "routing ladder off")
     if config["runner"] != {"worktree_per_task": False}:
         raise PlanEmitError("roko.toml must run the task in the shared working tree, where the driver reads it")
+    if config["learning"]["frozen"] is not is_frozen(spec):
+        raise PlanEmitError("[learning].frozen must match the resolved frozen value (gap-b001ca)")
     _check_overlay(config, overlay)
 
 

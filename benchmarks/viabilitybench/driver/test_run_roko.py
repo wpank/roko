@@ -321,7 +321,7 @@ def test_roko_full_arm_overlay_reaches_the_emitted_config(tmp_path, monkeypatch)
         assert not {"spec_quality", "audit", "self_model", "homeostasis"} & set(config)
         # Byte-identical to before the overlay existed: nothing is appended after CONFIG_TAIL's own last line.
         assert emitted.config_text.endswith("[learning.dreams]\ntrigger_on_plan_complete = false\n")
-    assert planemit.TEMPLATE_SHA256 == "24d5db33665a3537449708ff920e53ec0e182d9fd77c411c1feefd1eae4b8007"
+    assert planemit.TEMPLATE_SHA256 == "1b7b9906dd846ef598602bee770d0b6d3270e885f6262f76c3fbdd9e97b87f2b"
 
 
 def test_vb_run_refuses_a_binary_that_rejects_the_emitted_plan(places, tmp_path, capsys):

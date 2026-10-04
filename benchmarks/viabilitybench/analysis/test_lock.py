@@ -123,6 +123,25 @@ def test_a_lock_may_be_used_only_once_committed_and_clean(repo):
     assert lock.main(["--check", str(repo["lock"]), "--spec", str(repo["spec"])]) == 1
 
 
+def test_lock_hashes_experiments_and_arms(repo):
+    """gap-b001ca: experiments/ and arms/ are hashed too (LOG1's cells, caps and models, and every arm file), but
+    the lock file itself, which experiments/ now contains once it is written, is never one of its own hashes."""
+    (repo["bench"] / "experiments" / "budget.toml").write_text("planned_usd = 1\n", encoding="utf-8")
+    (repo["bench"] / "arms").mkdir()
+    (repo["bench"] / "arms" / "roko_fixed.toml").write_text('schema_version = "vb.arm/1"\n', encoding="utf-8")
+    git(repo["root"], "add", "-A")
+    git(repo["root"], "commit", "-q", "-m", "add experiments and arms fixtures")
+    built = lock.build(repo["spec"], repo["lock"])
+    hashes = built["hashes"]
+    assert "experiments/budget.toml" in hashes and "arms/roko_fixed.toml" in hashes
+    assert not any(name.startswith("experiments/prereg.lock.json") for name in hashes)
+    lock.write(built, repo["lock"])
+    assert lock.check(repo["lock"], repo["spec"]) == []  # clean, though experiments/ now holds the lock too
+    (repo["bench"] / "arms" / "roko_fixed.toml").write_text("# edited\n", encoding="utf-8")
+    drift = lock.check(repo["lock"], repo["spec"])
+    assert "arms/roko_fixed.toml: changed since the lock" in drift
+
+
 def test_blinded_labels_unblind_only_under_the_lock(repo, tmp_path):
     salt = blind.new_salt(tmp_path / "config" / "blind-salt")
     assert salt.stat().st_mode & 0o777 == 0o600

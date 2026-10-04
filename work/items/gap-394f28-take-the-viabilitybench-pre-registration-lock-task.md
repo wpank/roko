@@ -53,9 +53,14 @@ hashed files (analysis 50, audit 13, streams 15, the price snapshot, the simulat
 Before taking the lock:
 1. The PK36 shakedown (`driver/test_shakedown.py`, `VB_REQUIRE_REAL_ROKO=1`) passes all eight scenarios against a
    binary built from main (it did 6/8 at 425e256d5; bug-0b7695's driver fixes target the other two).
-2. The lock's HASHED list also covers `experiments/` (log1.toml, budget.toml) and `arms/`; today LOG1's cells, caps and
-   models could change after the lock without being caught.
-3. planemit's emitted roko.toml sets `[learning] frozen = true`, or G2's frozen-loop check fails on real LOG1 Roko runs.
+2. **Done (gap-b001ca).** The lock's HASHED list also covers `experiments/` (log1.toml, budget.toml) and `arms/`,
+   excluding the lock file itself from its own hash list; today LOG1's cells, caps and models could change after
+   the lock without being caught.
+3. **Done (gap-b001ca).** planemit's emitted roko.toml sets `[learning] frozen = true` for a pinned-mode arm
+   (roko_fixed, fr_claude; false for a routed, ladder-mode one), or G2's frozen-loop check fails on real LOG1
+   Roko runs. Confirmed from the Rust source (`crates/roko-core/src/config/learning.rs`,
+   `crates/roko-cli/src/graph_execution/run_manifest.rs`) that `[learning].frozen` is what a real run's S01
+   manifest reads into `ablation_flags = ["learning_frozen"]`.
 4. q-ab27d3 (fd_claude_lite's model) is answered, and Will confirms the lock.
 
 Then run 3345 as its spec says.

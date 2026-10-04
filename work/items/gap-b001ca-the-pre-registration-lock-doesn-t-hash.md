@@ -62,3 +62,25 @@ As above. The lock hasn't been taken (gap-394f28 holds it for Will's go-ahead), 
 ## Done when
 
 - [ ] Both `[[verify]]` commands pass.
+
+## Progress
+
+- Part 1 (HASHED): implemented at d16063767. `HASHED` gained `experiments` and `arms`; `file_hashes` takes the
+  lock's own path and excludes it, so a rebuild after the lock exists never hashes itself as drift. New test
+  `test_lock_hashes_experiments_and_arms` (`analysis/test_lock.py`): both dirs are hashed, the lock file is not,
+  `check()` stays clean right after the lock is written even though `experiments/` now holds it, and a real edit
+  under either new dir still shows as drift. Verify passes.
+- Part 2 (frozen learning): implemented at 7629f434f. `CONFIG_TAIL` gained a `frozen = {frozen}` field in
+  `[learning]`; `is_frozen(spec)` resolves it to true for a pinned-mode arm (no rungs: roko_fixed, fr_claude) and
+  false for a routed, ladder-mode one, unless `PlanSpec.learning_frozen` overrides it. Confirmed from the Rust
+  source, not by running Roko, that `config.learning.frozen` is what a real run's S01 manifest reads into
+  `ablation_flags = ["learning_frozen"]` (`crates/roko-core/src/config/learning.rs`,
+  `crates/roko-cli/src/graph_execution/run_manifest.rs`). New test
+  `test_emitted_config_freezes_learning_for_pinned_arms_not_ladder_mode` (`driver/test_planemit.py`). Since
+  `CONFIG_TAIL` is shared by every mode, this one change is not purely additive: it moved the pinned-mode golden
+  fixture (`testdata/planemit/pinned.roko.toml`) and the pinned `TEMPLATE_SHA256`, updated in both
+  `test_planemit.py` and `test_run_roko.py`. Verify passes.
+- Part 3: gap-394f28's Plan marks preconditions 2 and 3 done, at 69d62a9f2.
+- No arm needs `learning_frozen`'s explicit opt-out today (checked `arms/*.toml`'s harness/models_allow): the
+  5 roko-harness arms split cleanly into pinned (roko_fixed, fr_claude) and routed (roko_ladder, roko_plan,
+  roko_full), matching G2's census exactly.

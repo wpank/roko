@@ -17,7 +17,10 @@ and the price snapshot of the repository the lock is written into:
   `multiplicity` must equal `holm.MULTIPLICITY`, the graph the analysis runs (D28);
 - `hashes`: the sha256 of every file the analysis rests on: `analysis/` and `audit/` (`cs.py` builds on
   `audit/estimate.py`), `streams/`, `requirements-analysis.lock` (decision 3336), the simulation report under
-  `reports/simulation/` (3339) and the price snapshot.
+  `reports/simulation/` (3339) and the price snapshot; `experiments/` and `arms/` (gap-b001ca: LOG1's cells, caps
+  and models, and every arm file, so neither can drift after the lock unseen), except the lock file itself
+  (`out`/`path`, below): it is never one of its own hashes, or every build but the first would see itself as
+  drift.
 
 **Check** (`check`): every field derived from a file is recomputed and compared. A changed, added or removed file
 under the hashed paths, another spec text, another plan or graph, another suite or an unknown analysis commit is
@@ -59,7 +62,8 @@ VB_ROOT = ANALYSIS_DIR.parent
 LOCK_SCHEMA = "vb.prereg_lock/1"
 DEFAULT_LOCK = VB_ROOT / "experiments" / "prereg.lock.json"
 DEFAULT_SPEC = VB_ROOT.parents[1] / "tmp" / "cybernetic-harness" / "specs" / "S09-experiments.md"
-HASHED = ("analysis", "audit", "streams", "requirements-analysis.lock", "reports/simulation")  # under the bench root
+HASHED = ("analysis", "audit", "streams", "requirements-analysis.lock", "reports/simulation", "experiments", "arms")
+# ^ under the bench root; `file_hashes` excludes the lock file itself from "experiments" (gap-b001ca)
 SKIPPED = ("__pycache__", ".pytest_cache", ".venv")  # caches, never code
 PLAN_FIELDS = ("alpha_fw", "multiplicity", "primaries", "exploratory")
 GIT_TIMEOUT_S = 60
@@ -89,7 +93,7 @@ def build(spec: Path = DEFAULT_SPEC, out: Path = DEFAULT_LOCK, *, allow_dirty: b
             "suite_hash": suite_hash(root), "harness_sha": head,
             "locked_at": _git(repo, "show", "-s", "--format=%cI", head)}
     lock.update({field: plan[field] for field in PLAN_FIELDS})
-    lock["hashes"] = file_hashes(root, repo, snapshot)
+    lock["hashes"] = file_hashes(root, repo, snapshot, lock_path=out)
     return lock
 
 
@@ -124,7 +128,7 @@ def check(path: Path = DEFAULT_LOCK, spec: Path = DEFAULT_SPEC) -> list[str]:
         drift.append(str(err))
         snapshot = None
     pinned = lock.get("hashes") or {}
-    current = file_hashes(root, repo, snapshot)
+    current = file_hashes(root, repo, snapshot, lock_path=path)
     for name in sorted(pinned.keys() | current.keys()):
         if name not in current:
             drift.append(f"{name}: removed since the lock")
@@ -176,16 +180,22 @@ def suite_hash(root: Path) -> str:
     return hashlib.sha256(json.dumps(digests, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def file_hashes(root: Path, repo: Path, snapshot: Path | None) -> dict[str, str]:
+def file_hashes(root: Path, repo: Path, snapshot: Path | None, lock_path: Path | None = None) -> dict[str, str]:
     """Relative path -> sha256 of every file under HASHED (relative to the bench root) and of the price snapshot
-    (relative to the repository)."""
+    (relative to the repository), except `lock_path` itself: the lock (`experiments/prereg.lock.json`, or a
+    rehearsal's `--out`) never hashes its own file, wherever HASHED's "experiments" entry would otherwise find
+    it (gap-b001ca)."""
+    excluded = Path(lock_path).resolve() if lock_path is not None else None
     hashes: dict[str, str] = {}
     for name in HASHED:
         start = Path(root) / name
         if start.is_file():
-            hashes[name] = _sha256(start)
+            if start.resolve() != excluded:
+                hashes[name] = _sha256(start)
         elif start.is_dir():
-            hashes.update({f"{name}/{relpath}": digest for relpath, digest in _tree(start).items()})
+            for relpath, digest in _tree(start).items():
+                if (start / relpath).resolve() != excluded:
+                    hashes[f"{name}/{relpath}"] = digest
     if snapshot is not None:
         hashes[snapshot.resolve().relative_to(Path(repo).resolve()).as_posix()] = _sha256(snapshot)
     return dict(sorted(hashes.items()))

@@ -31,12 +31,12 @@ use crate::usage::Usage;
 use roko_core::{Body, Context, Kind, Provenance, Signal};
 
 use super::config::HermesConfig;
+use super::gateway_service::HermesGatewayService;
 
 /// Why a Hermes turn whose reply stopped at the output token limit fails:
 /// a cut-off reply is not an answer (gap-fd0c0b).
 const TRUNCATED_REPLY: &str =
     "hermes: the model hit its output token limit (finish_reason=length); its reply was cut off";
-use super::gateway_service::HermesGatewayService;
 
 /// Hermes HTTP adapter.
 ///

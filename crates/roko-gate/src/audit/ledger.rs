@@ -89,6 +89,9 @@ pub enum AuditEvent {
         /// r_i, M3's P(false green) the draw weighed; `None` without one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         risk_r: Option<f64>,
+        /// The id of M3's forecast of the attempt; `None` without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prediction_id: Option<String>,
     },
     /// An audit's labels.
     #[serde(rename = "audit.result")]
@@ -639,6 +642,7 @@ mod tests {
             base_tree: Some("base".into()),
             result_tree: Some(format!("tree-{index}")),
             risk_r: None,
+            prediction_id: None,
         }
     }
 

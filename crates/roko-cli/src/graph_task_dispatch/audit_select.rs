@@ -42,9 +42,10 @@
 //!   green) on its latest audited labels, and λ is 0 below 50 of them.
 //!   Without a risk, or at λ = 0, π is ρ.
 //! - The id of M3's forecast of an attempt (its prediction row, S01 §5.6) is
-//!   noted when the row is logged ([`AuditSelector::note_prediction`]); a
-//!   selected unit carries it, and so does the `vs.label` row its audit
-//!   writes.
+//!   noted when the row is logged ([`AuditSelector::note_prediction`]). The
+//!   attempt's `audit.selection` logs it and a selected unit carries it, so
+//!   a unit rebuilt from its selection alone keeps it, and so does the
+//!   `vs.label` row its audit writes.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -416,7 +417,7 @@ impl AuditSelector {
             base_tree: base_tree.clone(),
             result_tree: result_tree.clone(),
             model: model.clone(),
-            prediction_id,
+            prediction_id: prediction_id.clone(),
             task,
         });
         let event = AuditEvent::Selection {
@@ -437,6 +438,7 @@ impl AuditSelector {
             base_tree,
             result_tree,
             risk_r: risk,
+            prediction_id,
         };
         if let Err(error) = self.ledger.lock().append(event) {
             tracing::warn!(attempt_key = %attempt, %error, "audit.selection not written");
@@ -722,7 +724,7 @@ mod tests {
 
     use super::*;
     use crate::audit::labels::{AuditReport, vs_label};
-    use crate::audit::worker::queue_dir;
+    use crate::audit::worker::{pending_units, queue_dir};
     use crate::graph_task_dispatch::diff_snapshot::tests::commit_repo;
     use crate::graph_task_dispatch::tests::{
         VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, recording_feedback,
@@ -1202,6 +1204,7 @@ mod tests {
             base_tree: None,
             result_tree: Some("result".to_string()),
             risk_r: Some(risk),
+            prediction_id: None,
         };
         ledger.append(selection).expect("a selection");
         let unit = AuditUnit {
@@ -1370,5 +1373,39 @@ mod tests {
                 ("T2".to_string(), None),
             ])
         );
+    }
+
+    /// gap-71c60a: the lottery logs the id of M3's forecast on the unit's
+    /// `audit.selection`, so a selected unit whose queue file is lost, which
+    /// a worker rebuilds from its selection alone, keeps it.
+    #[test]
+    fn unit_rebuilt_from_selection_alone_keeps_its_prediction_id() {
+        let (temp, selector) = worker_less_lottery(0.10, &[]);
+        selector.census();
+        let forecast = AttemptKey::new(RUN, "plan", "T1", 1).attempt_key();
+        let prediction_id = AttemptPredictionRecord::prediction_id(&forecast, "m3-v1");
+        selector.note_prediction(&forecast, &prediction_id);
+        selector.draw(&green("T1"), None, 1);
+        // The unit's task inputs are lost with the vault's queue.
+        std::fs::remove_dir_all(queue_dir(selector.vault())).expect("the queue");
+
+        let context = WorkerContext {
+            workdir: temp.path().join("repo"),
+            vault: selector.vault().clone(),
+            config: selector.config.clone(),
+            gates: GatesConfig::default(),
+            secret: selector.secret.clone(),
+            run_id: RUN.to_string(),
+            run_spend: Arc::new(parking_lot::Mutex::new(0.0)),
+            phase_b: PhaseB::default(),
+            gaming: GamingWatch::new(selector.vault()),
+            learner: None,
+        };
+        let units = pending_units(context).expect("the ledger");
+        let rebuilt: Vec<_> = units
+            .iter()
+            .map(|unit| unit.prediction_id.as_deref())
+            .collect();
+        assert_eq!(rebuilt, [Some(prediction_id.as_str())]);
     }
 }

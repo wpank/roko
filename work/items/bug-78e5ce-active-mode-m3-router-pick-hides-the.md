@@ -87,3 +87,11 @@ can change post-construction is not yet confirmed either way.
 ## Notes
 
 - Discovered during the work that closed gap-d2d750.
+- 2026-10-04 (wave-10 follow-up, PK66/gap-414e56): this item's sub-finding (2) (the streaming path skips the
+  self-model's forecast hook) also means it skips the whole `post_pass` step
+  (`crates/roko-cli/src/graph_task_dispatch/self_model.rs::post_pass`/`post_pass_action`), not just forecasting —
+  so a streaming-dispatched task's post-pass never writes a `spec.refine_requested` event
+  (`SPEC_REFINE_EVENT`) either, even when the self-model would otherwise judge the task's spec needs refining.
+  When fixing (2), confirm the fix restores `post_pass` and its `spec.refine_requested` event, not just the
+  forecast call. Related: gap-2b0575 (S07's plan-load gate not reading that event at all yet, a separate,
+  consumer-side gap even once it's produced).

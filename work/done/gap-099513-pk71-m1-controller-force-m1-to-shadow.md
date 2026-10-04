@@ -2,7 +2,7 @@
 id = "gap-099513"
 kind = "gap"
 title = "PK71 M1 controller: Force M1 to shadow when M2 demotes L-M1, and allow B4 'on' moves only for live loops (+9 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 71
 size = "L"
 subsystem = ["roko-cli/runtime_feedback"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "f15044a68"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK71"
 anchors = ["crates/roko-cli/src/commands/learn.rs", "crates/roko-cli/src/graph_execution/agent_slots.rs", "crates/roko-cli/src/graph_task_dispatch/budget.rs", "crates/roko-cli/src/runtime_feedback/knowledge.rs", "crates/roko-core/src/config/learning.rs", "crates/roko-core/src/dashboard_snapshot.rs", "crates/roko-learn/src/lib.rs", "crates/roko-learn/src/model_call_feedback.rs", "crates/roko-neuro/src/knowledge_store/mod.rs", "crates/roko-neuro/src/lib.rs", "crates/roko-serve/src/routes/learning/mod.rs"]
 lane = "rust-hot"
@@ -47,6 +48,17 @@ command = "grep -rqw 'fn knowledge_batch_rolled_back_when_anchor_query_regresses
 
 [[verify]]
 command = "grep -rqw 'fn run_end_commits_router_and_knowledge_through_guard' crates/roko-cli/ && cargo test -p roko-cli run_end_commits_router_and_knowledge_through_guard"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T01:47:12Z"
+commit = "f15044a68"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T23:12:33Z"
+forced = false
+evidence = "Gate 13a (batch work/backlog-batch-13a, merged f15044a68): check, clippy, 8,237 lib tests (roko-cli/-core/-learn/-neuro/-dreams/-serve), roko-cli canaries (plan_validate's two alias tests are bug-2a31bc), bin 442, learn/neuro/serve integration tests, route snapshot (414 canonical), all 10 verifies pass. PK71 10/10: a demoted L-M1 forces M1 to shadow from the next run, M1's on-mode acceptance run, homeostat dashboard events and serve routes, roko learn homeostasis status/replay, live agent-slot resize, in-run budget cut handle, guarded router and knowledge-batch commits at run end. Gate fixes 1532c9bb2 (doc paragraph, test result) and c94d317de (fixture spec gate off)."
 +++
 
 ## Problem

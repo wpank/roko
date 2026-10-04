@@ -402,6 +402,15 @@ impl HomeostasisSink {
         }
     }
 
+    /// The retry budget of `plan_id`'s task `task_id` that
+    /// [`Self::set_retry_limits`] last recorded: its plan-load budget, or the
+    /// one M1's live source last handed out (B2).
+    #[must_use]
+    pub fn retry_limit(&self, plan_id: &str, task_id: &str) -> Option<u32> {
+        let key = (plan_id.to_string(), task_id.to_string());
+        self.state.lock().retry_limits.get(&key).copied()
+    }
+
     /// The chains resolved so far, in order.
     #[must_use]
     pub fn resolved_chains(&self) -> Vec<String> {

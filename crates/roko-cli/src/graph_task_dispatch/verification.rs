@@ -13,6 +13,15 @@ use crate::runner::promise_tracker::PromiseTracker;
 /// `error_patterns_k`.
 const PROMPT_ERROR_PATTERN_LIMIT: usize = 5;
 
+/// The most error patterns the prompt of an attempt that runs `theta`
+/// carries: θ's `error_patterns_k` (M1's B4, 8125), else
+/// [`PROMPT_ERROR_PATTERN_LIMIT`].
+pub(super) fn error_pattern_limit(theta: Option<&HarnessParams>) -> usize {
+    theta.map_or(PROMPT_ERROR_PATTERN_LIMIT, |theta| {
+        usize::try_from(theta.error_patterns_k).unwrap_or(usize::MAX)
+    })
+}
+
 /// What verifying an attempt found (S01 §4.3): its verdict, and what each
 /// verify step did.
 pub(super) struct VerificationReport {
@@ -43,7 +52,8 @@ impl GraphTaskDispatcher {
     ///
     /// The report lists what each verify step did, for the attempt's verdict
     /// record (backlog 2104). `theta`, the θ the attempt runs, sets the
-    /// promise thresholds that end a doomed verify run early (M1's B6, 8125).
+    /// promise thresholds of its verify run (M1's B6, 8125), which failing
+    /// fast leaves with nothing to end ([`promise_tracker_for`]).
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn settle_task_verification(
         &self,
@@ -1292,9 +1302,7 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         theta: Option<&HarnessParams>,
     ) -> crate::dispatch::factory::ErrorPatternSelection {
-        let limit = theta.map_or(PROMPT_ERROR_PATTERN_LIMIT, |theta| {
-            usize::try_from(theta.error_patterns_k).unwrap_or(usize::MAX)
-        });
+        let limit = error_pattern_limit(theta);
         if !self.config.learning.knowledge_error_patterns || limit == 0 {
             return crate::dispatch::factory::ErrorPatternSelection::default();
         }
@@ -1336,6 +1344,10 @@ impl GraphTaskDispatcher {
 /// The P4-03 tracker of an attempt that runs `theta`: its B6 promise floor
 /// and run of low readings (M1, 8125), else the tracker's defaults, which are
 /// θ₀'s. A floor of 0 is off, since no promise is below it.
+///
+/// The tracker reads each step of the run, and the run stops at its first
+/// failed step, so it never sees two low readings in a row: no B6 notch
+/// changes a run, and M1's SafetyBox refuses B6 search moves (bug-35a738).
 fn promise_tracker_for(theta: Option<&HarnessParams>) -> PromiseTracker {
     let tracker = PromiseTracker::new();
     match theta {

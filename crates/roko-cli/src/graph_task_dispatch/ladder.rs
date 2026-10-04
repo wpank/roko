@@ -19,7 +19,9 @@
 //! the θ the attempt runs raises its tier's start rung to `tier_floor`, and
 //! `tier_cap` stops its climb as the top rung does. Only what M1 moved from
 //! θ₀ binds, so θ₀ moves nothing; a pinned model ignores both, and a task
-//! already above a cap M1 lowered keeps its rung.
+//! already above a cap M1 lowered keeps its rung. A floor below θ₀'s binds
+//! nothing either, since the floor only raises the start rung, and M1's
+//! search never sets one (bug-35a738).
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -44,7 +46,7 @@ const MAX_ESCALATIONS: u32 = 2;
 /// Retry budget of a task that does not author `max_retries` while the
 /// ladder routes it: [`FAILURES_PER_RUNG`] attempts on its start rung and on
 /// each rung it may climb, less the first attempt.
-const LADDER_MIN_RETRIES: u32 = FAILURES_PER_RUNG * (MAX_ESCALATIONS + 1) - 1;
+pub(super) const LADDER_MIN_RETRIES: u32 = FAILURES_PER_RUNG * (MAX_ESCALATIONS + 1) - 1;
 
 /// M1's B1 bounds on one task's rungs, as indices among its role's rungs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -79,6 +81,15 @@ impl GraphTaskDispatcher {
         } else {
             0
         }
+    }
+
+    /// The retry budget `task` runs under now: the one M1's live source last
+    /// handed out (B2, 8126), else its plan-load budget. The ladder's last
+    /// chance is the attempt this budget ends on (gap-26c055).
+    fn live_max_retries(&self, spec: &TaskExecutionSpec, task: &TaskDef) -> u32 {
+        self.homeostasis_sink()
+            .and_then(|sink| sink.retry_limit(&spec.plan_id, &task.id))
+            .unwrap_or(spec.max_retries)
     }
 
     /// Rungs `task` climbed above its start rung, where its next attempt
@@ -128,6 +139,13 @@ impl GraphTaskDispatcher {
     /// `rung` hint names the floor rung, and the ladder starts the task there
     /// (B1, 8124). A pin beats any rung, so a pinned task runs its model
     /// either way.
+    ///
+    /// The router climbs the task's escalations from the rung that starts it,
+    /// so a floor raised after the task climbed lifts its climb too. A cap
+    /// stops that lift as it stops a climb (gap-26c055): the hint names the
+    /// highest rung up to the floor from which the climb stays at or under
+    /// the cap, and there is none when every such rung would carry the task
+    /// past it.
     pub(super) fn routed_task<'a>(
         &self,
         task: &'a TaskDef,
@@ -138,14 +156,27 @@ impl GraphTaskDispatcher {
             return Cow::Borrowed(task);
         };
         let role = task.role.as_deref().unwrap_or("implementer");
-        let start = ladder.start(role, task.tier_class(), task.hints.rung.as_deref());
-        match (start, ladder.rung_name(role, floor)) {
-            (Some(start), Some(name)) if start.index < floor => {
+        let tier = task.tier_class();
+        let Some(start) = ladder.start(role, tier, task.hints.rung.as_deref()) else {
+            return Cow::Borrowed(task);
+        };
+        let steps = self
+            .gate_retry_context
+            .ladder_standing(&attempt.identity().plan_id, &task.id)
+            .escalations;
+        let hint = (start.index + 1..=floor).rev().find_map(|index| {
+            let name = ladder.rung_name(role, index)?;
+            let from = ladder.start(role, tier, Some(name))?;
+            let lands = ladder.climb(role, from, steps).index;
+            bounds.cap.is_none_or(|cap| lands <= cap).then_some(name)
+        });
+        match hint {
+            Some(name) => {
                 let mut floored = task.clone();
                 floored.hints.rung = Some(name.to_string());
                 Cow::Owned(floored)
             }
-            _ => Cow::Borrowed(task),
+            None => Cow::Borrowed(task),
         }
     }
 
@@ -217,7 +248,7 @@ impl GraphTaskDispatcher {
                 let task_key = format!("{}/{}", spec.plan_id, task.id);
                 (
                     record,
-                    top && self.attempt_in_run(&task_key) >= spec.max_retries,
+                    top && self.attempt_in_run(&task_key) >= self.live_max_retries(spec, task),
                 )
             }
             ModelChoiceSource::Override | ModelChoiceSource::TaskHint => {
@@ -889,5 +920,143 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
         // A lower cap saves cost, so M1 doubles the audit rate after it.
         let lower = catalog_move(KnobKind::TierCap, Step::Down);
         assert!(lower.is_some_and(|lower| lower.audit_coupled()));
+    }
+
+    /// gap-26c055: a floor raised after a task climbed lifts its climb with
+    /// it, and a cap stops that lift as it stops a climb. A mechanical task
+    /// that climbed from cheap to mid stays on mid when θ raises its floor to
+    /// mid and caps it there, where the floor alone would lift it to top.
+    #[tokio::test]
+    async fn a_floor_raised_after_a_climb_stops_at_the_cap() {
+        use roko_core::config::harness_params::{HarnessLadders, HarnessParams, Knob, Step};
+        use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
+        use roko_learn::homeostasis::controller::Controller;
+        use roko_learn::homeostasis::detect::Baseline;
+        use roko_learn::homeostasis::policy::ViabilityPolicy;
+
+        use crate::runtime_feedback::HomeostasisSink;
+
+        const MID: &str = "claude-opus-4-6";
+        const POLICY: &str = "policy_version = 1\nholdout = 0.0\n\
+            ev.pass_rate = { lo = 0.70 }\nev.usd_per_verified_success = { hi = 0.12 }\n\
+            ev.false_green = { hi = 0.10 }\nev.latency_p90_s = { hi = 900 }\n";
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, task) = ladder_fixture_with(&temp, |config| {
+            config
+                .models
+                .insert("mid-model".to_string(), model("batch-cli", MID, None));
+            config.routing.ladder.rungs = vec![
+                rung("cheap", "cheap-model"),
+                rung("mid", "mid-model"),
+                rung("top", "batch-model"),
+            ];
+        })
+        .await;
+        let theta0 = HarnessParams::baseline(&dispatcher.config);
+        let ladders = HarnessLadders::from_config(&dispatcher.config);
+        let settings = HomeostasisConfig {
+            mode: HomeostasisMode::On,
+            ..HomeostasisConfig::default()
+        };
+        let baseline = Baseline {
+            pass_rate: 0.80,
+            usd_per_resolution: 0.05,
+            wall_ms: 300_000.0,
+        };
+        let policy = ViabilityPolicy::parse(POLICY).expect("the policy parses");
+        let controller = Controller::new(
+            &settings,
+            policy,
+            theta0.clone(),
+            ladders.clone(),
+            baseline,
+            0,
+        );
+        let sink = HomeostasisSink::new(temp.path(), Some(controller), None);
+        // Every chain runs the controller's θ, whatever the day's draws.
+        let sink = Arc::new(sink.with_holdout(0.0));
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            runs_dir: Some(temp.path().join(".roko/runs")),
+            homeostasis: Some(Arc::clone(&sink)),
+            ..GraphFeedbackContext::default()
+        });
+        let mut spec = make_spec(&task);
+        spec.max_retries = 3;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        // Under θ₀ two failures on cheap climb the task to mid.
+        for _ in 0..2 {
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("every attempt fails its verify step");
+        }
+        assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
+
+        // θ raises the tier's floor to mid and caps it there.
+        let floor = Knob::TierFloor(TaskTier::Mechanical);
+        let cap = Knob::TierCap(TaskTier::Mechanical);
+        let theta = theta0
+            .step(floor, Step::Up, &ladders)
+            .and_then(|theta| theta.step(cap, Step::Down, &ladders))
+            .expect("floor mid, cap mid");
+        assert_eq!(sink.handle().swap(theta, "floor and cap"), 1);
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("the attempt fails its verify step");
+        assert_eq!(called_models(&temp), [CHEAP, CHEAP, MID]);
+    }
+
+    /// gap-26c055: the ladder's last chance is the attempt the task's live
+    /// retry budget ends on, the one M1's live source last handed out (B2),
+    /// not its plan-load budget. With four retries at plan load raised to
+    /// five, the fifth attempt on the top rung is not the last, and the
+    /// sixth exhausts the ladder.
+    #[tokio::test]
+    async fn last_chance_reads_the_live_retry_budget() {
+        use crate::runtime_feedback::HomeostasisSink;
+
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let (dispatcher, task) = ladder_fixture(&temp).await;
+        let sink = Arc::new(HomeostasisSink::new(temp.path(), None, None));
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            homeostasis: Some(Arc::clone(&sink)),
+            ..GraphFeedbackContext::default()
+        });
+        let mut spec = make_spec(&task);
+        spec.max_retries = 4;
+        sink.set_retry_limits(&spec.plan_id, [(task.id.clone(), 5)]);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        for _ in 0..6 {
+            dispatcher
+                .dispatch(&spec, Vec::new(), &ctx)
+                .await
+                .expect_err("every attempt fails");
+        }
+
+        dispatcher.close_run_attempts(RUN);
+        let verdicts: Vec<serde_json::Value> =
+            std::fs::read_to_string(runs_dir.join(RUN).join("attempts.jsonl"))
+                .expect("the run's attempt log")
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|line| line["schema_version"] == "roko.verdict/1")
+                .collect();
+        let places: Vec<(&str, &str, &str, bool)> = verdicts.iter().map(place).collect();
+        assert_eq!(
+            places,
+            [
+                ("agent", "cheap", "start", false),
+                ("agent", "cheap", "start", false),
+                ("agent", "top", "escalated", false),
+                ("agent", "top", "escalated", false),
+                ("agent", "top", "escalated", false),
+                ("agent", "top", "escalated", true),
+            ]
+        );
     }
 }

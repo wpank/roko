@@ -917,6 +917,13 @@ impl GraphTaskDispatcher {
     /// (M1's B8, 8125): the `task_budget_scale` of the θ its chain runs.
     /// Decrease-only: 1 without an M1 sink, and for anything but a share
     /// below 1.
+    ///
+    /// Admission reads θ here, before the attempt opens and stamps the θ it
+    /// runs, so a θ the controller swaps in between leaves the two a version
+    /// apart. That window is accepted as rare and low-risk (gap-26c055): M1
+    /// changes θ only when a dwell ends, at least eight resolutions and two
+    /// minutes apart; B8 only ever lowers a ceiling; and the verdict's harness
+    /// stamp names the θ the attempt ran.
     pub(super) fn task_budget_scale(
         &self,
         spec: &TaskExecutionSpec,

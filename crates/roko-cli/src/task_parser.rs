@@ -46,7 +46,9 @@ pub struct TaskMeta {
     pub estimated_total_minutes: u32,
     /// When `true`, skip the enrichment pipeline and transition directly to
     /// implementing.  Useful for pre-authored plans where tasks.toml already
-    /// contains complete definitions.
+    /// contains complete definitions. The plan's tasks run unenriched: their
+    /// prompts load no workspace map, `tasks.toml`, workspace context or plan
+    /// brief (bug-19ae56).
     #[serde(default)]
     pub skip_enrichment: bool,
     /// What a run of this plan does when a task fails. Overrides

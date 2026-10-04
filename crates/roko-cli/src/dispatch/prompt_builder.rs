@@ -209,7 +209,8 @@ impl PromptContext {
         // these sections, `deep` twice as much (gap-404fdb).
         let factor = context_factor(task.hints.context_weight);
         let role_limits = role_limits.scaled(factor);
-        let skip_enrichment = bounded_context_only || factor == 0;
+        // The plan's own `[meta] skip_enrichment` skips them too (bug-19ae56).
+        let skip_enrichment = ctx.skip_enrichment || bounded_context_only || factor == 0;
 
         // Use pre-computed run-scoped cache when available; fall back to
         // on-demand computation (for callers that don't populate the cache,
@@ -3108,6 +3109,7 @@ mod tests {
             attempt_key: None,
             arm_set: None,
             self_model_rung: None,
+            skip_enrichment: false,
         }
     }
 
@@ -4423,6 +4425,44 @@ covers = ["AC1"]
             deep.tasks_toml.ends_with(&format!("{padding}\n")),
             "the whole tasks.toml"
         );
+    }
+
+    /// bug-19ae56: a plan's `[meta] skip_enrichment` reaches the prompt
+    /// through its dispatch context. A task that loads every enrichment
+    /// section without it (no bounded-context policy, its usual
+    /// `context_weight`) loads none with it set.
+    #[test]
+    fn task_meta_skip_enrichment_suppresses_prompt_builder_sections() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let root = workdir.path();
+        let plan_dir = root.join("plans/p");
+        std::fs::create_dir_all(&plan_dir).expect("create the plan directory");
+        let tasks = "[meta]\nplan = \"p\"\nskip_enrichment = true\n";
+        std::fs::write(plan_dir.join("tasks.toml"), tasks).expect("write tasks.toml");
+        let brief = plan_dir.join(crate::plan_brief::BRIEF_FILE);
+        std::fs::write(brief, "# Brief\nThe plan.\n").expect("write the brief");
+        let mut dispatch_ctx = ctx();
+        dispatch_ctx.workdir = root.to_path_buf();
+        dispatch_ctx.cached_workspace_map = "crates/roko-cli/src/main.rs\n".to_string();
+        dispatch_ctx.cached_workspace_context = "- roko-cli: The CLI\n".to_string();
+        let sections = |context: &PromptContext| {
+            [
+                ("workspace map", context.workspace_map.clone()),
+                ("tasks.toml", context.tasks_toml.clone()),
+                ("workspace context", context.workspace_context.clone()),
+                ("plan brief", context.plan_brief.clone()),
+            ]
+        };
+
+        let enriched = PromptContext::from_task(&task(), &dispatch_ctx);
+        for (section, text) in sections(&enriched) {
+            assert!(!text.is_empty(), "the {section} loads without the flag");
+        }
+        dispatch_ctx.skip_enrichment = true;
+        let skipped = PromptContext::from_task(&task(), &dispatch_ctx);
+        for (section, text) in sections(&skipped) {
+            assert!(text.is_empty(), "the {section} loads with the flag: {text}");
+        }
     }
 
     #[test]

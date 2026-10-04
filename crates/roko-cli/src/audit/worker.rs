@@ -126,6 +126,10 @@ pub struct AuditUnit {
     pub result_tree: Option<String>,
     /// The implementing model.
     pub model: String,
+    /// The id of M3's forecast of the attempt (S01 §5.6), which its
+    /// `vs.label` row names; `None` without one, or for a unit taken up
+    /// from its selection alone.
+    pub prediction_id: Option<String>,
     /// The task, when its attempt was noted.
     pub task: AuditTask,
 }
@@ -158,6 +162,7 @@ impl AuditUnit {
             base_tree: base_tree.clone(),
             result_tree: result_tree.clone(),
             model: stratum.model.clone(),
+            prediction_id: None,
             task: AuditTask::default(),
         })
     }
@@ -1221,6 +1226,7 @@ mod tests {
             base_tree: Some("base".to_string()),
             result_tree: Some("result".to_string()),
             model: "glm-4.7".to_string(),
+            prediction_id: None,
             task: AuditTask {
                 files: vec!["src/lib.rs".to_string()],
                 ..AuditTask::default()

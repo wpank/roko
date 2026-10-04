@@ -544,10 +544,15 @@ impl AttemptContext {
 
     /// Queue the self-model's forecast of the attempt for the run's
     /// `predictions.jsonl` (S01 §5.6), ahead of its route decision (6128).
+    /// The run's lottery notes its id, which the attempt's `vs.label` row
+    /// names once an audit labels it.
     pub(super) fn record_prediction(
         &self,
         prediction: roko_learn::telemetry::records::AttemptPredictionRecord,
     ) {
+        if let Some(audit) = &self.run.audit {
+            audit.note_prediction(&prediction.identity.attempt_key, &prediction.prediction_id);
+        }
         self.run.submit(prediction);
     }
 

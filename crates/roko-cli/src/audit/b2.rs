@@ -336,6 +336,7 @@ mod tests {
             base_tree: Some(base.to_string()),
             result_tree: Some(result.to_string()),
             model: "claude-sonnet-4-6".to_string(),
+            prediction_id: None,
             task: AuditTask {
                 files: vec!["src/lib.rs".to_string()],
                 verify: vec![("test".to_string(), verify.to_string())],

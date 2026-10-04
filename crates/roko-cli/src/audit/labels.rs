@@ -8,8 +8,9 @@
 //! green verdict and its result tree, visible_clean is A2, hidden is B1, and
 //! integrity is G. Strict VS is 1 only when every check is known and passes,
 //! so a unit phase B did not draw, which has no B1, has an unknown VS unless
-//! another check failed. `prediction_id` is null: the audit does not see M3's
-//! forecast.
+//! another check failed. `prediction_id` names M3's forecast of the attempt,
+//! which the lottery noted when its prediction row was logged, and is null
+//! when M3 made none.
 //!
 //! A known VS teaches the run's self-model with weight 1/π, through S04's
 //! late-label hook (6129, [`VsLearner`]): its target is P(VS), not P(gate
@@ -33,16 +34,26 @@ use crate::graph_task_dispatch::self_model::SelfModelRuntime;
 pub const LABELS_FILE: &str = "labels.jsonl";
 
 /// What learns audited VS labels: the run's self-model, through S04's
-/// late-label hook (6129).
+/// late-label hook (6129). Its false-green risk tilts the lottery (6132).
 pub trait VsLearner: Send + Sync {
     /// Teach the attempt `attempt_key`'s VS label `vs` with weight 1/π;
     /// `false` when the learner does not know the attempt.
     fn learn_vs(&self, attempt_key: &str, vs: bool, weight: f64) -> bool;
+
+    /// r, P(false green) of the chain `chain_key`'s last pass that stood:
+    /// the `risk_fg` S05's tilt draws by; `None` without one.
+    fn false_green_risk(&self, _chain_key: &str) -> Option<f64> {
+        None
+    }
 }
 
 impl VsLearner for SelfModelRuntime {
     fn learn_vs(&self, attempt_key: &str, vs: bool, weight: f64) -> bool {
         self.observe_label(attempt_key, vs, weight, LabelSource::Vs)
+    }
+
+    fn false_green_risk(&self, chain_key: &str) -> Option<f64> {
+        self.risk_fg(chain_key)
     }
 }
 
@@ -98,7 +109,7 @@ pub fn vs_label(unit: &AuditUnit, report: &AuditReport<'_>) -> VsLabel {
         task_id: unit.task_id.clone(),
         seed: None,
         arm: "prod".to_string(),
-        prediction_id: None,
+        prediction_id: unit.prediction_id.clone(),
         vs_source: VsSource::Audit,
         pi: report.pi_eff.unwrap_or(unit.pi),
         verdict: None,
@@ -230,6 +241,7 @@ mod tests {
             base_tree: Some("base".to_string()),
             result_tree: Some("result".to_string()),
             model: "glm-4.7".to_string(),
+            prediction_id: None,
             task: AuditTask::default(),
         }
     }

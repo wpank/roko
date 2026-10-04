@@ -312,6 +312,7 @@ mod tests {
             base_tree: Some(base),
             result_tree: Some(result),
             model: "claude-sonnet-4-6".to_string(),
+            prediction_id: None,
             task: AuditTask {
                 title: "`n` returns 1".to_string(),
                 kind: "code".to_string(),

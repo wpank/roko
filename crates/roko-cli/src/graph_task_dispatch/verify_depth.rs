@@ -625,6 +625,7 @@ fn depth_unit(
         base_tree: Some(diff.base().to_string()),
         result_tree: Some(diff.result().to_string()),
         model: executor.to_string(),
+        prediction_id: None,
         task: audit_task(task),
     }
 }

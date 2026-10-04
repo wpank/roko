@@ -311,6 +311,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::LoopTransition { .. } => "loop_transition",
         DashboardEvent::EvUpdate { .. } => "ev.update",
         DashboardEvent::M1Episode { .. } => "m1.episode",
+        DashboardEvent::SelfModelCalibration { .. } => "self_model.calibration",
         DashboardEvent::SnapshotRebased { .. } => "snapshot_rebased",
     }
 }

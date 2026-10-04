@@ -57,3 +57,9 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK48 (gap-d90ef6), PK49 (gap-7ec3ef), PK82 (gap-9ecd37), PK83 (gap-4119fb).
 - Suggested model: opus.
+
+## Progress
+
+Implemented by w4-pk02 on `work/gap-59ebfd` (from batch 13b, d5f4f38d2); cargo verification deferred to the batch gate.
+
+- 6134: implemented at 50f7f1602. `GET /api/showcase/economics?experiment_id=<id>` in `routes/showcase/economics.rs` serves `econ/<id>/econ-report.json` byte for byte from the newest verified bundle that lists it (400 without an id, 404 for an unknown or non-segment id, 409 when it was rejected), behind the showcase session auth. A calibration mirror, started beside the config watcher in both serve paths, publishes each new `.roko/learn/self-model/calibration.json` as a `self_model.calibration` DashboardEvent. The bundle builder does not copy reports into `econ/<id>/` yet.

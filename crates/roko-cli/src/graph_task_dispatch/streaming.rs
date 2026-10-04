@@ -1347,11 +1347,19 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
             self_model: Some(Arc::clone(&runtime)),
             ..GraphFeedbackContext::default()
         };
-        // Two ladder rungs on the scripted provider.
+        // Two ladder rungs on the scripted provider. A rung runs only on a model that can call
+        // tools, which the fixture's own `stream-model` cannot, so both are set up here, as the
+        // batch path's shadow test sets them up.
         let ladder = |config: &mut RokoConfig| {
             no_auto_fix(config);
-            let cheap = model("stream-cli", "claude-haiku-4-5", None);
-            config.models.insert("cheap-model".to_string(), cheap);
+            for (key, slug) in [
+                ("cheap-model", "claude-haiku-4-5"),
+                ("stream-model", "claude-sonnet-4-6"),
+            ] {
+                config
+                    .models
+                    .insert(key.to_string(), model("stream-cli", slug, None));
+            }
             let rung = |name: &str, model: &str| LadderRung {
                 name: name.to_string(),
                 model: model.to_string(),

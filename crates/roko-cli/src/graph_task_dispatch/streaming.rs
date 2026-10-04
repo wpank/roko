@@ -194,6 +194,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
             self_model_rung: None,
+            skip_enrichment: self.plan_skips_enrichment(spec),
         };
         // M1's B1 (8124): the attempt's θ may raise the task's start rung.
         let routed_task = self.routed_task(&task, &attempt);

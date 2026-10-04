@@ -68,6 +68,7 @@ pub mod runtime_event_bridge;
 pub mod sanitize;
 pub mod scheduler;
 pub mod service_factory;
+pub mod showcase;
 pub mod state;
 // The relay bridge that consumes this needs `relay` (9220); the journal and
 // status types also back `GET /api/subscriptions/relay/status`.

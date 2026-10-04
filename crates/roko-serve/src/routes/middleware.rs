@@ -716,6 +716,37 @@ fn check_cookie_same_origin(req: &Request<Body>) -> Result<(), Response> {
     Err(cookie_cross_origin_response())
 }
 
+/// The session the request's cookie names, as its credential: the cookie fallback of
+/// [`require_api_key`].
+///
+/// The scope comes from the session's record (9322), never a fixed `admin`. A state-changing
+/// request must also pass the same-origin check.
+#[allow(clippy::result_large_err)]
+fn session_credential(state: &AppState, req: &Request<Body>) -> Result<AuthContext, Response> {
+    let missing = || {
+        ApiError::unauthorized("missing X-Api-Key header or Authorization bearer token")
+            .into_response()
+    };
+    let Some(session_id) = extract_session_cookie(req.headers()) else {
+        return Err(missing());
+    };
+    match state.local_access.authenticate_session(session_id, Utc::now()) {
+        crate::state::SessionLookup::Live { scope, .. } => {
+            // Cookie auth on a state-changing request must satisfy the
+            // same-origin constraint before we grant access.
+            check_cookie_same_origin(req)?;
+            Ok(AuthContext {
+                method: AuthMethod::Session,
+                scope,
+                user_id: None,
+            })
+        }
+        crate::state::SessionLookup::Rotated | crate::state::SessionLookup::Missing => {
+            Err(missing())
+        }
+    }
+}
+
 fn cookie_cross_origin_response() -> Response {
     (
         StatusCode::FORBIDDEN,
@@ -752,7 +783,7 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 /// 5. `Authorization: Bearer roko_relay_*` — relay bearer tokens
 /// 6. `Authorization: Bearer <token>` — matched against API keys
 /// 7. `Authorization: Bearer <jwt>` — verified via Privy JWKS
-/// 8. `Cookie: roko_session=<id>` — live session cookie (admin scope)
+/// 8. `Cookie: roko_session=<id>` — live session cookie, with its record's scope
 ///    when no explicit header credential is present; state-changing requests
 ///    must additionally pass the same-origin check.
 ///
@@ -987,33 +1018,10 @@ pub async fn require_api_key(
                 ));
             }
             ApiCredential::Missing => {
-                // No explicit credential header — fall back to the `roko_session` cookie.
-                if let Some(session_id) = extract_session_cookie(req.headers()) {
-                    if state.local_access.session_valid(session_id) {
-                        // Cookie auth on a state-changing request must satisfy the
-                        // same-origin constraint before we grant access.
-                        if let Err(cross_origin_response) = check_cookie_same_origin(&req) {
-                            return Ok(cross_origin_response);
-                        }
-                        (
-                            AuthMethod::Session,
-                            AuthContext {
-                                method: AuthMethod::Session,
-                                scope: "admin".to_string(),
-                                user_id: None,
-                            },
-                            None,
-                            None,
-                        )
-                    } else {
-                        return Err(ApiError::unauthorized(
-                            "missing X-Api-Key header or Authorization bearer token",
-                        ));
-                    }
-                } else {
-                    return Err(ApiError::unauthorized(
-                        "missing X-Api-Key header or Authorization bearer token",
-                    ));
+                // No explicit credential header — fall back to the session cookie.
+                match session_credential(&state, &req) {
+                    Ok(context) => (AuthMethod::Session, context, None, None),
+                    Err(response) => return Ok(response),
                 }
             }
         };
@@ -4753,6 +4761,92 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         assert_eq!(resp.headers()["x-auth-method"], "session");
+    }
+
+    /// 9322: the cookie branch takes the scope from the session's record, not a fixed `admin`.
+    #[tokio::test]
+    async fn session_scope_comes_from_the_session_record() {
+        let state = make_test_state(ServeAuthConfig::default());
+        let access = &state.local_access;
+        let showcase = crate::state::SessionGrant::showcase(
+            &roko_core::config::showcase::ShowcaseSessionConfig::default(),
+            None,
+        );
+        let sessions = [
+            (access.create_session(), "admin"),
+            (access.create_scoped_session(&showcase, Utc::now()), "showcase"),
+        ];
+        let app = Router::new()
+            .route(
+                "/scope",
+                get(|Extension(context): Extension<AuthContext>| async move { context.scope }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                require_api_key,
+            ));
+
+        for (session_id, scope) in sessions {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/scope")
+                        .header("Cookie", format!("roko_session={session_id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(resp.headers()["x-auth-method"], "session");
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(body, scope.as_bytes());
+        }
+    }
+
+    /// 9322: rotating the passphrase hash revokes every session minted under the old one, and
+    /// rotating back does not revive it.
+    #[tokio::test]
+    async fn rotating_the_passphrase_hash_revokes_sessions() {
+        const FIRST: &str = "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$Zmlyc3Q";
+        const SECOND: &str = "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$c2Vjb25k";
+        let state = make_test_state(ServeAuthConfig::default());
+        let access = &state.local_access;
+        access.set_passphrase_hash(Some(FIRST.to_string()));
+        let grant = crate::state::SessionGrant::showcase(
+            &roko_core::config::showcase::ShowcaseSessionConfig::default(),
+            access.passphrase_generation(),
+        );
+        let session_id = access.create_scoped_session(&grant, Utc::now());
+        let admin_id = access.create_session();
+        let app = local_access_test_app(Arc::clone(&state));
+        let status = |id: String| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .uri("/test")
+                        .header("Cookie", format!("roko_session={id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+
+        assert_eq!(status(session_id.clone()).await, StatusCode::NO_CONTENT);
+        access.set_passphrase_hash(Some(SECOND.to_string()));
+        assert_ne!(access.passphrase_generation(), grant.generation);
+        assert_eq!(status(session_id.clone()).await, StatusCode::UNAUTHORIZED);
+        access.set_passphrase_hash(Some(FIRST.to_string()));
+        assert_eq!(status(session_id).await, StatusCode::UNAUTHORIZED);
+        // A credential exchange carries no generation: rotation leaves it alone.
+        assert_eq!(status(admin_id).await, StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

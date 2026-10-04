@@ -1756,6 +1756,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             agent_id,
             role,
             model,
+            provider,
         } => Some(DashboardEvent::AgentSpawned {
             agent_id: agent_id.clone(),
             plan_id: String::new(),
@@ -1763,7 +1764,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             attempt: 0,
             role: role.clone(),
             model: dashboard_model_label(model, agent_id),
-            provider: String::new(),
+            provider: provider.clone().unwrap_or_default(),
         }),
         ServerEvent::AgentOutput {
             agent_id, content, ..
@@ -2237,11 +2238,13 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
             agent_id,
             role,
             model,
+            provider,
             ..
         } => Some(ServerEvent::AgentSpawned {
             agent_id: agent_id.clone(),
             role: role.clone(),
             model: model.clone(),
+            provider: (!provider.is_empty()).then(|| provider.clone()),
         }),
         DashboardEvent::AgentOutput {
             agent_id, content, ..
@@ -3629,6 +3632,45 @@ mod plan_set_event_mapping_tests {
         assert_eq!(gate_label_rung(&gate), Some(2));
         assert_eq!(gate_label_rung("verify[0]"), Some(0));
         assert_eq!(gate_label_rung("rung[compile]"), None);
+    }
+
+    /// gap-511268: an agent's provider label crosses the bridge both ways, and
+    /// an older emitter's payload without one still parses and stays without.
+    #[test]
+    fn agent_spawned_provider_survives_the_serve_bridge() {
+        let spawned = roko_core::DashboardEvent::AgentSpawned {
+            agent_id: "agent-1".into(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
+            role: "implementer".into(),
+            model: "claude-sonnet-4-6".into(),
+            provider: "claude-cli".into(),
+        };
+        let server = dashboard_event_to_server(&spawned).expect("reaches the server stream");
+        let wire = serde_json::to_value(&server).expect("serialize server event");
+        assert_eq!(wire["provider"], "claude-cli");
+        assert_eq!(server_event_to_dashboard(&server), Some(spawned));
+
+        let old: ServerEvent = serde_json::from_value(serde_json::json!({
+            "type": "agent_spawned",
+            "agent_id": "agent-2",
+            "role": "implementer",
+            "model": "gpt-oss-120b",
+        }))
+        .expect("an agent_spawned without a provider parses");
+        assert!(
+            matches!(old, ServerEvent::AgentSpawned { provider: None, .. }),
+            "{old:?}"
+        );
+        let wire = serde_json::to_value(&old).expect("serialize server event");
+        assert!(wire.get("provider").is_none(), "{wire}");
+        let Some(roko_core::DashboardEvent::AgentSpawned { provider, .. }) =
+            server_event_to_dashboard(&old)
+        else {
+            panic!("an agent_spawned reaches the dashboard");
+        };
+        assert!(provider.is_empty());
     }
 
     /// gap-8a1fb3: a one-shot run starts and ends the plan its task and agent

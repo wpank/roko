@@ -1,6 +1,6 @@
 {
-  "total_registrations": 469,
-  "canonical_registrations": 409,
+  "total_registrations": 470,
+  "canonical_registrations": 410,
   "alias_count": 60,
   "conflict_count": 0,
   "unparsed_count": 0,
@@ -447,7 +447,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/auth_session.rs",
-      "line": 282,
+      "line": 421,
       "router_fn": "routes",
       "path": "/api/auth/session",
       "method": "DELETE",
@@ -455,7 +455,15 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/auth_session.rs",
-      "line": 282,
+      "line": 421,
+      "router_fn": "routes",
+      "path": "/api/auth/session",
+      "method": "GET",
+      "handler": "session_probe"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/auth_session.rs",
+      "line": 421,
       "router_fn": "routes",
       "path": "/api/auth/session",
       "method": "POST",
@@ -1623,7 +1631,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/loops.rs",
-      "line": 294,
+      "line": 299,
       "router_fn": "require_admin",
       "path": "/learn/loops/{id}/fault",
       "method": "POST",
@@ -1631,7 +1639,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/loops.rs",
-      "line": 295,
+      "line": 300,
       "router_fn": "require_admin",
       "path": "/showcase/m2/loops/{id}/break",
       "method": "POST",

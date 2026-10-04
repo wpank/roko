@@ -686,6 +686,8 @@ pub struct LocalAccess {
     sessions: std::sync::Mutex<HashMap<String, SessionRecord>>,
     /// The showcase passphrase's Argon2id PHC string (`ROKO_SHOWCASE_PASSPHRASE_HASH`).
     passphrase_hash: std::sync::RwLock<Option<String>>,
+    /// Passphrase verification behind a bounded queue, made on the first login (9323).
+    login: std::sync::OnceLock<crate::showcase::auth::PassphraseVerifier>,
 }
 
 impl LocalAccess {
@@ -698,6 +700,7 @@ impl LocalAccess {
             launch_token_hash: launch_token.map(|t| crate::routes::middleware::hash_api_key(&t)),
             sessions: std::sync::Mutex::new(HashMap::new()),
             passphrase_hash: std::sync::RwLock::new(None),
+            login: std::sync::OnceLock::new(),
         }
     }
 
@@ -734,6 +737,12 @@ impl LocalAccess {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// The passphrase verifier, made on first use with `concurrency` slots (S11 §4.3).
+    pub fn login_verifier(&self, concurrency: u32) -> &crate::showcase::auth::PassphraseVerifier {
+        self.login
+            .get_or_init(|| crate::showcase::auth::PassphraseVerifier::new(concurrency as usize))
     }
 
     /// `hex(sha256(PHC))[..16]` of the installed passphrase hash (S11 §4.3).
@@ -2559,7 +2568,10 @@ mod tests {
         for secs in (5..100).step_by(5) {
             assert!(live(&busy, secs), "{secs}");
         }
-        assert_eq!(access.authenticate_session(&busy, at(100)), SessionLookup::Missing);
+        assert_eq!(
+            access.authenticate_session(&busy, at(100)),
+            SessionLookup::Missing
+        );
     }
 
     /// A capped scope drops its oldest session to make room; other scopes keep theirs.

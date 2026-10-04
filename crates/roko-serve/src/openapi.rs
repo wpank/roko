@@ -306,6 +306,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         retrieval_query,
         create_auth_session,
         end_auth_session,
+        probe_auth_session,
         affect_state_handler,
         list_agent_tokens,
         issue_agent_token,
@@ -1439,7 +1440,9 @@ doc_get!(retrieval_query, "/retrieval/query", "neuro");
     tag = "auth",
     responses(
         (status = 204, description = "Session created; `Set-Cookie` carries `roko_session`"),
-        (status = 401, description = "Missing or invalid credential", body = ApiErrorResponse)
+        (status = 401, description = "Missing or invalid credential", body = ApiErrorResponse),
+        (status = 403, description = "Showcase mode: no `X-Roko-CSRF: 1` or a foreign origin"),
+        (status = 429, description = "Showcase mode: the passphrase queue is full")
     )
 )]
 fn create_auth_session() {}
@@ -1450,6 +1453,15 @@ fn create_auth_session() {}
     responses((status = 204, description = "Session ended and its cookie cleared"))
 )]
 fn end_auth_session() {}
+#[utoipa::path(
+    get,
+    path = "/auth/session",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Whether the caller holds a live session", body = Value)
+    )
+)]
+fn probe_auth_session() {}
 
 // ── affect (gap-c50b85) ────────────────────────────────────────────────────────────
 doc_get!(affect_state_handler, "/affect/state", "affect");

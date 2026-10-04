@@ -637,10 +637,17 @@ fn expired_key_response() -> Response {
 /// The raw value is **never logged**; it is passed to [`crate::state::LocalAccess`]
 /// which hashes it before any comparison.
 fn extract_session_cookie(headers: &HeaderMap) -> Option<&str> {
+    extract_named_cookie(headers, "roko_session")
+}
+
+/// Extract the value of the cookie called `name` from the `Cookie` request header, as
+/// [`extract_session_cookie`] does for `roko_session`. Showcase mode names its own cookie.
+pub(crate) fn extract_named_cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     let cookie_str = headers.get("Cookie")?.to_str().ok()?;
     for part in cookie_str.split(';') {
-        let part = part.trim();
-        if let Some(value) = part.strip_prefix("roko_session=") {
+        if let Some((key, value)) = part.trim().split_once('=')
+            && key == name
+        {
             let value = value.trim();
             if !value.is_empty() {
                 return Some(value);
@@ -720,31 +727,63 @@ fn check_cookie_same_origin(req: &Request<Body>) -> Result<(), Response> {
 /// [`require_api_key`].
 ///
 /// The scope comes from the session's record (9322), never a fixed `admin`. A state-changing
-/// request must also pass the same-origin check.
+/// request must also pass the same-origin check; in showcase mode it carries the CSRF header from
+/// the exact public origin instead (S11 §4.3), and the cookie has the configured name.
 #[allow(clippy::result_large_err)]
 fn session_credential(state: &AppState, req: &Request<Body>) -> Result<AuthContext, Response> {
+    let config = state.load_roko_config();
+    let showcase = &config.showcase;
     let missing = || {
         ApiError::unauthorized("missing X-Api-Key header or Authorization bearer token")
             .into_response()
     };
-    let Some(session_id) = extract_session_cookie(req.headers()) else {
+    let cookie = crate::showcase::auth::session_cookie_name(&config);
+    let Some(session_id) = extract_named_cookie(req.headers(), cookie) else {
         return Err(missing());
     };
-    match state.local_access.authenticate_session(session_id, Utc::now()) {
+    let access = &state.local_access;
+    match access.authenticate_session(session_id, Utc::now()) {
         crate::state::SessionLookup::Live { scope, .. } => {
-            // Cookie auth on a state-changing request must satisfy the
-            // same-origin constraint before we grant access.
-            check_cookie_same_origin(req)?;
+            let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS)
+                && !is_websocket_upgrade(req.headers());
+            if !showcase.enabled {
+                // Cookie auth on a state-changing request must satisfy the
+                // same-origin constraint before we grant access.
+                check_cookie_same_origin(req)?;
+            } else if !safe {
+                let public_origin = showcase.public_origin.as_deref();
+                crate::showcase::auth::check_csrf_and_origin(req.headers(), public_origin)
+                    .map_err(showcase_forbidden)?;
+            }
             Ok(AuthContext {
                 method: AuthMethod::Session,
                 scope,
                 user_id: None,
             })
         }
-        crate::state::SessionLookup::Rotated | crate::state::SessionLookup::Missing => {
+        crate::state::SessionLookup::Rotated => {
+            append_auth_audit(
+                state,
+                crate::auth_audit::AuthAuditEvent::new(
+                    "session",
+                    crate::auth_audit::AuthAuditAction::GenerationChanged,
+                    format!("{} {}", req.method(), req.uri().path()),
+                    crate::auth_audit::AuthOutcome::Denied,
+                ),
+            );
             Err(missing())
         }
+        crate::state::SessionLookup::Missing => Err(missing()),
     }
+}
+
+/// `403 {"error": code}`: a showcase session request refused by its CSRF header or origin.
+fn showcase_forbidden(code: &'static str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        axum::Json(serde_json::json!({ "error": code })),
+    )
+        .into_response()
 }
 
 fn cookie_cross_origin_response() -> Response {

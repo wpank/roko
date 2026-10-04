@@ -2,7 +2,7 @@
 id = "gap-86286e"
 kind = "gap"
 title = "B3 (verify-depth floor) has no S5 ceiling field, unlike its B7/B8 siblings"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-core/config", "roko-learn/homeostasis"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "1a778a57c"
 source = "wave-10 follow-up reports 2026-10-04 (PK70 gap-fa4d4b)"
 discovered_from = "gap-fa4d4b; decision 8101 point c"
 anchors = ["crates/roko-core/src/config/harness_params.rs", "crates/roko-learn/src/homeostasis/controller.rs::SafetyBox"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn b3_is_bounded_by_the_s5_verify_depth_ceiling' crates/roko-learn/ && cargo test -p roko-learn b3_is_bounded_by_the_s5_verify_depth_ceiling"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T10:30:45Z"
+commit = "1a778a57c"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T08:39:32Z"
+forced = false
+evidence = "Gate 16b (merged 1a778a57c): verify b3_is_bounded_by_the_s5_verify_depth_ceiling passes. viability.toml verify.max_floor (default V4, so existing policies are unchanged) caps B3, and the SafetyBox raises FloorAboveMax for any change above it; the property test runs under a V3 ceiling. S06's gates.max_rung wording is queued as a spec fix."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-73c98e"
 kind = "gap"
 title = "Inline B1/B3 audit checks are capped per-audit but never reach task/plan budgets or cost rows"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/audit"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "1a778a57c"
 source = "wave-10 follow-up reports 2026-10-04 (PK64 gap-2e4a81)"
 discovered_from = "gap-2e4a81"
 anchors = ["crates/roko-cli/src/audit/worker.rs::CheckOutcome", "crates/roko-cli/src/graph_task_dispatch/budget.rs::record_task_spend"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn inline_audit_check_spend_reaches_a_cost_row' crates/roko-cli/ && cargo test -p roko-cli inline_audit_check_spend_reaches_a_cost_row"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T10:30:44Z"
+commit = "1a778a57c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T08:39:31Z"
+forced = false
+evidence = "Gate 16b (merged 1a778a57c): verify inline_audit_check_spend_reaches_a_cost_row passes. CheckOutcome carries each model call; after each inline DP3 check the calls go through record_task_spend, the plan cost-ledger settle and a cost plus efficiency row (role audit). Inline checks charge the audited task's budget; the worker's sampled audits stay on the audit line (queued for the filer)."
 +++
 
 ## Problem

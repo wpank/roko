@@ -2,7 +2,7 @@
 id = "bug-eadcc4"
 kind = "bug"
 title = "Shakedown D1 flaked once under load: attempt 2's proxy row likely misattributed to attempt 1's window"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "1a778a57c"
 source = "wave-14 follow-up reports 2026-10-04 (gate 14b full bench run)"
 discovered_from = "gate 14b bench run (flaked once; passed alone and at gates 13c/14a/15a)"
 anchors = ["benchmarks/viabilitybench/driver/run_roko.py::settle", "benchmarks/viabilitybench/driver/test_shakedown.py::test_shakedown_d1_blank_answer_does_not_isolate_the_task"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_delayed_episode_write_does_not_misattribute_a_later_proxy_row' benchmarks/viabilitybench/driver/test_run_roko.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_roko.py -q -k test_delayed_episode_write_does_not_misattribute_a_later_proxy_row"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T10:30:43Z"
+commit = "1a778a57c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T08:39:29Z"
+forced = false
+evidence = "Gate 16b (merged 1a778a57c): verify test_delayed_episode_write_does_not_misattribute_a_later_proxy_row passes; bench suite 743 passed, shakedown included. _meter_from_proxy caps an attempt's window end at the next attempt's verdict-sourced start, so a late episode write can't claim the next attempt's proxy rows; proxy_diagnostic records ends/starts/proxy timestamps for any future no_proxy_traffic flag."
 +++
 
 ## Problem

@@ -28,7 +28,7 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 - **P2** [bug-2410e1](items/bug-2410e1-a-resumed-run-in-a-new-process.md) A resumed run in a new process redraws its chains' arm sets; --srm has no row for per-section bandit draws [bug] · size M · verified 2026-10-03
 - **P2** [spec-65c828](items/spec-65c828-backlog-phase-1-safe-runs.md) Backlog Phase 1 — safe runs [spec] · verified 2026-10-02
 
-_12 more open · on hold: gap-3698cd · `goal = "truth"`_
+_10 more open · on hold: gap-3698cd · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -44,7 +44,7 @@ _1 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRI
 - **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-03
 - **P2** [gap-a2f86a](items/gap-a2f86a-f7-s-in-tree-cargo-target-build.md) F7's in-tree .cargo-target build directory lands in commit_final's archived c_i · size S · verified 2026-10-02
 
-_16 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e, gap-eabd7f · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e, gap-eabd7f · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -52,7 +52,7 @@ _16 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-39
 - **P2** [bug-78e5ce](items/bug-78e5ce-active-mode-m3-router-pick-hides-the.md) Active-mode M3: router_pick hides the self-model's pick, streaming dispatch skips forecasting, early-climb eligibility may be stale [bug] · size M · verified 2026-10-03
 - **P2** [spec-446a41](items/spec-446a41-backlog-phase-4-loops-re-closed-s02.md) Backlog Phase 4 — loops re-closed (S02) [spec] · verified 2026-10-02
 
-_28 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_27 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

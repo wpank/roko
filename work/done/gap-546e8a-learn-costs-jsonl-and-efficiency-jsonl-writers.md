@@ -2,7 +2,7 @@
 id = "gap-546e8a"
 kind = "gap"
 title = "learn/costs.jsonl and efficiency.jsonl writers don't emit api_equiv_usd, so the historical cost fold still falls back to cost_usd"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "1a778a57c"
 source = "wave-14 follow-up reports 2026-10-04 (gap-e73a26, gate 15a)"
 discovered_from = "gap-e73a26 (closed; own evidence names this follow-up, 'queued for the filer')"
 anchors = ["crates/roko-learn/src/costs_db.rs::CostRecord", "crates/roko-learn/src/efficiency.rs::AgentEfficiencyEvent"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn costs_and_efficiency_rows_carry_api_equiv_usd' crates/roko-learn/ && cargo test -p roko-learn costs_and_efficiency_rows_carry_api_equiv_usd"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T10:30:43Z"
+commit = "1a778a57c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T08:39:30Z"
+forced = false
+evidence = "Gate 16b (merged 1a778a57c): verify costs_and_efficiency_rows_carry_api_equiv_usd passes. CostRecord and AgentEfficiencyEvent carry optional api_equiv_usd and price_snapshot_id (old rows parse; unpriced rows serialize unchanged); Graph dispatch and helper calls fill them from the settled cost, so the homeostasis fold reads API-rate costs. Gate fix f71b5de93 (inline audit-check calls priced the same way)."
 +++
 
 ## Problem

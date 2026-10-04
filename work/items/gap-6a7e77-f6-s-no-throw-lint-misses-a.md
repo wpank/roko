@@ -91,3 +91,28 @@ mention this regex gap anywhere in its body.
   anti-gaming check has a bypass), not a production safety or correctness defect.
 - Keep `_strip_noise`'s other three forms (line comment, block comment, plain string) as they are; only the
   template-literal alternative needs the fix.
+
+## Progress
+
+- Went with the regex-tightening option (Plan step 1's first alternative), not a tokenizer: a two-level bounded
+  brace-matcher (`_INTERPOLATION_RE`) handles a block body like the bug's own example
+  (`` `${(() => { throw new X(); })()}` ``, two nested `{}` levels) without a new dependency or a parser.
+- `_TEMPLATE_RE` matches a whole template literal (plain text, escapes, a bare `$` not starting an
+  interpolation, or a full bounded `${...}` span) the same way the old single alternative did, so it still finds
+  the literal's real end; `_template_interpolations` (a `re.sub` callback, not a plain string) then replaces the
+  whole match with just its interpolations' own inner text, space-joined, discarding the backticks and plain
+  text as before. The existing comment/string pass (`_NOISE_RE`, template alternative removed) then runs on that
+  result exactly as it did before, so a plain string *inside* an interpolation (e.g. `${"throw"}`, already in
+  the existing clean fixture) is still correctly stripped, not mistaken for code.
+- Added `test_throw_inside_template_interpolation_is_detected` (mirrors
+  `test_the_no_throw_lint_ignores_comments_and_strings`'s clean/dirty pattern): a clean file with a no-throw
+  interpolation and a `${"throw"}`-the-string case stays clean; adding the bug's own example (`` `bad input:
+  ${(() => { throw new Error("x"); })()}` ``) flips it. Verified the test is load-bearing by reverting both the
+  `_NOISE_RE` template alternative and `_strip_noise` to their pre-fix form and re-running: fails with exactly
+  the reported false negative, then passes restored.
+- Checked the blast radius: nothing outside `families/f6_tsresult/` imports it, so `test_f6.py`'s own suite (7
+  passed, node on PATH) is the whole one. Also hand-verified 12 before/after cases (comments, both quote styles,
+  a bare `$`, an embedded apostrophe, a throw after an interpolation) against the regex directly before touching
+  the real file, including the exact existing clean fixture line (`` `...${"throw"}...` ``) to confirm no
+  regression there specifically.
+- Verify: named `[[verify]]` command -> 1 passed. Full `families/f6_tsresult/test_f6.py`: 7 passed.

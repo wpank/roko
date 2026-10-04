@@ -441,6 +441,46 @@ allow = [
         assert!(toml::from_str::<ShowcaseConfig>("enable = true").is_err());
     }
 
+    /// 9334: `docker/showcase.roko.toml`, the deploy's configuration, loads with no unknown key and
+    /// no invariant problem, and says what S11 §4.7 says.
+    #[test]
+    fn showcase_example_config_loads_without_unknown_keys() {
+        const DEPLOY: &str = include_str!("../../../../docker/showcase.roko.toml");
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("roko.toml"), DEPLOY).expect("write roko.toml");
+        let options = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let loaded = load_config_validated_with_options(dir.path(), &options).expect("load");
+
+        let problems: Vec<_> = loaded
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.message.contains("unknown")
+                    || diagnostic.key.starts_with("showcase")
+                    || diagnostic.key.starts_with("serve")
+            })
+            .collect();
+        assert!(problems.is_empty(), "{problems:?}");
+        let value: toml::Value = toml::from_str(DEPLOY).expect("parse the file");
+        let unknown = crate::config::loader::validate_known_config_paths(&value);
+        assert!(unknown.is_empty(), "{unknown:?}");
+        let config = loaded.config();
+        assert!(config.showcase.enabled);
+        assert!(!config.showcase.live_enabled);
+        assert!(!config.showcase.portal_mounted);
+        assert!(config.serve.auth.enabled);
+        assert!(!config.serve.terminal_enabled);
+        assert_eq!(config.serve.public_routes, ["health", "ready"]);
+        assert_eq!(config.showcase.idle.exit_after_secs, 1_200);
+        assert!(config.showcase.problems().is_empty());
+    }
+
     /// The section's checks, through `validate_invariants` too.
     #[test]
     fn showcase_problems_name_their_keys() {

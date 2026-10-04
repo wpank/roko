@@ -315,3 +315,29 @@ def test_setup_refuses_an_api_key_login_flaky_verify_and_a_missing_codex(places,
     assert link == Path(env["HOME"]) / ".vb-bin" / "fakenode"
     assert link.resolve() == (script.parent / "fakenode").resolve()
     assert run_codex.interpreter_link(program, env) is None  # python3 is on the session's PATH already
+
+
+def test_rotated_refresh_token_prints_a_login_warning(places, login, capsys):
+    """gap-ba5006: a session that refreshes its Codex login rotates the refresh token inside its own sandboxed
+    copy, never the operator's real ~/.codex (the canonical home is sandboxed out, so it never moves to compare).
+    A changed fingerprint between seeding and settlement prints a warning naming the cause, never the tokens
+    themselves; unchanged or unreadable prints nothing -- that is "unknown", not "proof it did not rotate"."""
+    codex_home = places["tmp"] / "session-codex"
+    run_codex._seed_codex_home(codex_home)
+    seeded = run_codex.login_fingerprint(codex_home)
+    assert seeded is not None
+
+    run_codex._warn_if_login_rotated(seeded, run_codex.login_fingerprint(codex_home))
+    assert capsys.readouterr().err == ""  # unchanged: silent
+
+    rotated = {**LOGIN, "OPENAI_API_KEY": None, "tokens": {**LOGIN["tokens"], "refresh_token": "fake-refresh-2"}}
+    (codex_home / "auth.json").write_text(json.dumps(rotated))
+    run_codex._warn_if_login_rotated(seeded, run_codex.login_fingerprint(codex_home))
+    err = capsys.readouterr().err
+    assert "run_codex:" in err and "codex login" in err
+    for token in ("fake-refresh", "fake-refresh-2", LOGIN["tokens"]["access_token"]):
+        assert token not in err  # the warning names the cause, never a token
+
+    (codex_home / "auth.json").unlink()
+    run_codex._warn_if_login_rotated(seeded, run_codex.login_fingerprint(codex_home))
+    assert capsys.readouterr().err == ""  # unreadable afterward: silent, not a false "it rotated"

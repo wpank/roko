@@ -1365,6 +1365,11 @@ pub struct ContentDecisionRecord {
     /// of the attempt carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arm_set: Option<crate::loop_audit::arm_set::ArmSet>,
+    /// The section bandit's draws at the `sections` point (S02 L9): each
+    /// droppable section's exclusion probability and whether the prompt left
+    /// it out, which `--srm` checks section by section; empty elsewhere.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section_draws: Vec<crate::section_effect::SectionDecision>,
     /// What each policy proposed (A-DEC); `None` on rows written before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposals: Option<ContentProposals>,
@@ -2545,6 +2550,7 @@ mod tests {
             state: Some(state),
             thresholds_digest: None,
             arm_set: None,
+            section_draws: Vec::new(),
             proposals: None,
             audit: Default::default(),
         };

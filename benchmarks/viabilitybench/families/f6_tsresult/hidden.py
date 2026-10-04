@@ -57,9 +57,15 @@ TSC_TIMEOUT_S = 60.0
 DENSITY = {"low": 4, "medium": 8, "high": 14, "high_differential": 22}
 # Comments, block comments, template literals and quoted strings, stripped before the no-throw lint runs, so a
 # string or a comment that merely mentions "throw" is not mistaken for the keyword. DOTALL: a block comment or a
-# template literal may span lines.
-_NOISE_RE = re.compile(r"//[^\n]*|/\*.*?\*/|`(?:[^`\\]|\\.)*`|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'", re.DOTALL)
+# template literal may span lines. A template literal's own `${...}` interpolations are code, not noise, unlike
+# its backticks and plain text (gap-6a7e77): _strip_noise replaces each literal with just its interpolations'
+# own text first, so a `throw` hidden inside one -- `` `bad: ${(() => { throw new X(); })()}` `` -- is still
+# found. _INTERPOLATION_RE tracks up to two levels of `{...}` nested inside `${...}`, enough for a block body
+# like that one without a full tokenizer (impractical for arbitrarily deep nesting, per the item's own notes).
+_NOISE_RE = re.compile(r"//[^\n]*|/\*.*?\*/|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'", re.DOTALL)
 _THROW_RE = re.compile(r"\bthrow\b")
+_INTERPOLATION_RE = re.compile(r"\$\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}")
+_TEMPLATE_RE = re.compile(r"`(?:[^`\\$]|\\.|\$(?!\{)|" + _INTERPOLATION_RE.pattern + r")*`", re.DOTALL)
 
 # Runs in the export. Reads the job on stdin: the export's root and the hidden cases. Imports inventory.ts and
 # errors/index.ts by absolute path (type stripping needs no project context) and prints one JSON result line
@@ -93,8 +99,14 @@ process.stdout.write("\n" + job.nonce + JSON.stringify(out) + "\n");
 '''
 
 
+def _template_interpolations(match: re.Match) -> str:
+    """One template literal's own `${...}` interpolations, space-joined and stripped of their braces -- the rest
+    of the literal (backticks, plain text) is noise, the same as a plain string with nothing to execute."""
+    return " ".join(interpolation[2:-1] for interpolation in _INTERPOLATION_RE.findall(match.group(0)))
+
+
 def _strip_noise(text: str) -> str:
-    return _NOISE_RE.sub(" ", text)
+    return _NOISE_RE.sub(" ", _TEMPLATE_RE.sub(_template_interpolations, text))
 
 
 def domain_has_throw(export: Path) -> bool:

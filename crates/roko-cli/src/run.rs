@@ -654,6 +654,9 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
             frozen_learning: false,
             no_holdout: run.no_holdout,
             metrics: None,
+            // A chat host's run holds outbound effects whatever its plan says
+            // (gap-1a4563).
+            outbound_floor: crate::graph_execution::outbound_floor(&run.origin),
         },
         Some(run_id.clone()),
     )

@@ -37,6 +37,7 @@ use crate::loop_audit::arm_set::{
 };
 use crate::loop_audit::cs::SrmEvalue;
 use crate::routing_log::{ROUTE_DECISION_POINT, RoutingDecisionLog};
+use crate::section_effect::SectionDecision;
 
 /// The source [`route_report`] files an attempt under when no route
 /// decision names one: an attempt that never routed (a T0 reflex, a harness
@@ -811,6 +812,27 @@ pub struct SrmLayer {
     pub problems: Vec<String>,
 }
 
+/// One droppable section's bandit draws in the sample-ratio check (S02
+/// L9): how often the chains that drew it left it out, against the
+/// exclusion probabilities they logged.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SrmSection {
+    /// The section, e.g. `conventions`.
+    pub section: String,
+    /// Chains that drew it, once each, with their first draw.
+    pub units: usize,
+    /// Of those, the draws that left it out.
+    pub excluded: usize,
+    /// The exclusions the draws' logged probabilities expect: Σ p_ex.
+    pub expected_excluded: f64,
+    /// The sequential SRM e-value (S03 §4.5) of the draws against their
+    /// p_ex, capped at `f64::MAX`.
+    pub e_value: f64,
+    /// Whether the e-value reached 1/[`SRM_ALPHA`], or a draw took an
+    /// outcome its p_ex gives no chance.
+    pub mismatch: bool,
+}
+
 /// What `roko learn telemetry check --srm` prints.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct SrmReport {
@@ -820,6 +842,8 @@ pub struct SrmReport {
     pub alpha: f64,
     /// One entry per layer, by layer name.
     pub layers: Vec<SrmLayer>,
+    /// One entry per section the section bandit drew, by section name.
+    pub sections: Vec<SrmSection>,
     /// Chains left out, by condition: `maximize` withholds nothing and
     /// `forced` pins arms, so neither draws as its h and g say.
     pub excluded: BTreeMap<String, usize>,
@@ -847,6 +871,17 @@ impl SrmReport {
             for problem in &layer.problems {
                 failures.push(format!("{}: {problem}", layer.layer));
             }
+        }
+        for section in self.sections.iter().filter(|section| section.mismatch) {
+            failures.push(format!(
+                "section `{}`: the bandit left it out in {} of {} draw(s), {:.1} expected \
+                 (e-value {:.3e})",
+                section.section,
+                section.excluded,
+                section.units,
+                section.expected_excluded,
+                section.e_value
+            ));
         }
         for row in &self.unreadable {
             failures.push(format!("arms without a readable attempt key: {row}"));
@@ -876,6 +911,10 @@ impl SrmReport {
 /// since a retry must keep its chain's arms. Chains in the `maximize` and
 /// `forced` conditions are left out; a placebo row takes its chain's
 /// condition from the run's other rows.
+///
+/// The section bandit's draws (S02 L9), which the `sections` rows carry,
+/// are checked section by section: each chain's first draw of a section
+/// against its logged exclusion probability (bug-2410e1).
 #[must_use]
 pub fn srm_check(runs: &[RunRecords]) -> SrmReport {
     let mut tally = SrmTally::default();
@@ -887,10 +926,16 @@ pub fn srm_check(runs: &[RunRecords]) -> SrmReport {
         .iter()
         .map(|(layer, draws)| srm_layer(layer, draws, tally.redrawn.get(layer)))
         .collect();
+    let sections = tally
+        .sections
+        .iter()
+        .map(|(section, draws)| srm_section(section, draws))
+        .collect();
     SrmReport {
         runs: runs.iter().map(|run| run.run_id.clone()).collect(),
         alpha: SRM_ALPHA,
         layers,
+        sections,
         excluded: tally
             .excluded
             .into_iter()
@@ -908,6 +953,9 @@ struct SrmTally {
     draws: BTreeMap<String, BTreeMap<String, Assignment>>,
     /// Units whose rows carry another draw, by layer.
     redrawn: BTreeMap<String, BTreeSet<String>>,
+    /// Each chain's first draw of a section by the section bandit, by
+    /// section and chain key.
+    sections: BTreeMap<String, BTreeMap<String, SectionDecision>>,
     /// Chains left out, by condition.
     excluded: BTreeMap<String, BTreeSet<String>>,
     /// Decision rows without arms.
@@ -938,6 +986,13 @@ impl SrmTally {
                     rows.push((record.identity.attempt_key.as_str(), arms, Some(point)));
                 }
                 None => self.unassigned += 1,
+            }
+            for draw in &record.section_draws {
+                self.sections
+                    .entry(draw.section.clone())
+                    .or_default()
+                    .entry(record.identity.chain_key.clone())
+                    .or_insert_with(|| draw.clone());
             }
         }
         // A run draws every chain's arms in one mode, so a placebo row whose
@@ -1009,6 +1064,30 @@ impl SrmTally {
                 .or_default()
                 .insert(unit);
         }
+    }
+}
+
+/// The check of `section`'s bandit draws, one per chain: a two-outcome
+/// e-value of each draw, kept or left out, against its logged p_ex.
+fn srm_section(section: &str, draws: &BTreeMap<String, SectionDecision>) -> SrmSection {
+    let mut srm = SrmEvalue::new(2);
+    let (mut excluded, mut expected_excluded) = (0, 0.0);
+    let mut impossible = false;
+    for draw in draws.values() {
+        let p_ex = draw.p_exclude.clamp(0.0, 1.0);
+        let chance = if draw.excluded { p_ex } else { 1.0 - p_ex };
+        impossible |= chance <= 0.0;
+        srm.push(usize::from(draw.excluded), &[1.0 - p_ex, p_ex]);
+        excluded += usize::from(draw.excluded);
+        expected_excluded += p_ex;
+    }
+    SrmSection {
+        section: section.to_string(),
+        units: draws.len(),
+        excluded,
+        expected_excluded,
+        e_value: srm.e_value().min(f64::MAX),
+        mismatch: impossible || srm.rejects(SRM_ALPHA),
     }
 }
 
@@ -1502,6 +1581,7 @@ mod tests {
             state: None,
             thresholds_digest: None,
             arm_set: None,
+            section_draws: Vec::new(),
             proposals: None,
             audit: Default::default(),
         }
@@ -1788,6 +1868,58 @@ mod tests {
             .collect();
         assert_eq!(excluded, [(FORCED_CONDITION, 1), (MAXIMIZE_CONDITION, 1)]);
         assert_eq!(report.unassigned, 1);
+    }
+
+    /// bug-2410e1 (S02 L9): `--srm` checks each section the section bandit
+    /// drew, one draw per chain, against the exclusion probabilities the
+    /// sections rows logged. 400 chains that leave `conventions` out at
+    /// p_ex = 0.2 pass with 80 exclusions, and 160 is a mismatch; a retry's
+    /// row with the same draw counts once.
+    #[test]
+    fn srm_check_reports_each_sections_bandit_draws() {
+        let draw = |excluded: bool| SectionDecision {
+            section: "conventions".to_string(),
+            p_exclude: 0.2,
+            excluded,
+            propensity: if excluded { 0.2 } else { 0.8 },
+        };
+        let stream = |left_out: usize| {
+            let mut run = empty_run();
+            for index in 0..400 {
+                for attempt in 1..=2 {
+                    let mut record = knowledge_decision(&format!("T{index}"), attempt);
+                    record.decision_point = ContentDecisionPoint::Sections;
+                    record.section_draws = vec![draw(index < left_out)];
+                    run.content_decisions.push(stamped(record));
+                }
+            }
+            run
+        };
+
+        let even = srm_check(&[stream(80)]);
+        assert_eq!(even.failures(), Vec::<String>::new());
+        let rows: Vec<(&str, usize, usize)> = even
+            .sections
+            .iter()
+            .map(|row| (row.section.as_str(), row.units, row.excluded))
+            .collect();
+        assert_eq!(rows, [("conventions", 400, 80)]);
+        let section = &even.sections[0];
+        assert!(
+            (section.expected_excluded - 80.0).abs() < 1e-9,
+            "{section:?}"
+        );
+        assert!(!section.mismatch && section.e_value < 1.0, "{section:?}");
+
+        let skewed = srm_check(&[stream(160)]);
+        let section = &skewed.sections[0];
+        assert!(section.mismatch, "{section:?}");
+        let failures = skewed.failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].starts_with("section `conventions`: the bandit left it out in 160 of 400"),
+            "{failures:?}"
+        );
     }
 
     /// A retry that redraws, a propensity its h and g do not give, an arm

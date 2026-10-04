@@ -1,8 +1,14 @@
+# Superseded (bug-261c02): execute_plan (now crates/roko-serve/src/routes/plans/run_control.rs, moved and renamed
+# from plans.rs by a later refactor) already calls the graph engine via start_plan_run, not run_once -- T01's goal
+# (confirmed: "The Graph run settles the plan itself. Publish PlanCompleted...", run_control.rs:622). Live
+# DashboardEvent forwarding (T02's goal) is also done, by a standing bridge (runtime_event_bridge.rs) rather than
+# T02's per-request sibling task. Marked done/superseded rather than patched: its line ranges are not just stale,
+# the functions they named (find_plan, build_plan_execution_prompt) no longer exist under those names at all.
 [meta]
 plan = "wire-http-plan-execute"
 total = 3
-done = 0
-status = "ready"
+done = 3
+status = "done"
 skip_enrichment = true
 estimated_total_minutes = 30
 
@@ -60,7 +66,8 @@ Steps:
 4. Map the `PlanExecutionResult` to success/failure the same way the old code did
    with `RunResult`.
 5. Ensure the file still compiles with `cargo check -p roko-serve`."""
-status = "ready"
+status = "done"
+superseded_by = "run_control.rs::start_plan_run (the graph-engine-by-default refactor)"
 tier = "focused"
 max_loc = 60
 files = [
@@ -170,7 +177,8 @@ Steps:
    `CancelToken` already attached to the `PlanHandle`, or a new local
    `tokio::sync::oneshot` channel — whichever avoids leaking the background task.
 4. Ensure `cargo check -p roko-serve` passes."""
-status = "ready"
+status = "done"
+superseded_by = "runtime_event_bridge.rs (a standing bridge, not a per-request forwarding task)"
 tier = "focused"
 max_loc = 80
 files = [
@@ -250,7 +258,8 @@ Create `plans/wire-http-plan-execute/REVIEW.md` with sections:
 
 Verdict must be `PASS` or `FAIL`. Reference specific line numbers or symbol
 names from the implementation. Do not modify any source file."""
-status = "ready"
+status = "done"
+superseded_by = "T01 and T02's own superseded_by; nothing left for this review to confirm against"
 tier = "integrative"
 max_loc = 100
 files = [

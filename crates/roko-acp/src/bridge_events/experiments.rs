@@ -13,6 +13,7 @@ use roko_learn::{
     model_router::RoutingContext,
     prompt_experiment::{
         AssignmentSettlement, ExperimentStatus, ExperimentStore, PromptAttemptKey,
+        PromptExperimentAssignment,
     },
     provider_health::ProviderHealthRegistry,
 };
@@ -35,7 +36,8 @@ pub(crate) struct AcpExperimentAssignment {
     pub(crate) content: String,
     pub(crate) model_slug: Option<String>,
     /// P1-21: Durable receipt key for the canonical experiment lifecycle.
-    /// Populated when `prepare_attempt_assignments` succeeds.
+    /// Populated when `prepare_attempt_assignments` drew this dispatch's
+    /// variant (bug-a3f005); `None` records the outcome directly.
     pub(crate) attempt_key: Option<PromptAttemptKey>,
     /// Assignment IDs returned by `prepare_attempt_assignments`, needed by
     /// `mark_attempt_dispatched` to record the exact included subset.
@@ -49,10 +51,16 @@ pub(crate) fn experiment_store_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Select one running experiment deterministically for this ACP role.
+/// Select one running experiment deterministically for this ACP role, and
+/// the variant this dispatch serves.
 ///
 /// The persisted map is intentionally sorted before selection so HashMap
 /// iteration order cannot change which experiment receives an ACP turn.
+///
+/// The variant is drawn once, by the dispatch's durable receipt, and ACP
+/// serves, marks dispatched and settles that one variant (bug-a3f005).
+/// Without a receipt, ACP serves the experiment's unkeyed variant, its
+/// control, and records the outcome directly.
 pub(crate) fn assign_acp_experiment(
     path: &Path,
     mode: &str,
@@ -73,43 +81,74 @@ pub(crate) fn assign_acp_experiment(
         .collect::<Vec<_>>();
     experiments.sort_by(|left, right| left.experiment_id.cmp(&right.experiment_id));
     let experiment = experiments.first()?;
-    let variant = experiment.assign_variant()?;
 
     // P1-21: Prepare a durable receipt key so ACP dispatches participate in
     // the canonical experiment lifecycle. Use session_id as run_id, "acp" as
-    // plan_id, and the mode as task_id.
-    let attempt_key = PromptAttemptKey::new(session_id, "acp", mode, 1);
-    let prepare_result = ExperimentStore::prepare_attempt_assignments(
+    // plan_id, the mode as task_id, and the dispatch as the attempt, so each
+    // dispatch gets its own draw and its own settlement (bug-a3f005).
+    let attempt = store.next_attempt_for(session_id, "acp", mode);
+    let attempt_key = PromptAttemptKey::new(session_id, "acp", mode, attempt);
+    match ExperimentStore::prepare_attempt_assignments(
         path,
         &attempt_key,
         Some(role),
         &[experiment.section_name.as_str()],
-    );
-    let (attempt_key, prepared_assignment_ids) = match prepare_result {
-        Ok(assignments) => {
-            let ids = assignments
-                .iter()
-                .map(|a| a.assignment_id.clone())
-                .collect::<Vec<_>>();
-            (Some(attempt_key), ids)
+    ) {
+        Ok(receipts) => {
+            if let Some(served) = served_from_receipts(&store, attempt_key, &receipts) {
+                return Some(served);
+            }
         }
         Err(err) => {
             tracing::debug!(
                 error = %err,
                 "P1-21: ACP experiment receipt preparation failed (non-fatal)"
             );
-            (None, Vec::new())
         }
-    };
+    }
 
+    let variant = experiment.assign_variant()?;
     Some(AcpExperimentAssignment {
         experiment_id: experiment.experiment_id.clone(),
         variant_id: variant.id.clone(),
         section_name: experiment.section_name.clone(),
         content: variant.content.clone(),
         model_slug: variant.slug.clone().filter(|slug| !slug.trim().is_empty()),
-        attempt_key,
-        prepared_assignment_ids,
+        attempt_key: None,
+        prepared_assignment_ids: Vec::new(),
+    })
+}
+
+/// What a dispatch serves from its receipts: the experiment and variant the
+/// receipt drew, with the content it snapshotted, so that the variant ACP
+/// serves is the one it settles (bug-a3f005). `None` without a receipt for a
+/// variant of a known experiment.
+fn served_from_receipts(
+    store: &ExperimentStore,
+    attempt_key: PromptAttemptKey,
+    receipts: &[PromptExperimentAssignment],
+) -> Option<AcpExperimentAssignment> {
+    let receipt = receipts.first()?;
+    let variant = store
+        .get(&receipt.experiment_id)?
+        .variants
+        .iter()
+        .find(|variant| variant.id == receipt.variant_id)?;
+    let content = receipt
+        .content_snapshot
+        .clone()
+        .unwrap_or_else(|| variant.content.clone());
+    Some(AcpExperimentAssignment {
+        experiment_id: receipt.experiment_id.clone(),
+        variant_id: receipt.variant_id.clone(),
+        section_name: receipt.section_name.clone(),
+        content,
+        model_slug: variant.slug.clone().filter(|slug| !slug.trim().is_empty()),
+        attempt_key: Some(attempt_key),
+        prepared_assignment_ids: receipts
+            .iter()
+            .map(|prepared| prepared.assignment_id.clone())
+            .collect(),
     })
 }
 

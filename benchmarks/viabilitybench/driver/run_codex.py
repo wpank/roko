@@ -13,7 +13,10 @@ measure that setup rather than Codex (W10). Every session gets:
   of the operator's `auth.json` (from `$CODEX_HOME`, else `~/.codex`; the scrubbed `vb run` keeps only the latter),
   with any API key in it dropped, so Codex can only use the subscription. A same-uid agent can read that copy, as it
   can Claude Code's `credentials_file` copy. Codex refreshes an expired login inside the copy; a refresh that
-  rotates the refresh token can leave the operator's own login stale, which `codex login` then renews;
+  rotates the refresh token can leave the operator's own login stale, which `codex login` then renews. The
+  canonical home is never written during a session (sandboxed out, `denied`), so nothing there moves to compare;
+  instead `_run_confined` fingerprints the copy's own tokens (`login_fingerprint`) just after seeding it and
+  again once the session ends, and a mismatch prints a warning naming the cause (gap-ba5006), never the tokens;
 - `--ignore-user-config` and `--ignore-rules`: no config.toml and no execpolicy rules load, even if one appears;
 - `-c web_search="disabled"` (gap-f253cf): no web search tool. The repository is public, so a search could return
   a truth suite, and Codex's search runs on OpenAI's side, where the egress proxy cannot see it. Codex names no
@@ -73,6 +76,7 @@ API:
     price_turns(usages, models, snapshot, pinned) -> tuple[dict | None, ledger.Cost, list[str]]
     rollout(codex_home) -> Rollout; cli_version(program, env) -> str | None
     operator_home() -> Path; home_digest(path) -> str; interpreter_link(program, env) -> Path | None
+    login_fingerprint(codex_home) -> str | None
     ancestor_instructions(workdir) -> list[Path]
     PROMPT_VERSION, PROMPT_SHA256, DEFAULT_ALLOW
 """
@@ -85,6 +89,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -203,6 +208,7 @@ def _run_confined(ctx: harness.TaskContext, cli: CodexConfig, proxy: egress.Egre
         invocation = build_invocation(ctx, cli, proxy)
     except (run_cli.CliError, OSError, agent_env.AgentEnvError) as err:
         return harness.TaskOutcome("infra_error", f"codex setup: {err}", [], transcript, started, harness.utc_now())
+    seeded_login = login_fingerprint(invocation.config_dir)  # gap-ba5006: the copy's own tokens, just seeded
     version = cli_version(invocation.argv[0], invocation.env)
     attempt = run_cli.CliAttempt(number=1, attempt_key=f"{ctx.chain_key}:1", model_requested=ctx.model,
                                  provider=ctx.endpoint.provider,
@@ -214,6 +220,7 @@ def _run_confined(ctx: harness.TaskContext, cli: CodexConfig, proxy: egress.Egre
         return harness.TaskOutcome("aborted_cap", "budget", [], transcript, started, harness.utc_now())
     session = run_cli.run_session(invocation, prompt, cwd=ctx.workdir, wallclock_s=ctx.caps.wallclock_s,
                                   usd_cap=ctx.caps.usd_per_task, meter=Meter(ctx.snapshot, ctx.model))
+    _warn_if_login_rotated(seeded_login, login_fingerprint(invocation.config_dir))
     status, reason = status_of(session)
     transcript += [{"attempt": 1, "stream": event} for event in session.events]
     if session.stop:
@@ -372,6 +379,30 @@ def home_digest(path: Path) -> str:
         else:
             entries[name] = "login" if item.name == AUTH_FILE else hashlib.sha256(item.read_bytes()).hexdigest()
     return records.canonical_hash(entries)
+
+
+def login_fingerprint(codex_home: Path) -> str | None:
+    """A hash of a Codex home's login tokens, or None when `auth.json` is missing, unreadable or holds no
+    `tokens` dict. Only to tell whether a refresh rotated them (gap-ba5006) -- never logged or compared to
+    anything outside this process, and never the tokens themselves."""
+    try:
+        login = json.loads((Path(codex_home) / AUTH_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    tokens = login.get("tokens") if isinstance(login, dict) else None
+    if not isinstance(tokens, dict):
+        return None
+    return hashlib.sha256(json.dumps(tokens, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _warn_if_login_rotated(seeded: str | None, settled: str | None) -> None:
+    """gap-ba5006: prints a login warning when the session's own token fingerprint moved between seeding and
+    settlement -- Codex refreshed inside the sandboxed copy, which can leave the operator's real login stale
+    (module docstring). Silent when either fingerprint is unavailable: that is "unknown", not "unchanged"."""
+    if seeded is not None and settled is not None and seeded != settled:
+        print("run_codex: this session's Codex login was refreshed, which may have rotated the operator's "
+             "refresh token; if a later `codex` command reports a stale login, run `codex login` again",
+             file=sys.stderr)
 
 
 def interpreter_link(program: Path, env: Mapping[str, str]) -> Path | None:

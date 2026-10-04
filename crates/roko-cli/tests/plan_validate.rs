@@ -668,7 +668,8 @@ title = "Implement one architecture packet"
 role = "implementer"
 files = ["crates/roko-core/src/config/schema.rs"]
 depends_on = []
-verify = [{ phase = "compile", command = "cargo check -p roko-core" }]
+acceptance = ["AC1: roko-core compiles with the packet's schema change"]
+verify = [{ phase = "compile", command = "cargo check -p roko-core", covers = ["AC1"] }]
 
 [task.context]
 read_files = [
@@ -705,10 +706,10 @@ evidence_ref = "crates/roko-core/src/config/schema.rs"
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    // The contract is accepted: its one finding is the PLAN_046 warning
-    // that contracts are not enforced at run time (3230).
+    // Checked acceptance satisfies PLAN_024, and beside it the contract
+    // (kept for its parity rows) draws no PLAN_046 warning (bug-ac2a51).
     assert!(
-        stdout.contains("1 diagnostics in 1 plan") && stdout.contains("PLAN_046"),
+        stdout.contains("0 diagnostics in 1 plan") && !stdout.contains("PLAN_046"),
         "unexpected stdout: {stdout}"
     );
 }
@@ -874,7 +875,8 @@ title = "Deferred advanced packet"
 role = "implementer"
 files = ["plans/architecture-core-queue/tasks.toml"]
 depends_on = []
-verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
+acceptance = ["AC1: roko-cli compiles with the deferred packet recorded"]
+verify = [{ phase = "compile", command = "cargo check -p roko-cli", covers = ["AC1"] }]
 
 [task.context]
 read_files = [
@@ -919,12 +921,91 @@ evidence_ref = "plans/architecture-core-queue/tasks.toml"
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     // Both discovered plans validate, including the intentionally absent
-    // output. The only diagnostic is 3230's warning that an acceptance
-    // contract is not enforced at run time (PLAN_046).
+    // output. The contract sits beside checked acceptance, so it draws no
+    // PLAN_046 warning (bug-ac2a51).
     assert!(
-        stdout.contains("1 diagnostics in 2 plans") && stdout.contains("PLAN_046"),
+        stdout.contains("0 diagnostics in 2 plans") && !stdout.contains("PLAN_046"),
         "unexpected stdout: {stdout}"
     );
+}
+
+/// bug-ac2a51: PLAN_024 asks an architecture-queue task for checked
+/// acceptance (decision 3205), and PLAN_046 warns only when a contract is the
+/// task's only acceptance, so a packet that keeps its contract for the parity
+/// rows (PLAN_025) validates clean. A contract alone still fails PLAN_024 and
+/// draws the PLAN_046 warning.
+#[test]
+fn architecture_queue_task_with_acceptance_criteria_has_no_contract_warning() {
+    let temp = TempDir::new().unwrap();
+    std::fs::create_dir_all(temp.path().join("tmp/architecture-plans")).unwrap();
+    std::fs::write(
+        temp.path()
+            .join("tmp/architecture-plans/06-architecture-implementation.md"),
+        "# source plan\n",
+    )
+    .unwrap();
+    let plan = |acceptance: &str| {
+        format!(
+            r#"
+[meta]
+plan = "architecture"
+queue_kind = "architecture_implementation"
+
+[[task]]
+id = "Q1"
+title = "Implement one architecture packet"
+role = "implementer"
+files = ["crates/roko-gate/src/acceptance_contract.rs"]
+depends_on = []
+{acceptance}
+[task.context]
+read_files = [
+  {{ path = "tmp/architecture-plans/06-architecture-implementation.md", why = "source plan" }},
+]
+
+[task.acceptance_contract]
+version = 1
+gates = [{{ id = "test", kind = "test", command = "cargo test -p roko-gate acceptance" }}]
+
+[task.acceptance_contract.parity_ledger]
+
+[[task.acceptance_contract.parity_ledger.rows]]
+requirement_id = "ARCH-Q1"
+source_ref = "tmp/architecture-plans/06-architecture-implementation.md"
+evidence_ref = "crates/roko-gate/src/acceptance_contract.rs"
+"#
+        )
+    };
+
+    write_plan(
+        temp.path(),
+        "architecture",
+        &plan(
+            r#"acceptance = ["AC1: the contract module's tests pass"]
+verify = [{ phase = "test", command = "cargo test -p roko-gate acceptance", covers = ["AC1"] }]
+"#,
+        ),
+    );
+    let assert = run_validate(&temp, &["plans"]).success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    for rule in ["PLAN_024", "PLAN_046"] {
+        assert!(!stdout.contains(rule), "unexpected {rule}: {stdout}");
+    }
+    assert!(stdout.contains("0 diagnostics in 1 plan"), "{stdout}");
+
+    write_plan(
+        temp.path(),
+        "architecture",
+        &plan(
+            r#"verify = [{ phase = "test", command = "cargo test -p roko-gate acceptance" }]
+"#,
+        ),
+    );
+    let assert = run_validate(&temp, &["plans"]).failure();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    for rule in ["PLAN_024", "PLAN_046"] {
+        assert!(stdout.contains(rule), "missing {rule}: {stdout}");
+    }
 }
 
 #[test]
@@ -1084,4 +1165,66 @@ gates = [{ id = "compile", kind = "compile", command = "cargo check -p roko-cli"
             .iter()
             .any(|task| task.acceptance_contract.is_some())
     );
+}
+
+/// bug-261c02: five tracked plans failed `roko plan validate` with staleness unrelated to PK14's
+/// own work (which only noticed them). Three (two line ranges in
+/// `portal-programme/08d-portal-legibility` and `08f-final-polish`, one symbol anchor in
+/// `workspace-doctor-improvements`) named code that moved, shrank or was renamed, and are fixed in
+/// place: `plan validate` passes against the real tree, since their `read_files` entries point at
+/// files scattered across the repository, not a synthetic fixture. The other two
+/// (`portal-plan-execution`, `wire-http-plan-execute`) named code and files that were never built
+/// as the plans described -- a portal editor page with a `StatusLED` atom and `TaskEditorRow`
+/// component that do not exist anywhere under `apps/portal/src`, and an `execute_plan` HTTP
+/// handler already switched to the graph engine by a later, unrelated refactor -- and are marked
+/// archived or done/superseded instead, per this item's own "or deliberately archived" allowance,
+/// rather than patched with fabricated content.
+#[test]
+fn five_stale_plans_pass_plan_validate() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for dir in [
+        "plans/portal-programme/08d-portal-legibility",
+        "plans/portal-programme/08f-final-polish",
+        "plans/workspace-doctor-improvements",
+    ] {
+        let assert = Command::cargo_bin("roko")
+            .unwrap()
+            .current_dir(&repo)
+            .arg("plan")
+            .arg("validate")
+            .arg(dir)
+            .assert();
+        let output = assert.get_output();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{dir} should pass `roko plan validate`:\n{stdout}"
+        );
+    }
+
+    for (old_dir, archived_dir, meta_status) in [
+        (
+            "plans/portal-plan-execution",
+            "plans/archive/portal-plan-execution",
+            "archived",
+        ),
+        (
+            "plans/wire-http-plan-execute",
+            "plans/archive/wire-http-plan-execute",
+            "done",
+        ),
+    ] {
+        assert!(
+            !repo.join(old_dir).exists(),
+            "{old_dir} should have moved to plans/archive/, not stayed live and unvalidatable"
+        );
+        let tasks_toml = fs::read_to_string(repo.join(archived_dir).join("tasks.toml"))
+            .unwrap_or_else(|err| panic!("read {archived_dir}/tasks.toml: {err}"));
+        let needle = format!("status = \"{meta_status}\"");
+        assert!(
+            tasks_toml.contains(&needle),
+            "{archived_dir}/tasks.toml should set [meta] {needle}"
+        );
+    }
 }

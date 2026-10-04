@@ -32,7 +32,7 @@ pub enum Complexity {
 
 /// A complexity-adjusted budget derived from the base per-role budget.
 ///
-/// Contains the 8 section caps from [`PromptBudget`] plus metadata about
+/// Contains the 9 section caps from [`PromptBudget`] plus metadata about
 /// which sections were dropped and where cache breaks should go.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdjustedBudget {
@@ -57,10 +57,12 @@ pub struct AdjustedBudget {
 /// 1. Start with the base per-role budget from `budget_for(role)`.
 /// 2. Apply complexity adjustments:
 ///    - **Trivial**: zero out `context` and `skills`; halve `workspace_map`
-///      and `brief`. These sections add noise to simple single-file tasks.
+///      and `brief`. These sections add noise to simple single-file tasks;
+///      the task's own `runner_context` stays.
 ///    - **Standard**: use the base budget as-is.
-///    - **Complex**: inflate `workspace_map` by 50%, `context` by 100%,
-///      `file_context` by 50%. Complex tasks need more spatial awareness.
+///    - **Complex**: inflate `workspace_map` by 50%, `context` and
+///      `runner_context` by 100%, `file_context` by 50%. Complex tasks need
+///      more spatial awareness.
 /// 3. Compute cache break hints based on section stability tiers.
 #[must_use]
 pub fn adjusted_budget_for(role: AgentRole, complexity: Complexity) -> AdjustedBudget {
@@ -91,6 +93,8 @@ fn adjusted_budget_from_base(
     match complexity {
         Complexity::Trivial => {
             // Drop heavy context sections that add noise for trivial tasks.
+            // The task's own runner context (its verify commands and gate
+            // feedback) stays: it is never noise (gap-c8bfc8).
             if budget.context > 0 {
                 budget.context = 0;
                 dropped.push("context");
@@ -110,6 +114,7 @@ fn adjusted_budget_from_base(
             // Inflate sections that help with cross-crate awareness.
             budget.workspace_map = budget.workspace_map.saturating_mul(3) / 2;
             budget.context = budget.context.saturating_mul(2);
+            budget.runner_context = budget.runner_context.saturating_mul(2);
             budget.file_context = budget.file_context.saturating_mul(3) / 2;
         }
     }
@@ -137,7 +142,7 @@ fn adjusted_budget_from_base(
     }
 }
 
-/// Total character budget across all 8 sections.
+/// Total character budget across all 9 sections.
 ///
 /// Useful for estimating whether a prompt will fit in a model's context window
 /// when fully populated.
@@ -146,6 +151,7 @@ pub const fn total_budget(budget: &PromptBudget) -> usize {
     budget.plan
         + budget.workspace_map
         + budget.context
+        + budget.runner_context
         + budget.brief
         + budget.reviews
         + budget.instructions
@@ -179,6 +185,15 @@ mod tests {
         assert_eq!(adj.budget.skills, 0);
         assert!(adj.dropped_sections.contains(&"context"));
         assert!(adj.dropped_sections.contains(&"skills"));
+    }
+
+    #[test]
+    fn trivial_keeps_the_runner_context() {
+        let base = budget_for(AgentRole::Implementer);
+        let adj = adjusted_budget_for(AgentRole::Implementer, Complexity::Trivial);
+        assert_eq!(adj.budget.runner_context, base.runner_context);
+        let fixer = adjusted_budget_for(AgentRole::AutoFixer, Complexity::Trivial);
+        assert!(fixer.budget.runner_context > 0);
     }
 
     #[test]
@@ -236,6 +251,7 @@ mod tests {
             b.plan
                 + b.workspace_map
                 + b.context
+                + b.runner_context
                 + b.brief
                 + b.reviews
                 + b.instructions

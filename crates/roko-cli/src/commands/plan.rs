@@ -3252,6 +3252,7 @@ async fn cmd_plan_run_engine(
         // `--no-holdout` runs it in maximize mode (decision 4115).
         no_holdout,
         metrics: None,
+        outbound_floor: None,
     };
     let exit_code = run_graph_plan(params).await;
 

@@ -50,6 +50,19 @@ use super::*;
 /// exploration draws do. The chain key names the run.
 const ARM_SEED: u64 = 0;
 
+/// The run's file of chain arm sets, beside `attempts.jsonl`: one line per
+/// chain, as its first attempt drew it, so a run resumed in another process
+/// keeps its chains' arms (bug-2410e1).
+const ARM_SETS_FILE: &str = "arm-sets.jsonl";
+
+/// One line of [`ARM_SETS_FILE`]: a chain's arm set and the epoch the run
+/// draws for.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct KeptArmSet {
+    epoch: String,
+    arm_set: ArmSet,
+}
+
 /// Attempt state of one run: its durable ordinals, its telemetry writer and
 /// its chains' arm sets.
 struct RunAttempts {
@@ -60,36 +73,49 @@ struct RunAttempts {
     /// The run's audit lottery (DP1), with `[audit] enabled`.
     audit: Option<Arc<AuditSelector>>,
     run_id: String,
-    /// The UTC day this process draws the run's arm sets for, fixed when it
-    /// opened the run, so a retry after midnight keeps its chain's arms.
+    /// The UTC day the run draws its arm sets for: the day its arm-set file
+    /// names, else the day this process opened the run, so a retry after
+    /// midnight keeps its chain's arms.
     epoch: String,
-    /// Each chain's arm set (S02.P1-14), drawn on its first attempt in this
-    /// process and inherited by its retries.
+    /// Each chain's arm set (S02.P1-14), drawn on its first attempt in the
+    /// run and inherited by its retries, in this process or a later one.
     arm_sets: parking_lot::Mutex<HashMap<String, Arc<ArmSet>>>,
+    /// The run's [`ARM_SETS_FILE`]; `None` without run files.
+    arm_sets_path: Option<PathBuf>,
 }
 
 impl RunAttempts {
     /// Open run `run_id` under `runs_dir` (`.roko/runs`): recover its
-    /// ordinals from `attempts.jsonl` and start its writer. Without a
-    /// `runs_dir` the ordinals live in memory and nothing is written.
+    /// ordinals from `attempts.jsonl` and its chains' arm sets and epoch
+    /// from its arm-set file, and start its writer. Without a `runs_dir` the
+    /// ordinals and arm sets live in memory and nothing is written.
     fn open(runs_dir: Option<&Path>, run_id: &str, audit: Option<Arc<AuditSelector>>) -> Self {
         // DP1: the run commits to its audit key before its first draw.
         if let Some(audit) = &audit {
             audit.open_run(run_id);
         }
         let run_id = run_id.to_string();
-        let epoch = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        let arm_sets = parking_lot::Mutex::new(HashMap::new());
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let Some(run_dir) = runs_dir.map(|dir| dir.join(&run_id)) else {
             return Self {
                 ordinals: AttemptOrdinals::default(),
                 writer: None,
                 audit,
                 run_id,
-                epoch,
-                arm_sets,
+                epoch: today,
+                arm_sets: parking_lot::Mutex::new(HashMap::new()),
+                arm_sets_path: None,
             };
         };
+        // bug-2410e1: a resumed run keeps the arm sets its earlier processes
+        // drew, and the epoch they drew them for.
+        let arm_sets_path = run_dir.join(ARM_SETS_FILE);
+        let kept = read_arm_sets(&arm_sets_path);
+        let epoch = kept.first().map_or(today, |first| first.epoch.clone());
+        let arm_sets = kept
+            .into_iter()
+            .map(|kept| (kept.arm_set.chain_key.clone(), Arc::new(kept.arm_set)))
+            .collect();
         let ordinals = AttemptOrdinals::load(&run_dir).unwrap_or_else(|error| {
             tracing::warn!(
                 run_dir = %run_dir.display(),
@@ -115,19 +141,48 @@ impl RunAttempts {
             audit,
             run_id,
             epoch,
-            arm_sets,
+            arm_sets: parking_lot::Mutex::new(arm_sets),
+            arm_sets_path: Some(arm_sets_path),
         }
     }
 
     /// The arm set of `key`'s chain: drawn over `loops` in `mode` on the
-    /// chain's first attempt, and the same for every later one.
+    /// chain's first attempt in the run and kept in its arm-set file, and
+    /// the same for every later one, in this process or one that resumes
+    /// the run.
     fn arm_set(&self, key: &AttemptKey, loops: &Registry, mode: &ArmMode) -> Arc<ArmSet> {
         let mut sets = self.arm_sets.lock();
-        let set = sets.entry(key.chain_key()).or_insert_with(|| {
-            let draws = ArmDraws::new(ARM_SEED, self.epoch.clone());
-            Arc::new(ArmSet::assign(key, loops, mode, &draws))
-        });
-        Arc::clone(set)
+        let chain = key.chain_key();
+        if let Some(set) = sets.get(&chain) {
+            return Arc::clone(set);
+        }
+        let draws = ArmDraws::new(ARM_SEED, self.epoch.clone());
+        let set = Arc::new(ArmSet::assign(key, loops, mode, &draws));
+        self.keep(&set);
+        sets.insert(chain, Arc::clone(&set));
+        set
+    }
+
+    /// Append `set`, a chain's first draw, to the run's arm-set file; a
+    /// failed write is logged, and a resumed run then draws the chain anew.
+    fn keep(&self, set: &ArmSet) {
+        let Some(path) = &self.arm_sets_path else {
+            return;
+        };
+        let kept = KeptArmSet {
+            epoch: self.epoch.clone(),
+            arm_set: set.clone(),
+        };
+        let written = serde_json::to_string(&kept)
+            .map_err(std::io::Error::other)
+            .and_then(|line| append_line(path, &line));
+        if let Err(error) = written {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "a chain's arm set was not kept; a resumed run draws it anew"
+            );
+        }
     }
 
     /// Queue `record` without waiting; the writer counts what it drops.
@@ -156,6 +211,31 @@ impl RunAttempts {
         }
         Some(stats)
     }
+}
+
+/// The arm sets a run's earlier processes kept at `path`, in the order they
+/// were drawn; none without the file, and a line that does not parse is
+/// skipped.
+fn read_arm_sets(path: &Path) -> Vec<KeptArmSet> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+/// Append `line` to the file at `path`, making its directory.
+fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")
 }
 
 impl Drop for RunAttempts {
@@ -2322,5 +2402,50 @@ printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_c
                 (row.arm, version, row.params_digest.as_str())
             );
         }
+    }
+
+    /// bug-2410e1: a run resumed by another process on a later day keeps
+    /// each chain's arm set and the epoch its arms were drawn for. The first
+    /// process keeps them in the run's arm-set file; the second reads them
+    /// back, so a retry gets its chain's own arms, not today's redraw, and a
+    /// new chain draws for the run's epoch.
+    #[test]
+    fn resumed_run_in_a_new_process_keeps_its_arm_sets() {
+        const EARLIER: &str = "2000-01-01";
+        let temp = tempdir().expect("tempdir");
+        let runs = temp.path().join(".roko/runs");
+        let loops = Registry::embedded().expect("the embedded registry");
+        let mode = ArmMode::Normal;
+        let key = |task: &str, attempt: u32| AttemptKey::new("run-resumed", "plan", task, attempt);
+
+        // The first process opened the run and drew T1's arms on an earlier
+        // day.
+        let mut first = RunAttempts::open(Some(runs.as_path()), "run-resumed", None);
+        first.epoch = EARLIER.to_string();
+        let drawn = first.arm_set(&key("T1", 1), &loops, &mode);
+        drop(first);
+
+        let resumed = RunAttempts::open(Some(runs.as_path()), "run-resumed", None);
+        assert_eq!(resumed.epoch, EARLIER, "the run keeps its epoch");
+        let retry = resumed.arm_set(&key("T1", 2), &loops, &mode);
+        assert_eq!(*retry, *drawn, "the retry keeps its chain's arms");
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let draws = ArmDraws::new(ARM_SEED, today);
+        let redraw = ArmSet::assign(&key("T1", 2), &loops, &mode, &draws);
+        assert_ne!(*retry, redraw, "a redraw today would change them");
+        let fresh = resumed.arm_set(&key("T2", 1), &loops, &mode);
+        let at = format!("@{EARLIER}");
+        let on_epoch = fresh.arms.values().all(|arm| arm.salt_id.ends_with(&at));
+        assert!(on_epoch, "{fresh:?}");
+        drop(resumed);
+
+        // Each chain was kept once, as it was first drawn.
+        let kept = read_arm_sets(&runs.join("run-resumed").join(ARM_SETS_FILE));
+        let chains: Vec<&str> = kept
+            .iter()
+            .map(|row| row.arm_set.chain_key.as_str())
+            .collect();
+        let expected = [drawn.chain_key.as_str(), fresh.chain_key.as_str()];
+        assert_eq!(chains, expected);
     }
 }

@@ -321,6 +321,28 @@ pub(super) fn outbound_policy(
         .unwrap_or(default)
 }
 
+/// `policy`, held at least as strictly as `floor`: a run's floor raises an
+/// `allow` to `stage` and keeps a `deny` (gap-1a4563).
+pub(super) const fn at_least(
+    policy: OutboundPolicy,
+    floor: Option<OutboundPolicy>,
+) -> OutboundPolicy {
+    match floor {
+        Some(floor) if strictness(floor) > strictness(policy) => floor,
+        _ => policy,
+    }
+}
+
+/// How firmly `policy` holds a tool call that acts on the outside world:
+/// `allow` runs it, `stage` holds it for approval, `deny` refuses it.
+const fn strictness(policy: OutboundPolicy) -> u8 {
+    match policy {
+        OutboundPolicy::Allow => 0,
+        OutboundPolicy::Stage => 1,
+        OutboundPolicy::Deny => 2,
+    }
+}
+
 /// The tools a task in `domain` is denied: its own `denied_tools`, and the
 /// built-in tools that belong to another domain
 /// ([`roko_std::roles::DomainToolProfile::offers`]) unless it names them in
@@ -519,6 +541,23 @@ mod tests {
         task.domain = Some(TaskDomain::Code);
         let policy = outbound_policy(Some(&chat), &task, &config);
         assert_eq!(policy, OutboundPolicy::Stage);
+    }
+
+    /// gap-1a4563: a run's floor raises a policy weaker than itself and
+    /// keeps a stricter one.
+    #[test]
+    fn a_run_floor_raises_allow_and_keeps_deny() {
+        let stage = Some(OutboundPolicy::Stage);
+        assert_eq!(
+            at_least(OutboundPolicy::Allow, stage),
+            OutboundPolicy::Stage
+        );
+        assert_eq!(
+            at_least(OutboundPolicy::Stage, stage),
+            OutboundPolicy::Stage
+        );
+        assert_eq!(at_least(OutboundPolicy::Deny, stage), OutboundPolicy::Deny);
+        assert_eq!(at_least(OutboundPolicy::Allow, None), OutboundPolicy::Allow);
     }
 
     /// gap-585bd2: the task's domain decides whether the `chain.*` tools,

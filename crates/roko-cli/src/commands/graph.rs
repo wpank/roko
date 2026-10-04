@@ -95,6 +95,11 @@ async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
         roko_core::Capability::Bus,
         roko_core::Capability::Shell,
     ]);
+    // Without `llm` no node may start agent work: refuse such a graph before
+    // any node runs, and say why (gap-1a4563).
+    if let Some(refusal) = entry_cell_refusal(&graph, &workspace_grant) {
+        return Err(anyhow!(refusal));
+    }
 
     // Construct the AuthoredGraphController for preflight validation (#267).
     let controller = AuthoredGraphController::new(workspace_grant.clone());
@@ -218,6 +223,34 @@ async fn cmd_graph_run(path: &Path, json: bool, quiet: bool) -> Result<i32> {
         }
         Ok(EXIT_FAILURE)
     }
+}
+
+/// Why `roko graph run` refuses `graph`, when it does: a node of an entry
+/// cell, `agent.task` or `plan.run`, starts agent work, which needs the `llm`
+/// capability that `grant` lacks. The refusal names those nodes and where
+/// agent work can start instead.
+fn entry_cell_refusal(graph: &roko_graph::types::Graph, grant: &CapabilitySet) -> Option<String> {
+    use roko_cli::graph_entry_cells::{AGENT_TASK_CELL, PLAN_RUN_CELL};
+
+    if grant.contains(roko_core::Capability::Llm) {
+        return None;
+    }
+    let nodes: Vec<String> = graph
+        .node_map
+        .values()
+        .map(|&index| &graph.inner[index])
+        .filter(|node| matches!(node.cell_type.as_str(), AGENT_TASK_CELL | PLAN_RUN_CELL))
+        .map(|node| format!("`{}` ({})", node.id, node.cell_type))
+        .collect();
+    if nodes.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "roko graph run refuses this graph: {} start agent work, which needs the `llm` \
+         capability, and roko graph run grants only read_fs, bus and shell. Run the request \
+         with `roko run`, or fire the graph from a trigger whose Space grants `llm`",
+        nodes.join(", ")
+    ))
 }
 
 /// Execute one graph without printing, using the caller's live state hub for
@@ -518,6 +551,41 @@ cell_type = "noop"
         let result = cmd_graph_run(&graph_path, false, true).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), EXIT_SUCCESS);
+    }
+
+    /// gap-1a4563: `roko graph run` grants no `llm`, so a graph whose node
+    /// starts agent work is refused before any node runs, with the reason and
+    /// where agent work starts instead, rather than as an unknown cell type.
+    /// A grant with `llm` takes it.
+    #[tokio::test]
+    async fn graph_run_refuses_agent_work_it_cannot_grant_and_says_why() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let graph_path = directory.path().join("agent-work.toml");
+        std::fs::write(
+            &graph_path,
+            r#"
+[graph]
+name = "agent-work"
+
+[[nodes]]
+id = "ask"
+cell_type = "agent.task"
+config = { prompt = "summarise the inbox", max_usd = 0.5 }
+"#,
+        )
+        .expect("write graph");
+
+        let error = cmd_graph_run(&graph_path, false, true)
+            .await
+            .expect_err("agent work needs llm");
+        let message = error.to_string();
+        for part in ["`ask` (agent.task)", "`llm`", "`roko run`"] {
+            assert!(message.contains(part), "{message}");
+        }
+
+        let graph = loader::load_from_file(&graph_path).expect("load graph");
+        let with_llm = CapabilitySet::from([roko_core::Capability::Llm]);
+        assert_eq!(entry_cell_refusal(&graph, &with_llm), None);
     }
 
     #[test]

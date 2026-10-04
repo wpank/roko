@@ -758,6 +758,65 @@ fn record_acp_experiment_outcome_legacy_fallback_when_no_attempt_key() {
     assert_eq!(stats.successes, 1);
 }
 
+/// bug-a3f005: the variant ACP serves is the one its receipt drew and settles.
+/// Each of a session's dispatches is its own attempt with its own draw, and
+/// over many draws the served and the settled variant never part.
+#[test]
+fn acp_settles_the_same_variant_it_served() {
+    use roko_learn::prompt_experiment::{PromptAssignmentState, PromptExperiment, PromptVariant};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join(".roko/learn/experiments.json");
+    std::fs::create_dir_all(path.parent().expect("experiment parent"))
+        .expect("create experiment parent");
+    let variant = |id: &str| PromptVariant {
+        id: id.to_string(),
+        name: id.to_string(),
+        section_name: "constraints".to_string(),
+        content: format!("Constraint variant {id}."),
+        slug: None,
+        active: true,
+    };
+    let variants = ["v-a", "v-b", "v-c", "v-d"].map(variant).to_vec();
+    let mut experiment = PromptExperiment::new("draw-exp", "constraints", variants);
+    // The experiment keeps running, so every dispatch draws.
+    experiment.min_trials_per_variant = 1_000;
+    let mut store = ExperimentStore::new();
+    store.register(experiment);
+    store.save(&path).expect("save experiments");
+
+    let mut served = HashSet::new();
+    let mut attempts = HashSet::new();
+    for turn in 0..40 {
+        let assignment = assign_acp_experiment(&path, "code", "draws").expect("assignment");
+        let attempt_key = assignment.attempt_key.clone().expect("a receipt");
+        assert!(
+            attempts.insert(attempt_key.clone()),
+            "turn {turn} reused an attempt"
+        );
+        assert_eq!(
+            assignment.content,
+            format!("Constraint variant {}.", assignment.variant_id)
+        );
+        let prompt_hash = format!("prompt-{turn}");
+        mark_acp_experiment_dispatched(&path, &assignment, &prompt_hash);
+        record_acp_experiment_outcome(&path, &assignment, true).expect("record outcome");
+
+        let store = ExperimentStore::load_or_new(&path);
+        let Some([receipt]) = store.assignments_for_attempt(&attempt_key) else {
+            panic!("turn {turn}: one receipt per dispatch");
+        };
+        assert_eq!(receipt.variant_id, assignment.variant_id, "turn {turn}");
+        assert_eq!(receipt.state, PromptAssignmentState::Observed);
+        served.insert(assignment.variant_id);
+    }
+    assert!(served.len() > 1, "the draws vary: {served:?}");
+    let store = ExperimentStore::load_or_new(&path);
+    let stats = &store.get("draw-exp").expect("experiment").stats;
+    let trials: u64 = stats.values().map(|counts| counts.trials).sum();
+    assert_eq!(trials, 40, "each dispatch settles once");
+}
+
 #[test]
 fn replace_experiment_section_replaces_named_canonical_section() {
     // P1-ACP-2: replace_experiment_section must replace the named section in

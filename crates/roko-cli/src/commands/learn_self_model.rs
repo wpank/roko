@@ -411,8 +411,8 @@ pub(crate) fn replay_matrix(
     let matrix =
         Matrix::read_dir(dir).with_context(|| format!("read the matrix in {}", dir.display()))?;
     let arms = rungs_by_cost(&matrix);
-    let mut models = arm_models(dir)?;
-    models.retain(|arm, _| arms.contains(arm));
+    // An arm that ran several models is one arm per model (gap-b10978).
+    let models = matrix.arm_models();
     let names: Vec<&str> = if names.is_empty() {
         DEFAULT_POLICIES.to_vec()
     } else {
@@ -651,48 +651,6 @@ fn rungs_by_cost(matrix: &Matrix) -> Vec<String> {
         .collect();
     rungs.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     rungs.into_iter().map(|(_, arm)| arm).collect()
-}
-
-/// Each arm's model, as its runs' first attempts asked for it: the most frequent, ties by
-/// name. Reads every `*.jsonl` file in `dir`, as [`Matrix::read_dir`] does.
-fn arm_models(dir: &Path) -> Result<BTreeMap<String, String>> {
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
-        .with_context(|| format!("read {}", dir.display()))?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "jsonl")
-        })
-        .collect();
-    paths.sort();
-    let mut counts: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
-    for path in paths {
-        let text =
-            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-        for line in text.lines() {
-            let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue;
-            };
-            let arm = record["arm"].as_str();
-            let model = record["execution"]["attempts"][0]["model_requested"].as_str();
-            if let (Some(arm), Some(model)) = (arm, model) {
-                *counts
-                    .entry(arm.to_string())
-                    .or_default()
-                    .entry(model.to_string())
-                    .or_default() += 1;
-            }
-        }
-    }
-    Ok(counts
-        .into_iter()
-        .filter_map(|(arm, models)| {
-            let model = models
-                .into_iter()
-                .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))?;
-            Some((arm, model.0))
-        })
-        .collect())
 }
 
 /// H4-B0 over a whole matrix: each family's own static arm.

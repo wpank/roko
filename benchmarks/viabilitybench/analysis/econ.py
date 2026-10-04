@@ -520,14 +520,32 @@ def _envelope(rows: Sequence[Mapping], label: Callable[[Mapping], int], attempt:
     return out
 
 
+def _model(record: Mapping) -> str | None:
+    """The model the run's first attempt asked for; None when it recorded none."""
+    attempts = record.get("execution", {}).get("attempts") or [{}]
+    return attempts[0].get("model_requested")
+
+
+def arm_label(arm: str, model: str | None) -> str:
+    """6120's `arm_label`: the matrix arm of `arm`'s runs of `model` when the arm ran several models,
+    `<arm>[<model>]`, or `<arm>[?]` for a run that recorded no model (gap-b10978)."""
+    return f"{arm}[{'?' if model is None else model}]"
+
+
 def _matrix(records: Iterable[Mapping]) -> dict[tuple[str, str], Mapping]:
-    """6120's `Matrix::from_records` cells: per (instance, arm), the labelled run of known cost with the lowest seed,
-    the first one read on a tie."""
+    """6120's `Matrix::from_records` cells: per (instance, arm, model), the labelled run of known cost with the lowest
+    seed, the first one read on a tie. An arm whose runs asked for several models is one arm per model (`arm_label`,
+    gap-b10978), as the replay's traces name it; an arm that ran one model keeps its name."""
+    runs = [record for record in records if record["vs"].get("label") is not None and attempt_usd(record) is not None]
+    models: dict[str, set[str | None]] = {}
+    for record in runs:
+        models.setdefault(record["arm"], set()).add(_model(record))
     cells: dict[tuple[str, str], Mapping] = {}
-    for record in records:
-        if attempt_usd(record) is None:
-            continue
-        key = (record["task"]["instance_id"], record["arm"])
+    for record in runs:
+        arm = record["arm"]
+        if len(models[arm]) > 1:
+            arm = arm_label(arm, _model(record))
+        key = (record["task"]["instance_id"], arm)
         kept = cells.get(key)
         if kept is None or record["seed"] < kept["seed"]:
             cells[key] = record

@@ -149,6 +149,31 @@ def test_policy_report_reuses_passk_and_cluster_bootstrap(monkeypatch, tmp_path)
     assert text == json.dumps(json.loads(text), sort_keys=True, indent=2, ensure_ascii=False) + "\n"
 
 
+def test_matrix_keeps_one_cell_per_task_arm_and_model():
+    """gap-b10978: a (task, arm) recorded under two models keeps one cell per model, labelled as the replay's
+    `arm_label` labels it, at its lowest seed; an arm that ran one model keeps its name."""
+    def ran(record: dict, model: str) -> dict:
+        record["execution"]["attempts"][0]["model_requested"] = model
+        return record
+
+    task = "F1-l1-0001"
+    records = [ran(run_record(task, 1, "roko_fixed", 1, 0.02), "glm-4.7"),
+               ran(run_record(task, 1, "roko_fixed", 0, 0.01), "gpt-oss-120b"),
+               ran(run_record(task, 2, "roko_fixed", 0, 0.03), "glm-4.7"),
+               run_record(task, 1, "cheap_direct", 1, 0.005)]
+    cells = econ._matrix(records)
+    glm, oss = econ.arm_label("roko_fixed", "glm-4.7"), econ.arm_label("roko_fixed", "gpt-oss-120b")
+    assert (glm, oss) == ("roko_fixed[glm-4.7]", "roko_fixed[gpt-oss-120b]")
+    assert sorted(cells) == [(task, "cheap_direct"), (task, glm), (task, oss)]
+    assert (cells[(task, glm)]["seed"], cells[(task, glm)]["vs"]["label"]) == (1, 1)
+    assert (cells[(task, oss)]["vs"]["label"], econ.attempt_usd(cells[(task, oss)])) == (0, 0.01)
+    assert econ.arm_label("roko_fixed", None) == "roko_fixed[?]"
+    # A trace naming the split arms joins their cells.
+    rows, counts = econ._trace_rows([trace("lcb_aci", 0, task, [oss, glm], True, 0.03)], records)
+    assert counts["kept"] == 1 and counts["unmatched"] == 0
+    assert len(rows["lcb_aci"]) == 1
+
+
 def test_variance_audit_spend_and_excluded_runs():
     golden = econ.build(golden_records(), b=200)["arms"]["golden"]
     # Within-task: (3/10 + 0 + 0 + 1/2) / 4; ICC(1) from the one-way ANOVA of the same four tasks.

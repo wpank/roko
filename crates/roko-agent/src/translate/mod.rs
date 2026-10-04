@@ -474,15 +474,12 @@ impl BackendResponse {
     #[must_use]
     pub fn extract_finish_reason_raw(&self) -> Option<String> {
         match self {
-            Self::Json(v) => {
-                nonempty_str_at(v, "/choices/0/finish_reason")
-                    .or_else(|| nonempty_str_at(v, "/stop_reason"))
-                    .map(str::to_string)
-                    .or_else(|| {
-                        nonempty_str_at(v, "/candidates/0/finishReason")
-                            .map(str::to_ascii_lowercase)
-                    })
-            }
+            Self::Json(v) => nonempty_str_at(v, "/choices/0/finish_reason")
+                .or_else(|| nonempty_str_at(v, "/stop_reason"))
+                .map(str::to_string)
+                .or_else(|| {
+                    nonempty_str_at(v, "/candidates/0/finishReason").map(str::to_ascii_lowercase)
+                }),
             Self::StreamJson(events) => {
                 for ev in events.iter().rev() {
                     if ev.get("type").and_then(|t| t.as_str()) == Some("result") {

@@ -1477,7 +1477,10 @@ pub(crate) async fn dispatch_bench_prompt(
             // (gap-ade918), as `roko run` and ACP say.
             let mut reason = vec![error];
             reason.extend(failover.credentials_hints());
-            anyhow::bail!("ModelCallService bench dispatch failed: {}", reason.join(" "));
+            anyhow::bail!(
+                "ModelCallService bench dispatch failed: {}",
+                reason.join(" ")
+            );
         }
     };
     loop {

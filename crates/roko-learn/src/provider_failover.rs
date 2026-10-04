@@ -404,7 +404,11 @@ impl Failover {
             };
             hinted.push(&refusal.provider_id);
             let key_env = provider.api_key_env.as_deref();
-            hints.push(credentials_hint(&refusal.provider_id, provider.kind, key_env));
+            hints.push(credentials_hint(
+                &refusal.provider_id,
+                provider.kind,
+                key_env,
+            ));
         }
         hints
     }

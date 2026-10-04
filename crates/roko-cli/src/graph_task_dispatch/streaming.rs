@@ -1384,10 +1384,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
         drop(dispatcher);
 
         let path = roko.join("runs").join(RUN).join("predictions.jsonl");
-        let predictions = jsonl_rows_where(&path, 1, |row| {
-            row["schema_version"] == "roko.prediction/1"
-        })
-        .await;
+        let predictions =
+            jsonl_rows_where(&path, 1, |row| row["schema_version"] == "roko.prediction/1").await;
         let row = &predictions[0];
         assert_eq!(row["task_id"], "T-STREAM", "{row}");
         assert_eq!(row["precedes"], "route", "{row}");

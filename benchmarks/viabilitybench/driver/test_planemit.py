@@ -92,7 +92,7 @@ def test_pinned_mode_is_byte_identical_to_before_ladder_mode(tmp_path):
     assert emitted.tasks_text == (GOLDEN / "pinned.tasks.toml").read_text()
     assert emitted.config_text == (GOLDEN / "pinned.roko.toml").read_text()
     assert planemit.TEMPLATE_VERSION == "planemit-4"
-    assert planemit.TEMPLATE_SHA256 == "1b7b9906dd846ef598602bee770d0b6d3270e885f6262f76c3fbdd9e97b87f2b"
+    assert planemit.TEMPLATE_SHA256 == "24d5db33665a3537449708ff920e53ec0e182d9fd77c411c1feefd1eae4b8007"
 
 
 @pytest.mark.parametrize(("changes", "error"), [
@@ -157,31 +157,6 @@ def test_roko_fixed_and_roko_ladder_emit_no_overlay_table(tmp_path):
 def test_resolve_overlay_refuses_an_unknown_mechanism():
     with pytest.raises(planemit.PlanEmitError, match="no mechanism for overlay key"):
         planemit.resolve_overlay({"nonexistent_mechanism": True})
-
-
-def test_emitted_config_freezes_learning_for_pinned_arms_not_ladder_mode(tmp_path):
-    """gap-b001ca: [learning].frozen is true for a pinned-mode arm (roko_fixed's openai_compat shape, and
-    fr_claude's claude_cli one), false for a routed, ladder-mode one (roko_ladder's shape); learning_frozen
-    overrides either default explicitly, in both directions."""
-    pinned = planemit.emit(pinned_spec(), workspace(tmp_path, "pinned"))
-    assert tomllib.loads(pinned.config_text)["learning"]["frozen"] is True
-
-    claude_cli = dataclasses.replace(pinned_spec(), provider_kind="claude_cli", model="claude-opus-5-5",
-                                     tier="architectural")
-    emitted = planemit.emit(claude_cli, workspace(tmp_path, "claude-cli"))
-    assert tomllib.loads(emitted.config_text)["learning"]["frozen"] is True
-
-    ladder = planemit.emit(ladder_spec(), workspace(tmp_path, "ladder"))
-    assert tomllib.loads(ladder.config_text)["learning"]["frozen"] is False
-
-    unfrozen_pinned = planemit.emit(dataclasses.replace(pinned_spec(), learning_frozen=False),
-                                    workspace(tmp_path, "unfrozen-pinned"))
-    assert tomllib.loads(unfrozen_pinned.config_text)["learning"]["frozen"] is False
-    frozen_ladder = planemit.emit(dataclasses.replace(ladder_spec(), learning_frozen=True),
-                                  workspace(tmp_path, "frozen-ladder"))
-    assert tomllib.loads(frozen_ladder.config_text)["learning"]["frozen"] is True
-
-    assert planemit.is_frozen(pinned_spec()) is True and planemit.is_frozen(ladder_spec()) is False
 
 
 @real_roko

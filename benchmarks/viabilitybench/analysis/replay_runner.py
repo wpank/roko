@@ -267,7 +267,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--adapter", required=True, help=f"one of {', '.join(sorted({*ADAPTERS, *ADAPTER_MODULES}))}")
     parser.add_argument("--seed", type=int, default=1, help="the replay's seed (default 1)")
     parser.add_argument("--arm", help="aa: the arm label to split (default: the arm with the most rows)")
-    parser.add_argument("--reps", type=int, help=f"aa: the number of splits (default {AA_REPS}); h5: lotteries")
+    parser.add_argument("--reps", type=int,
+                        help=f"aa: the number of splits (default {AA_REPS}); h5 and closure (X3): lotteries")
     parser.add_argument("--risk", type=Path, help='h5: M3\'s risk per unit, JSONL {"attempt_key", "r"}')
     parser.add_argument("--lam", type=float, help="h5: the tilt lambda that goes with --risk")
     parser.add_argument("--salt", type=Path, help=f"the blinding salt (default {blind.DEFAULT_SALT})")

@@ -33,6 +33,7 @@ API:
     Unit(attempt_key, run_id, task_id, final_commit, y, verdict, unknown=False, risk=None)
     units_from_labels(rows, risk=None) -> list[Unit]
     replay(units, *, rhos=RHOS, runs=1000, seed=DEFAULT_SEED, lam=0.0, alpha=0.05) -> dict
+    draw_order(units, *, runs=1000, seed=DEFAULT_SEED) -> list[list[int]]
     format_report(report) -> str
     build_fixture() -> dict
     main(argv=None) -> int
@@ -133,6 +134,24 @@ def replay(units: Sequence[Unit], *, rhos: Sequence[float] = RHOS, runs: int = 1
                           for verdict in audit.CENSUS_VERDICTS},
         "cells": [cells[rho].summary(rho, theta, pis[rho]) for rho in rhos],
     }
+
+
+def draw_order(units: Sequence[Unit], *, runs: int = 1000, seed: str = DEFAULT_SEED) -> list[list[int]]:
+    """Each of `runs` keyed lotteries' draw x_i for each unit, in the units' order, keyed as `replay` keys them.
+
+    Lottery r selects a unit at inclusion probability π exactly when `lottery.is_selected(x_i, π)`, so one draw order
+    serves every π a position may have: a sequential estimand (X3's delay to a breach, `replay_closure.py`) replays a
+    fixed and a boosted rate over the same draws.
+    """
+    if runs < 1:
+        raise ValueError(f"runs must be at least 1, not {runs}")
+    secret = hashlib.sha256(seed.encode("utf-8")).digest()
+    orders = []
+    for r in range(runs):
+        key = lottery.run_key(secret, f"replay-{r}")
+        orders.append([lottery.draw(key, unit.run_id, unit.task_id, unit.attempt_key, unit.final_commit)
+                       for unit in units])
+    return orders
 
 
 def format_report(report: dict) -> str:

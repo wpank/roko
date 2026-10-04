@@ -2058,6 +2058,7 @@ fn build_agent(
             live_output: None,
             thinking: None,
             data_llm: None,
+            pricing: roko_core::pricing_snapshot::PricingConfig::default(),
         },
     )
     .with_context(|| format!("create agent for template '{}'", template.name))

@@ -333,6 +333,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
         max_turns: None,
         thinking: None,
         data_llm: None,
+        pricing: roko_core::pricing_snapshot::PricingConfig::default(),
     };
 
     let agent = ClaudeCliAdapter

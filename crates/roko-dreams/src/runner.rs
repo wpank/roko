@@ -217,6 +217,7 @@ impl DreamAgentConfig {
             live_output: None,
             thinking: None,
             data_llm: None,
+            pricing: roko_core::pricing_snapshot::PricingConfig::default(),
         }
     }
 }

@@ -70,6 +70,8 @@ impl RunManifests {
     #[must_use]
     pub fn capture(workdir: &Path, config: &RokoConfig) -> Self {
         let config_frozen = config.learning.frozen;
+        let price_snapshot_id = PriceSnapshot::shared(&config.pricing, workdir)
+            .map(|snapshot| snapshot.id().to_string());
         let config = match roko_core::config::fingerprint(config) {
             Ok(fingerprint) => ConfigHashProvenance {
                 hash: fingerprint.hash,
@@ -88,8 +90,6 @@ impl RunManifests {
         if config_frozen {
             ablation_flags.push(LEARNING_FROZEN_FLAG.to_string());
         }
-        let price_snapshot_id = PriceSnapshot::shared(&config.pricing, workdir)
-            .map(|snapshot| snapshot.id().to_string());
         Self {
             runs_dir: RokoLayout::for_project(workdir).runs_dir(),
             harness: harness_provenance(),

@@ -830,6 +830,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"total_cos
             live_output: None,
             thinking: None,
             data_llm: None,
+            pricing: roko_core::pricing_snapshot::PricingConfig::default(),
         };
         let model = claude_model();
 

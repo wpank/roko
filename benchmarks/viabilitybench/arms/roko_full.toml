@@ -1,0 +1,70 @@
+# Arm roko_full (S08 §4.9, S09 §4.2, §9.5; task 3360): arm C of the confirmatory head-to-head (3368), on the same
+# cheap-model ladder as roko_ladder (three rungs cheapest first, no frontier rung) plus every mechanism S09 §9.5
+# turns on for it: S07's spec gate enforcing (not just recording), S04 routing with a cross-fitted, verify-then-
+# escalate predictor inside the pool, S05's audits at their 5% floor, S03's holdout fixed at h = 0.10, and S06
+# (M1's homeostat) only once its own loop (L-M1) is LIVE at the census. The runner is driver/run_roko.py, which
+# emits planemit's ladder mode (3310, 3312) for an arm whose models_allow holds more than one model; the
+# `[overlay]` table below is planemit's own addition (3360): `resolve_overlay`/`_overlay_text` turn it into
+# roko.toml's `[spec_quality]`, `[audit]`, `[self_model]` and `[homeostasis]` tables, each recorded in the run's
+# config_hash like the rest of roko.toml. Budget line BL6 (experiments/budget.toml): "P1 live roko_full: 360 + 60,
+# plus audit spend ≤ 12% (S05 SC6)".
+schema_version = "vb.arm/1"
+
+[arm]
+id = "roko_full"
+harness = "roko"                      # S09's harness vocabulary
+runner = "run_roko"
+models_allow = ["gpt-oss-120b", "glm-4.7", "gpt-5.4-mini"]   # cheapest first: the ladder's rung order (3312)
+line = "BL6"                          # S09 §4.6: P1 live roko_full
+billed = true
+label = "full·roko"
+
+# planemit's overlay (module docstring, 3360): every key here is one `resolve_overlay`/`_overlay_text` know how to
+# emit; an unknown key refuses to emit rather than silently drop a mechanism the binary may not support.
+[overlay]
+gate_mode = "enforce"          # S07 D14: the spec gate enforces, it does not just record
+audit_floor = 0.05             # S05 D13: the audit floor epsilon, locked at 0.05 or more (AUDIT_FLOOR)
+routing_mode = "active"        # S04: the self-model chooses the start rung while its calibration gate holds
+routing_policy = "lcb_aci"     # S04 D11 policy (a): the cheapest rung whose LCB on P(VS) meets the target
+                                # (cross-fitted, verify-then-escalate; cross-fitting is this policy's own training,
+                                # not a separate roko.toml key, so there is no per-task fold field to set here)
+holdout = 0.10                 # S03 D10: M1's static holdout share
+homeostasis = "if_live"        # S06: on only once the loop census (campaign.census_report) says L-M1 is LIVE
+
+[caps]                                # roko_ladder's caps: usd_per_task at the top rung's (gpt-5.4-mini) token
+                                       # worst case, so the token caps bind for every rung, cheap or expensive, and
+                                       # Roko's own plan budget is never starved by an escalation. Audit spend is
+                                       # booked separately (S05 SC6's ≤ 12% share), not out of this per-task cap.
+turns_per_attempt = 12
+input_tokens_per_attempt = 150000
+turns_per_task = 36
+input_tokens_per_task = 450000
+wallclock_s = 1200
+model_calls_per_task = 45
+usd_per_task = 2.00
+max_output_tokens = 8192
+command_timeout_s = 120
+
+[roko]
+binary = "target/debug/roko"          # relative to the repository root; each attempt records the build it ran
+build = ""                            # a git sha pins the binary: a different build stops the task
+provider_kind = "openai_compat"
+context_window = 128000
+tier = "focused"
+max_retries = 2
+skip_enrichment = true                # explicit per arm (B §2.3)
+
+[providers.cerebras]                  # gpt-oss-120b, the start rung
+base_url = "https://api.cerebras.ai/v1"
+api_key_env = "CEREBRAS_API_KEY"
+max_tokens_param = "max_completion_tokens"
+
+[providers.zai]                       # glm-4.7, the middle rung
+base_url = "https://api.z.ai/api/paas/v4"
+api_key_env = "ZAI_API_KEY"
+max_tokens_param = "max_completion_tokens"
+
+[providers.openai]                    # gpt-5.4-mini, the top rung
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+max_tokens_param = "max_completion_tokens"

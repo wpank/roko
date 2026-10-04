@@ -65,3 +65,31 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK17 (gap-cb5133), PK19 (gap-de0b87), PK21 (gap-1149aa), PK28 (gap-c06ff3), PK30 (gap-2ca903), PK43 (gap-c1d920), PK44 (gap-85d176), PK49 (gap-7ec3ef), PK50 (gap-63fd4c), PK52 (gap-0c429f), PK59 (gap-147c4d), PK62 (gap-f7bab8), PK66 (gap-414e56).
 - Suggested model: sonnet.
+
+## Progress
+
+- 3357: implemented at d828e8486. New replay_h6.py (8 arms A0-A5/A3-gated/A3-mis x 6 disturbance kinds from
+  driver/disturb.py's KINDS), reading an optional `--table` of `roko_learn::homeostasis::replay::ArmReport`-shaped
+  JSON lines. 8117 (S06.T7) built that evaluator as a roko-learn library function with no CLI or subprocess entry
+  point (grepped roko-cli and roko-learn/examples/: nothing calls it), so every cell is `evaluated: false` with
+  that reason until one exists, the same pattern replay_h4.py/replay_h5.py already use for a mechanism that has
+  not run on the matrix. Verify passes.
+- 3358: implemented at af098523a. New replay_closure.py: X1 (delta_brier(gate_labels, ipw_audit_labels | y_vs))
+  is real, with a bootstrap 95% CI, reusing replay_h5.units() and replay_h4.brier_score over a previously-written
+  R-H5 document (`--h5`). X2 (delta_iae(A4, A3), guarded by A3-mis) reads its cells from a previously-written
+  R-H6 document (`--h6`); since every H6 cell is unevaluated (3357), X2 stays not evaluated per kind too, and its
+  own ci95_excludes_0 rule is flagged separately not evaluated even once real (no paired bootstrap draws in
+  ArmReport's summary). X3 (per-position lottery breach timing) and X4 (no_gate/always_refine/always_escalate
+  policy cells) have no data behind them in this codebase, so both report evaluated: false with why. Closure 4
+  (H7's E0) reuses campaign.census_report/is_loop_live (3359) rather than reimplementing the loop census. Verify
+  passes.
+- 3360: implemented at 5deb293c4. New arms/roko_full.toml (BL6): roko_ladder's 3-rung pool plus an `[overlay]`
+  table (gate_mode=enforce D14, audit_floor=0.05 D13, routing_mode=active + routing_policy=lcb_aci S04,
+  holdout=0.10 D10, homeostasis=if_live S06). planemit.py gained `PlanSpec.overlay`, `resolve_overlay()` (refuses
+  an unknown key; resolves if_live via campaign.census_report/is_loop_live, faked in the test) and
+  `_overlay_text()`, appended after the existing templates so an empty overlay (roko_fixed, roko_ladder) stays
+  byte for byte unchanged (TEMPLATE_SHA256 and the golden fixtures untouched); `_check`/`_check_ladder` verify the
+  overlay's tables round-trip. Verify passes. Known gap, outside this task's files: run_roko.py's `_plan_spec()`
+  does not yet pass the arm's `[overlay]` table into PlanSpec (confirmed by reading it: no `overlay=` kwarg in
+  its `PlanSpec(...)` call), so a real roko_full dispatch still builds an empty overlay until that one-line change
+  lands; flagged for the coordinator, not fixed here since driver/run_roko.py is not in this task's `files`.

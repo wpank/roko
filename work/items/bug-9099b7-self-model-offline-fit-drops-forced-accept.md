@@ -79,3 +79,12 @@ Confirmed both conventions exist, in the exact call paths described, disagreeing
 ## Notes
 
 - Discovered during PK49's M3 self-model work (gap-7ec3ef, done).
+
+## Progress
+
+- bug-9099b7: implemented at 42200b6b9 on `work/bug-9099b7`; cargo verification deferred to the batch gate.
+  Decision: a forced accept teaches nothing (the shared S01 §4.1 learning label, null for
+  `forced_accept`, and S01's SC3), not a fail. `Label::of_verdict` (`self_model/mod.rs`) is the one rule; the
+  offline fit (`ingest.rs`) and the live sink (`runtime_feedback/self_model.rs`) both call it, and the sink's
+  special case is gone. S04 §4.1's "`forced_accept` counts as 0" line now disagrees with the code and should
+  follow S01.

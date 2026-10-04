@@ -16,7 +16,7 @@ source = "tmp/backlog/2026-10-02-complete-and-wire 9315, 9316 (held in wave 12, 
 discovered_from = "gap-9ecd37"
 anchors = ["benchmarks/viabilitybench/showcase"]
 lane = "bench"
-links = { depends_on = [], blocks = [], related = ["gap-9ecd37", "gap-c33709", "gap-327242"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-dbe8e7"], blocks = [], related = ["gap-9ecd37", "gap-c33709", "gap-327242"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "python3 benchmarks/viabilitybench/showcase/verify_bundle.py .roko/showcase/bundles/b-pilot-p1 && grep -q '\"kind\": \"replay\"' .roko/showcase/bundles/b-pilot-p1/bundle.json"

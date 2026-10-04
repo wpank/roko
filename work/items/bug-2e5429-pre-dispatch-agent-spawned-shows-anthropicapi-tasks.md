@@ -107,3 +107,14 @@ model to the Anthropic API chose `ProviderKind::AnthropicApi` before ever touchi
   taxonomy) and bug-466060 (a third copy of the provider error classifier) are different instances of the same
   underlying pattern — provider identity/classification getting flattened or lost on a side path. Not duplicates;
   don't merge.
+
+## Progress
+
+- bug-2e5429: the display fix was already on main. Backlog 1127 (1013f307f, 2026-10-03 04:07, 27 minutes after
+  this item was filed) replaced `ProviderKind::from(dispatch_plan.model.backend).label()` with the provider the
+  planned model key resolves to (`ProviderDispatchResolver`), and 1128 made failover's row do the same. Added
+  `agent_spawned_label_reflects_anthropic_api` at 89d4b05fd on `work/bug-2e5429` (cargo verification deferred to
+  the batch gate): a Claude model on an `AnthropicApi` provider shows `anthropic`, not `claude_cli`. No
+  `AgentBackend` variant was added. No display label derives from it any more (only the unconfigured-slug
+  heuristic in `resolve_model` uses `From<AgentBackend>`), so the TUI, the dashboard snapshot and serde are
+  unchanged. Serve's `ServerEvent::AgentSpawned` drops the provider field altogether: a separate gap.

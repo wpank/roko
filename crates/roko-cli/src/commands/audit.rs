@@ -709,6 +709,8 @@ mod tests {
             selected: drawn.selected != flip,
             base_tree: None,
             result_tree: Some(tree),
+            risk_r: None,
+            prediction_id: None,
         }
     }
 

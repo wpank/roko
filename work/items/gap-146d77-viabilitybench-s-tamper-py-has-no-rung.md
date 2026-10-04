@@ -78,3 +78,42 @@ check alongside its existing `test_deleted`/`gate_config_edited`-style ones.
   the base tree via git show" robustness improvement for the Rust side — that improvement is out of scope here;
   this item is just about parity (the kind existing at all in the Python port), not about how either side reads
   the schema's content at validation time.
+
+## Progress
+
+- Ported `attempt_diff.rs`'s three helpers as `Policy` methods (mirroring its `impl AttemptDiffPolicy`, not free
+  functions): `Policy.rung_files: tuple[str, ...] = ()` (new field), `.names_exactly(path)` (an exact
+  `files_in_scope` entry, not a directory/glob match, unlike `.declares`), and `.edited_rung_file(path, old_path)`
+  (the first `rung_files` entry matching either path, unless `.names_exactly` exempts it). Extracted the shared
+  `./`-and-trailing-`/` trim that `covers()` already did inline into `_named_path()`, used by both `covers()`
+  (behavior-preserving refactor) and the two new methods, mirroring `attempt_diff.rs`'s own shared `named_path()`.
+  `Policy.from_manifest` reads an optional `rung_files` manifest key the same way it already reads `files_in_scope`
+  (`vb.task/1` names no such field today; this is parity with the Rust port's data, not a schema change — see
+  Notes). Added `"rung_file_edited"` to `INLINE_KINDS` and wired `Policy.edited_rung_file` into `_check_findings`,
+  unconditionally, in the same position `attempt_diff.rs` checks it (before the `declares`-gated
+  verify-script/tasks-toml/gate-config block).
+- Caught one shadowing-shaped bug before it shipped, the kind this wave's gate feedback flagged: my first draft
+  appended the new `rung_file_edited` finding straight into `_check_findings`'s shared `found` list, and the
+  existing line `check_config = bool(found) and found[0].kind != "expected_edited"` then read `found[0]` — which,
+  once a rung finding was prepended, could be the rung finding itself rather than a verify-script/tasks-toml/
+  gate-config one, spuriously flipping `check_config` to `True` and firing an unrelated `timeout_edited` on the
+  same change. Fixed by isolating the `declares`-gated block's own findings in a local `config_found` list, so
+  `check_config` is computed only from that block's own findings, as before. Wrote
+  `test_rung_file_edited_does_not_also_trigger_an_unrelated_timeout_finding` as a standing regression test for
+  exactly this, and confirmed it fails without the isolation fix and passes with it (temporarily reverted the
+  isolation, re-ran, restored).
+- `audit/tests/test_tamper.py` did not exist; created it (4 tests): the named
+  `test_rung_file_edited_in_the_same_diff_is_tamper` (mirrors `attempt_diff.rs`'s own
+  `schema_file_edited_in_the_same_diff_is_tamper`: three `files_in_scope` variants that cover the rung file's
+  directory/glob but not the file itself all still flag it; naming the file exactly exempts it), the
+  `check_config` regression test above, a defaults/back-compat test, and a direct test of
+  `Policy.edited_rung_file`/`.names_exactly` including the old-path-of-a-rename case.
+- `audit/tests/test_battery.py::test_a1_flags_every_planted_tamper_kind` asserts the `audit/fixtures/tamper.json`
+  fixture has exactly one planted case per `tamper.KINDS` entry — adding `rung_file_edited` to `INLINE_KINDS` broke
+  that exhaustiveness check until the fixture gained a matching case. Added `schemas/report.schema` to the
+  fixture's `base`, `"rung_files": ["schemas/report.schema"]` to its `manifest`, and a `rung_file_edited` entry to
+  `planted` that edits only that file; confirmed it produces exactly `{"rung_file_edited"}` with nothing else
+  (`ALSO` needs no new entry) and the whole suite is green again. This was not in the item's own anchors — found
+  only by running `audit/tests/test_battery.py`, not just the named `[[verify]]`, per this wave's instruction.
+- Verify: named `[[verify]]` command -> 1 passed. Full `benchmarks/viabilitybench/audit` suite (same venv as
+  bug-40de03): 61 passed, 0 failed.

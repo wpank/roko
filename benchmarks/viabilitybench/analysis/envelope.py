@@ -137,13 +137,13 @@ def level_table(records: Iterable[dict], experiment_id: str, *, ks: Sequence[int
     records = list(records)
     wanted = {"vs_rate", "usd_per_vs", *(f"pass_hat_{k}" for k in ks)}
     table = []
-    for arm, model in metrics.cells(records):
-        found = metrics.arm_metrics(records, experiment_id, arm, ks=ks, model=model)
+    for arm, model, harness in metrics.cells(records):
+        found = metrics.arm_metrics(records, experiment_id, arm, ks=ks, model=model, harness=harness)
         for level in LEVELS:
             values = {metric.metric: metric.value for metric in found
                       if metric.cell == f"l{level}" and metric.metric in wanted}
             if values:
-                table.append({"cell": metrics.cell_name(arm, model), "level": level,
+                table.append({"cell": metrics.cell_name(arm, model, harness), "level": level,
                               **{name: values.get(name) for name in sorted(wanted)}})
     return table
 

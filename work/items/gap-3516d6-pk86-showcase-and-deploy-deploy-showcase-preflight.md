@@ -61,3 +61,24 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK83 (gap-4119fb), PK85 (gap-fcb44c).
 - Suggested model: sonnet.
+
+## Progress
+
+- 9337: implemented at fad7c5c90. New deploy/showcase/preflight.sh (P1-P14) and
+  deploy/showcase/README.md. `bash -n` passes on both the Homebrew bash (5.3) and macOS's own
+  `/bin/bash` (3.2.57). Grounded every route/status in the Rust source (auth_session.rs,
+  showcase/auth.rs, routes/mod.rs's showcase_router_mounts_no_public_extras test), not just S11's
+  prose: e.g. login is 204 not the spec's "200" (matches auth-gate.spec.ts), and `/api/auth/session`
+  not "/api/session". P8's stream and P9's admin-freeze sub-checks SKIP on a 404 rather than FAIL:
+  grepped routes/showcase/mod.rs and confirmed neither route is wired yet. Validated against a
+  throwaway Python stub of the same API surface (not committed): 31/31 PASS on the happy path, and
+  wrong secrets correctly FAIL the right checks with exit = failure count. Could not run `--local`
+  against a real roko binary: none of the prebuilt binaries available in this environment have the
+  `showcase` subcommand yet (all predate it); the static parts of the verify
+  (`test -x` && `bash -n`) pass, the live part is deferred to the coordinator's gate once a binary
+  with `roko showcase` exists.
+- 9338: implemented at 4ec4aef67. New demo/demo-app/playwright.fly-smoke.config.ts and
+  e2e/showcase/fly-smoke.spec.ts (A1-A5), modeled closely on 9332's auth-gate.spec.ts (login flow,
+  cookie name) and golden-views.spec.ts (the provenance-drawer SC1 pattern), plus 9333's
+  build_bundle.py call so the local run's Overview has tiles. Could not run
+  `npx playwright test` (no npm builds); deferred to the coordinator's gate.

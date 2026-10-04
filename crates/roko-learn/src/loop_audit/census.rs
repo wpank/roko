@@ -68,8 +68,6 @@ const SECTION_OUTCOMES: &str = "section-outcomes.jsonl";
 const RETRIEVAL_OUTCOMES: &str = "retrieval-outcomes.jsonl";
 /// The retired `HoldoutExperiment`'s state, under the learn directory.
 const HOLDOUT_STATE: &str = "holdout-state.json";
-/// The dream cycle's routing advice, under the learn directory.
-const DREAM_ROUTING_ADVICE: &str = "dream-routing-advice.json";
 /// The run directories, under the `.roko` directory.
 const RUNS_DIR: &str = "runs";
 /// The loop whose layer a route row without a `loop_id` drew on.
@@ -908,7 +906,6 @@ struct Logs {
     playbooks: usize,
     holdout_costs: Option<(f64, f64)>,
     prompt_experiments: Option<usize>,
-    dream_recommendations: Option<usize>,
 }
 
 impl Logs {
@@ -968,9 +965,6 @@ impl Logs {
                     .filter(|id| id.as_str() != ExperimentStore::RETRIEVAL_STRATEGY_EXPERIMENT_ID)
                     .count()
             });
-        }
-        if let Some(advice) = read_json(&paths.root.join(DREAM_ROUTING_ADVICE)) {
-            logs.dream_recommendations = advice["recommendations"].as_array().map(Vec::len);
         }
         logs
     }
@@ -1078,13 +1072,6 @@ impl Logs {
                     None
                 }
             }
-            "L-dream-bias" => {
-                let written = self.dream_recommendations?;
-                facts.push(format!(
-                    "the dream cycle wrote {written} routing recommendations"
-                ));
-                None
-            }
             _ => None,
         }
     }
@@ -1177,14 +1164,6 @@ mod tests {
                 Lifecycle::Active,
                 Some(Flagged),
                 R::Mask,
-                vec![],
-                Declared,
-            ),
-            (
-                "L-dream-bias",
-                Lifecycle::Active,
-                Some(Flagged),
-                R::WriteOnly,
                 vec![],
                 Declared,
             ),

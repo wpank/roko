@@ -378,6 +378,10 @@ pub struct ClaudeCliAgent {
     /// Where a run reports that it waits for its provider's permit.
     live_output: Option<crate::live_output::LiveOutput>,
     name: String,
+    /// The operator's `[pricing]` snapshot pin (bug-1809d7), consulted instead of the default in
+    /// `priced_observation`. Unset (`PricingConfig::default()`) keeps the "newest file in
+    /// `config/prices/`, else the built-in copy" fallback.
+    pricing: PricingConfig,
 }
 
 impl ClaudeCliAgent {
@@ -418,6 +422,7 @@ impl ClaudeCliAgent {
             provider_semaphores: None,
             live_output: None,
             name: format!("claude-cli:{model}"),
+            pricing: PricingConfig::default(),
         }
     }
 
@@ -432,6 +437,14 @@ impl ClaudeCliAgent {
     #[must_use]
     pub const fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Pin pricing to the operator's configured `[pricing]` snapshot (bug-1809d7), instead of
+    /// `priced_observation`'s "newest, else built-in" default.
+    #[must_use]
+    pub fn with_pricing(mut self, pricing: PricingConfig) -> Self {
+        self.pricing = pricing;
         self
     }
 
@@ -970,10 +983,11 @@ impl ClaudeCliAgent {
         usage
     }
 
-    /// The usage observation of `stream_usage`, priced model by model at the
-    /// price snapshot of the agent's working directory (backlog 6105).
+    /// The usage observation of `stream_usage`, priced model by model at the price snapshot of
+    /// the agent's working directory: the operator's `[pricing]` pin (`self.pricing`,
+    /// bug-1809d7) when set, else the newest file there, else the built-in copy (backlog 6105).
     fn priced_observation(&self, stream_usage: &StreamUsage, wall_ms: u64) -> UsageObservation {
-        let snapshot = PriceSnapshot::shared(&PricingConfig::default(), &self.current_dir);
+        let snapshot = PriceSnapshot::shared(&self.pricing, &self.current_dir);
         let priced = stream_usage.clone().priced_at(snapshot.as_deref());
         Self::usage_observation(&priced, wall_ms)
     }
@@ -3133,6 +3147,66 @@ mod tests {
         assert_eq!(observed.cli_version.as_deref(), Some("2.1.250"));
         let gap = usage.vendor_gap().expect("both figures are known");
         assert!(gap.abs() <= VENDOR_GAP_TOLERANCE, "{gap}");
+    }
+
+    /// A row with every rate column, required and positive (`PriceRow::problem`).
+    fn pin_test_row(slug: &str, rate: f64) -> String {
+        format!(
+            "[[model]]\nslug = \"{slug}\"\nprovider = \"test\"\ninput = {rate}\n\
+             cache_read = {rate}\ncache_write_5m = {rate}\ncache_write_1h = {rate}\n\
+             output = {rate}\nreasoning_in_output = true\nsource_url = \"https://example.test\"\n\
+             verified = \"test\"\n"
+        )
+    }
+
+    /// A `vb.price_snapshot/1` file's text, with `id` and `rows`.
+    fn pin_test_snapshot(id: &str, rows: &str) -> String {
+        format!(
+            "schema_version = \"roko.price_snapshot/1\"\nid = \"{id}\"\n\
+             fetched_at = \"2030-01-01\"\ncurrency = \"USD\"\nunit = \"per_1M_tokens\"\n{rows}"
+        )
+    }
+
+    /// bug-1809d7: a configured `[pricing] snapshot` pin prices a Claude CLI call at that
+    /// snapshot, not the newest file in `config/prices/`.
+    #[test]
+    fn claude_cli_prices_at_the_configured_snapshot_pin() {
+        let workspace = tempdir().expect("tempdir");
+        let prices = workspace.path().join("config").join("prices");
+        fs::create_dir_all(&prices).expect("create config/prices");
+        // The pin prices this model at $1/million; the newer file, which must NOT be used, at
+        // $1000/million, 1000x larger, so a wrong resolution could not pass the assertion below
+        // by accident.
+        fs::write(
+            prices.join("2030-01-01.toml"),
+            pin_test_snapshot("prices-2030-01-01", &pin_test_row("pin-test-model", 1.0)),
+        )
+        .expect("write the pinned snapshot");
+        fs::write(
+            prices.join("2030-06-01.toml"),
+            pin_test_snapshot("prices-2030-06-01", &pin_test_row("pin-test-model", 1000.0)),
+        )
+        .expect("write the newer snapshot");
+
+        let agent = ClaudeCliAgent::new("claude", workspace.path(), "pin-test-model").with_pricing(
+            PricingConfig {
+                snapshot: "prices-2030-01-01".to_string(),
+            },
+        );
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"result","model":"pin-test-model","usage":{"input_tokens":1000,"output_tokens":1000}}"#,
+            "pin-test-model",
+        );
+        let observed = agent.priced_observation(&usage, 0);
+        assert_eq!(
+            observed.price_snapshot_id.as_deref(),
+            Some("prices-2030-01-01"),
+            "{observed:?}"
+        );
+        let api_equiv = observed
+            .api_equiv_usd
+            .expect("the pinned snapshot prices this model");
+        assert!((api_equiv - 0.002).abs() < 1e-9, "{observed:?}");
     }
 
     /// backlog 6105: a model of the session the snapshot does not list

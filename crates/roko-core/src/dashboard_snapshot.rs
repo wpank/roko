@@ -496,6 +496,34 @@ pub enum DashboardEvent {
         /// When it moved (RFC 3339).
         ts: String,
     },
+    /// One of M1's essential variables after a resolution (S06 §5).
+    #[serde(rename = "ev.update")]
+    EvUpdate {
+        /// The variable: `pass_rate`, `usd_per_verified_success`,
+        /// `false_green` or `latency_p90_s`.
+        ev: String,
+        /// Its estimate over M1's window; `None` before it has data.
+        #[serde(default)]
+        value: Option<f64>,
+        /// The S5 bound it must stay inside.
+        bound: f64,
+        /// The inner band it recovers to.
+        #[serde(default)]
+        inner: Option<f64>,
+        /// `breached` or `in_bounds`.
+        state: String,
+    },
+    /// An M1 episode moved: it opened, changed θ, held or closed (S06 §5).
+    #[serde(rename = "m1.episode")]
+    M1Episode {
+        /// The episode, e.g. `ep-0007`; `relax` for a relaxation.
+        episode_id: String,
+        /// The controller's phase after it: `idle`, `search` or `hold`.
+        phase: String,
+        /// The change it made, as `knob: from -> to`; `None` without one.
+        #[serde(default)]
+        change: Option<String>,
+    },
     /// An error occurred.
     Error { message: String },
 }
@@ -2460,6 +2488,23 @@ impl DashboardSnapshot {
             // this event only exists to advance the event-bus cursor for
             // SSE/WS consumers.
             DashboardEvent::SnapshotRebased { .. } => {}
+            // The Homeostat view reads EVs from the event stream; the
+            // snapshot logs only M1's episode moves (8130).
+            DashboardEvent::EvUpdate { .. } => {}
+            DashboardEvent::M1Episode {
+                episode_id,
+                phase,
+                change,
+            } => {
+                let change = change.as_deref().unwrap_or("no change");
+                self.push_event_log(
+                    ts,
+                    "m1_episode".to_string(),
+                    String::new(),
+                    String::new(),
+                    format!("M1 {episode_id}: {phase}, {change}"),
+                );
+            }
             // S10's Loop Health view reads health from the event stream; the
             // snapshot keeps no loop state, and logs only the transitions.
             DashboardEvent::LoopHealth { .. } => {}
@@ -5904,5 +5949,35 @@ mod tests {
         assert_eq!(snapshot.experiment_winners[0].sample_size, 120);
         assert!(snapshot.experiment_winners[0].ci_lower <= snapshot.experiment_winners[0].win_rate);
         assert!(snapshot.experiment_winners[0].ci_upper >= snapshot.experiment_winners[0].win_rate);
+    }
+
+    /// S06 §5 (8130): M1's live events serialize as `ev.update` and
+    /// `m1.episode` and read back the same.
+    #[test]
+    fn homeostasis_dashboard_events_serialize() {
+        let events = [
+            DashboardEvent::EvUpdate {
+                ev: "pass_rate".to_string(),
+                value: Some(0.62),
+                bound: 0.70,
+                inner: Some(0.75),
+                state: "breached".to_string(),
+            },
+            DashboardEvent::M1Episode {
+                episode_id: "ep-0007".to_string(),
+                phase: "search".to_string(),
+                change: Some("tier_floor.focused: \"cheap\" -> \"mid\"".to_string()),
+            },
+        ];
+        for (event, kind) in events.into_iter().zip(["ev.update", "m1.episode"]) {
+            let json = serde_json::to_value(&event).expect("the event serializes");
+            assert_eq!(json["type"], kind, "{json}");
+            let back: DashboardEvent = serde_json::from_value(json).expect("it reads back");
+            assert_eq!(back, event);
+        }
+        let quiet: DashboardEvent =
+            serde_json::from_str(r#"{"type":"m1.episode","episode_id":"ep-1","phase":"idle"}"#)
+                .expect("an episode move without a change");
+        assert!(matches!(quiet, DashboardEvent::M1Episode { change: None, .. }));
     }
 }

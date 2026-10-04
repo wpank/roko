@@ -309,6 +309,8 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::CrossCutCascade { .. } => "cross_cut_cascade",
         DashboardEvent::LoopHealth { .. } => "loop_health",
         DashboardEvent::LoopTransition { .. } => "loop_transition",
+        DashboardEvent::EvUpdate { .. } => "ev.update",
+        DashboardEvent::M1Episode { .. } => "m1.episode",
         DashboardEvent::SnapshotRebased { .. } => "snapshot_rebased",
     }
 }

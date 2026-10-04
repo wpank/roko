@@ -202,6 +202,27 @@ pub struct LearningConfig {
     /// `[learning.audit]`: the M2 loop auditor (S03 §5).
     #[serde(default)]
     pub audit: LearningAuditConfig,
+    /// What a Graph run's end does with what the run taught the cascade
+    /// router and the knowledge store (P21, 8138): propose both to their
+    /// guards, which log a failed check (`observe`, decision 8103's default)
+    /// or roll the store back (`enforce`), or save them unchecked (`off`).
+    #[serde(default)]
+    pub guarded_commit: GuardedCommitMode,
+}
+
+/// `[learning] guarded_commit` (P21, decision 8103): what a failed guard
+/// check does to a run's learning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardedCommitMode {
+    /// Commit the learning and log the rollback that would have happened:
+    /// the first ten runs, until a person switches to `enforce`.
+    #[default]
+    Observe,
+    /// Roll the store back to its last-known-good version.
+    Enforce,
+    /// Propose nothing: the run's learning is saved unchecked, as before.
+    Off,
 }
 
 // ---- [learning.audit] ----------------------------------------------------
@@ -529,6 +550,7 @@ impl Default for LearningConfig {
             knowledge: KnowledgeProgressionConfig::default(),
             frozen: false,
             audit: LearningAuditConfig::default(),
+            guarded_commit: GuardedCommitMode::default(),
         }
     }
 }

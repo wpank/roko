@@ -1250,6 +1250,7 @@ impl From<&InsightRecord> for KnowledgeEntry {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         }
     }
 }
@@ -1295,6 +1296,7 @@ impl From<&HeuristicRule> for KnowledgeEntry {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         }
     }
 }
@@ -1346,6 +1348,7 @@ impl From<&PlaybookCompilation> for KnowledgeEntry {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         }
     }
 }
@@ -1831,6 +1834,7 @@ fn anti_knowledge_for_heuristic(heuristic: &Heuristic, created_at_ms: i64) -> Kn
         last_accessed: None,
         contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -2224,6 +2228,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
         let verdicts = vec![
             EpisodeGateVerdict::new("compile", true),
@@ -2278,6 +2283,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
         let verdicts = vec![
             EpisodeGateVerdict::new("compile", false),
@@ -2331,6 +2337,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         assert!(TierProgression::needs_expiry_review(&entry));
@@ -2378,6 +2385,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
         let transient = KnowledgeEntry {
             tier: KnowledgeTier::Transient,

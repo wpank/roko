@@ -1,8 +1,11 @@
 //! Spend accounting at the Graph dispatch boundary: the per-plan budget ledger
-//! and its reservations and alerts, the per-task spend ledger, and the daily
-//! ceiling.
+//! and its reservations and alerts, the per-task spend ledger, the daily
+//! ceiling, and S5's in-run budget cut (8135).
 
 use roko_core::dashboard_snapshot::{InboxCategory, inbox_routing};
+use roko_core::disturbance::{
+    CeilingOverlay, DisturbanceEvent, DisturbanceSpec, GroundTruthWriter, Origin,
+};
 
 use super::*;
 
@@ -717,6 +720,70 @@ pub(super) fn task_budget_ceiling_usd(
     .unwrap_or(0.0)
 }
 
+/// The ground truth of S5's in-run budget cuts (8135): each cut's
+/// `disturbance.inject` row in its run's `disturbances.jsonl`, whose
+/// `start_resolution` is the task position the cut took effect at. The
+/// controller never reads it (8119).
+#[derive(Debug, Default)]
+pub(super) struct CutGroundTruth {
+    rows: parking_lot::Mutex<CutRows>,
+}
+
+#[derive(Debug, Default)]
+struct CutRows {
+    /// The cut whose row is written.
+    recorded: Option<Arc<DisturbanceSpec>>,
+    /// Cuts written so far, which number the next one's id.
+    written: u64,
+    /// Each run's writer, which numbers the run's rows.
+    writers: HashMap<String, GroundTruthWriter>,
+}
+
+impl CutGroundTruth {
+    /// Write the row of `cut`, which took effect at task position
+    /// `position` of run `run_id`, unless it has one. Without a runs
+    /// directory nothing is written; a failed write is logged.
+    pub(super) fn record(
+        &self,
+        runs_dir: Option<&Path>,
+        run_id: &str,
+        cut: &Arc<DisturbanceSpec>,
+        position: u64,
+    ) {
+        let mut rows = self.rows.lock();
+        if let Some(recorded) = &rows.recorded
+            && Arc::ptr_eq(recorded, cut)
+        {
+            return;
+        }
+        rows.recorded = Some(Arc::clone(cut));
+        let Some(runs_dir) = runs_dir else {
+            return;
+        };
+        rows.written += 1;
+        let id = format!("dist-{}", rows.written);
+        let effective = DisturbanceSpec {
+            start_at: position,
+            ..cut.as_ref().clone()
+        };
+        let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let writer = rows
+            .writers
+            .entry(run_id.to_string())
+            .or_insert_with(|| GroundTruthWriter::new(&runs_dir.join(run_id), run_id));
+        let row = writer.record(
+            DisturbanceEvent::Inject,
+            &id,
+            &effective,
+            Origin::AdminRoute,
+            &ts,
+        );
+        if let Err(error) = row {
+            tracing::warn!(%error, run_id, "S5's budget cut has no ground-truth row");
+        }
+    }
+}
+
 /// Provider spend per task (`"{plan_id}/{task_id}"`), summed across every
 /// attempt of the run, for per-task ceiling admission, and the process's
 /// spend across all tasks, for the daily ceiling.
@@ -969,6 +1036,35 @@ fn daily_stop(
 }
 
 impl GraphTaskDispatcher {
+    /// S5's in-run ceiling overlay, which every task budget admission reads
+    /// (8135). The demo's disturbance route sets its cut on a showcase run.
+    #[must_use]
+    pub fn ceiling_overlay(&self) -> CeilingOverlay {
+        self.ceiling_overlay.clone()
+    }
+
+    /// Share `overlay`, whose cut whoever runs the plan may set (8135).
+    #[must_use]
+    pub fn with_ceiling_overlay(mut self, overlay: CeilingOverlay) -> Self {
+        self.ceiling_overlay = overlay;
+        self
+    }
+
+    /// The share of task `task_key`'s ceiling that S5's in-run overlay leaves
+    /// at the task's position (8135): the cut's factor from the position it
+    /// took effect at, else 1. The first admission a cut covers writes its
+    /// ground truth to the run's `disturbances.jsonl`.
+    pub(super) fn budget_cut(&self, task_key: &str, ctx: &CellContext) -> f64 {
+        let position = self.ceiling_overlay.position(task_key);
+        let Some((cut, factor)) = self.ceiling_overlay.cut_at(position) else {
+            return 1.0;
+        };
+        let runs_dir = self.feedback.runs_dir.as_deref();
+        let run_id = self.attempts.run_id(ctx);
+        self.cut_ground_truth.record(runs_dir, run_id, &cut, position);
+        factor
+    }
+
     /// The handle through which `roko plan budget raise` raises the ceiling
     /// of a plan this dispatcher runs (backlog 2118).
     #[must_use]
@@ -1949,6 +2045,73 @@ exit 1
         fresh.attach_retry_feedback("plan", kept, "run-2");
         assert!(fresh.task_spend.admit("plan/T1", 0.10).is_ok());
         assert_eq!(fresh.take_turn_cap_retry("plan", "T1"), None);
+    }
+
+    /// S5's in-run budget cut (8135): a cut set before task 3 of 6 leaves
+    /// tasks 1 and 2 at the old ceiling, on later attempts too, and admits
+    /// tasks 3 to 6 at the new one. The run's ground truth says the cut took
+    /// effect at position 3.
+    #[tokio::test]
+    async fn in_run_budget_cut_applies_from_position() {
+        use roko_core::disturbance::{DISTURBANCES_FILE, DisturbanceKind, DisturbanceRecord};
+
+        let temp = tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.budget.max_task_usd = 0.0;
+        config.budget.max_task_retry_usd = 4.0;
+        let runs = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let dispatcher = make_bare_dispatcher(config, temp.path()).await;
+        let dispatcher = dispatcher.with_feedback(feedback);
+        let ctx = CellContext::new().with_run_id("cut-run".to_string());
+        let tasks: Vec<TaskDef> = (1..=6)
+            .map(|n| TaskDef {
+                id: format!("T{n}"),
+                ..make_task_def("focused")
+            })
+            .collect();
+        // $3 of each task's $4 ceiling is spent: below it, above half of it.
+        let spent = roko_core::Usage {
+            cost_usd: 3.0,
+            ..roko_core::Usage::zero()
+        };
+        for task in &tasks {
+            dispatcher.record_task_spend("stream-plan", &task.id, &spent);
+        }
+        let admitted = |task: &TaskDef| {
+            let spec = make_spec(task);
+            let key = format!("{}/{}", spec.plan_id, task.id);
+            dispatcher.admit_task_budget(&spec, task, &key, &ctx).is_ok()
+        };
+
+        assert!(admitted(&tasks[0]) && admitted(&tasks[1]));
+        // The ceiling is halved from the next task on.
+        let overlay = dispatcher.ceiling_overlay();
+        assert_eq!(overlay.next_position(), 3);
+        let factor = ("factor".to_string(), serde_json::json!(0.5));
+        let cut = DisturbanceSpec {
+            kind: DisturbanceKind::BudgetCut,
+            params: std::collections::BTreeMap::from([factor]),
+            start_at: overlay.next_position(),
+            end_at: None,
+            seed: 0,
+        };
+        overlay.set(cut).expect("a budget cut applies within a run");
+        let after: Vec<bool> = tasks.iter().map(admitted).collect();
+        assert_eq!(after, [true, true, false, false, false, false]);
+
+        let ground_truth = runs.join("cut-run").join(DISTURBANCES_FILE);
+        let text = std::fs::read_to_string(ground_truth).expect("the run's ground truth");
+        let rows: Vec<DisturbanceRecord> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a ground-truth row"))
+            .collect();
+        assert_eq!(rows.len(), 1, "{text}");
+        assert_eq!(rows[0].disturbance, DisturbanceKind::BudgetCut);
+        assert_eq!(rows[0].start_resolution, 3);
     }
 
     // ── budget.max_daily_usd (bug-ae28ac) ───────────────────────────────

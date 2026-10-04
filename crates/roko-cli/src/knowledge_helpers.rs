@@ -352,6 +352,7 @@ pub(crate) fn record_lifecycle_knowledge(
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
         knowledge_store.max_similarity(&probe).unwrap_or(0.0)
     };
@@ -605,6 +606,7 @@ pub(crate) fn build_success_knowledge_entry(
         last_accessed: None,
         contradiction_count: 0,
         activation_conditions: Vec::new(),
+        commit_batch: None,
     }
 }
 
@@ -877,6 +879,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
         knowledge_store.add(existing).expect("add existing entry");
 

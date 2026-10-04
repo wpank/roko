@@ -74,6 +74,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         }
     }
 
@@ -798,6 +799,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add anti knowledge");
 
@@ -978,6 +980,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add anti knowledge");
 
@@ -1047,6 +1050,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add anti knowledge");
 
@@ -1106,6 +1110,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add oldest");
         store
@@ -1147,6 +1152,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add middle");
         store
@@ -1188,6 +1194,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add newest");
 
@@ -1510,6 +1517,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         assert!(!entries_are_similar(&existing, &anti));
@@ -1712,6 +1720,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add tiered");
 
@@ -1765,6 +1774,7 @@ mod tests {
                 last_accessed: None,
                 contradiction_count: 0,
                 activation_conditions: Vec::new(),
+                commit_batch: None,
             })
             .expect("add persistent");
 
@@ -1963,6 +1973,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         // A near-identical entry that should be rejected.
@@ -2001,6 +2012,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         // An unrelated entry that should pass through.
@@ -2039,6 +2051,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         let existing = vec![anti];
@@ -2090,6 +2103,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         let new_anti = KnowledgeEntry {
@@ -2127,6 +2141,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         };
 
         let existing = vec![existing_anti];
@@ -2601,6 +2616,7 @@ mod anti_pattern_tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         }
     }
 

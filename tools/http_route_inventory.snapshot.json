@@ -1,6 +1,6 @@
 {
-  "total_registrations": 469,
-  "canonical_registrations": 409,
+  "total_registrations": 474,
+  "canonical_registrations": 414,
   "alias_count": 60,
   "conflict_count": 0,
   "unparsed_count": 0,
@@ -1623,7 +1623,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/loops.rs",
-      "line": 294,
+      "line": 299,
       "router_fn": "require_admin",
       "path": "/learn/loops/{id}/fault",
       "method": "POST",
@@ -1631,7 +1631,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/loops.rs",
-      "line": 295,
+      "line": 300,
       "router_fn": "require_admin",
       "path": "/showcase/m2/loops/{id}/break",
       "method": "POST",
@@ -1639,7 +1639,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 28,
+      "line": 29,
       "router_fn": "routes",
       "path": "/c-factor/trend",
       "method": "GET",
@@ -1647,7 +1647,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 29,
+      "line": 30,
       "router_fn": "routes",
       "path": "/learn/model-scorecard",
       "method": "GET",
@@ -1655,7 +1655,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 30,
+      "line": 31,
       "router_fn": "routes",
       "path": "/learning/model-scorecard",
       "method": "GET",
@@ -1663,7 +1663,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 31,
+      "line": 32,
       "router_fn": "routes",
       "path": "/learning/efficiency",
       "method": "GET",
@@ -1671,7 +1671,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 32,
+      "line": 33,
       "router_fn": "routes",
       "path": "/learn/efficiency",
       "method": "GET",
@@ -1679,7 +1679,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 33,
+      "line": 34,
       "router_fn": "routes",
       "path": "/learning/costs",
       "method": "GET",
@@ -1687,7 +1687,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 34,
+      "line": 35,
       "router_fn": "routes",
       "path": "/learn/costs",
       "method": "GET",
@@ -1695,7 +1695,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 35,
+      "line": 36,
       "router_fn": "routes",
       "path": "/learning/provider-outcomes",
       "method": "GET",
@@ -1703,7 +1703,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 36,
+      "line": 37,
       "router_fn": "routes",
       "path": "/learn/provider-outcomes",
       "method": "GET",
@@ -1711,7 +1711,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 37,
+      "line": 38,
       "router_fn": "routes",
       "path": "/learning/retries",
       "method": "GET",
@@ -1719,7 +1719,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 38,
+      "line": 39,
       "router_fn": "routes",
       "path": "/learn/retries",
       "method": "GET",
@@ -1727,7 +1727,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 39,
+      "line": 40,
       "router_fn": "routes",
       "path": "/learning/runtime-feedback",
       "method": "GET",
@@ -1735,7 +1735,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 40,
+      "line": 41,
       "router_fn": "routes",
       "path": "/learn/runtime-feedback",
       "method": "GET",
@@ -1743,7 +1743,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 41,
+      "line": 42,
       "router_fn": "routes",
       "path": "/learning/cascade-router",
       "method": "GET",
@@ -1751,7 +1751,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 42,
+      "line": 43,
       "router_fn": "routes",
       "path": "/learn/cascade-router",
       "method": "GET",
@@ -1759,7 +1759,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 43,
+      "line": 44,
       "router_fn": "routes",
       "path": "/learning/cascade",
       "method": "GET",
@@ -1767,7 +1767,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 44,
+      "line": 45,
       "router_fn": "routes",
       "path": "/learning/cost-tiers",
       "method": "GET",
@@ -1775,7 +1775,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 45,
+      "line": 46,
       "router_fn": "routes",
       "path": "/learn/cost-tiers",
       "method": "GET",
@@ -1783,7 +1783,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 46,
+      "line": 47,
       "router_fn": "routes",
       "path": "/learn/cascade",
       "method": "GET",
@@ -1791,7 +1791,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 47,
+      "line": 48,
       "router_fn": "routes",
       "path": "/learn/experiments",
       "method": "GET",
@@ -1799,7 +1799,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 48,
+      "line": 49,
       "router_fn": "routes",
       "path": "/learning/experiments",
       "method": "GET",
@@ -1807,7 +1807,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 49,
+      "line": 50,
       "router_fn": "routes",
       "path": "/learn/adaptive-thresholds",
       "method": "GET",
@@ -1815,7 +1815,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 50,
+      "line": 51,
       "router_fn": "routes",
       "path": "/learning/adaptive-thresholds",
       "method": "GET",
@@ -1823,7 +1823,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 51,
+      "line": 52,
       "router_fn": "routes",
       "path": "/learning/gate-thresholds",
       "method": "GET",
@@ -1831,7 +1831,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 52,
+      "line": 53,
       "router_fn": "routes",
       "path": "/learn/gate-thresholds",
       "method": "GET",
@@ -1839,7 +1839,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 53,
+      "line": 54,
       "router_fn": "routes",
       "path": "/learn/router",
       "method": "GET",
@@ -1847,7 +1847,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 54,
+      "line": 55,
       "router_fn": "routes",
       "path": "/executor/state",
       "method": "GET",
@@ -1855,7 +1855,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 56,
+      "line": 57,
       "router_fn": "routes",
       "path": "/learn/reflexes",
       "method": "GET",
@@ -1863,7 +1863,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 57,
+      "line": 58,
       "router_fn": "routes",
       "path": "/learning/reflexes",
       "method": "GET",
@@ -1871,7 +1871,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 59,
+      "line": 60,
       "router_fn": "routes",
       "path": "/learn/playbooks",
       "method": "GET",
@@ -1879,7 +1879,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 60,
+      "line": 61,
       "router_fn": "routes",
       "path": "/learning/playbooks",
       "method": "GET",
@@ -1887,7 +1887,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 62,
+      "line": 63,
       "router_fn": "routes",
       "path": "/learn/section-outcomes",
       "method": "GET",
@@ -1895,7 +1895,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 63,
+      "line": 64,
       "router_fn": "routes",
       "path": "/learning/section-outcomes",
       "method": "GET",
@@ -1903,7 +1903,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 65,
+      "line": 66,
       "router_fn": "routes",
       "path": "/learn/role-costs",
       "method": "GET",
@@ -1911,7 +1911,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 66,
+      "line": 67,
       "router_fn": "routes",
       "path": "/learning/role-costs",
       "method": "GET",
@@ -1919,7 +1919,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 68,
+      "line": 69,
       "router_fn": "routes",
       "path": "/learn/loops",
       "method": "GET",
@@ -1927,7 +1927,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 69,
+      "line": 70,
       "router_fn": "routes",
       "path": "/learn/loops/{id}",
       "method": "GET",
@@ -1935,7 +1935,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 70,
+      "line": 71,
       "router_fn": "routes",
       "path": "/learn/loops/{id}/decisions",
       "method": "GET",
@@ -1943,7 +1943,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 71,
+      "line": 72,
       "router_fn": "routes",
       "path": "/learn/loops/{id}/canary",
       "method": "POST",
@@ -1951,7 +1951,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 72,
+      "line": 73,
       "router_fn": "routes",
       "path": "/showcase/m2/loops",
       "method": "GET",
@@ -1959,11 +1959,51 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 73,
+      "line": 74,
       "router_fn": "routes",
       "path": "/showcase/m2/loops/{id}/ledger",
       "method": "GET",
       "handler": "loops::loop_ledger"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
+      "line": 77,
+      "router_fn": "routes",
+      "path": "/learn/homeostasis",
+      "method": "GET",
+      "handler": "homeostasis::homeostasis"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
+      "line": 78,
+      "router_fn": "routes",
+      "path": "/learn/homeostasis/mode",
+      "method": "POST",
+      "handler": "homeostasis::set_mode"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
+      "line": 79,
+      "router_fn": "routes",
+      "path": "/learn/homeostasis/ack",
+      "method": "POST",
+      "handler": "homeostasis::ack"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
+      "line": 80,
+      "router_fn": "routes",
+      "path": "/showcase/m1/essential-variables",
+      "method": "GET",
+      "handler": "homeostasis::essential_variables"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
+      "line": 84,
+      "router_fn": "routes",
+      "path": "/showcase/m1/episodes",
+      "method": "GET",
+      "handler": "homeostasis::episodes"
     },
     {
       "source_file": "crates/roko-serve/src/routes/marketplace.rs",
@@ -3929,126 +3969,126 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 30,
+      "line": 31,
       "path": "/learning/model-scorecard",
       "method": "GET",
       "handler": "model_scorecard"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 32,
+      "line": 33,
       "path": "/learn/efficiency",
       "method": "GET",
       "handler": "efficiency"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 34,
+      "line": 35,
       "path": "/learn/costs",
       "method": "GET",
       "handler": "costs"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 36,
+      "line": 37,
       "path": "/learn/provider-outcomes",
       "method": "GET",
       "handler": "provider_outcomes"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 38,
+      "line": 39,
       "path": "/learn/retries",
       "method": "GET",
       "handler": "retries"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 40,
+      "line": 41,
       "path": "/learn/runtime-feedback",
       "method": "GET",
       "handler": "runtime_feedback"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 42,
+      "line": 43,
       "path": "/learn/cascade-router",
       "method": "GET",
       "handler": "learn_router_snapshot"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 45,
+      "line": 46,
       "path": "/learn/cost-tiers",
       "method": "GET",
       "handler": "router_state::cost_tiers"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 46,
+      "line": 47,
       "path": "/learn/cascade",
       "method": "GET",
       "handler": "router_state::cascade"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 48,
+      "line": 49,
       "path": "/learning/experiments",
       "method": "GET",
       "handler": "experiments::experiments"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 50,
+      "line": 51,
       "path": "/learning/adaptive-thresholds",
       "method": "GET",
       "handler": "adaptive_thresholds"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 52,
+      "line": 53,
       "path": "/learn/gate-thresholds",
       "method": "GET",
       "handler": "gate_thresholds"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 53,
+      "line": 54,
       "path": "/learn/router",
       "method": "GET",
       "handler": "learn_router_snapshot"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 57,
+      "line": 58,
       "path": "/learning/reflexes",
       "method": "GET",
       "handler": "reflexes"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 60,
+      "line": 61,
       "path": "/learning/playbooks",
       "method": "GET",
       "handler": "playbooks"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 63,
+      "line": 64,
       "path": "/learning/section-outcomes",
       "method": "GET",
       "handler": "section_outcomes"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 66,
+      "line": 67,
       "path": "/learning/role-costs",
       "method": "GET",
       "handler": "role_costs"
     },
     {
       "source_file": "crates/roko-serve/src/routes/learning/mod.rs",
-      "line": 72,
+      "line": 73,
       "path": "/showcase/m2/loops",
       "method": "GET",
       "handler": "loops::loops"

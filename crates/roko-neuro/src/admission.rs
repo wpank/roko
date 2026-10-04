@@ -451,6 +451,7 @@ impl KnowledgeCandidateRecord {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         }
     }
 }
@@ -1881,6 +1882,7 @@ mod tests {
             last_accessed: None,
             contradiction_count: 0,
             activation_conditions: Vec::new(),
+            commit_batch: None,
         }
     }
 

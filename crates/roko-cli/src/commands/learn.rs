@@ -207,6 +207,12 @@ pub(crate) enum LearnCmd {
         #[command(subcommand)]
         cmd: commands::learn_self_model::EconCmd,
     },
+    /// M1, the ultrastable controller: its saved state, or a replay over a stream
+    /// (S06; read-only, except what `replay --out` writes).
+    Homeostasis {
+        #[command(subcommand)]
+        cmd: commands::learn_homeostasis::HomeostasisCmd,
+    },
     /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
     #[command(hide = true)]
     Tune {
@@ -361,6 +367,9 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             commands::learn_self_model::self_model_workdir(cli, sub)
         }
         LearnCmd::Econ { cmd: sub } => commands::learn_self_model::econ_workdir(cli, sub),
+        LearnCmd::Homeostasis { cmd: sub } => {
+            commands::learn_homeostasis::homeostasis_workdir(cli, sub)
+        }
         LearnCmd::Tune { workdir, .. } => workdir.clone().unwrap_or_else(|| resolve_workdir(cli)),
     };
     let _lock =
@@ -536,6 +545,9 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             commands::learn_self_model::cmd_self_model(cli, sub, json)
         }
         LearnCmd::Econ { cmd: sub } => commands::learn_self_model::cmd_econ(cli, sub, json),
+        LearnCmd::Homeostasis { cmd: sub } => {
+            commands::learn_homeostasis::cmd_homeostasis(cli, sub, json)
+        }
         LearnCmd::Tune {
             subsystem,
             dry_run,

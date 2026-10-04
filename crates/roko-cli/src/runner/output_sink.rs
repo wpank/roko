@@ -1501,6 +1501,8 @@ pub fn format_dashboard_event(
         | DashboardEvent::CrossCutCascade { .. }
         | DashboardEvent::LoopHealth { .. }
         | DashboardEvent::LoopTransition { .. }
+        | DashboardEvent::EvUpdate { .. }
+        | DashboardEvent::M1Episode { .. }
         | DashboardEvent::SnapshotRebased { .. } => return None,
     };
 

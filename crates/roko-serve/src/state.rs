@@ -21,6 +21,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::service_factory::{ServiceConfig, ServiceFactory};
+use crate::showcase::after;
 use roko_agent::ModelCallService;
 use roko_core::config::schema::RokoConfig;
 use roko_core::config::serve::LiveAgentOutput;
@@ -663,12 +664,6 @@ pub enum SessionLookup {
     Missing,
 }
 
-/// `now` plus `secs`, or `None` when the sum leaves chrono's range (never, in effect).
-fn after(now: chrono::DateTime<chrono::Utc>, secs: u64) -> Option<chrono::DateTime<chrono::Utc>> {
-    let delta = chrono::TimeDelta::try_seconds(i64::try_from(secs).ok()?)?;
-    now.checked_add_signed(delta)
-}
-
 /// Ephemeral local-access state for this server process.
 ///
 /// Holds an optional launch token (never persisted), the live sessions and the showcase
@@ -688,6 +683,8 @@ pub struct LocalAccess {
     passphrase_hash: std::sync::RwLock<Option<String>>,
     /// Passphrase verification behind a bounded queue, made on the first login (9323).
     login: std::sync::OnceLock<crate::showcase::auth::PassphraseVerifier>,
+    /// Failed passphrase logins, per client address and in total (9325).
+    lockout: crate::showcase::lockout::LoginLockout,
 }
 
 impl LocalAccess {
@@ -701,6 +698,7 @@ impl LocalAccess {
             sessions: std::sync::Mutex::new(HashMap::new()),
             passphrase_hash: std::sync::RwLock::new(None),
             login: std::sync::OnceLock::new(),
+            lockout: crate::showcase::lockout::LoginLockout::default(),
         }
     }
 
@@ -743,6 +741,11 @@ impl LocalAccess {
     pub fn login_verifier(&self, concurrency: u32) -> &crate::showcase::auth::PassphraseVerifier {
         self.login
             .get_or_init(|| crate::showcase::auth::PassphraseVerifier::new(concurrency as usize))
+    }
+
+    /// The failed-login counters that block bursts of wrong passphrases (S11 §4.3).
+    pub fn login_lockout(&self) -> &crate::showcase::lockout::LoginLockout {
+        &self.lockout
     }
 
     /// `hex(sha256(PHC))[..16]` of the installed passphrase hash (S11 §4.3).

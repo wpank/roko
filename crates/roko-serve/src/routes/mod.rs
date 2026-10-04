@@ -2543,6 +2543,7 @@ mod tests {
             ("/api/learn/loops/L-know/fault", "admin"),
             ("/api/showcase/m2/loops/L-know/break", "admin"),
             ("/api/showcase/admin/bundles/reload", "admin"),
+            ("/api/showcase/admin/login-unlock", "admin"),
             // agent:write
             ("/api/agents/register", "agent:write"),
             ("/api/agents/create", "agent:write"),

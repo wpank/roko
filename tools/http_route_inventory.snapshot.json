@@ -1,6 +1,6 @@
 {
-  "total_registrations": 478,
-  "canonical_registrations": 418,
+  "total_registrations": 479,
+  "canonical_registrations": 419,
   "alias_count": 60,
   "conflict_count": 0,
   "unparsed_count": 0,
@@ -447,7 +447,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/auth_session.rs",
-      "line": 421,
+      "line": 453,
       "router_fn": "routes",
       "path": "/api/auth/session",
       "method": "DELETE",
@@ -455,7 +455,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/auth_session.rs",
-      "line": 421,
+      "line": 453,
       "router_fn": "routes",
       "path": "/api/auth/session",
       "method": "GET",
@@ -463,7 +463,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/auth_session.rs",
-      "line": 421,
+      "line": 453,
       "router_fn": "routes",
       "path": "/api/auth/session",
       "method": "POST",
@@ -3055,7 +3055,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 26,
+      "line": 29,
       "router_fn": "routes",
       "path": "/showcase/overview",
       "method": "GET",
@@ -3063,7 +3063,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 27,
+      "line": 30,
       "router_fn": "routes",
       "path": "/showcase/p1/head-to-head",
       "method": "GET",
@@ -3071,7 +3071,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 28,
+      "line": 31,
       "router_fn": "routes",
       "path": "/showcase/m4/audits",
       "method": "GET",
@@ -3079,11 +3079,19 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 29,
+      "line": 32,
       "router_fn": "routes",
       "path": "/showcase/admin/bundles/reload",
       "method": "POST",
       "handler": "admin::reload_bundles"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 36,
+      "router_fn": "routes",
+      "path": "/showcase/admin/login-unlock",
+      "method": "POST",
+      "handler": "admin::unlock_login"
     },
     {
       "source_file": "crates/roko-serve/src/routes/sse.rs",

@@ -72,6 +72,8 @@ pub enum AuthAuditAction {
     LoginSucceeded,
     /// A showcase passphrase login failed: a wrong passphrase, never logged.
     LoginFailed,
+    /// A showcase login was refused because its address, or every address, is blocked.
+    LoginLocked,
     /// A showcase session was ended on request.
     SessionRevoked,
     /// A showcase session was refused because the passphrase hash rotated after it was minted.
@@ -97,6 +99,7 @@ impl AuthAuditAction {
             Self::TokenDelegated => "TokenDelegated",
             Self::LoginSucceeded => "LoginSucceeded",
             Self::LoginFailed => "LoginFailed",
+            Self::LoginLocked => "LoginLocked",
             Self::SessionRevoked => "SessionRevoked",
             Self::GenerationChanged => "GenerationChanged",
         }

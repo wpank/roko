@@ -39,6 +39,7 @@ use crate::showcase::auth::{
     check_csrf_and_origin, clear_session_cookie, client_ip, ip_prefix, session_cookie_name,
     set_session_cookie,
 };
+use crate::showcase::lockout::Locked;
 use crate::state::{AppState, SessionGrant, SessionLookup};
 
 /// Optional JSON body for `POST /api/auth/session`.
@@ -107,6 +108,17 @@ const PASSPHRASE_BYTES: std::ops::RangeInclusive<usize> = 12..=256;
 /// `{"error": code}` with `status`: the showcase login's uniform errors.
 fn showcase_error(status: StatusCode, code: &str) -> Response {
     (status, Json(json!({ "error": code }))).into_response()
+}
+
+/// `429 login_locked` with `Retry-After`: a block in force (S11 §4.3).
+fn locked_response(locked: Locked) -> Response {
+    let body = json!({
+        "error": "login_locked",
+        "scope": locked.scope.as_str(),
+        "retry_after_s": locked.retry_after_s,
+    });
+    let retry_after = [(RETRY_AFTER, locked.retry_after_s.to_string())];
+    (StatusCode::TOO_MANY_REQUESTS, retry_after, Json(body)).into_response()
 }
 
 /// Validate a token against the launch token and all configured API keys.
@@ -254,14 +266,33 @@ async fn create_session(State(state): State<Arc<AppState>>, req: Request) -> Res
 /// passphrase is checked with Argon2id against `ROKO_SHOWCASE_PASSPHRASE_HASH`
 /// behind a bounded queue (`429 login_busy` past it). Success mints a `showcase`
 /// session under the passphrase generation; every failure is the same
-/// `401 invalid_passphrase`, and nothing echoes the passphrase.
+/// `401 invalid_passphrase`, and nothing echoes the passphrase. A burst of
+/// failures from one address, or from all, blocks further tries before any
+/// Argon2 work (`429 login_locked`, 9325).
 async fn passphrase_login(state: &AppState, config: &RokoConfig, req: Request) -> Response {
     let route_label = "POST /api/auth/session";
     let showcase = &config.showcase;
-    let prefix = ip_prefix(client_ip(&req, showcase.login.trust_fly_client_ip));
+    let ip = client_ip(&req, showcase.login.trust_fly_client_ip);
+    let prefix = ip_prefix(ip);
+    let client = ip.map_or_else(|| "unknown".to_string(), |ip| ip.to_string());
     let headers = req.headers();
     if let Err(code) = check_csrf_and_origin(headers, showcase.public_origin.as_deref()) {
         return showcase_error(StatusCode::FORBIDDEN, code);
+    }
+    let lockout = state.local_access.login_lockout();
+    if let Some(locked) = lockout.check(&client, Utc::now()) {
+        audit(
+            state,
+            AuthAuditEvent::new(
+                "showcase",
+                AuthAuditAction::LoginLocked,
+                route_label,
+                AuthOutcome::Denied,
+            )
+            .with_ip(Some(prefix))
+            .with_meta("scope", locked.scope.as_str()),
+        );
+        return locked_response(locked);
     }
     if headers.contains_key("X-Api-Key") || headers.contains_key(AUTHORIZATION) {
         return showcase_error(StatusCode::BAD_REQUEST, "token_exchange_disabled");
@@ -300,6 +331,7 @@ async fn passphrase_login(state: &AppState, config: &RokoConfig, req: Request) -
         None => false,
     };
     if !verified {
+        lockout.record_failure(&client, &showcase.login, Utc::now());
         audit(
             state,
             AuthAuditEvent::new(
@@ -659,17 +691,26 @@ mod tests {
             .to_string()
     }
 
-    /// A showcase-mode server whose passphrase is [`PASSPHRASE`].
-    fn showcase_state_router() -> (tempfile::TempDir, Arc<AppState>, axum::Router) {
+    /// A showcase-mode server whose passphrase is [`PASSPHRASE`], configured further by
+    /// `configure`.
+    fn showcase_router_with(
+        configure: impl FnOnce(&mut RokoConfig),
+    ) -> (tempfile::TempDir, Arc<AppState>, axum::Router) {
         let mut config = RokoConfig::default();
         config.serve.auth.enabled = true;
         config.showcase.enabled = true;
         config.showcase.public_origin = Some(ORIGIN.to_string());
+        configure(&mut config);
         let (dir, state, router) = build_test_state_router(config);
         state
             .local_access
             .set_passphrase_hash(Some(cheap_phc(PASSPHRASE)));
         (dir, state, router)
+    }
+
+    /// A showcase-mode server whose passphrase is [`PASSPHRASE`].
+    fn showcase_state_router() -> (tempfile::TempDir, Arc<AppState>, axum::Router) {
+        showcase_router_with(|_| {})
     }
 
     /// A login as the SPA sends it: JSON, the CSRF header and the public origin.
@@ -682,6 +723,18 @@ mod tests {
             .header("Origin", ORIGIN)
             .body(Body::from(json!({ "passphrase": passphrase }).to_string()))
             .expect("login request")
+    }
+
+    /// [`login`] from the client address `ip`, as Fly's proxy reports it.
+    fn login_from(passphrase: &str, ip: &str) -> Request<Body> {
+        let mut request = login(passphrase);
+        let address = ip.parse().expect("address header");
+        request.headers_mut().insert("Fly-Client-IP", address);
+        request
+    }
+
+    async fn send(app: &axum::Router, request: Request<Body>) -> Response {
+        app.clone().oneshot(request).await.expect("response")
     }
 
     async fn body_text(resp: Response) -> String {
@@ -849,6 +902,72 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert!(resp.headers().get("set-cookie").is_none());
         assert!(!body_text(resp).await.contains(PASSPHRASE));
+    }
+
+    // ─── Showcase mode: login lockout (9325) ─────────────────────────────────
+
+    const WRONG: &str = "a wrong but long passphrase";
+
+    #[tokio::test]
+    async fn login_lockout_sixth_failure_from_one_ip_is_429() {
+        let (_dir, _state, app) = showcase_router_with(|config| {
+            config.showcase.login.trust_fly_client_ip = true;
+        });
+        for _ in 0..5 {
+            let resp = send(&app, login_from(WRONG, "203.0.113.7")).await;
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        // Blocked before any Argon2 work: the right passphrase fares no better.
+        let resp = send(&app, login_from(PASSPHRASE, "203.0.113.7")).await;
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(resp.headers()["retry-after"], "900");
+        assert!(resp.headers().get("set-cookie").is_none());
+        let body: serde_json::Value =
+            serde_json::from_str(&body_text(resp).await).expect("lockout JSON");
+        let expected = json!({ "error": "login_locked", "scope": "ip", "retry_after_s": 900 });
+        assert_eq!(body, expected);
+
+        // Another address still logs in.
+        let resp = send(&app, login_from(PASSPHRASE, "198.51.100.1")).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn login_lockout_global_block_and_its_unlock() {
+        let (_dir, state, _) = showcase_router_with(|config| {
+            config.showcase.login.trust_fly_client_ip = true;
+            config.showcase.login.global_max_failures = 3;
+        });
+        let app = routes()
+            .merge(crate::routes::showcase::routes())
+            .with_state(Arc::clone(&state));
+        for ip in ["203.0.113.1", "203.0.113.2", "203.0.113.3"] {
+            let resp = send(&app, login_from(WRONG, ip)).await;
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{ip}");
+        }
+        let resp = send(&app, login_from(PASSPHRASE, "198.51.100.9")).await;
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body: serde_json::Value =
+            serde_json::from_str(&body_text(resp).await).expect("lockout JSON");
+        assert_eq!(body["scope"], "global");
+
+        let unlock = |csrf: bool| {
+            let mut builder = Request::builder()
+                .method(Method::POST)
+                .uri("/showcase/admin/login-unlock");
+            if csrf {
+                builder = builder.header("X-Roko-CSRF", "1");
+            }
+            builder.body(Body::empty()).expect("unlock request")
+        };
+        let refused = send(&app, unlock(false)).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let unlocked = send(&app, unlock(true)).await;
+        assert_eq!(unlocked.status(), StatusCode::OK);
+
+        let resp = send(&app, login_from(PASSPHRASE, "198.51.100.9")).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     }
 
     // ─── DELETE /api/auth/session ─────────────────────────────────────────────

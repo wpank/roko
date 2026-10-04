@@ -385,6 +385,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         showcase_p1_head_to_head,
         showcase_m4_audits,
         showcase_reload_bundles,
+        showcase_unlock_login,
         list_effects,
         decide_effect,
         sse_handler,
@@ -1615,11 +1616,20 @@ doc_get_param!(showcase_bundle, "/showcase/bundles/{id}", "showcase", "id");
 )]
 fn showcase_bundle_file() {}
 doc_get!(showcase_overview, "/showcase/overview", "showcase");
-doc_get!(showcase_p1_head_to_head, "/showcase/p1/head-to-head", "showcase");
+doc_get!(
+    showcase_p1_head_to_head,
+    "/showcase/p1/head-to-head",
+    "showcase"
+);
 doc_get!(showcase_m4_audits, "/showcase/m4/audits", "showcase");
 doc_post_value!(
     showcase_reload_bundles,
     "/showcase/admin/bundles/reload",
+    "showcase"
+);
+doc_post_value!(
+    showcase_unlock_login,
+    "/showcase/admin/login-unlock",
     "showcase"
 );
 

@@ -41,6 +41,15 @@ pub(super) fn admit(state: &AppState, req: &Request, route: &str) -> Result<(), 
     Ok(())
 }
 
+/// `POST /api/showcase/admin/login-unlock`: clear every login block and failure count.
+pub async fn unlock_login(State(state): State<Arc<AppState>>, req: Request) -> Response {
+    if let Err(response) = admit(&state, &req, "POST /api/showcase/admin/login-unlock") {
+        return response;
+    }
+    state.local_access.login_lockout().unlock();
+    Json(json!({ "unlocked": true })).into_response()
+}
+
 /// `POST /api/showcase/admin/bundles/reload`: load the bundles again, and list them.
 pub async fn reload_bundles(State(state): State<Arc<AppState>>, req: Request) -> Response {
     if let Err(response) = admit(&state, &req, "POST /api/showcase/admin/bundles/reload") {

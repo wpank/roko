@@ -23,9 +23,11 @@ ids must name runs of the experiment.
     views/<view>.json      the R1 views, `overview`, `p1-head-to-head` and `m4-audits`
 
 No statistic is computed here: a view copies MetricRecord values, each with a `metric_ref` that names its record, and
-`verify_bundle.py` re-derives every view from `data/metrics.jsonl` byte for byte. A view's provenance envelope
-(`showcase-provenance/1`) comes from the manifest; the reader that checks the bundle's checksums says so
-(`sha256_verified`), so the stored view does not.
+`verify_bundle.py` re-derives every view from `data/metrics.jsonl` byte for byte. Each view lists the records it shows
+in `metrics` (`ViewMetric` in `demo/demo-app/src/showcase/contracts.ts`), so the page's render guard can check the n and
+interval of every number before it draws one; a record with n below 1 has no run behind it and no view shows it. A
+view's provenance envelope (`showcase-provenance/1`) comes from the manifest; the reader that checks the bundle's
+checksums says so (`sha256_verified`), so the stored view does not.
 
 Exit status: 0 when the bundle is written, 1 when the input is refused, 2 on a usage error.
 """
@@ -90,6 +92,54 @@ def metric_ref(record: dict) -> str:
     return "m-" + sha256_hex(canonical_json(record))[:16]
 
 
+def metric_kind(metric: str) -> str:
+    """How a view draws `metric` (contracts.ts `MetricKind`), from its S08 name. The render guard asks every rate for
+    an interval, or for `ci_method` "none"."""
+    if metric.startswith("pass_hat_") or metric.endswith("_rate") or "_rate_" in metric:
+        return "rate"
+    if metric.startswith("usd_") or metric.endswith("_usd") or "_usd_" in metric:
+        return "usd"
+    if metric.endswith(("_runs", "_features")) or metric == "false_greens":
+        return "count"
+    if metric.startswith(("cost_gap", "envelope_ratio")) or metric.endswith("_ratio"):
+        return "ratio"
+    return "score"
+
+
+def view_metric(ref: str, record: dict) -> dict:
+    """The `metrics` entry (contracts.ts `ViewMetric`) of the MetricRecord `record`: its fields copied, and the kind
+    its name gives."""
+    arms = record.get("arms") or []
+    return {
+        "metric_ref": ref,
+        "metric": record.get("metric"),
+        "kind": metric_kind(str(record.get("metric"))),
+        "value": record.get("value"),
+        "ci": record.get("ci"),
+        "ci_method": record.get("ci_method"),
+        "n": record.get("n"),
+        "estimator": record.get("estimator"),
+        "arm": arms[0] if len(arms) == 1 else None,
+        "envelope_level": record.get("envelope_level"),
+    }
+
+
+def displayed_refs(node: Any) -> set[str]:
+    """Every `metric_ref` in `node` outside a `metrics` index or a provenance envelope: the numbers the render guard
+    (`demo/demo-app/src/showcase/guard.ts`) finds displayed."""
+    found: set[str] = set()
+    if isinstance(node, list):
+        for item in node:
+            found |= displayed_refs(item)
+    elif isinstance(node, dict):
+        if isinstance(node.get("metric_ref"), str):
+            found.add(node["metric_ref"])
+        for key, value in node.items():
+            if key not in ("metrics", "provenance"):
+                found |= displayed_refs(value)
+    return found
+
+
 def is_prompt_key(key: str) -> bool:
     lowered = key.lower()
     return lowered in ("prompt", "prompts") or lowered.endswith(("_prompt", "_prompts"))
@@ -130,9 +180,20 @@ def provenance_envelope(manifest: dict, metrics: list[dict], metrics_bytes: byte
 
 
 def project_views(manifest: dict, metrics: list[dict], metrics_bytes: bytes) -> dict[str, bytes]:
-    """The R1 views, as the bytes of `views/<view>.json`: MetricRecord values copied, never computed."""
+    """The R1 views, as the bytes of `views/<view>.json`: MetricRecord values copied, never computed, and each view's
+    `metrics` index of the records it shows."""
     provenance = provenance_envelope(manifest, metrics, metrics_bytes)
-    refs = [(metric_ref(record), record) for record in metrics]
+    # The guard refuses a number with no sample size, so a record with n below 1 (its value null) is shown nowhere.
+    refs = [
+        (metric_ref(record), record)
+        for record in metrics
+        if isinstance(record.get("n"), int) and record["n"] >= 1
+    ]
+    by_ref = dict(refs)
+
+    def indexed(view: dict) -> dict:
+        view["metrics"] = [view_metric(ref, by_ref[ref]) for ref in sorted(displayed_refs(view))]
+        return view
 
     def shown(ref: str, record: dict) -> dict:
         return {
@@ -181,12 +242,13 @@ def project_views(manifest: dict, metrics: list[dict], metrics_bytes: bytes) -> 
                 "false_greens": cell_value(arm, "false_greens"),
             }
         )
+    # Results against the thesis come from S09's test records, which this builder does not read yet: no negatives.
     views = {
-        "overview": {"schema": "showcase-view/overview/1", "tiles": tiles, "provenance": provenance},
-        "p1-head-to-head": {"schema": "showcase-view/p1-head-to-head/1", "arms": head_to_head, "provenance": provenance},
-        "m4-audits": {"schema": "showcase-view/m4-audits/1", "arms": audits, "provenance": provenance},
+        "overview": {"schema": "showcase-view/overview/1", "tiles": tiles, "negatives": []},
+        "p1-head-to-head": {"schema": "showcase-view/p1-head-to-head/1", "arms": head_to_head},
+        "m4-audits": {"schema": "showcase-view/m4-audits/1", "arms": audits},
     }
-    return {name: canonical_json(view) for name, view in views.items()}
+    return {name: canonical_json({**indexed(view), "provenance": provenance}) for name, view in views.items()}
 
 
 def write_sums(bundle: Path) -> None:

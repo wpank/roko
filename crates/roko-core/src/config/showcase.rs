@@ -449,7 +449,9 @@ allow = [
         bad.session.cookie_secure = false;
         bad.login.verify_concurrency = 0;
         bad.caps.per_run_usd = 10.0;
-        bad.models.allow.push(price("zai/glm-4.7", -1.0, None, 2.20));
+        bad.models
+            .allow
+            .push(price("zai/glm-4.7", -1.0, None, 2.20));
         let keys: Vec<&str> = bad.problems().into_iter().map(|(key, _)| key).collect();
         let expected = [
             "public_origin",

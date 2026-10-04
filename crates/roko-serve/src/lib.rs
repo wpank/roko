@@ -989,9 +989,8 @@ pub fn validate_showcase_mode(config: &RokoConfig, passphrase_hash: Option<&str>
         missing.push("showcase.public_origin must be set");
     }
     if !passphrase_hash.is_some_and(|hash| hash.starts_with("$argon2id$")) {
-        missing.push(
-            "ROKO_SHOWCASE_PASSPHRASE_HASH must hold an Argon2id PHC string ($argon2id$...)",
-        );
+        missing
+            .push("ROKO_SHOWCASE_PASSPHRASE_HASH must hold an Argon2id PHC string ($argon2id$...)");
     }
     if auth.privy_app_id.is_some() {
         missing.push("serve.auth.privy_app_id must not be set");

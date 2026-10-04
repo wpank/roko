@@ -133,8 +133,16 @@ mod tests {
         let phc = hash_passphrase(&passphrase).expect("hash");
         let parsed = PasswordHash::new(&phc).expect("a PHC string");
         let verifier = Argon2::default();
-        assert!(verifier.verify_password(passphrase.as_bytes(), &parsed).is_ok());
-        assert!(verifier.verify_password(b"another passphrase", &parsed).is_err());
+        assert!(
+            verifier
+                .verify_password(passphrase.as_bytes(), &parsed)
+                .is_ok()
+        );
+        assert!(
+            verifier
+                .verify_password(b"another passphrase", &parsed)
+                .is_err()
+        );
         assert_ne!(hash_passphrase(&passphrase).expect("hash"), phc);
         assert_eq!(one_line("pw\r\n"), "pw");
     }
@@ -154,7 +162,10 @@ mod tests {
         assert_eq!(groups.len(), GROUPS, "{passphrase}");
         for group in &groups {
             assert_eq!(group.len(), GROUP_CHARS, "{passphrase}");
-            assert!(group.bytes().all(|byte| ALPHABET.contains(&byte)), "{passphrase}");
+            assert!(
+                group.bytes().all(|byte| ALPHABET.contains(&byte)),
+                "{passphrase}"
+            );
         }
         assert!(LOGIN_BYTES.contains(&passphrase.len()));
         assert_ne!(new_passphrase(), passphrase);

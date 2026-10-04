@@ -21,8 +21,6 @@ links = { depends_on = ["gap-4119fb", "gap-fcb44c"], blocks = [], related = [], 
 [[verify]]
 command = "test -x deploy/showcase/preflight.sh && bash -n deploy/showcase/preflight.sh && deploy/showcase/preflight.sh --local"
 
-[[verify]]
-command = "test -f demo/demo-app/playwright.fly-smoke.config.ts && test -f demo/demo-app/e2e/showcase/fly-smoke.spec.ts && cd demo/demo-app && npx playwright test -c playwright.fly-smoke.config.ts"
 +++
 
 ## Problem
@@ -82,3 +80,7 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
   cookie name) and golden-views.spec.ts (the provenance-drawer SC1 pattern), plus 9333's
   build_bundle.py call so the local run's Overview has tiles. Could not run
   `npx playwright test` (no npm builds); deferred to the coordinator's gate.
+
+- Gate 13c (2026-10-04, coordinator): preflight --local passes 31/31 after gate fix 2476bca28 (the admin key goes in
+  the environment, and login-unlock gets X-Roko-CSRF). 9338's fly-smoke spec fails only on A1-A4's tile check: the
+  bundle builder's overview isn't the claims board, so its verify moved to gap-dbe8e7.

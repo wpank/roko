@@ -452,6 +452,8 @@ impl ServerBuilder {
         }
         let _gateway_batch_loop = state.gateway_http.spawn_batch_loop();
         let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
+        let _calibration_mirror =
+            routes::showcase::economics::start_calibration_mirror(Arc::clone(&state));
         let _feedback_loop = feedback::start_feedback_loop(Arc::clone(&state));
         let bridge_dedup = BridgeDedup::new();
         let _state_hub_bridge = start_state_hub_bridge(Arc::clone(&state), bridge_dedup.clone());
@@ -1061,6 +1063,8 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     start_builtin_event_sources(Arc::clone(&state), roko_config.clone());
     let _trigger_runtime = trigger_runtime::ensure_trigger_runtime(&state).await;
     let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
+    let _calibration_mirror =
+        routes::showcase::economics::start_calibration_mirror(Arc::clone(&state));
     // Both bridges share a BridgeDedup so they can run simultaneously without
     // creating a feedback loop (EventBus -> StateHub -> EventBus -> ...).
     let bridge_dedup = BridgeDedup::new();
@@ -2366,6 +2370,7 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         | DashboardEvent::LoopTransition { .. }
         | DashboardEvent::EvUpdate { .. }
         | DashboardEvent::M1Episode { .. }
+        | DashboardEvent::SelfModelCalibration { .. }
         | DashboardEvent::SnapshotRebased { .. } => None,
     }
 }

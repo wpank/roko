@@ -7,6 +7,7 @@
 
 pub(crate) mod admin;
 pub(crate) mod bundles;
+pub(crate) mod economics;
 pub(crate) mod views;
 
 use std::sync::Arc;
@@ -29,6 +30,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/showcase/overview", get(views::overview))
         .route("/showcase/p1/head-to-head", get(views::p1_head_to_head))
         .route("/showcase/m4/audits", get(views::m4_audits))
+        .route("/showcase/economics", get(economics::economics))
         .route(
             "/showcase/admin/bundles/reload",
             post(admin::reload_bundles),

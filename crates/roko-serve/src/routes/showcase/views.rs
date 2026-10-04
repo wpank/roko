@@ -36,18 +36,18 @@ pub fn bundle_root(state: &AppState, config: &RokoConfig) -> PathBuf {
 }
 
 /// The configuration, and the catalogue of its bundle root.
-fn catalog(state: &AppState) -> (Arc<RokoConfig>, Arc<Catalog>) {
+pub(super) fn catalog(state: &AppState) -> (Arc<RokoConfig>, Arc<Catalog>) {
     let config = state.load_roko_config();
     let catalog = state.showcase_bundles.catalog(&bundle_root(state, &config));
     (config, catalog)
 }
 
-fn error(status: StatusCode, code: &str) -> Response {
+pub(super) fn error(status: StatusCode, code: &str) -> Response {
     (status, Json(json!({ "error": code }))).into_response()
 }
 
 /// `409 bundle_rejected`, with the loader's reason.
-fn rejected(reason: &str) -> Response {
+pub(super) fn rejected(reason: &str) -> Response {
     let body = json!({ "error": "bundle_rejected", "reason": reason });
     (StatusCode::CONFLICT, Json(body)).into_response()
 }
@@ -126,7 +126,7 @@ fn verified<'a>(catalog: &'a Catalog, id: &str) -> Result<&'a LoadedBundle, Resp
 }
 
 /// A listed file of `bundle`, once it still matches its digest; `409` when it no longer does.
-fn serve_file(bundle: &LoadedBundle, path: &str) -> Response {
+pub(super) fn serve_file(bundle: &LoadedBundle, path: &str) -> Response {
     let Some(digest) = bundle.sums.get(path) else {
         return error(StatusCode::NOT_FOUND, "file_not_found");
     };

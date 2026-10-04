@@ -1,6 +1,6 @@
 {
-  "total_registrations": 484,
-  "canonical_registrations": 424,
+  "total_registrations": 485,
+  "canonical_registrations": 425,
   "alias_count": 60,
   "conflict_count": 0,
   "unparsed_count": 0,
@@ -3063,7 +3063,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 22,
+      "line": 23,
       "router_fn": "routes",
       "path": "/showcase/manifest",
       "method": "GET",
@@ -3071,7 +3071,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 23,
+      "line": 24,
       "router_fn": "routes",
       "path": "/showcase/bundles",
       "method": "GET",
@@ -3079,7 +3079,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 24,
+      "line": 25,
       "router_fn": "routes",
       "path": "/showcase/bundles/{id}",
       "method": "GET",
@@ -3087,7 +3087,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 25,
+      "line": 26,
       "router_fn": "routes",
       "path": "/showcase/bundles/{id}/files/{*path}",
       "method": "GET",
@@ -3095,7 +3095,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 29,
+      "line": 30,
       "router_fn": "routes",
       "path": "/showcase/overview",
       "method": "GET",
@@ -3103,7 +3103,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 30,
+      "line": 31,
       "router_fn": "routes",
       "path": "/showcase/p1/head-to-head",
       "method": "GET",
@@ -3111,7 +3111,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 31,
+      "line": 32,
       "router_fn": "routes",
       "path": "/showcase/m4/audits",
       "method": "GET",
@@ -3119,7 +3119,15 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 32,
+      "line": 33,
+      "router_fn": "routes",
+      "path": "/showcase/economics",
+      "method": "GET",
+      "handler": "economics::economics"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 34,
       "router_fn": "routes",
       "path": "/showcase/admin/bundles/reload",
       "method": "POST",
@@ -3127,7 +3135,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
-      "line": 36,
+      "line": 38,
       "router_fn": "routes",
       "path": "/showcase/admin/login-unlock",
       "method": "POST",

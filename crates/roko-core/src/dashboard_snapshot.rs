@@ -524,6 +524,13 @@ pub enum DashboardEvent {
         #[serde(default)]
         change: Option<String>,
     },
+    /// M3's calibration export changed (S04 §4.7, 6134): the gate report the
+    /// self-model wrote to `.roko/learn/self-model/calibration.json`.
+    #[serde(rename = "self_model.calibration")]
+    SelfModelCalibration {
+        /// The export, as written.
+        report: serde_json::Value,
+    },
     /// An error occurred.
     Error { message: String },
 }
@@ -2505,6 +2512,9 @@ impl DashboardSnapshot {
                     format!("M1 {episode_id}: {phase}, {change}"),
                 );
             }
+            // S10's calibration view reads the export from the event stream
+            // (6134); the snapshot keeps none of it.
+            DashboardEvent::SelfModelCalibration { .. } => {}
             // S10's Loop Health view reads health from the event stream; the
             // snapshot keeps no loop state, and logs only the transitions.
             DashboardEvent::LoopHealth { .. } => {}

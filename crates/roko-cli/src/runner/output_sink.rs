@@ -1503,6 +1503,7 @@ pub fn format_dashboard_event(
         | DashboardEvent::LoopTransition { .. }
         | DashboardEvent::EvUpdate { .. }
         | DashboardEvent::M1Episode { .. }
+        | DashboardEvent::SelfModelCalibration { .. }
         | DashboardEvent::SnapshotRebased { .. } => return None,
     };
 

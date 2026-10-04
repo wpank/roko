@@ -7,14 +7,12 @@ An adapter under `replay_runner` (3354), so it runs deterministically on arm-has
 **R-H6**: IAE per (arm, disturbance kind) cell, with its 95% bootstrap interval, from S06's full-information
 replay evaluator (S06.T7)'s own rows: `roko_learn::homeostasis::replay::ArmReport`, one per arm x kind, read from
 `--table` as `{"arm", "disturbance", "iae": {"mean", "low", "high", "n"} | null, "changes", "holds", "note"}` JSON
-lines (`ArmReport`'s own field names, so a future exporter needs no renaming). This adapter never recomputes any
-of that itself: 8117 built the evaluator as a Rust library inside roko-learn
-(`crates/roko-learn/src/homeostasis/replay.rs`), exercised today only by `cargo test -p roko-learn
-replay_arms_share_common_random_numbers`. No CLI subcommand or other subprocess-callable form exists yet for it
-(unlike S04's self-model, which `roko learn self-model replay` already exposes for R-H4's `--traces`), and every
-other Roko interaction in this driver shells out to the `roko` binary, which has no subcommand for this either.
-Without `--table`, every (arm, kind) cell is `evaluated: False` with that reason, the same as R-H4's cells with
-no `--traces` file (analysis/replay_h4.py) and R-H5's with no `--risk` file.
+lines (`ArmReport`'s own field names). This adapter never recomputes any of that itself: 8117 built the
+evaluator as a Rust library inside roko-learn (`crates/roko-learn/src/homeostasis/replay.rs`), and
+`roko learn homeostasis replay --evaluate --stream synthetic:all@<t> --out FILE` runs it over disturb.py's six
+kinds and writes exactly this table (gap-1a8ee7), the way `roko learn self-model replay` writes R-H4's
+`--traces`. Without `--table`, every (arm, kind) cell is `evaluated: False` with that reason, the same as R-H4's
+cells with no `--traces` file (analysis/replay_h4.py) and R-H5's with no `--risk` file.
 
 **Arms and kinds.** `ARMS` is replay.rs's own `ReplayArm::ALL`, in its order (A0..A5, A3-gated, A3-mis; S06 §4.9).
 `KINDS` is S08's six disturbance kinds this task names (`driver/disturb.py`'s `KINDS`: provider_fault, model_swap,
@@ -42,9 +40,8 @@ import replay_runner  # noqa: E402
 
 ARMS = ("A0", "A1", "A2", "A3", "A4", "A5", "A3-gated", "A3-mis")  # roko-learn ReplayArm::ALL, in its order
 KINDS = ("provider_fault", "model_swap", "harder_mix", "budget_cut", "convention_flip", "flaky_verify")  # disturb.py
-NOT_WIRED = ("S06.T7's replay evaluator (crates/roko-learn/src/homeostasis/replay.rs, task 8117) is a Rust "
-            "library with no CLI or subprocess entry point yet (nothing calls it from roko-cli or an example "
-            "binary); pass --table once one exists")
+NOT_WIRED = ("no --table: S06.T7's replay evaluator (task 8117) has not been run; write one with `roko learn "
+            "homeostasis replay --evaluate --stream synthetic:all@<t> --out FILE` and pass it as --table")
 
 
 def load_table(path: Path) -> dict[tuple[str, str], dict]:

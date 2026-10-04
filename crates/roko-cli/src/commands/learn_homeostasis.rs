@@ -2,6 +2,11 @@
 //! read: `status` reports M1's saved state, and `replay` runs the controller
 //! over a historical or synthetic stream of resolutions, writing its
 //! `roko.controller/1` rows to `--out` or stdout. Neither calls a provider.
+//!
+//! `replay --evaluate` runs S06's replay evaluator instead (8117,
+//! gap-1a8ee7): each `--arm` over the synthetic stream, once per seed, and
+//! one `ArmReport` row per arm and disturbance, the table R-H6 reads
+//! (`benchmarks/viabilitybench/analysis/replay_h6.py --table`).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -12,12 +17,16 @@ use chrono::SecondsFormat;
 use clap::Subcommand;
 use roko_cli::exit_codes::EXIT_SUCCESS;
 use roko_core::config::homeostasis::{HomeostasisConfig, HomeostasisMode};
+use roko_core::disturbance::DisturbanceKind;
 use roko_fs::RokoLayout;
 use roko_learn::guarded_commit::{COMMITS_DIR, GuardMode, GuardedStore};
 use roko_learn::homeostasis::controller::{Controller, ControllerState, operator_mode};
 use roko_learn::homeostasis::ledger::{ControllerRecord, Envelope, ledger_path, write_jsonl};
 use roko_learn::homeostasis::lkg::STORE;
-use roko_learn::homeostasis::streams::{StreamSpec, replay_theta0};
+use roko_learn::homeostasis::replay::{Evaluator, ReplayArm};
+use roko_learn::homeostasis::streams::{
+    IN_CONTROL, StepKind, StreamSpec, SyntheticStream, replay_theta0,
+};
 use roko_learn::telemetry::Arm;
 use serde::Serialize;
 use serde_json::Value;
@@ -52,6 +61,17 @@ pub(crate) enum HomeostasisCmd {
         /// File the rows go to.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Run S06's replay evaluator over the synthetic stream instead, and write one
+        /// `ArmReport` row per arm and disturbance; `synthetic:all@<t>` steps into each of
+        /// disturb.py's six kinds, R-H6's grid.
+        #[arg(long)]
+        evaluate: bool,
+        /// An arm to evaluate: A0 to A5, A3-gated or A3-mis (default: all eight).
+        #[arg(long = "arm")]
+        arms: Vec<String>,
+        /// Seeds each evaluated stream is replayed over, from `--seed` on.
+        #[arg(long, default_value_t = 20)]
+        seeds: u64,
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -80,6 +100,19 @@ pub(crate) fn cmd_homeostasis(cli: &Cli, cmd: HomeostasisCmd, json: bool) -> Res
                 Some(report) if json => println!("{}", serde_json::to_string_pretty(&report)?),
                 Some(report) => print!("{}", report.render()),
             }
+        }
+        HomeostasisCmd::Replay {
+            stream,
+            seed,
+            length,
+            out,
+            evaluate: true,
+            arms,
+            seeds,
+            ..
+        } => {
+            let seeds: Vec<u64> = (0..seeds.max(1)).map(|n| seed.wrapping_add(n)).collect();
+            evaluate_arms(&stream, &arms, &seeds, length, out.as_deref())?;
         }
         HomeostasisCmd::Replay {
             stream,
@@ -271,6 +304,76 @@ fn replay(
     Ok(())
 }
 
+/// `replay --evaluate`: S06's replay evaluator over `stream`, each of `arms`
+/// (every arm when empty) replayed once per seed, its `ArmReport` rows
+/// written to `out` or stdout as JSON lines.
+fn evaluate_arms(
+    stream: &str,
+    arms: &[String],
+    seeds: &[u64],
+    length: Option<u64>,
+    out: Option<&Path>,
+) -> Result<()> {
+    let (steps, onset) = evaluated_steps(stream)?;
+    let arms = if arms.is_empty() {
+        ReplayArm::ALL.to_vec()
+    } else {
+        arms.iter()
+            .map(|arm| parse_arm(arm))
+            .collect::<Result<_>>()?
+    };
+    let (theta0, ladders) = replay_theta0();
+    // A synthetic stream's bounds are calibrated in control, whatever it
+    // steps into.
+    let stream = SyntheticStream {
+        step: steps[0],
+        onset,
+        seed: seeds[0],
+    };
+    let evaluator = Evaluator::new(stream.policy(), theta0, ladders, IN_CONTROL);
+    let length = length.unwrap_or(onset + 80);
+    let reports = evaluator.evaluate(&steps, &arms, onset, length, seeds);
+    let mut text = String::new();
+    for report in &reports {
+        text.push_str(&serde_json::to_string(report)?);
+        text.push('\n');
+    }
+    match out {
+        Some(path) => {
+            std::fs::write(path, text).with_context(|| format!("write {}", path.display()))?;
+        }
+        None => print!("{text}"),
+    }
+    Ok(())
+}
+
+/// The steps and onset `--evaluate` replays: `synthetic:<kind>@<t>`, or
+/// `synthetic:all@<t>` for disturb.py's six kinds. A historical stream has
+/// no outcome table to replay under another θ until S09's Stage-A export.
+fn evaluated_steps(stream: &str) -> Result<(Vec<StepKind>, u64)> {
+    if let Some(onset) = stream.strip_prefix("synthetic:all@") {
+        let onset = onset
+            .parse()
+            .with_context(|| format!("`{onset}` is not a position"))?;
+        let steps = DisturbanceKind::DISTURB_PY.map(StepKind::of).to_vec();
+        return Ok((steps, onset));
+    }
+    match StreamSpec::parse(stream).map_err(|problem| anyhow!("--stream: {problem}"))? {
+        StreamSpec::Synthetic { step, onset } => Ok((vec![step], onset)),
+        StreamSpec::Historical(_) => {
+            bail!("--evaluate needs a synthetic stream; historical ones have no outcome table yet")
+        }
+    }
+}
+
+/// The arm `label` names: `A0` to `A5`, `A3-gated` or `A3-mis`.
+fn parse_arm(label: &str) -> Result<ReplayArm> {
+    ReplayArm::ALL
+        .into_iter()
+        .find(|arm| arm.label() == label)
+        .ok_or_else(|| anyhow!("--arm is A0 to A5, A3-gated or A3-mis, not {label}"))
+}
+
 /// `value`'s name as records write it.
 fn label<T: Serialize>(value: T) -> String {
     serde_json::to_value(value)
@@ -346,5 +449,67 @@ mod tests {
         let text = report.render();
         assert!(text.contains("θ: retry_delta = 1 (θ₀ 0)"), "{text}");
         assert!(text.contains("committed versions of θ: 1, 2"), "{text}");
+    }
+
+    /// The JSON rows of the file at `path`.
+    fn read_rows(path: &Path) -> Vec<Value> {
+        let text = std::fs::read_to_string(path).expect("the table");
+        text.lines()
+            .map(|line| serde_json::from_str(line).expect("a row"))
+            .collect()
+    }
+
+    /// gap-1a8ee7: `replay --evaluate` writes the evaluator's verdict, one
+    /// `ArmReport` row per arm and disturbance in the shape R-H6's `--table`
+    /// reads: an IAE over the seeds where the arm ran, a note where it could
+    /// not, and every disturb.py kind for `synthetic:all@<t>`.
+    #[test]
+    fn homeostasis_replay_reports_the_evaluator_s_verdict() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let out = temp.path().join("h6-table.jsonl");
+        let arms = ["A0", "A3", "A3-gated"].map(String::from);
+        evaluate_arms(
+            "synthetic:model_swap@20",
+            &arms,
+            &[1, 2, 3],
+            Some(100),
+            Some(&out),
+        )
+        .expect("evaluated");
+        let rows = read_rows(&out);
+        let label = |row: &Value| {
+            let arm = row["arm"].as_str().unwrap_or_default();
+            let kind = row["disturbance"].as_str().unwrap_or_default();
+            format!("{arm} {kind}")
+        };
+        let labels: Vec<String> = rows.iter().map(label).collect();
+        assert_eq!(
+            labels,
+            ["A0 model_swap", "A3 model_swap", "A3-gated model_swap"]
+        );
+        for row in &rows[..2] {
+            let iae = &row["iae"];
+            assert_eq!(iae["n"], 3, "{row}");
+            let at = |key: &str| iae[key].as_f64().expect("a number");
+            assert!(at("low") <= at("mean"), "{row}");
+            assert!(at("mean") <= at("high"), "{row}");
+            assert!(row["note"].is_null(), "{row}");
+        }
+        assert!(rows[2]["iae"].is_null());
+        assert_eq!(rows[2]["note"], "no predictions");
+
+        // `synthetic:all@<t>`: one row per disturb.py kind, R-H6's six.
+        let a0 = ["A0".to_string()];
+        evaluate_arms("synthetic:all@20", &a0, &[1], Some(60), Some(&out)).expect("evaluated");
+        let kinds: Vec<String> = read_rows(&out)
+            .iter()
+            .map(|row| row["disturbance"].as_str().unwrap_or_default().to_string())
+            .collect();
+        let six = DisturbanceKind::DISTURB_PY.map(DisturbanceKind::name);
+        assert_eq!(kinds, six);
+
+        // A historical stream has no outcome table, and an unknown arm is refused.
+        assert!(evaluate_arms("historical:/nowhere", &[], &[1], None, None).is_err());
+        assert!(parse_arm("A9").is_err());
     }
 }

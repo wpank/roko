@@ -18,11 +18,12 @@ evaluates without --risk); without it X1 is not evaluated.
 
 **X2** `delta_iae(A4, A3)`, guard `ub95(iae_A3mis) <= 1.10 * iae_A4`, rule ci95 excludes 0, one result per
 disturbance kind. Reads its A3/A4/A3-mis cells from `--h6`, a previously run `vb replay --adapter h6 --out FILE`
-(replay_h6.py, task 3357). Every one of those cells is `evaluated: false` until 8117's evaluator has a CLI entry
-point (replay_h6.py's own module docstring): this adapter does not recompute IAE itself, so X2 stays not
-evaluated per kind until then. Even once iae_a3/iae_a4 are real, the ci95_excludes_0 rule itself needs A3 and
-A4's paired bootstrap draws (common random numbers): replay_h6.py's `ArmReport` carries only each arm's own
-`IaeSummary`, with no covariance between arms, so that rule is reported separately as not evaluated too.
+(replay_h6.py, task 3357). Those cells are `evaluated: false` until R-H6 is given a `--table` from
+`roko learn homeostasis replay --evaluate` (replay_h6.py's own module docstring): this adapter does not recompute
+IAE itself, so X2 stays not evaluated per kind until then. Even once iae_a3/iae_a4 are real, the ci95_excludes_0
+rule itself needs A3 and A4's paired bootstrap draws (common random numbers): replay_h6.py's `ArmReport` carries
+only each arm's own `IaeSummary`, with no covariance between arms, so that rule is reported separately as not
+evaluated too.
 
 **X3** `median_delay_to_fg_breach(floor, boost)`, guard `audit_share <= 0.12`, rule ci95 excludes 0. Needs the
 lottery replay's own per-position draw order, to find when a false-green run would first have been caught under

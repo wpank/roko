@@ -81,6 +81,21 @@ def test_r_h6_replay_reads_evaluated_and_noted_rows_from_the_table(tmp_path):
               for cell in others)
 
 
+def test_r_h6_reads_rows_as_the_evaluator_cli_writes_them(tmp_path):
+    """`roko learn homeostasis replay --evaluate` writes whole `ArmReport`s, `recovery` scorecard included
+    (gap-1a8ee7): R-H6 reads the fields it knows and ignores the rest, so such a row's cell is evaluated."""
+    results = log1_tree(tmp_path)
+    table = write_table(tmp_path / "h6_table.jsonl", [
+        {"arm": "A3", "disturbance": "budget_cut", "recovery": {"iae": 0.3, "recovered": True},
+         "iae": {"mean": 0.25, "low": 0.2, "high": 0.31, "n": 20}, "changes": 1.5, "holds": 0.0, "note": None},
+    ])
+    found = replay_runner.run(results, [EXPERIMENT], "h6", seed=1, params={"table": table})["estimates"]
+    assert found["n_evaluated"] == 1
+    cell = next(cell for cell in found["cells"] if (cell["arm"], cell["kind"]) == ("A3", "budget_cut"))
+    assert cell == {"arm": "A3", "kind": "budget_cut", "evaluated": True, "iae_mean": 0.25,
+                    "iae_ci95": [0.2, 0.31], "n": 20, "changes": 1.5, "holds": 0.0}
+
+
 def test_load_table_rejects_an_unknown_arm_or_kind(tmp_path):
     bad = write_table(tmp_path / "bad.jsonl", [{"arm": "A9", "disturbance": "provider_fault"}])
     with pytest.raises(ValueError, match="not an ArmReport row"):

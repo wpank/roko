@@ -87,6 +87,10 @@ mode = "on"
 
 [gates]
 sibling_settle_secs = 0
+
+[spec_quality]
+mode = "off"
+red_on_base = false
 "#,
             provider = provider.display().to_string()
         ),
@@ -164,7 +168,7 @@ fn param_change_takes_effect_on_next_attempt() {
         String::from_utf8_lossy(&output.stderr)
     );
     let run_dirs: Vec<PathBuf> = fs::read_dir(workdir.join(".roko/runs"))
-        .expect("the run wrote .roko/runs")
+        .unwrap_or_else(|error| panic!("the run wrote .roko/runs: {error}\n{log}"))
         .map(|entry| entry.expect("run directory").path())
         .filter(|path| path.is_dir())
         .collect();

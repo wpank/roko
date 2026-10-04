@@ -4,15 +4,15 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 117 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 116 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
-- **P2** [gap-fcb44c](items/gap-fcb44c-pk85-showcase-and-deploy-any-write-scoped.md) PK85 Showcase and deploy: Any write-scoped caller can mint a permanent public share link, also on a public bind (+8 more) · size L · verified 2026-10-02
-- **P2** [gap-3516d6](items/gap-3516d6-pk86-showcase-and-deploy-deploy-showcase-preflight.md) PK86 Showcase and deploy: `deploy/showcase/preflight.sh`: checks P1–P14, with a `--local` mode that boots a… (+1 more) · size M · verified 2026-10-02
-- **P3** [gap-21e5f5](items/gap-21e5f5-pk88-showcase-and-deploy-apply-the-owner.md) PK88 Showcase and deploy: Apply the owner decision to the image registry, worker image default, commit identity… · size S · verified 2026-10-02
+- **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
+- **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
+- **P2** [q-bc6cc5](items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md) Confirm licence coverage for another contributor's code in apps/mirage-rs [question] · size S · verified 2026-09-29
 
-_12 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_10 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -40,11 +40,11 @@ _1 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRI
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
-- **P1** [gap-127263](items/gap-127263-a-frozen-run-writes-no-episodes-so.md) A frozen run writes no episodes, so the bench driver sees no Roko attempts: planemit can't freeze learning yet (gap-394f28 precondition 3) · size M · verified 2026-10-04
 - **P1** [dec-20744e](items/dec-20744e-accept-same-uid-keychain-risk-for-subscription.md) Accept same-uid keychain risk for subscription arms, or containerize them (S08 decision 4) [decision] · size S · verified 2026-10-02
 - **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-03
+- **P2** [gap-a2f86a](items/gap-a2f86a-f7-s-in-tree-cargo-target-build.md) F7's in-tree .cargo-target build directory lands in commit_final's archived c_i · size S · verified 2026-10-02
 
-_14 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_13 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -64,11 +64,11 @@ _10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
-- **P3** [gap-59ebfd](items/gap-59ebfd-pk84-m3-self-model-serve-the-economics.md) PK84 M3 self-model: Serve the economics report and the calibration stream for the showcase · size S · verified 2026-10-02
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-10-01
 - **P2** [gap-ade918](items/gap-ade918-acp-s-no-usable-provider-error-has.md) ACP's no-usable-provider error has no login hint for an auth quarantine · size S · verified 2026-10-03
+- **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
 
-_4 more open · `goal = "visibility"`_
+_3 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 

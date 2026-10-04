@@ -2,7 +2,7 @@
 id = "gap-21e5f5"
 kind = "gap"
 title = "PK88 Showcase and deploy: Apply the owner decision to the image registry, worker image default, commit identity…"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
@@ -10,8 +10,9 @@ rank = 88
 size = "S"
 subsystem = ["release"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "cb8cbfeed"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK88"
 anchors = [".github/workflows/docker-publish.yml", "crates/roko-cli/src/worker/cloud.rs", "crates/roko-core/src/config/serve.rs", "docker/RAILWAY.md", "docker/README.md"]
 lane = "rust-cold"
@@ -20,6 +21,17 @@ links = { depends_on = ["gap-4119fb"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn worker_image_default_matches_the_published_prefix' crates/roko-core/src/ && cargo test -p roko-core worker_image_default_matches_the_published_prefix"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T04:48:56Z"
+commit = "cb8cbfeed"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T01:55:06Z"
+forced = false
+evidence = "Gate 13c (merged cb8cbfeed): roko-core and roko-cli lib tests pass; verify worker_image_default_matches_the_published_prefix passes. 9341 per decision 9305: images under ghcr.io/wpank in docker-publish.yml, the worker_image default and docker docs; cloud workers' git identity overridable by ROKO_WORKER_GIT_AUTHOR_NAME/_EMAIL with a neutral default."
 +++
 
 ## Problem

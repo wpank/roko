@@ -2,7 +2,7 @@
 id = "gap-127263"
 kind = "gap"
 title = "A frozen run writes no episodes, so the bench driver sees no Roko attempts: planemit can't freeze learning yet (gap-394f28 precondition 3)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "cb8cbfeed"
 source = "gate 13b: gap-b001ca part 2 (7629f434f) reverted in 202fb29b2"
 discovered_from = "gap-b001ca"
 anchors = ["benchmarks/viabilitybench/driver/run_roko.py", "benchmarks/viabilitybench/driver/planemit.py"]
@@ -22,6 +23,17 @@ command = "benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabi
 
 [[verify]]
 command = "VB_REQUIRE_REAL_ROKO=1 benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_shakedown.py benchmarks/viabilitybench/driver/test_run_roko.py -q -p no:cacheprovider"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T04:50:16Z"
+commit = "cb8cbfeed"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T02:47:50Z"
+forced = true
+evidence = "Forced: both verifies passed at gate 13c against the gate's binary; work.py's static runner runs the shakedown here against the main checkout's stale target/debug/roko (Oct 2). Gate 13c (merged cb8cbfeed): a frozen run writes its episodes to .roko/runs/<run_id>/episodes.jsonl (20eb73a96) and the driver reads them (447a00e1c); planemit's freeze re-applied (a557864f0). Bench suite 718 passed with frozen pinned-mode runs, shakedown plus test_run_roko 29/29, roko-cli/-learn lib tests and the learning wiring census pass."
 +++
 
 ## Problem

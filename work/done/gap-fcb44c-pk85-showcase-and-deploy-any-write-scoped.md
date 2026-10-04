@@ -2,7 +2,7 @@
 id = "gap-fcb44c"
 kind = "gap"
 title = "PK85 Showcase and deploy: Any write-scoped caller can mint a permanent public share link, also on a public bind (+8 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -10,8 +10,9 @@ rank = 85
 size = "L"
 subsystem = ["roko-serve/showcase"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "cb8cbfeed"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK85"
 anchors = [".dockerignore", "Dockerfile", "crates/roko-cli/src/commands/server.rs", "crates/roko-serve/src/embedded.rs", "crates/roko-serve/src/lib.rs", "crates/roko-serve/src/routes/middleware.rs", "crates/roko-serve/src/routes/shared_runs.rs", "demo/demo-app/src/main.tsx", "demo/demo-app/src/transport/api.ts", "demo/demo-app/src/transport/sse.ts"]
 lane = "rust-cold"
@@ -44,6 +45,17 @@ command = "grep -q 'AS builder-core' Dockerfile && grep -q 'AS showcase-replay' 
 
 [[verify]]
 command = "grep -q 'build_target' crates/roko-cli/src/commands/server.rs && grep -rqw 'fn deploy_fly_dry_run_reads_app_and_region_from_config' crates/roko-cli/src/ && cargo test -p roko-cli deploy_fly_dry_run_reads_app_and_region_from_config"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T04:50:16Z"
+commit = "cb8cbfeed"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-04T01:55:04Z"
+forced = true
+evidence = "Forced: every verify passed at gate 13c in the batch worktree; work.py's static runner counts docker build as static and runs it in the main checkout. Gate 13c (merged cb8cbfeed): check, clippy, serve feature builds, 6,601 lib tests (roko-cli/-core/-serve), 15 serve integration suites, canaries (plan_validate's two are bug-2a31bc), bin 450, demo tsc, all 9 verifies: transport-auth 6/6, showcase-auth 5/5, showcase-serve 5/5 after fix 012c75cf1 (bundle views list their metrics), fly.showcase.toml checks, the showcase-replay image builds (about 210 MB unpacked, 73 MB compressed), deploy fly dry run. PK85 9/9: admin-only permanent shares, showcase mode redirects / to /demo/ and 404s portal paths, idle exit, transport auth with CSRF, login page, serve manifest, Fly config and entrypoint, image stages, roko deploy fly --fly-config with posture checks."
 +++
 
 ## Problem

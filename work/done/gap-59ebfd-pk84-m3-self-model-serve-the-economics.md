@@ -2,7 +2,7 @@
 id = "gap-59ebfd"
 kind = "gap"
 title = "PK84 M3 self-model: Serve the economics report and the calibration stream for the showcase"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -10,8 +10,9 @@ rank = 84
 size = "S"
 subsystem = ["roko-serve/showcase"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "cb8cbfeed"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK84"
 anchors = ["crates/roko-serve/src/routes"]
 lane = "rust-cold"
@@ -20,6 +21,17 @@ links = { depends_on = ["gap-d90ef6", "gap-7ec3ef", "gap-9ecd37", "gap-4119fb"],
 
 [[verify]]
 command = "grep -rqw 'fn economics_route_serves_stored_report_bytes' crates/roko-serve/ && cargo test -p roko-serve economics_route_serves_stored_report_bytes"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T04:48:55Z"
+commit = "cb8cbfeed"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T01:55:05Z"
+forced = false
+evidence = "Gate 13c (merged cb8cbfeed): lib tests and serve integration pass; verify economics_route_serves_stored_report_bytes passes. 6134: GET /api/showcase/economics?experiment_id= serves econ-report.json byte for byte from the newest verified bundle behind showcase auth (400/404/409), and a self_model.calibration StateHub event mirrors calibration.json."
 +++
 
 ## Problem

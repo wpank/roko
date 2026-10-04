@@ -2,7 +2,7 @@
 id = "gap-3516d6"
 kind = "gap"
 title = "PK86 Showcase and deploy: `deploy/showcase/preflight.sh`: checks P1–P14, with a `--local` mode that boots a… (+1 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -10,8 +10,9 @@ rank = 86
 size = "M"
 subsystem = ["deploy/fly"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "cb8cbfeed"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK86"
 anchors = ["demo/demo-app", "demo/demo-app/e2e", "deploy"]
 lane = "rust-cold"
@@ -21,6 +22,16 @@ links = { depends_on = ["gap-4119fb", "gap-fcb44c"], blocks = [], related = [], 
 [[verify]]
 command = "test -x deploy/showcase/preflight.sh && bash -n deploy/showcase/preflight.sh && deploy/showcase/preflight.sh --local"
 
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T04:50:17Z"
+commit = "cb8cbfeed"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T02:59:19Z"
+forced = true
+evidence = "Forced: preflight --local passed 31/31 at gate 13c against the gate's binary; work.py's static runner runs it here against the main checkout's stale target/debug/roko (Oct 2), which has no showcase subcommand. Gate fix 2476bca28 (admin key in the environment; X-Roko-CSRF on login-unlock); P8 stream and P9 freeze skip on 404 until those routes exist. 9338's fly-smoke spec is in; its A1-A4 tile check waits for gap-dbe8e7 (the builder's overview isn't the claims board), so that verify moved there."
 +++
 
 ## Problem

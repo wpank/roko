@@ -7,7 +7,7 @@ triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
-hold = "waits for the shakedown to pass 8/8, the lock's hash list to cover experiments/ and arms/, frozen learning in planemit, q-ab27d3, and Will's go-ahead"
+hold = "waits on q-ab27d3 (fd_claude_lite's model), dec-3d5714 (S09's bootstrap coverage) and Will's go-ahead; the shakedown, the hash list and frozen learning are done (gates 8b and 13b-c)"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-03
 updated = 2026-10-03
@@ -57,9 +57,9 @@ Before taking the lock:
    excluding the lock file itself from its own hash list; today LOG1's cells, caps and models could change after
    the lock without being caught.
 3. planemit's emitted roko.toml sets `[learning] frozen = true` for a pinned-mode arm (roko_fixed, fr_claude),
-   or G2's frozen-loop check fails on real LOG1 Roko runs. **Reopened at gate 13b:** a frozen run writes no
-   `.roko/episodes.jsonl`, so the driver saw no attempts and six real-roko bench tests failed; gap-b001ca's
-   planemit change was reverted (202fb29b2) and gap-127263 reconciles the two.
+   or G2's frozen-loop check fails on real LOG1 Roko runs. **Done (gap-127263, gate 13c):** a frozen run now writes its
+   episodes to `.roko/runs/<run_id>/episodes.jsonl` and the driver reads them there, so planemit freezes the
+   pinned-mode arms again; the bench suite and the shakedown pass with frozen runs.
 4. q-ab27d3 (fd_claude_lite's model) is answered, and Will confirms the lock.
 
 Then run 3345 as its spec says.

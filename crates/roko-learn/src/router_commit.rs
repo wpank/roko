@@ -24,7 +24,7 @@
 //! [`ModelCallJournal::save`]: crate::model_call_feedback::ModelCallJournal::save
 //! [`ModelCallJournal::save_guarded`]: crate::model_call_feedback::ModelCallJournal::save_guarded
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use roko_core::agent::AgentRole;
@@ -39,6 +39,9 @@ use crate::guarded_commit::{
     CheckOutcome, CommitCheck, CommitDecision, GuardError, GuardMode, GuardedState, GuardedStore,
     Proposer,
 };
+use crate::loop_audit::assign::takes_default;
+use crate::routing_log::RoutingDecisionLog;
+use crate::telemetry::report::RunRecords;
 
 /// The router's store under `.roko/learn/commits/`.
 pub const ROUTER_STORE: &str = "router";
@@ -82,6 +85,53 @@ pub fn held_out_attempts(settled: &[SettledOutcome]) -> Vec<SettledOutcome> {
     }
     let tail = settled.len().div_ceil(5);
     settled[settled.len() - tail..].to_vec()
+}
+
+/// The settled attempts in a run's records, in order (gap-a47d07).
+///
+/// Each gives the model the attempt ran on and whether its learning label
+/// passed. It is marked `holdout` when its route decision drew M2's holdout
+/// arm of the router loop, π⁰ or the all-learning-off arm, so the router's
+/// learned state did not route it: [`held_out_attempts`] scores against
+/// those. An attempt without a label or a model is left out.
+#[must_use]
+pub fn settled_outcomes(records: &RunRecords) -> Vec<SettledOutcome> {
+    let holdout: HashSet<&str> = records
+        .decisions
+        .iter()
+        .filter(|line| on_holdout_arm(&line.record))
+        .filter_map(|line| line.record.attempt_key.as_deref())
+        .collect();
+    records
+        .verdicts
+        .iter()
+        .filter_map(|line| {
+            let verdict = &line.record;
+            let executed = &verdict.executed;
+            let model = executed
+                .model_dispatched
+                .as_ref()
+                .or(executed.model_reported.as_ref())
+                .or(executed.model_requested.as_ref())?;
+            let label = verdict.learning_label?;
+            Some(SettledOutcome {
+                model: model.clone(),
+                category: None,
+                success: label == 1,
+                holdout: holdout.contains(verdict.identity.attempt_key.as_str()),
+            })
+        })
+        .collect()
+}
+
+/// Whether `decision` drew M2's holdout arm on the route layer: the default
+/// policy π⁰ or the all-learning-off arm.
+fn on_holdout_arm(decision: &RoutingDecisionLog) -> bool {
+    decision
+        .audit
+        .assignment
+        .as_ref()
+        .is_some_and(|assignment| takes_default(assignment.draw.arm))
 }
 
 /// One `[[router]]` case of the anchors file: the task features it covers
@@ -406,6 +456,10 @@ mod tests {
     use super::*;
     use crate::model_call_feedback::ModelCallJournal;
     use crate::model_router::RoutingContext;
+    use crate::telemetry::records::{
+        AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord,
+    };
+    use crate::telemetry::writer::{TelemetryWriter, TelemetryWriterConfig};
 
     const A: &str = "model-a";
     const B: &str = "model-b";
@@ -505,5 +559,84 @@ mod tests {
         );
         assert!(held_out.reason.contains("re-learned"));
         assert_eq!(store.versions().expect("versions"), [1, 2]);
+    }
+
+    /// The route decision of `identity`'s attempt, which drew `arm` on the
+    /// route layer.
+    fn route_decision(identity: &AttemptIdentity, arm: &str) -> RoutingDecisionLog {
+        let row = serde_json::json!({
+            "timestamp": "2026-10-04T00:00:00Z",
+            "trace_id": "trace-1",
+            "task_id": identity.task_id,
+            "requested_model": A,
+            "role": "implementer",
+            "task_complexity": "focused",
+            "selected_provider": "fake",
+            "selected_model": A,
+            "routing_stage": "ucb",
+            "routing_reason": "highest_ucb_score",
+            "candidates": [],
+            "attempt_key": identity.attempt_key,
+            "loop_id": "L-route",
+            "layer": "route",
+            "assignment": {
+                "unit": "chain",
+                "unit_key": identity.chain_key,
+                "layer": "route",
+                "salt_id": "route@2026-10-04",
+                "audit_epoch": "2026-10-04",
+                "u": 0.5,
+                "h": 0.2,
+                "g": 0.0,
+                "global_off": false,
+                "arm": arm,
+                "propensity": 1.0,
+                "assigned_at": 1,
+            },
+        });
+        serde_json::from_value(row).expect("a route decision")
+    }
+
+    /// gap-a47d07: the attempts whose route decision drew π⁰ are marked as
+    /// M2's holdout arm, and the held-out check scores against them rather
+    /// than the run's last 20%.
+    #[test]
+    fn router_commit_scores_against_m2_holdout_arm() {
+        let dir = tempfile::tempdir().expect("run dir");
+        let config = TelemetryWriterConfig::default();
+        let writer = TelemetryWriter::spawn(dir.path(), config).expect("the run's writer");
+        // T2 and T4 drew π⁰ and ran on model-b; the others drew the learned arm.
+        let tasks = [
+            ("T1", false),
+            ("T2", true),
+            ("T3", false),
+            ("T4", true),
+            ("T5", false),
+        ];
+        for (task, holdout) in tasks {
+            let key = AttemptKey::new("run-1", "plan", task, 1);
+            let identity = AttemptIdentity::new(&key);
+            let arm = if holdout { "default" } else { "learned" };
+            assert!(writer.submit(AttemptOpenRecord::new(AttemptIdentity::new(&key), 0)));
+            assert!(writer.submit(route_decision(&identity, arm)));
+            let mut verdict = AttemptVerdictRecord::settle(identity, AttemptOutcome::Passed, true);
+            let model = if holdout { B } else { A };
+            verdict.executed.model_dispatched = Some(model.to_string());
+            assert!(writer.submit(verdict));
+        }
+        assert_eq!(writer.close().written, 15);
+        let records = RunRecords::load(dir.path()).expect("the run's records");
+
+        let settled = settled_outcomes(&records);
+        let marked: Vec<(&str, bool)> = settled
+            .iter()
+            .map(|attempt| (attempt.model.as_str(), attempt.holdout))
+            .collect();
+        let expected = [(A, false), (B, true), (A, false), (B, true), (A, false)];
+        assert_eq!(marked, expected);
+        let held_out = held_out_attempts(&settled);
+        assert_eq!(held_out.len(), 2, "{held_out:?}");
+        let on_holdout = |attempt: &SettledOutcome| attempt.holdout && attempt.model == B;
+        assert!(held_out.iter().all(on_holdout));
     }
 }

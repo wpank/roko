@@ -89,3 +89,15 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK81 (gap-a63e3c), PK82 (gap-9ecd37), PK83 (gap-4119fb).
 - Suggested model: opus.
+
+## Progress
+
+- 9328: implemented at 83cc285fe (cargo verification deferred to the batch gate; write-scoped callers that created shares now get 403, and no portal caller does)
+- 9329: implemented at 1c1418ad2 (cargo verification deferred; PK83's 9327 test now asserts 404 for /metrics, /runs/x and the other unmounted routes)
+- 9330: implemented at 2b7d4db52 (cargo verification deferred; the SSE idle close and `event: shutdown` wait for a showcase stream)
+- 9331: implemented at 838321882 (the Node-side Playwright spec runs at the gate)
+- 9332: implemented at 2968310b9 (the auth-gate spec needs a built roko and a `VITE_SHOWCASE_SOURCE=api` build at the gate)
+- 9333: implemented at 1d3d95fc3 (5 serve-manifest tests; running the R1 specs against serve waits for 9316)
+- 9334: implemented at c40515248 (cargo verification deferred; G0b's `privy_enabled` key does not exist, so the config omits it)
+- 9335: implemented at 913098917 (the image was not built; the docker build and its size check run at the gate)
+- 9336: implemented at 7d854971a (cargo verification deferred; the flag is `--fly-config`, since a subcommand `--config` shares the global flag's value; find-3d0d97's revival is left to the coordinator)

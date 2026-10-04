@@ -20,8 +20,13 @@ pub struct PromptBudget {
     pub plan: usize,
     /// Workspace map (file tree) cap.
     pub workspace_map: usize,
-    /// Cross-plan context (CONTEXT.md) cap.
+    /// Cross-plan context cap: CONTEXT.md, domain notes and pheromone signals.
     pub context: usize,
+    /// The task's own runner context cap: the `context_layer` block (files in
+    /// scope, acceptance criteria, verify commands, dependency outputs) and the
+    /// retry `gate_feedback`. A role with no cross-plan context still checks
+    /// its task against these (gap-c8bfc8).
+    pub runner_context: usize,
     /// Strategist brief cap.
     pub brief: usize,
     /// Prior review feedback cap.
@@ -52,6 +57,7 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
             plan: 50_000,
             workspace_map: 20_000,
             context: 4_000,
+            runner_context: 4_000,
             brief: 8_000,
             reviews: 3_000,
             instructions: 4_000,
@@ -62,6 +68,7 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
             plan: 50_000,
             workspace_map: 20_000,
             context: 4_000,
+            runner_context: 4_000,
             brief: 6_000,
             reviews: 3_000,
             instructions: 4_000,
@@ -72,6 +79,7 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
             plan: 50_000,
             workspace_map: 6_000,
             context: 2_000,
+            runner_context: 2_000,
             brief: 4_000,
             reviews: 3_000,
             instructions: 4_000,
@@ -82,6 +90,7 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
             plan: 50_000,
             workspace_map: 6_000,
             context: 4_000,
+            runner_context: 4_000,
             brief: 6_000,
             reviews: 3_000,
             instructions: 4_000,
@@ -92,6 +101,7 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
             plan: 50_000,
             workspace_map: 6_000,
             context: 0,
+            runner_context: 2_000,
             brief: 4_000,
             reviews: 3_000,
             instructions: 2_000,
@@ -102,6 +112,7 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
             plan: 0,
             workspace_map: 0,
             context: 0,
+            runner_context: 2_000,
             brief: 0,
             reviews: 0,
             instructions: 2_000,
@@ -112,6 +123,7 @@ pub const fn budget_for(role: AgentRole) -> PromptBudget {
             plan: 50_000,
             workspace_map: 8_000,
             context: 4_000,
+            runner_context: 4_000,
             brief: 4_000,
             reviews: 2_000,
             instructions: 4_000,
@@ -183,6 +195,7 @@ pub fn adaptive_budget_for(role: AgentRole, model_context_tokens: usize) -> Prom
         plan: scaled(base.plan),
         workspace_map: scaled(base.workspace_map),
         context: scaled(base.context),
+        runner_context: scaled(base.runner_context),
         brief: scaled(base.brief),
         reviews: scaled(base.reviews),
         instructions: scaled(base.instructions),
@@ -336,6 +349,19 @@ mod tests {
         // Still gets plan and brief
         assert_eq!(b.plan, 50_000);
         assert_eq!(b.brief, 4_000);
+    }
+
+    /// gap-c8bfc8: the review and fix roles get no cross-plan context, but a
+    /// runner context of their own, for their verify commands and gate feedback.
+    #[test]
+    fn review_and_fix_roles_keep_a_runner_context() {
+        for role in [AgentRole::QuickReviewer, AgentRole::AutoFixer] {
+            let b = budget_for(role);
+            assert_eq!(b.context, 0, "{role:?}");
+            assert!(b.runner_context > 0, "{role:?}");
+        }
+        let implementer = budget_for(AgentRole::Implementer);
+        assert_eq!(implementer.runner_context, implementer.context);
     }
 
     #[test]

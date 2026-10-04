@@ -910,8 +910,8 @@ impl SystemPromptBuilder {
         let budget = self.budget_profile?;
         match section_name {
             "conventions" | "tool_instructions" | "anti_patterns" => Some(budget.instructions),
-            "domain_context" | "context_layer" | "pheromone_signals" => Some(budget.context),
-            "gate_feedback" => Some(budget.context),
+            "domain_context" | "pheromone_signals" => Some(budget.context),
+            "context_layer" | "gate_feedback" => Some(budget.runner_context),
             "relevant_techniques" | "tool_hints" => Some(budget.skills),
             "role_identity" | "agents_instructions" => {
                 Some(budget.plan.max(budget.instructions).min(8_000))

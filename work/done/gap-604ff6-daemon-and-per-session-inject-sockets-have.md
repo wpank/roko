@@ -2,15 +2,16 @@
 id = "gap-604ff6"
 kind = "gap"
 title = "Daemon and per-session inject sockets have no sun_path length protection, unlike the hub socket"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
 size = "S"
 subsystem = ["roko-cli/daemon", "roko-cli/inject"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "7789cfee6"
 source = "wave-6 follow-up reports 2026-10-03 (PK06 gap-4b890c)"
 discovered_from = "gap-4b890c"
 anchors = ["crates/roko-cli/src/daemon.rs::daemon_socket_path", "crates/roko-cli/src/state_hub_ipc.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn daemon_socket_binds_under_a_deep_workdir' crates/roko-cli/ && cargo test -p roko-cli daemon_socket_binds_under_a_deep_workdir"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T11:30:35Z"
+commit = "7789cfee6"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T09:32:36Z"
+forced = false
+evidence = "Gate 17a (merged 7789cfee6): verify daemon_socket_binds_under_a_deep_workdir passes. The daemon binds through state_hub_ipc::bind_socket, so a long path goes to /tmp/roko-<uid>/<hash>/ with a daemon.sock.path pointer that stop, status, reload and secrets follow; the socket is 0600. The inject socket already had the guard."
 +++
 
 ## Problem

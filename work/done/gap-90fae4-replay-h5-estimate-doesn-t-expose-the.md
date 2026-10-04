@@ -2,7 +2,7 @@
 id = "gap-90fae4"
 kind = "gap"
 title = "replay_h5.estimate doesn't expose the audit lottery's per-position draw order, which X3 needs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "7789cfee6"
 source = "wave-15 follow-up reports 2026-10-04 (gap-1a8ee7, gate 16a)"
 discovered_from = "gap-1a8ee7 (open, work/gap-1a8ee7; X3's own more vaguely stated data gap traced precisely)"
 anchors = ["benchmarks/viabilitybench/analysis/replay_h5.py::estimate", "benchmarks/viabilitybench/analysis/replay_closure.py"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'def test_x3_evaluates_from_a_false_green_step_replay' benchmarks/viabilitybench/analysis/ && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/ -q -k test_x3_evaluates_from_a_false_green_step_replay"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T11:30:37Z"
+commit = "7789cfee6"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T09:32:38Z"
+forced = false
+evidence = "Gate 17a (merged 7789cfee6): verify test_x3_evaluates_from_a_false_green_step_replay passes; bench suite 744 passed. audit/replay.py exposes each lottery's per-position draws, replay_h5 exposes draw_order and stream_units, and replay_closure's X3 replays a false-green step at the 5% floor and at M1's 2x boost with S06's E3 breach rule (median delays, paired-bootstrap gain, audit-share guard). Caveat queued: no gaming-prone cells in the records."
 +++
 
 ## Problem

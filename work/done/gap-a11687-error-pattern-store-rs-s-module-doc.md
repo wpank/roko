@@ -2,15 +2,16 @@
 id = "gap-a11687"
 kind = "gap"
 title = "error_pattern_store.rs's module doc comment still calls record_resolution mark_resolved"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-learn/error-patterns"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "7789cfee6"
 source = "wave-6 follow-up reports 2026-10-03 (PK35 gap-943046)"
 discovered_from = "gap-943046"
 anchors = ["crates/roko-learn/src/error_pattern_store.rs::record_resolution"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'mark_resolved' crates/roko-learn/src/error_pattern_store.rs"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T11:30:39Z"
+commit = "7789cfee6"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T09:32:43Z"
+forced = false
+evidence = "Gate 17a (merged 7789cfee6): its verify passes, with workspace check, clippy, lib tests and the learning wiring census green. Part of the p3 cleanup branch (work/gap-9d32d0): L-dream-bias retired from loops.toml and the census, TaskSpeedPriority docs, the dead vcg_warmup_observations field, error_pattern_store's module doc, and demo_seed feeding the attempt ledger instead of task-metrics.jsonl."
 +++
 
 ## Problem

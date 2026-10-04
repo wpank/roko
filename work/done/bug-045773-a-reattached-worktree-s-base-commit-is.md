@@ -2,15 +2,16 @@
 id = "bug-045773"
 kind = "bug"
 title = "A reattached worktree's base_commit is hardcoded to None instead of read back from the original attach"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/orchestrator-worktree"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "7789cfee6"
 source = "wave-6 follow-up reports 2026-10-03 (PK03 gap-d254a3)"
 discovered_from = "gap-d254a3"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/mod.rs::WorktreeHandle", "crates/roko-cli/src/graph_execution/workspaces.rs::lease_from_handle"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn reattached_handle_keeps_its_original_base_commit' crates/roko-cli/ && cargo test -p roko-cli reattached_handle_keeps_its_original_base_commit"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T11:30:34Z"
+commit = "7789cfee6"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T09:32:37Z"
+forced = false
+evidence = "Gate 17a (merged 7789cfee6): verify reattached_handle_keeps_its_original_base_commit passes. Worktree creation writes the base commit to the checkout's git admin dir (roko-base) and reattach reads it back (full object ids only); checkouts from an older roko fall back to the base branch."
 +++
 
 ## Problem

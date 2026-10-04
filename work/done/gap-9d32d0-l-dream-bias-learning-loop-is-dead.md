@@ -2,15 +2,16 @@
 id = "gap-9d32d0"
 kind = "gap"
 title = "L-dream-bias learning loop is dead (3109 removed its routing-bias path) but still registered as live"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
 size = "S"
 subsystem = ["roko-learn/loop-audit"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "7789cfee6"
 source = "wave-6 follow-up reports 2026-10-03 (PK14 gap-997366)"
 discovered_from = "gap-997366 (backlog task 3109)"
 anchors = ["crates/roko-learn/src/loop_audit/loops.toml", "crates/roko-learn/src/loop_audit/spec.rs", "crates/roko-learn/src/loop_audit/assign.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'L-dream-bias' crates/roko-learn/src/loop_audit/loops.toml"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T11:30:38Z"
+commit = "7789cfee6"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T09:32:40Z"
+forced = false
+evidence = "Gate 17a (merged 7789cfee6): its verify passes, with workspace check, clippy, lib tests and the learning wiring census green. Part of the p3 cleanup branch (work/gap-9d32d0): L-dream-bias retired from loops.toml and the census, TaskSpeedPriority docs, the dead vcg_warmup_observations field, error_pattern_store's module doc, and demo_seed feeding the attempt ledger instead of task-metrics.jsonl."
 +++
 
 ## Problem

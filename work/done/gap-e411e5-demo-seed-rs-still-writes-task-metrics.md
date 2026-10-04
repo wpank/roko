@@ -2,15 +2,16 @@
 id = "gap-e411e5"
 kind = "gap"
 title = "demo_seed.rs still writes task-metrics.jsonl, which the dashboard no longer reads"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/demo-seed", "roko-cli/tui"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "7789cfee6"
 source = "wave-4 follow-up reports 2026-10-02 (PK08)"
 discovered_from = "gap-a0043b (its own Progress note on task 2126, commit 1ef44eb93, names this exact residual with no task to fix it)"
 anchors = ["crates/roko-cli/src/demo_seed.rs::build_task_metrics", "crates/roko-cli/src/tui/dashboard_model.rs::attempt_ledger_metrics"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -rqw 'fn build_task_metrics' crates/roko-cli/src/demo_seed.rs || grep -rqw 'fn demo_seed_feeds_the_attempt_ledger_dashboard' crates/roko-cli/ && cargo test -p roko-cli demo_seed_feeds_the_attempt_ledger_dashboard"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T11:30:40Z"
+commit = "7789cfee6"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T09:32:44Z"
+forced = false
+evidence = "Gate 17a (merged 7789cfee6): its verify passes, with workspace check, clippy, lib tests and the learning wiring census green. Part of the p3 cleanup branch (work/gap-9d32d0): L-dream-bias retired from loops.toml and the census, TaskSpeedPriority docs, the dead vcg_warmup_observations field, error_pattern_store's module doc, and demo_seed feeding the attempt ledger instead of task-metrics.jsonl."
 +++
 
 ## Problem

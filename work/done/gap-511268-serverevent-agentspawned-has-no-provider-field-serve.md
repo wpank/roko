@@ -2,7 +2,7 @@
 id = "gap-511268"
 kind = "gap"
 title = "ServerEvent::AgentSpawned has no provider field; serve's bridge drops it in both directions"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,6 +11,7 @@ subsystem = ["roko-core"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "7789cfee6"
 source = "wave-15 follow-up reports 2026-10-04 (bug-2e5429)"
 discovered_from = "bug-2e5429 (closed; own Progress note names this as a separate gap)"
 anchors = ["crates/roko-serve/src/events.rs::ServerEvent", "crates/roko-core/src/dashboard_snapshot.rs::DashboardEvent"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn agent_spawned_provider_survives_the_serve_bridge' crates/roko-serve/ && cargo test -p roko-serve agent_spawned_provider_survives_the_serve_bridge"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T11:30:35Z"
+commit = "7789cfee6"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T09:32:35Z"
+forced = false
+evidence = "Gate 17a (merged 7789cfee6): verify agent_spawned_provider_survives_the_serve_bridge passes; serve integration tests pass. ServerEvent::AgentSpawned carries an optional provider (skipped when None) both ways through the bridge; the HTTP API event catalog and the demo app's DashboardEvent type list it."
 +++
 
 ## Problem

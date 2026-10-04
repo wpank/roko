@@ -2,15 +2,16 @@
 id = "gap-9fd9ff"
 kind = "gap"
 title = "PromptBuildHandle.vcg_warmup_observations survives the VCG auction's retirement with no consumer"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-execution/prompt"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "7789cfee6"
 source = "wave-8 follow-up reports 2026-10-03 (PK39 gap-222d47)"
 discovered_from = "gap-222d47"
 anchors = ["crates/roko-execution/src/prompt/builder.rs::PromptBuildHandle", "crates/roko-core/src/config/schema.rs::PromptConfig"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'vcg_warmup_observations' crates/roko-execution/src/prompt/builder.rs"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T11:30:39Z"
+commit = "7789cfee6"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T09:32:42Z"
+forced = false
+evidence = "Gate 17a (merged 7789cfee6): its verify passes, with workspace check, clippy, lib tests and the learning wiring census green. Part of the p3 cleanup branch (work/gap-9d32d0): L-dream-bias retired from loops.toml and the census, TaskSpeedPriority docs, the dead vcg_warmup_observations field, error_pattern_store's module doc, and demo_seed feeding the attempt ledger instead of task-metrics.jsonl."
 +++
 
 ## Problem

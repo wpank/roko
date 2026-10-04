@@ -1,8 +1,13 @@
+# Archived (bug-261c02): every task here assumes apps/portal/src/app/work/editor/page.tsx already exists, with an
+# existing TaskEditorRow component and StatusLED atom to extend -- none of the three exist in the current portal
+# tree (confirmed: no editor/ directory, no StatusLED.tsx, no AgentOutputStream.tsx anywhere under apps/portal/src).
+# This is not a stale line range; the plan's whole premise (modifying an existing editor page) does not hold, and
+# nothing in its own tasks creates these files first. Archived rather than patched.
 [meta]
 plan = "portal-plan-execution"
 total = 3
 done = 0
-status = "ready"
+status = "archived"
 skip_enrichment = true
 estimated_total_minutes = 45
 

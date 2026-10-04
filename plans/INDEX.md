@@ -11,7 +11,6 @@
 |------|-------|------|-------|--------|----------|
 | `add-plan-queue` | 3 | 0 | 3 | 📋 ready | — |
 | `e2e-smoke-test` | 2 | 0 | 2 | 📋 ready | — |
-| `portal-plan-execution` | 3 | 0 | 3 | 📋 ready | — |
 | `portal-programme/01-backend-plan-service` | 10 | 0 | 10 | 📋 ready | — |
 | `portal-programme/02-backend-plan-execution` | 9 | 0 | 9 | 📋 ready | — |
 | `portal-programme/03-backend-live-events` | 7 | 0 | 7 | 📋 ready | — |
@@ -31,12 +30,11 @@
 | `portal-programme/08g-first-run` | 3 | 0 | 3 | 📋 ready | — |
 | `portal-programme/09-acceptance` | 4 | 0 | 4 | 📋 ready | — |
 | `qa-workflow-validation` | 4 | 0 | 4 | 📋 ready | — |
-| `wire-http-plan-execute` | 3 | 0 | 3 | 📋 ready | — |
 | `workspace-doctor-improvements` | 2 | 0 | 2 | 📋 ready | — |
 
-**Executable Total**: 24 plans, 197 tasks, 0 done (0%), 197 remaining
+**Executable Total**: 22 plans, 191 tasks, 0 done (0%), 191 remaining
 **Complete Plans**: 0
-**Ready/In-Progress Plans**: 24
+**Ready/In-Progress Plans**: 22
 
 ## Fixtures / Examples
 

@@ -12,8 +12,8 @@ A bundle passes only when every rule holds:
 - `records`: every run record passes `schema/validate.py` and names a run of the bundle;
 - `metrics`: every MetricRecord passes `schema/validate.py`;
 - `run_ids`: every MetricRecord lists run ids, each a run of the bundle;
-- `views`: every view the manifest names is there, re-derived from `data/metrics.jsonl` byte for byte, and no other
-  view is;
+- `views`: the manifest names exactly the views `data/metrics.jsonl` and `data/records.jsonl` make, and each is there,
+  re-derived from them byte for byte;
 - `transcripts`: no transcript file and no transcript field with a value;
 - `hidden`: every prompt and hidden-test value, the names of failed truth-suite checks included, is `sha256:<hex>`;
 - `timeline`: when `timeline/events.jsonl` is there, its rows are `showcase-event/1` replay events of the bundle's
@@ -154,7 +154,8 @@ def check(bundle: Path) -> list[tuple[str, str]]:
             problems.append(("transcripts", f"{relative} is a transcript"))
 
     run_ids = set(manifest.get("run_ids") or [])
-    for number, record in enumerate(read_rows(bundle, "data/records.jsonl", problems, "records"), start=1):
+    records = read_rows(bundle, "data/records.jsonl", problems, "records")
+    for number, record in enumerate(records, start=1):
         for error in validate.validate("run-record", record)[:1]:
             problems.append(("records", f"run record {number}: {error}"))
         if record.get("run_id") not in run_ids:
@@ -175,8 +176,11 @@ def check(bundle: Path) -> list[tuple[str, str]]:
 
     metrics_file = bundle / "data/metrics.jsonl"
     if metrics_file.is_file():
-        expected = project_views(manifest, metrics, metrics_file.read_bytes())
+        expected = project_views(manifest, metrics, metrics_file.read_bytes(), records)
         named = list(manifest.get("views") or [])
+        for name in expected:
+            if name not in named:
+                problems.append(("views", f"the manifest leaves out the {name} view its data makes"))
         for name in named:
             view = bundle / "views" / f"{name}.json"
             if name not in expected:
@@ -184,7 +188,7 @@ def check(bundle: Path) -> list[tuple[str, str]]:
             elif not view.is_file():
                 problems.append(("views", f"views/{name}.json is missing"))
             elif view.read_bytes() != expected[name]:
-                problems.append(("views", f"views/{name}.json is not what data/metrics.jsonl projects"))
+                problems.append(("views", f"views/{name}.json is not what the bundle's data projects"))
         if (bundle / "views").is_dir():
             for view in sorted((bundle / "views").iterdir()):
                 if view.stem not in named:

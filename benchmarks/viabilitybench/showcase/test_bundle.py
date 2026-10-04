@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,27 @@ def build(tmp_path: Path) -> Path:
 
 def rules(bundle: Path) -> set[str]:
     return {rule for rule, _ in verify_bundle.check(bundle)}
+
+
+def view(bundle: Path, name: str) -> dict:
+    return json.loads((bundle / "views" / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def contract(name: str) -> dict:
+    """The page's JSON Schema for `name`: a view id, or `bundle` for the manifest."""
+    return json.loads((CONTRACTS / f"{name}.schema.json").read_text(encoding="utf-8"))
+
+
+def copied_results(tmp_path: Path) -> tuple[Path, Path, dict]:
+    """A copy of the fixture results to change, its metrics.json, and that file's document."""
+    results = tmp_path / "results"
+    shutil.copytree(FIXTURES, results)
+    metrics_path = results / "FIXTURE-P1" / "metrics.json"
+    return results, metrics_path, json.loads(metrics_path.read_text(encoding="utf-8"))
+
+
+def build_from(results: Path, out: Path) -> int:
+    return build_bundle.main(["--experiment", "FIXTURE-P1", "--results", str(results), "--out", str(out)])
 
 
 def rows(path: Path) -> list[dict]:
@@ -91,7 +113,7 @@ def test_fixture_bundle_builds_and_verifies(tmp_path: Path) -> None:
     manifest = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))
     assert manifest["kind"] == "replay" and manifest["simulated"] is False
     assert manifest["run_ids"] == ["vb-fixture-f1", "vb-fixture-r1", "vb-fixture-r2"]
-    assert manifest["views"] == ["overview", "p1-head-to-head", "m4-audits"]
+    assert manifest["views"] == ["overview", "p1-head-to-head"]
 
     # Redacted: no transcript, the prompt and the failed hidden checks only as hashes.
     records = rows(bundle / "data" / "records.jsonl")
@@ -117,42 +139,136 @@ def test_every_number_a_view_shows_is_in_its_metrics_index(tmp_path: Path) -> No
     records = {build_bundle.metric_ref(record): record for record in rows(bundle / "data" / "metrics.jsonl")}
     manifest = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))
     for name in manifest["views"]:
-        view = json.loads((bundle / "views" / f"{name}.json").read_text(encoding="utf-8"))
-        assert shown_refs(view), f"{name} shows no number"
-        assert guard_refusals(view) == [], name
+        document = view(bundle, name)
+        assert shown_refs(document), f"{name} shows no number"
+        assert guard_refusals(document) == [], name
         # Each entry has the fields of contracts.ts's ViewMetric, copied from its MetricRecord.
-        contract = json.loads((CONTRACTS / f"{name}.schema.json").read_text(encoding="utf-8"))
-        assert validate.schema_errors(view["metrics"], contract["properties"]["metrics"]) == [], name
-        for entry in view["metrics"]:
+        index_schema = contract(name)["properties"]["metrics"]
+        assert validate.schema_errors(document["metrics"], index_schema) == [], name
+        for entry in document["metrics"]:
             record = records[entry["metric_ref"]]
             copied = {key: record.get(key) for key in ("metric", "value", "ci", "ci_method", "n", "estimator")}
             assert {key: entry[key] for key in copied} == copied
             assert entry["arm"] == (record["arms"][0] if len(record["arms"]) == 1 else None)
-    overview = json.loads((bundle / "views" / "overview.json").read_text(encoding="utf-8"))
-    assert overview["negatives"] == []
-    kinds = {entry["metric"]: entry["kind"] for entry in overview["metrics"]}
-    assert kinds == {
+
+
+def test_metric_kinds_follow_the_metric_names() -> None:
+    """The guard asks every rate for an interval, so a metric's kind comes from its S08 name."""
+    names = {
         "vs_rate": "rate",
-        "pass_hat_1": "rate",
+        "vs_rate_unknown_as_1": "rate",
+        "pass_hat_3": "rate",
         "false_green_rate": "rate",
+        "honest_conflict_rate": "rate",
         "usd_per_vs": "usd",
+        "usd_per_vs_vendor": "usd",
+        "spend_usd": "usd",
         "false_greens": "count",
+        "cap_censored_runs": "count",
+        "pl_verified_features": "count",
+        "cost_gap_ur": "ratio",
+        "pl_makespan_median_s": "score",
     }
+    assert {name: build_bundle.metric_kind(name) for name in names} == names
+
+
+def test_overview_tiles_follow_the_claims_board(tmp_path: Path) -> None:
+    """The Overview draws only claims-board tiles (contracts.ts `OverviewTile`), so a built bundle showed no tile.
+    Every built view and the manifest follow the page's JSON Schemas, and the tiles are the R1 catalogue's."""
+    bundle = build(tmp_path)
+    manifest = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))
+    assert validate.schema_errors(manifest, contract("bundle")) == []
+    for name in manifest["views"]:
+        assert validate.schema_errors(view(bundle, name), contract(name)) == [], name
+
+    overview = view(bundle, "overview")
+    tiles = {tile["id"]: tile for tile in overview["tiles"]}
+    assert list(tiles) == [tile["id"] for tile in build_bundle.OVERVIEW_TILES]
+    assert {tile["pillar"] for tile in overview["tiles"]} == {"P1", "P2"}
+    # No results directory records an S09 verdict yet: every claim is not yet measured and names where it will be.
+    assert all(tile["claim_state"] == "NOT_YET_MEASURED" and tile["planned_in"] for tile in overview["tiles"])
+    usd = tiles["p1-usd-per-verified"]
+    labels = [(row["label"], row["estimate"]["value"]) for row in usd["rows"]]
+    assert labels == [("cheap·roko", 0.0418), ("frontier·direct", 0.241)]
+    assert usd["view"] == "p1-head-to-head"
+    records = {build_bundle.metric_ref(record): record for record in rows(bundle / "data" / "metrics.jsonl")}
+    for row in usd["rows"]:
+        ref = row["estimate"]["metric_ref"]
+        assert records[ref]["metric"] == "usd_per_vs"
+        assert row["estimate"] == {"value": records[ref]["value"], "ci": records[ref].get("ci"), "metric_ref": ref}
+    # The fixture has pass^1, not pass^3, and census false-green rates, not M4's audit estimate.
+    for name in ("p1-consistency", "p1-routing", "p1-spec-effect", "p2-m4-false-green"):
+        assert (tiles[name]["rows"], tiles[name]["view"]) == ([], None), name
+    assert overview["negatives"] == []
+
+    head_to_head = view(bundle, "p1-head-to-head")
+    arms = {arm["arm"]: arm for arm in head_to_head["arms"]}
+    roko = arms["roko_fixed"]
+    assert (roko["label"], roko["tier"], roko["harness"], roko["role"]) == ("cheap·roko", "cheap", "roko", "arm")
+    assert (roko["n_trials"], arms["fd_claude"]["n_trials"]) == (2, 1)
+    assert arms["fd_claude"]["models"] == ["anthropic/claude-sonnet-4-6"]
+    assert head_to_head["claim"]["state"] == "NOT_YET_MEASURED"
+    provenance = overview["provenance"]
+    assert provenance["window"] == {"from": "2026-10-03T09:00:00Z", "to": "2026-10-03T10:29:31Z"}
+    assert (provenance["n"], provenance["seeds"], provenance["cost_usd"]) == (3, [1, 2], 0.2828)
+    assert provenance["record_filter"] == 'experiment_id == "FIXTURE-P1"'
+    assert [source["sha256_verified"] for source in provenance["sources"]] == [False]
+
+
+def test_the_m4_tile_shows_only_an_audit_estimate(tmp_path: Path) -> None:
+    """M4's false-green rate is S05's audit-lottery estimate (`vs_estimated`); a census rate stays off its tile."""
+    results, metrics_path, document = copied_results(tmp_path)
+    census = next(record for record in document["records"] if record["metric"] == "false_green_rate")
+    audited = dict(census, label_source="vs_estimated", value=0.25, ci=[0.05, 0.6], ci_method="ht_wilson_eff_n")
+    document["records"].append(audited)
+    metrics_path.write_text(json.dumps(document), encoding="utf-8")
+    out = tmp_path / "b-audited"
+    assert build_from(results, out) == 0
+    tile = next(tile for tile in view(out, "overview")["tiles"] if tile["id"] == "p2-m4-false-green")
+    estimate = {"value": 0.25, "ci": [0.05, 0.6], "metric_ref": build_bundle.metric_ref(audited)}
+    assert tile["rows"] == [{"label": "cheap·roko", "estimate": estimate}]
+    assert tile["view"] is None  # no m4-audits view until S05's audit records are projected
+
+
+def test_the_arm_labels_are_the_arm_files() -> None:
+    """Views label arms as `arms/<arm>.toml` does, and the head-to-head's harness is the file's."""
+    for arm, label in build_bundle.ARM_LABELS.items():
+        spec = tomllib.loads((build_bundle.VB_ROOT / "arms" / f"{arm}.toml").read_text(encoding="utf-8"))["arm"]
+        assert spec["label"] == label, arm
+        if arm in build_bundle.HEAD_TO_HEAD:
+            assert (build_bundle.HEAD_TO_HEAD[arm][1] == "roko") == (spec["harness"] == "roko"), arm
+    assert set(build_bundle.HEAD_TO_HEAD) <= set(build_bundle.ARM_LABELS)
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [("execution", "started_at"), ("execution", "finished_at"), ("costs", "billed_usd")],
+)
+def test_a_record_without_its_run_times_or_its_bill_is_refused(tmp_path: Path, section: str, field: str) -> None:
+    """A view's provenance window and cost come from the run records, so each needs its start, finish and bill."""
+    results, _, _ = copied_results(tmp_path)
+    path = results / "FIXTURE-P1" / "vb-fixture-r1" / "records.jsonl"
+    record = rows(path)[0]
+    if section == "costs":
+        record[section][field] = None
+    else:
+        del record[section][field]
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    out = tmp_path / "b-refused"
+    assert build_from(results, out) == 1
+    assert not out.exists()
 
 
 def test_a_record_with_no_run_behind_it_is_shown_nowhere(tmp_path: Path) -> None:
     """A MetricRecord with n = 0, such as a false-green rate over no reported pass, has a null value; showing it would
     make the guard refuse its whole view."""
-    results = tmp_path / "results"
-    shutil.copytree(FIXTURES, results)
-    metrics_path = results / "FIXTURE-P1" / "metrics.json"
-    document = json.loads(metrics_path.read_text(encoding="utf-8"))
+    results, metrics_path, document = copied_results(tmp_path)
     empty = dict(document["records"][0], metric="false_green_rate_unknown_as_1", value=None, n=0, ci_method="none")
     empty.pop("ci", None)
     document["records"].append(empty)
     metrics_path.write_text(json.dumps(document), encoding="utf-8")
     out = tmp_path / "b-empty"
-    assert build_bundle.main(["--experiment", "FIXTURE-P1", "--results", str(results), "--out", str(out)]) == 0
+    assert build_from(results, out) == 0
     assert verify_bundle.check(out) == []
 
     ref = build_bundle.metric_ref(empty)
@@ -197,9 +313,14 @@ def poison_plaintext_hidden_test(bundle: Path) -> None:
     write_rows(records_path, records)
 
 
+def poison_dropped_view(bundle: Path) -> None:
+    edit_manifest(bundle, views=["overview"])
+
+
 def poison_hand_edited_view(bundle: Path) -> None:
-    view = bundle / "views" / "overview.json"
-    view.write_bytes(view.read_bytes().replace(b'"value":0.5', b'"value":0.9', 1))
+    overview = view(bundle, "overview")
+    next(row for tile in overview["tiles"] for row in tile["rows"])["estimate"]["value"] = 0.9
+    (bundle / "views" / "overview.json").write_bytes(build_bundle.canonical_json(overview))
 
 
 @pytest.mark.parametrize(
@@ -211,6 +332,7 @@ def poison_hand_edited_view(bundle: Path) -> None:
         (poison_transcript, "transcripts"),
         (poison_plaintext_hidden_test, "hidden"),
         (poison_hand_edited_view, "views"),
+        (poison_dropped_view, "views"),
     ],
 )
 def test_each_poisoned_bundle_fails_its_rule(tmp_path: Path, poison, rule: str) -> None:

@@ -214,8 +214,9 @@ const SECTION_BANDIT_POLICY: &str = "section_bandit_token_budget";
 /// The content decision at `point`, whose candidates are `items`, made from
 /// `state`. An item the role's prompt has no place for was never eligible.
 /// At the sections point, `draws` are the section bandit's: the row gives
-/// each drawn section its odds of staying in, and the propensity of the
-/// bandit's draws. `shown` is the most error patterns the prompt shows.
+/// each drawn section its odds of staying in, the propensity of the
+/// bandit's draws, and the draws themselves, which `--srm` checks
+/// (bug-2410e1). `shown` is the most error patterns the prompt shows.
 fn content_decision(
     identity: &AttemptIdentity,
     point: ContentDecisionPoint,
@@ -272,6 +273,7 @@ fn content_decision(
         state: read,
         thresholds_digest: state.thresholds.clone(),
         arm_set: None,
+        section_draws: draws.to_vec(),
         proposals: None,
         audit: Default::default(),
     }

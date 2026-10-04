@@ -1,3 +1,7 @@
+/**
+ * Lab only: `/api/bench/cost-summary` may count simulated runs, so the showcase retires this
+ * chart (S10 §4.4). No showcase route may import it; e2e/showcase/retired.spec.ts checks.
+ */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getCssVar, hexToRgba } from '../lib/color';
 import { modelColor as paletteModelColor } from '../lib/palette';

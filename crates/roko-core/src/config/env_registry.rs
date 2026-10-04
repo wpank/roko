@@ -963,6 +963,18 @@ fn server_deploy() -> Vec<EnvVarSpec> {
             replacement: None,
         },
         EnvVarSpec {
+            name: "ROKO_SHOWCASE_PASSPHRASE_HASH",
+            owner: "Server / deploy",
+            purpose: "Argon2id PHC string of the showcase passphrase; required in showcase mode",
+            value_type: ValueType::String,
+            default: "",
+            precedence: "env only (a deploy secret, never a roko.toml key)",
+            scope: Scope::Server,
+            sensitivity: Sensitivity::Secret,
+            stability: Stability::Unstable,
+            replacement: None,
+        },
+        EnvVarSpec {
             name: "ROKO_SERVE_URL",
             owner: "Server / deploy",
             purpose: "URL of the roko serve instance",

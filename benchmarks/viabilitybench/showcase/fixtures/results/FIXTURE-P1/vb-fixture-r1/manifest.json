@@ -1,0 +1,9 @@
+{
+  "arm": "roko_fixed",
+  "experiment_id": "FIXTURE-P1",
+  "run_id": "vb-fixture-r1",
+  "schema_version": "vb.fixture_manifest/1",
+  "seeds": [
+    1
+  ]
+}

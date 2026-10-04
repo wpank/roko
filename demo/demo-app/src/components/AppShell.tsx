@@ -32,10 +32,13 @@ export default function AppShell() {
   const help = useHelpOverlay();
 
   // KeepAlive: once the scenario player (/lab/demo) is visited, keep it mounted
-  // (display:none when elsewhere).
+  // (display:none) while other lab pages are open. It is retired from the showcase
+  // (S10 §4.4), so a showcase page unmounts it.
+  const inLab = location.pathname === '/lab' || location.pathname.startsWith('/lab/');
   const isDemo = location.pathname === '/lab/demo';
   const demoVisitedRef = useRef(false);
   if (isDemo) demoVisitedRef.current = true;
+  else if (!inLab) demoVisitedRef.current = false;
 
   // Global keyboard shortcuts (E4/E5)
   const shortcuts = useMemo<ShortcutDef[]>(() => [

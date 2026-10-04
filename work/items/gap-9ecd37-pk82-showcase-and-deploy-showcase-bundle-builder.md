@@ -87,3 +87,14 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Existing work items this package covers or touches: gap-f30b8e. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
 - 2026-10-02 (roko-7d): the workflow-audit migration (merge bfd36512f) removed the PRD pipeline, `roko do` and `roko develop`; `roko run` is the one entry point and plans come from a prompt. In demo-app it fixed only what broke (the scenario runners and `PipelineStagesPanel` say `roko run`, the transport types lost the Atelier fields, `lib/cmd-descriptions.ts` describes the new commands). The PRD sample pieces (`lib/prd-pipeline-sample.ts`, `PrdPipelinePanel.tsx`, the fake terminal lines) are left for task 9317.
+
+## Progress
+
+- 9314: implemented at c66dfade0 (`benchmarks/viabilitybench/showcase/`: build_bundle.py, verify_bundle.py, a fixture P1 experiment; `test_bundle.py`, 9 tests, passes in a venv)
+- 9315: blocked: held by the coordinator for a follow-up; it builds the first real bundle from the pilot runs, which have not happened
+- 9316: blocked: held with 9315; the showcase-static project's specs and budget need the real pilot bundle
+- 9317: implemented at be9bb659f (TSX; npm not run: the gate should run `npx tsc --noEmit` and the showcase-fixture specs copy-rules and retired)
+- 9318: implemented at a082101cf (TSX; npm not run: `npx playwright test --project=chromium e2e/no-simulated.spec.ts`)
+- 9319: implemented at 3fa7ee21a (cargo verification deferred to the batch gate; the bench route already graded tasks by executed check since 3343, so the change is `RunResult::verdict()` plus two tests)
+- 9320: implemented at f0bf3d36b (cargo verification deferred to the batch gate; config invariant 15)
+- 9321: implemented at a847660ea (cargo verification deferred to the batch gate; Cargo.lock must be regenerated there for the verify's argon2 grep)

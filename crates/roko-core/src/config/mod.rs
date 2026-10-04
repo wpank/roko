@@ -37,6 +37,7 @@ pub mod schema;
 pub mod sections;
 pub mod self_model;
 pub mod serve;
+pub mod showcase;
 pub mod spec_quality;
 pub mod subscriptions;
 pub mod timeouts;

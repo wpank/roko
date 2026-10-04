@@ -1,3 +1,7 @@
+/**
+ * Lab only: a canned pipeline for the Demo scenario player, retired from the showcase
+ * (S10 §4.4). No showcase route may import this; e2e/showcase/retired.spec.ts checks.
+ */
 import type {
   PipelineDemoState,
   PipelineExampleId,

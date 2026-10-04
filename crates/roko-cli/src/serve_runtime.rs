@@ -206,6 +206,9 @@ impl CliRuntime for RokoCliRuntime {
                     }
                 }
 
+                // No gate checked the answer, so its verdict is `unverified`,
+                // never a pass (9319): the bench grades a task with its own
+                // executed check.
                 Ok(RunResult {
                     success: true,
                     output_text,
@@ -2749,5 +2752,32 @@ mod tests_provider_failover {
         assert!(message.contains("pinned"), "{message}");
         assert_eq!(calls(dir, "backup-claude"), 0);
         assert!(!persisted_health(dir).is_available("limited-cli"));
+    }
+
+    /// 9319: a bench run whose provider answers ends with no gate result, so
+    /// its verdict is `unverified`: the answer alone is not a pass.
+    #[tokio::test]
+    async fn bench_run_without_gates_is_unverified() {
+        let (workspace, mut config) = failover_workspace();
+        let dir = workspace.path();
+        // The prompt's model runs on the provider that answers.
+        let primary = config.models.get_mut("primary").expect("primary model");
+        primary.provider = "backup-cli".to_string();
+        let runtime = RokoCliRuntime::new(config, RepoRegistry::default());
+        let overrides = BenchConfigOverrides {
+            strategy: BenchStrategy::Minimal,
+            ..BenchConfigOverrides::default()
+        };
+
+        let result = runtime
+            .run_once_with_config(dir, "Say hello.", &overrides)
+            .await
+            .expect("bench run");
+
+        let output = result.output_text.as_deref().unwrap_or_default();
+        assert!(output.contains(ANSWER), "{output}");
+        assert!(result.success, "the provider answered");
+        assert!(result.gate_results.is_empty());
+        assert_eq!(result.verdict(), roko_serve::state::RunState::Unverified);
     }
 }

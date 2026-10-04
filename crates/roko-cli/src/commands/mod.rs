@@ -36,6 +36,7 @@ pub mod screenshot;
 pub mod server;
 pub mod setup;
 pub mod show;
+pub mod showcase;
 pub mod status;
 pub mod think;
 pub mod trigger;

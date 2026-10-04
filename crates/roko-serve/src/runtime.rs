@@ -14,6 +14,7 @@ use crate::bench::BenchConfigOverrides;
 use crate::plan_types::{
     CreatePlanOutcome, PlanSourceDto, PlanSummaryDto, PlanTasksDto, PlanValidationDto, RevisionDto,
 };
+use crate::state::RunState;
 use roko_runtime::cancel::CancelToken;
 
 /// Token usage reported by an LLM provider.
@@ -35,8 +36,8 @@ pub struct RunResultUsage {
 pub struct RunResult {
     /// Whether the overall run succeeded (all gates passed). With no
     /// `gate_results`, `true` only says the runtime finished: nothing
-    /// verified the output, and `POST /api/run` reports the run
-    /// `unverified`, not a success (G42).
+    /// verified the output, so [`RunResult::verdict`] is `unverified`, not a
+    /// success (G42).
     pub success: bool,
     /// Final text output produced by the run, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,6 +50,24 @@ pub struct RunResult {
     /// gate checked the output.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gate_results: Vec<RuntimeGateResult>,
+}
+
+impl RunResult {
+    /// The run's verdict (G42): `failed` when the runtime says it failed or a
+    /// gate rejected it, `unverified` when no gate checked its output,
+    /// whatever the runtime says, as `roko run` ends work nothing can check
+    /// (bug-1410e8), and `succeeded` only when gates passed it. A provider
+    /// that answered a bench prompt is not a pass (9319).
+    #[must_use]
+    pub fn verdict(&self) -> RunState {
+        if !self.success || self.gate_results.iter().any(|gate| !gate.passed) {
+            RunState::Failed
+        } else if self.gate_results.is_empty() {
+            RunState::Unverified
+        } else {
+            RunState::Succeeded
+        }
+    }
 }
 
 /// Result of generating an implementation plan from a prompt.

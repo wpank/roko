@@ -192,7 +192,7 @@ async fn execute_run(
     match mode {
         RunMode::Answer => {
             let result = runtime.run_once(workdir, prompt).await?;
-            Ok((run_verdict(&result), result))
+            Ok((result.verdict(), result))
         }
         RunMode::GatedPlan => {
             let plan = runtime.run_prompt_plan(workdir, prompt, options).await?;
@@ -485,30 +485,16 @@ async fn record_run_failure(state: &AppState, run_id: &str, error_message: &str)
     }
 }
 
-/// The verdict of a run that returned `result` (G42): `failed` when the
-/// runtime says it failed or a gate rejected it, `unverified` when no gate
-/// checked its output, whatever the runtime says, as `roko run` ends work
-/// nothing can check (bug-1410e8), and `succeeded` only when gates passed it.
-fn run_verdict(result: &RunResult) -> RunState {
-    if !result.success || result.gate_results.iter().any(|gate| !gate.passed) {
-        RunState::Failed
-    } else if result.gate_results.is_empty() {
-        RunState::Unverified
-    } else {
-        RunState::Succeeded
-    }
-}
-
 /// The state a run handle reports, with the error of a run that failed:
 /// `running`, then the run's verdict once it ends: the one it recorded, else
-/// the one its result gives ([`run_verdict`]).
+/// the one its result gives ([`RunResult::verdict`]).
 pub(crate) fn run_handle_state(handle: &RunHandle) -> (RunState, Option<&str>) {
     match &handle.status {
         OperationStatus::Running => (RunState::Running, None),
         OperationStatus::Completed { .. } => {
             let verdict = match (handle.verdict, &handle.result) {
                 (Some(verdict), _) => verdict,
-                (None, Some(result)) => run_verdict(result),
+                (None, Some(result)) => result.verdict(),
                 (None, None) => RunState::Unverified,
             };
             (verdict, None)

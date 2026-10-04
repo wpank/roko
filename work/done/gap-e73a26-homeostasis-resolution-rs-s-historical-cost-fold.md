@@ -2,15 +2,16 @@
 id = "gap-e73a26"
 kind = "gap"
 title = "homeostasis/resolution.rs's historical cost fold reads cost_usd, never the row's api_equiv_usd"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-learn/homeostasis"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "517ab9d19"
 source = "wave-5 follow-up reports 2026-10-02 (PK13 gap-9e3134)"
 discovered_from = "gap-9e3134"
 anchors = ["crates/roko-learn/src/homeostasis/resolution.rs::HistoricalRow"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn historical_fold_prefers_api_equiv_usd_over_cost_usd' crates/roko-learn/ && cargo test -p roko-learn historical_fold_prefers_api_equiv_usd_over_cost_usd"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T07:56:43Z"
+commit = "517ab9d19"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T06:54:00Z"
+forced = false
+evidence = "Gate 15a (merged 517ab9d19): verify historical_fold_prefers_api_equiv_usd_over_cost_usd passes. EfficiencyRow and CostRow read api_equiv_usd and the homeostasis fold prefers it over cost_usd; the costs and efficiency writers don't emit it yet (queued for the filer)."
 +++
 
 ## Problem

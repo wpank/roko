@@ -2,7 +2,7 @@
 id = "gap-d8382b"
 kind = "gap"
 title = "build_bundle.py doesn't copy econ-report.json into bundles; GET /api/showcase/economics 404s on real bundles"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/showcase"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "517ab9d19"
 source = "gate-13c follow-up reports 2026-10-04 (PK84 gap-59ebfd, task 6134)"
 discovered_from = "gap-59ebfd (closed; own done-note already flagged this, never tracked)"
 anchors = ["benchmarks/viabilitybench/showcase/build_bundle.py::build"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_build_copies_the_econ_report_into_the_bundle' benchmarks/viabilitybench/showcase/test_bundle.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/showcase/test_bundle.py -q -k test_build_copies_the_econ_report_into_the_bundle"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T07:56:45Z"
+commit = "517ab9d19"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T06:54:03Z"
+forced = false
+evidence = "Gate 15a (merged 517ab9d19): verify test_build_copies_the_econ_report_into_the_bundle passes; bench suite 736 passed. build_bundle.py copies M3's econ-report.json byte for byte to econ/<id>/econ-report.json (listed and checksummed; refused for another experiment or price snapshot) and verify_bundle.py checks it; served by the batch binary, GET /api/showcase/economics answers 200 byte for byte."
 +++
 
 ## Problem

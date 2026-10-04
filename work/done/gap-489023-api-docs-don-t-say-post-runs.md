@@ -2,7 +2,7 @@
 id = "gap-489023"
 kind = "gap"
 title = "API docs don't say POST /runs/{id}/share needs admin or that no_expire needs a loopback bind"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "517ab9d19"
 source = "gate-13c follow-up reports 2026-10-04 (PK85 gap-fcb44c, task 9328)"
 discovered_from = "gap-fcb44c (closed; 9328 changed the route's behavior, docs never followed)"
 anchors = ["docs/v3/26-HTTP-API.md"]
@@ -22,6 +23,17 @@ command = "grep -q 'runs/{id}/share' docs/v3/26-HTTP-API.md && grep -B2 'runs/{i
 
 [[verify]]
 command = "grep -B6 'pub async fn create_share' crates/roko-serve/src/routes/shared_runs.rs | grep -q 'utoipa::path'"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T07:56:46Z"
+commit = "517ab9d19"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T06:54:04Z"
+forced = false
+evidence = "Gate 15a (merged 517ab9d19): both verifies pass; serve lib tests incl. openapi_documents_every_registered_route pass. docs/v3/26-HTTP-API.md lists POST /runs/{id}/share as admin (and corrects the catch-all row: unlisted writes need write) and documents the 7-day TTL and loopback-only no_expire; create_share has its own utoipa path (200/400/403/404)."
 +++
 
 ## Problem

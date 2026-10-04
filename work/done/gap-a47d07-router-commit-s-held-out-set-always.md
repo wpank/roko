@@ -2,7 +2,7 @@
 id = "gap-a47d07"
 kind = "gap"
 title = "Router commit's held-out set always falls back to the last 20%, never M2's holdout arm"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "517ab9d19"
 source = "wave-13 follow-up reports 2026-10-04 (PK71 gap-099513, task 8136)"
 discovered_from = "gap-099513 (closed; own done-note at line 124 already flagged this as a known gap)"
 anchors = ["crates/roko-learn/src/router_commit.rs::held_out_attempts", "crates/roko-cli/src/graph_execution/learning_commit.rs::settled_outcomes"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn router_commit_scores_against_m2_holdout_arm' crates/ && cargo test -p roko-learn router_commit_scores_against_m2_holdout_arm"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T07:56:43Z"
+commit = "517ab9d19"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T06:53:59Z"
+forced = false
+evidence = "Gate 15a (merged 517ab9d19): roko-learn and roko-cli lib tests pass; verify router_commit_scores_against_m2_holdout_arm passes. router_commit::settled_outcomes (now in roko-learn) marks an attempt holdout when its route decision drew M2's holdout arm (π⁰), so the router commit's held-out check scores against it instead of the run's last 20%."
 +++
 
 ## Problem

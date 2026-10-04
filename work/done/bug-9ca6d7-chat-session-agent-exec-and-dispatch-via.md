@@ -2,15 +2,16 @@
 id = "bug-9ca6d7"
 kind = "bug"
 title = "chat_session, agent_exec and dispatch_via_model_call_service record provider health as Unknown, never the real failure class"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/learning-helpers", "roko-learn/model-call-feedback"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "517ab9d19"
 source = "wave-6 follow-up reports 2026-10-03 (health bundle, gap-d90a93)"
 discovered_from = "gap-d90a93, related to bug-52c48f (same pattern, different call sites)"
 anchors = ["crates/roko-cli/src/learning_helpers.rs::record_persisted_provider_health", "crates/roko-learn/src/model_call_feedback.rs::record_provider_health_at", "crates/roko-cli/src/dispatch_v2.rs::dispatch_via_model_call_service"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn classified_failure_through_agent_exec_is_not_recorded_as_unknown' crates/roko-cli/ && cargo test -p roko-cli classified_failure_through_agent_exec_is_not_recorded_as_unknown"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T07:56:44Z"
+commit = "517ab9d19"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T06:54:08Z"
+forced = false
+evidence = "Gate 15a (merged 517ab9d19): verify classified_failure_through_agent_exec_is_not_recorded_as_unknown passes. record_persisted_provider_outcome classifies failure text with the Graph path's classifier (ErrorClass::from_failure_text) for agent_exec, chat_session and dispatch_via_model_call_service; the always-Unknown roko-learn helpers are gone; openai_compat's 401 records AuthFailure."
 +++
 
 ## Problem

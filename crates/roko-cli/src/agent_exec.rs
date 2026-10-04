@@ -622,8 +622,7 @@ tool_format = "openai_json"
             ("the agent stopped", ErrorClass::Unknown),
         ] {
             let tmp = TempDir::new().expect("tempdir");
-            std::fs::write(tmp.path().join("roko.toml"), GLM_MINI_CONFIG)
-                .expect("write roko.toml");
+            std::fs::write(tmp.path().join("roko.toml"), GLM_MINI_CONFIG).expect("write roko.toml");
 
             persist_capture_episode(
                 tmp.path(),

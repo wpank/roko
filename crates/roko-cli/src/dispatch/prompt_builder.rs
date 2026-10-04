@@ -1558,24 +1558,8 @@ fn build_runner_context(
         parts.push(format!("# Acceptance criteria\n{list}"));
     }
 
-    if !ctx.verify_commands.is_empty() {
-        let list = ctx
-            .verify_commands
-            .iter()
-            .map(|v| format!("- `{v}`"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let pinned = ctx
-            .verify_commands
-            .iter()
-            .map(String::as_str)
-            .any(task_accept::is_pinned_command);
-        let note = if pinned {
-            format!("\n{PINNED_STEP_NOTE}")
-        } else {
-            String::new()
-        };
-        parts.push(format!("# Verify\nAfter editing, run:\n{list}{note}"));
+    if let Some(verify) = render_verify_commands(ctx) {
+        parts.push(verify);
     }
 
     if !ctx.impact_context.is_empty() {
@@ -1656,6 +1640,45 @@ fn build_runner_context(
     }
 
     Ok(parts.join("\n\n"))
+}
+
+/// The `# Verify` block: the task's verify commands, and the pinned-step note
+/// when one of them runs a pinned test. `None` without verify commands.
+fn render_verify_commands(ctx: &PromptContext) -> Option<String> {
+    if ctx.verify_commands.is_empty() {
+        return None;
+    }
+    let list = ctx
+        .verify_commands
+        .iter()
+        .map(|v| format!("- `{v}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let pinned = ctx
+        .verify_commands
+        .iter()
+        .map(String::as_str)
+        .any(task_accept::is_pinned_command);
+    let note = if pinned {
+        format!("\n{PINNED_STEP_NOTE}")
+    } else {
+        String::new()
+    };
+    Some(format!("# Verify\nAfter editing, run:\n{list}{note}"))
+}
+
+/// The runner context of a role with no cross-plan context (`context: 0` in
+/// [`roko_compose::budget_for`]: QuickReviewer and AutoFixer). It holds only
+/// what checking the task turns on: its verify commands and, on a retry, the
+/// failing gate's feedback (gap-c8bfc8).
+fn minimal_runner_context(ctx: &PromptContext) -> String {
+    let mut parts: Vec<String> = render_verify_commands(ctx).into_iter().collect();
+    if ctx.attempt > 0 {
+        if let Some(feedback) = &ctx.gate_feedback {
+            parts.push(render_gate_feedback(feedback));
+        }
+    }
+    parts.join("\n\n")
 }
 
 #[derive(Debug, Clone)]
@@ -1876,8 +1899,15 @@ impl PromptAssembler {
 
         // Rich runner context (files, acceptance, verify, allowed tools,
         // gate feedback, dep outputs, workspace map, etc.) injected
-        // into the canonical "Relevant Context" section.
-        let runner_context = build_runner_context(task, ctx)?;
+        // into the canonical "Relevant Context" section. A role with no
+        // cross-plan context gets only its verify commands and gate feedback;
+        // the full block is still built, so its declared context is checked.
+        let full_context = build_runner_context(task, ctx)?;
+        let runner_context = if roko_compose::budget_for(role).context == 0 {
+            minimal_runner_context(ctx)
+        } else {
+            full_context
+        };
 
         // Build TaskContext with runner-specific context block.
         let task_context = {
@@ -4156,6 +4186,43 @@ mod tests {
             p.system_prompt.contains("mod::test_foo"),
             "retry should contain test failure"
         );
+    }
+
+    /// gap-c8bfc8: QuickReviewer and AutoFixer get no cross-plan context, yet
+    /// their prompt still carries the task's verify commands and, on a retry,
+    /// the failing gate's feedback, and none of the rest of the runner context.
+    #[test]
+    fn quick_reviewer_prompt_includes_verify_commands_and_gate_feedback() {
+        let assembler = PromptAssembler::minimal();
+        for role in ["quick-reviewer", "auto-fixer"] {
+            let mut c = ctx();
+            c.role = role.into();
+            c.attempt = 1;
+            c.gate_feedback = Some(GateFeedback {
+                compile_errors: vec!["E0432: unresolved import".into()],
+                test_failures: vec![],
+                clippy_warnings: vec![],
+                raw_output: "...".into(),
+                diagnosis: Some("The import path moved to crate::dispatch.".into()),
+            });
+            let pctx = PromptContext::from_task(&task(), &c);
+            let system = assembler.assemble(&task(), &pctx).unwrap().system_prompt;
+            assert!(
+                system.contains("# Verify\nAfter editing, run:\n- `cargo test`"),
+                "{role}: {system}"
+            );
+            assert!(
+                system.contains("# Previous attempt feedback"),
+                "{role}: {system}"
+            );
+            assert!(system.contains("E0432"), "{role}: {system}");
+            assert!(!system.contains("# Files in scope"), "{role}: {system}");
+        }
+
+        // The implementer keeps the whole runner context.
+        let pctx = PromptContext::from_task(&task(), &ctx());
+        let system = assembler.assemble(&task(), &pctx).unwrap().system_prompt;
+        assert!(system.contains("# Files in scope"), "{system}");
     }
 
     #[test]

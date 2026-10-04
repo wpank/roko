@@ -5,10 +5,12 @@
 //! `acceptance_contract` is still parsed, so archived plans load, and
 //! [`AcceptanceContract::validate_contract`] still checks its shape, but
 //! nothing evaluates evidence against it at run time, and `roko plan validate`
-//! says so for every contract (PLAN_046). A task states its acceptance
-//! criteria in `acceptance`, with verify steps that name them in `covers`, or
-//! pins a planner-written test with `[task.accept]`. [`ReviewVerdictEvidence`]
-//! and [`RequiredNextAction`] remain for structured review verdicts.
+//! warns when a contract is a task's only acceptance (PLAN_046). A task states
+//! its acceptance criteria in `acceptance`, with verify steps that name them in
+//! `covers`, or pins a planner-written test with `[task.accept]`; beside those,
+//! a contract is metadata, such as an architecture packet's parity rows.
+//! [`ReviewVerdictEvidence`] and [`RequiredNextAction`] remain for structured
+//! review verdicts.
 
 use serde::{Deserialize, Serialize};
 

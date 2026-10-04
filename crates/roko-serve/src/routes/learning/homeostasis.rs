@@ -266,9 +266,9 @@ fn ledger_rows(roko: &Path) -> Vec<Value> {
 mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use roko_core::config::ServeAuthConfig;
     use roko_core::config::harness_params::{HarnessLadders, HarnessParams, Knob, Step};
     use roko_core::config::homeostasis::HomeostasisConfig;
-    use roko_core::config::ServeAuthConfig;
     use roko_core::config::schema::RokoConfig;
     use roko_learn::homeostasis::detect::Baseline;
     use roko_learn::homeostasis::lkg::ThetaLkg;
@@ -378,7 +378,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(view["mode"], "shadow");
         assert_eq!(view["state"], "idle");
-        assert_eq!(view["theta0"], serde_json::to_value(&theta0).expect("θ₀ as JSON"));
+        assert_eq!(
+            view["theta0"],
+            serde_json::to_value(&theta0).expect("θ₀ as JSON")
+        );
         assert_eq!(view["theta"], view["theta0"]);
         assert_eq!(view["lkg_versions"], json!([1, 2]));
         assert!(view["episode"].is_null(), "{view}");
@@ -388,9 +391,10 @@ mod tests {
         let body = Json(ModeBody {
             mode: HomeostasisMode::On,
         });
-        set_mode(State(Arc::clone(&state)), admin, body)
+        let Json(set) = set_mode(State(Arc::clone(&state)), admin, body)
             .await
             .expect("an admin sets the mode");
+        assert_eq!(set["mode"], "on", "{set}");
         let (_, view) = get(&state, "/api/learn/homeostasis").await;
         assert_eq!(view["mode"], "on");
         let rows = ledger_rows(&roko);

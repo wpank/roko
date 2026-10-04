@@ -210,7 +210,9 @@ impl KnowledgeChecks {
     fn invariants(&self, batch: &[KnowledgeEntry]) -> Result<(), String> {
         let (count, limit) = (batch.len(), self.max_batch);
         if count > limit {
-            return Err(format!("{count} entries, above the {limit} a batch may add"));
+            return Err(format!(
+                "{count} entries, above the {limit} a batch may add"
+            ));
         }
         let unverified = [
             SourceChannel::AgentOutput.as_str(),
@@ -293,11 +295,13 @@ impl CommitCheck for KnowledgeChecks {
     }
 }
 
-/// Propose the run `batch`'s entries in `store` under `checks` (P21, 8137)
-/// to the guarded store under `learn_dir`, in `mode`, and return the
-/// decision: committed, the entries losing the batch id; rolled back, the
-/// entries deleted; or observed, committed with a row that records the
-/// rollback that would have happened. `None` when the batch holds no entry.
+/// Propose the run `batch`'s entries in `store` to the guarded store.
+///
+/// The proposal runs under `checks` (P21, 8137) against the guarded store
+/// under `learn_dir`, in `mode`, and returns the decision: committed, the
+/// entries losing the batch id; rolled back, the entries deleted; or
+/// observed, committed with a row that records the rollback that would have
+/// happened. `None` when the batch holds no entry.
 ///
 /// The store's first proposal commits an empty baseline version first, so
 /// that a rollback in enforce mode has a version to keep.
@@ -314,7 +318,9 @@ pub fn propose_batch(
     proposer: &Proposer,
 ) -> Result<Option<CommitDecision>, GuardError> {
     let mut state = KnowledgeBatch::new(store, batch);
-    let entries = state.entries().map_err(|error| store_error(store, &error))?;
+    let entries = state
+        .entries()
+        .map_err(|error| store_error(store, &error))?;
     if entries.is_empty() {
         return Ok(None);
     }

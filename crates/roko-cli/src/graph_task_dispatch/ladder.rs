@@ -19,7 +19,9 @@
 //! the θ the attempt runs raises its tier's start rung to `tier_floor`, and
 //! `tier_cap` stops its climb as the top rung does. Only what M1 moved from
 //! θ₀ binds, so θ₀ moves nothing; a pinned model ignores both, and a task
-//! already above a cap M1 lowered keeps its rung.
+//! already above a cap M1 lowered keeps its rung. A floor below θ₀'s binds
+//! nothing either, since the floor only raises the start rung, and M1's
+//! search never sets one (bug-35a738).
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -44,7 +46,7 @@ const MAX_ESCALATIONS: u32 = 2;
 /// Retry budget of a task that does not author `max_retries` while the
 /// ladder routes it: [`FAILURES_PER_RUNG`] attempts on its start rung and on
 /// each rung it may climb, less the first attempt.
-const LADDER_MIN_RETRIES: u32 = FAILURES_PER_RUNG * (MAX_ESCALATIONS + 1) - 1;
+pub(super) const LADDER_MIN_RETRIES: u32 = FAILURES_PER_RUNG * (MAX_ESCALATIONS + 1) - 1;
 
 /// M1's B1 bounds on one task's rungs, as indices among its role's rungs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

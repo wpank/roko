@@ -127,6 +127,9 @@ pub mod reflex_store;
 pub mod regression;
 /// RAG-10: Retrieval outcome JSONL telemetry with gate-pass correlation.
 pub mod retrieval_outcome;
+/// Guarded commit for the cascade router: held-out and anchor checks before
+/// its snapshot is replaced (P21, 8136).
+pub mod router_commit;
 /// Lookahead and calibration shells around the shipped cascade router.
 pub mod routing_extras;
 /// Append-only routing-decision audit log for explainability and dashboards.

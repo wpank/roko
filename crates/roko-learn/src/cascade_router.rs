@@ -176,6 +176,15 @@ pub fn canary_scope<T>(category: &str, route: impl FnOnce() -> T) -> T {
     routed
 }
 
+/// What a guarded save's transaction returns: `decide`'s answer, and the
+/// snapshot written in place of the merge, if any.
+type Decided<R> = std::io::Result<(R, Option<CascadeSnapshot>)>;
+
+/// Swap the values behind two locks.
+fn swap_locked<T>(into: &Mutex<T>, from: &Mutex<T>) {
+    std::mem::swap(&mut *into.lock(), &mut *from.lock());
+}
+
 impl std::fmt::Debug for CascadeRouter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CascadeRouter")
@@ -2824,6 +2833,92 @@ impl CascadeRouter {
         })?;
         *baseline = current;
         Ok(())
+    }
+
+    /// [`Self::save`], deciding under the snapshot's lock what is written
+    /// (P21, 8136). `decide` gets the merged snapshot's bytes, as they would
+    /// be written, and returns its answer with the bytes of a snapshot to
+    /// write instead, or `None` to write the merge. A replacement is what
+    /// this router then holds too: what it learned since is dropped.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::save`]; an error of `decide`, or a replacement that is not
+    /// a snapshot, leaves the file as it was.
+    pub(crate) fn save_deciding<R>(
+        &self,
+        path: &Path,
+        decide: impl FnOnce(&[u8]) -> std::io::Result<(R, Option<Vec<u8>>)>,
+    ) -> Result<R, crate::error::LearnError> {
+        let mut baseline = self.baseline.lock();
+        let current = self.persisted_snapshot();
+        let mut decide = Some(decide);
+        let mut transaction = |latest: &mut CascadeSnapshot| -> Decided<R> {
+            merge_learning(latest, &current, &baseline);
+            let Some(decide) = decide.take() else {
+                return Err(std::io::Error::other("a guarded save decides once"));
+            };
+            let merged = serde_json::to_vec_pretty(latest)?;
+            let (answer, replacement) = decide(&merged)?;
+            let Some(bytes) = replacement else {
+                return Ok((answer, None));
+            };
+            let replaced: CascadeSnapshot = serde_json::from_slice(&bytes)?;
+            latest.clone_from(&replaced);
+            Ok((answer, Some(replaced)))
+        };
+        // A file that no longer parses is read before `decide` runs.
+        let mut saved = with_locked_json_transaction(path, &mut transaction);
+        let unreadable = saved
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::InvalidData);
+        if unreadable && Self::quarantine_unreadable_snapshot(path) {
+            saved = with_locked_json_transaction(path, &mut transaction);
+        }
+        let (answer, replaced) = saved.map_err(|source| crate::error::LearnError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        *baseline = match replaced {
+            Some(snapshot) => self.restore_learned(snapshot),
+            None => current,
+        };
+        Ok(answer)
+    }
+
+    /// Replace what this router has learned with the persisted JSON
+    /// `snapshot`, keeping its configuration, as a load of it would (P21,
+    /// 8136). Its next save adds only what it learns from here.
+    ///
+    /// # Errors
+    ///
+    /// The parse error when `snapshot` is not a router snapshot.
+    pub(crate) fn restore_learned_json(&self, snapshot: &[u8]) -> Result<(), serde_json::Error> {
+        let snapshot: CascadeSnapshot = serde_json::from_slice(snapshot)?;
+        let mut baseline = self.baseline.lock();
+        *baseline = self.restore_learned(snapshot);
+        Ok(())
+    }
+
+    /// Replace what this router has learned with `snapshot`, keeping its
+    /// configuration, as a load of `snapshot` sets it, and return the
+    /// baseline of its next save. The caller holds the baseline's lock.
+    fn restore_learned(&self, mut snapshot: CascadeSnapshot) -> CascadeSnapshot {
+        snapshot.name_legacy_arms();
+        let linucb_state = snapshot.linucb_state.clone();
+        let restored = Self::from_snapshot(snapshot, self.model_slugs.clone());
+        let total = restored.linucb.total_observations();
+        self.linucb.set_total_observations(total);
+        if let Some(state) = &linucb_state {
+            self.linucb.import_linucb_snapshot(state);
+        }
+        swap_locked(&self.confidence_stats, &restored.confidence_stats);
+        swap_locked(&self.pareto_frontier, &restored.pareto_frontier);
+        swap_locked(&self.role_table, &restored.role_table);
+        swap_locked(&self.default_roles, &restored.default_roles);
+        swap_locked(&self.stage_tracking, &restored.stage_tracking);
+        swap_locked(&self.category_stats, &restored.category_stats);
+        restored.baseline.lock().clone()
     }
 
     fn from_snapshot(mut snapshot: CascadeSnapshot, model_slugs: Vec<String>) -> Self {

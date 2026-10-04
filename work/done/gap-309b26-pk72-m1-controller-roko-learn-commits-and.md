@@ -2,7 +2,7 @@
 id = "gap-309b26"
 kind = "gap"
 title = "PK72 M1 controller: roko learn commits and roko learn rollback for guarded stores"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -10,8 +10,9 @@ rank = 72
 size = "S"
 subsystem = ["roko-cli/commands"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "a4962b9b1"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK72"
 anchors = ["crates/roko-cli/src/commands/learn.rs"]
 lane = "rust-cold"
@@ -20,6 +21,17 @@ links = { depends_on = ["gap-099513"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn learn_rollback_restores_router_version' crates/roko-cli/ && cargo test -p roko-cli learn_rollback_restores_router_version"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T02:47:33Z"
+commit = "a4962b9b1"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T00:59:24Z"
+forced = false
+evidence = "Gate 13b (merged a4962b9b1): roko-cli lib and bin tests and canaries pass; verify learn_rollback_restores_router_version passes. 8139: roko learn commits [--store] [--json] lists guarded-store commit rows; roko learn rollback <store> --to <v> restores router, knowledge and harness versions through GuardedStore, refused while a plan run holds the runner lock."
 +++
 
 ## Problem

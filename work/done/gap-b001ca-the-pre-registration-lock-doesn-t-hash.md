@@ -2,7 +2,7 @@
 id = "gap-b001ca"
 kind = "gap"
 title = "The pre-registration lock doesn't hash experiments/ or arms/, and planemit's runs don't freeze learning (gap-394f28 preconditions)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "a4962b9b1"
 source = "coordinator check of gap-394f28's preconditions at 09387c6fc"
 discovered_from = "gap-394f28"
 anchors = ["benchmarks/viabilitybench/analysis/lock.py", "benchmarks/viabilitybench/driver/planemit.py"]
@@ -20,6 +21,16 @@ links = { depends_on = [], blocks = ["gap-394f28"], related = ["gap-394f28", "ga
 [[verify]]
 command = "benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_lock.py -q -k lock_hashes_experiments_and_arms"
 
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T02:47:34Z"
+commit = "a4962b9b1"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T00:56:12Z"
+forced = false
+evidence = "Gate 13b (merged a4962b9b1): lock.py hashes experiments/ and arms/ without its own file (d16063767); verify lock_hashes_experiments_and_arms passes. Part 2 (planemit's frozen learning) was reverted at the gate (202fb29b2): frozen runs write no episodes, so the driver saw no attempts; it moved with its verify to gap-127263. Bench suite and shakedown 8/8 pass after the revert."
 +++
 
 ## Problem

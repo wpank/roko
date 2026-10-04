@@ -73,5 +73,9 @@ commit.
 ## Notes
 
 - Discovered during PK67's work (gap-ed1a08, done).
-- `work/gap-099513` is live-claimed; this item is informational for whoever holds that claim, not an
-  instruction to edit their branch.
+- 2026-10-04 (wave-13 follow-up): `work/gap-099513` (PK71) merged at `f15044a68`; `gap-099513` is now closed.
+  `roko learn homeostasis replay` (`crates/roko-cli/src/commands/learn_homeostasis.rs::replay`) is real and
+  shipped — it builds a `Controller` and runs it over the stream's resolutions — but still never constructs or
+  calls `homeostasis::replay::Evaluator` (confirmed: zero matches for `Evaluator`/`evaluate` anywhere in that
+  file at HEAD). This item's fix is no longer blocked on anyone's in-flight branch; it's a straightforward
+  follow-up to wire the evaluator into the now-real command.

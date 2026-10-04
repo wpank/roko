@@ -59,3 +59,12 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK62 (gap-f7bab8), PK71 (gap-099513), PK90 (gap-fbd580).
 - On hold until Will takes the deferred decision(s) 9303 (spend or a public release); see `DECISIONS.md`.
 - Suggested model: opus.
+- 2026-10-04 (wave-13 follow-up, PK71 8135): confirmed at main HEAD `b7ad508ce`.
+  `roko_core::disturbance::CeilingOverlay` (`crates/roko-core/src/disturbance.rs:536-541`) is
+  already wired into `GraphTaskDispatcher` as a real field (`graph_task_dispatch.rs:305`,
+  defaulted at line 365), with a getter `ceiling_overlay()` and builder `with_ceiling_overlay()`
+  (`graph_task_dispatch/budget.rs:1042-1048`) — but `with_ceiling_overlay` has zero call sites
+  anywhere outside its own definition, and `ceiling_overlay()` has exactly one caller, a test
+  (`budget.rs:2095`). No caller sets a non-default overlay anywhere. When this task (8132) is
+  picked back up, its admin route should take the handle from these two methods rather than
+  inventing a new ceiling mechanism.

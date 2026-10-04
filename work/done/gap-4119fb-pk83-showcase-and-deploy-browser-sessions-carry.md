@@ -2,7 +2,7 @@
 id = "gap-4119fb"
 kind = "gap"
 title = "PK83 Showcase and deploy: Browser sessions carry a scope, absolute and idle TTLs, and a passphrase generation (+5 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -10,8 +10,9 @@ rank = 83
 size = "L"
 subsystem = ["roko-serve/showcase"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "a4962b9b1"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK83"
 anchors = ["crates/roko-core/src/config/loader.rs", "crates/roko-core/src/config/serve.rs", "crates/roko-serve/src/auth_audit.rs", "crates/roko-serve/src/lib.rs", "crates/roko-serve/src/routes/auth_session.rs", "crates/roko-serve/src/routes/middleware.rs", "crates/roko-serve/src/routes/mod.rs", "crates/roko-serve/src/state.rs"]
 lane = "rust-cold"
@@ -35,6 +36,17 @@ command = "grep -rqw 'fn showcase_scope_session_gets_403_on_config_and_secrets' 
 
 [[verify]]
 command = "grep -q 'public_routes' crates/roko-core/src/config/serve.rs && grep -rqw 'fn showcase_router_mounts_no_public_extras' crates/roko-serve/src/ && cargo test -p roko-serve --lib showcase_router_mounts_no_public_extras"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T02:47:32Z"
+commit = "a4962b9b1"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-04T00:49:44Z"
+forced = false
+evidence = "Gate 13b (merged a4962b9b1): check (no warnings), clippy, serve feature builds (chain, groups, relay, hdc-only, fault-injection), 6,588 lib tests over roko-cli/-core/-serve, 15 serve integration suites, roko-cli canaries (plan_validate's two alias tests are bug-2a31bc) and bin 443, route snapshot (424 canonical), all 6 verifies pass. PK83 6/6: session records with scope, TTLs and passphrase generation (in memory; find-c8527b is Will's), passphrase login with CSRF, Origin and an Argon2 queue, verified-bundle showcase routes and admin reload, login lockout with Retry-After, showcase sessions limited to the showcase allowlist, serve.public_routes (invariant 17). Gate fixes 55cfeab84 (Cargo.lock argon2), d5f4f38d2 (dead extract_session_cookie)."
 +++
 
 ## Problem

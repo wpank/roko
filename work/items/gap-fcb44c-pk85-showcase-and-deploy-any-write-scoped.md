@@ -89,3 +89,16 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 
 - Waits on: PK81 (gap-a63e3c), PK82 (gap-9ecd37), PK83 (gap-4119fb).
 - Suggested model: opus.
+- 2026-10-04 (wave-13 follow-up, PK83 gap-4119fb, task 9327): confirmed on `work/gap-4119fb` at
+  `076879e92` (unmerged). 9327's own test, `showcase_router_mounts_no_public_extras`
+  (`crates/roko-serve/src/routes/mod.rs:806-819`), carries a doc comment that already says so:
+  "Until 9329 turns the portal off in showcase mode, its SPA fallback still answers browser
+  paths such as `/metrics`." Its assertions match: `/api/shared/x`, `/ws/terminal/x`,
+  `/api/terminal/sessions` and `/ws` get a real `StatusCode::NOT_FOUND` check, but `/metrics`
+  only gets `assert!(!metrics.contains("roko_uptime_seconds"))` — no longer real Prometheus
+  output, not a 404 — and `/runs/x` (also a `shared_runs::public_routes` member per 9327's own
+  Problem section) isn't checked by this test at all. So S11 P4/P6 (404 on these paths in
+  showcase mode) fully pass only once this package's task 9329 ("`/` redirects to `/demo/`, the
+  portal is not served") turns the SPA fallback off. No action needed on 9327 itself; flagging
+  so 9329, when implemented, is checked against this specific gap (`/metrics` and `/runs/x`
+  actually 404ing, not just not-Prometheus) rather than assumed to follow automatically.

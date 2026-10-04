@@ -5,7 +5,8 @@
 experiment directory under `results`), through `report.load_runs`, which validates each row against the run-record
 schema and refuses simulated ones. For a record whose `provenance.s01_run_dir` names Roko's records copied by the Roko
 arm (`run_roko._save_evidence`: `<run_id>/s01/<key>/`), it also reads `S01_FILES` and every `runs/*/attempts.jsonl`
-there, as JSON rows. `.campaign/` and `<experiment>.abandoned/` directories are not experiments.
+there, as JSON rows, and every `runs/*/episodes.jsonl`, where a run with learning frozen keeps its episodes
+(gap-127263). `.campaign/` and `<experiment>.abandoned/` directories are not experiments.
 
 **In a stable order.** Entries come sorted by (experiment id, run id, record id), and each one's S01 rows by file
 path, then line, whatever order the files were written in, so two loads of one tree give the same sequence and a
@@ -152,7 +153,8 @@ def _s01(run_dir: Path, record: dict, problems: list[Problem]) -> dict[str, tupl
         problems.append(Problem(str(root), 0, "the record's s01_run_dir is not a directory here"))
         return {}
     found: dict[str, tuple[dict, ...]] = {}
-    paths = [root / name for name in S01_FILES] + sorted(root.glob("runs/*/attempts.jsonl"))
+    paths = [root / name for name in S01_FILES] + sorted([*root.glob("runs/*/attempts.jsonl"),
+                                                          *root.glob("runs/*/episodes.jsonl")])
     for path in paths:
         if not path.exists() and not path.is_symlink():
             continue

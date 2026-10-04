@@ -63,3 +63,32 @@ At 202fb29b2: planemit emits no `frozen`; the six tests pass; G2's census would 
 ## Done when
 
 - [ ] Both `[[verify]]` commands pass.
+
+## Progress
+
+- 2026-10-04 (w4-length): option (a), implemented on `work/gap-127263`; cargo verification deferred to the batch
+  gate. Nothing read per-run episodes before, and the episode sink sees each attempt's run id (the settled verdict's
+  `identity.run_id`), so (a) held.
+  - 20eb73a96: a frozen run's facade holds one sink, `EpisodeSink::per_run`. It writes each episode to
+    `.roko/runs/<run_id>/episodes.jsonl`, beside the run's attempt log; `.roko/episodes.jsonl` and every other
+    learned state stay untouched. The sink is named `run_episodes`, so the wiring census still reports no learning
+    sink. `roko learn telemetry check` (`LegacyRows`) joins a frozen run's own episodes too. Tests:
+    `per_run_sink_writes_each_episode_to_its_runs_own_log`, `legacy_rows_read_a_frozen_runs_own_episodes`, and two
+    updated plan_runner tests (`frozen_learning_run_writes_no_learned_state` now also reads the run's episodes,
+    T1 plus T2 twice; `frozen_run_registers_no_learning_sinks` expects the one `run_episodes` sink).
+  - 447a00e1c: `run_roko.read_evidence` reads `runs/*/episodes.jsonl` when the workspace's log holds none of the
+    plan's episodes. `_save_evidence` already copies `runs/`, and `analysis/replay.py` now reads
+    `runs/*/episodes.jsonl`. Python tests added; the bench driver and analysis suites pass (264 passed, 14 skipped).
+  - a557864f0: 7629f434f re-applied (cherry-pick), with its tests. Verify 1 passes.
+- Verify 2 needs a binary built from this branch. With a copy of the batch binary (d5f4f38d2, before the Rust
+  change) it fails exactly as at gate 13b: D1, D2, D6, `test_real_roko_run_against_a_fake_provider` and
+  `test_real_roko_gate_meets_the_flaky_verify_wrapper` each end `model_unverified: Roko recorded no attempt`, and
+  the other 24 pass. The same binary's frozen D2 run shows `ablation_flags = ["learning_frozen"]` in its manifest
+  and its attempt log in `runs/<run_id>/`, where the new sink writes.
+- The driver side was checked on real Roko output. An unfrozen D2 run's records (from main's driver), with the
+  episodes moved into `runs/<run_id>/episodes.jsonl`, settle to the same three attempts and no problems as from the
+  workspace's log.
+- Follow-ups: `roko run`'s one-task report reads `.roko/episodes.jsonl` since its start offset (`run.rs`,
+  `task_episodes_since`), so under a frozen config it reports no turns, tokens or cost. bug-dd20bd (the workflow
+  episode a frozen `roko run` still appends to the root) could use the same per-run log.
+

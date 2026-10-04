@@ -59,6 +59,16 @@ def results_tree(root: Path) -> Path:
     return results
 
 
+def test_replay_io_reads_a_frozen_runs_own_episodes(tmp_path):
+    # gap-127263: a run with learning frozen keeps its episodes in its own run directory, beside its attempts.
+    results = results_tree(tmp_path)
+    run_dir = results / "LOG1" / "run-a" / "s01" / S01_KEY / "runs" / "plan-x"
+    (run_dir / "episodes.jsonl").write_text('{"task_id": "t", "attempt": 1}\n')
+    [entry] = [entry for entry in replay.load(results).entries if entry.s01]
+    assert entry.s01["runs/plan-x/episodes.jsonl"] == ({"task_id": "t", "attempt": 1},)
+    assert list(entry.s01)[-2:] == ["runs/plan-x/attempts.jsonl", "runs/plan-x/episodes.jsonl"]
+
+
 def snapshot(root: Path) -> dict[str, tuple]:
     return {path.relative_to(root).as_posix(): (path.stat().st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest())
             for path in sorted(root.rglob("*")) if path.is_file()}

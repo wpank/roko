@@ -78,3 +78,16 @@ transport's session socket still build a plain, unbounded path.
   twelve watchers" claim is already self-documented: `docs/v3/30-CONDUCTOR.md` line 41-42 already says "The design
   sections below speak of twelve watchers; the thirteenth, `retrieval-precision`, came later" — not a silent gap,
   so not filed.
+
+## Progress
+
+- 2026-10-04 (w4-length): implemented on `work/bug-045773` at c3450d285; cargo verification deferred to the batch
+  gate. The shared helper already existed: `state_hub_ipc::{bind_socket, bound_socket_path, socket_pointer_path}`
+  (1224), and the inject transport already uses it. The daemon now binds through `bind_socket` (via
+  `bind_daemon_socket`), so a home too long for `sun_path` binds in `/tmp/roko-<uid>/<workspace hash>/` and
+  `daemon.sock.path` names it. The socket is also owner-only now. The stop, status and reload clients and
+  secrets' reload signal follow the pointer, and the cleanups remove the socket wherever it is bound, with its
+  pointer. Test `daemon_socket_binds_under_a_deep_workdir`.
+- Premise corrections: the per-session inject socket the item names already had 1224's treatment
+  (`inject_socket_binds_under_a_long_workspace_path`). The per-session `roko-<session>.sock` that `DaemonConfig`
+  names is never bound, only reported in `DaemonStatus`.

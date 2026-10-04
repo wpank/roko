@@ -74,3 +74,13 @@ back when reconstructing a handle for an existing worktree.
 
 - Backlog task 1124 is the origin of the "configured base only when unknown, as for a re-attached checkout" rule
   this bug defeats — check that task's text for any constraint on how the recorded value should be persisted.
+
+## Progress
+
+- 2026-10-04 (w4-length): implemented on `work/bug-045773` at c1b008691; cargo verification deferred to the batch
+  gate. The claim marker does not outlive creation, so creating a checkout now records its base commit
+  (`claim.marker.target_oid`) in the checkout's git administrative directory as `roko-base`, beside the `roko-run`
+  file a run checkout already keeps there. The re-attach reads it back (`recorded_base_commit`, which accepts only
+  a full 40- or 64-hex object id). `base_commit` is `None`, so `lease_from_handle` falls back to the base branch,
+  only for a checkout an older roko made. Test `reattached_handle_keeps_its_original_base_commit` moves `main` on
+  before the re-attach.

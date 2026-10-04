@@ -66,7 +66,8 @@ impl WorktreeExecutionWorkspaceProvider {
 
         // The commit the checkout started from, so the attempt's diff leaves
         // out what siblings landed before it; the configured base only when
-        // that is unknown, as for a re-attached checkout (backlog 1124).
+        // that is unknown, as for a re-attached checkout an older roko made
+        // (backlog 1124, bug-045773).
         let base_revision = handle
             .base_commit
             .clone()

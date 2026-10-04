@@ -2,15 +2,16 @@
 id = "gap-76ea03"
 kind = "gap"
 title = "Run manifest doesn't record the price snapshot id, though decision 2113 says it should"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "c71eabdb0"
 source = "wave-5 follow-up reports 2026-10-02 (PK13 gap-9e3134)"
 discovered_from = "gap-9e3134 (decision 2113)"
 anchors = ["crates/roko-cli/src/graph_execution/run_manifest.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn run_manifest_records_the_price_snapshot_id' crates/roko-cli/ && cargo test -p roko-cli run_manifest_records_the_price_snapshot_id"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T06:53:21Z"
+commit = "c71eabdb0"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T04:53:02Z"
+forced = false
+evidence = "Gate 14b (merged c71eabdb0): verify run_manifest_records_the_price_snapshot_id passes. RunManifests resolves the active price snapshot (PriceSnapshot::shared) and writes prices.snapshot_id at open (decision 2113); gates.py reads only ablation_flags. Gate fix 5a2c4a4f0 (read the snapshot from RokoConfig before the name is shadowed)."
 +++
 
 ## Problem

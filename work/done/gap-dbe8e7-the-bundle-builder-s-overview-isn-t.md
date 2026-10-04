@@ -2,7 +2,7 @@
 id = "gap-dbe8e7"
 kind = "gap"
 title = "The bundle builder's R1 views don't follow the page's contracts: overview tiles lack pillar and claim_state, head-to-head and m4-audits crash the page, and the provenance lacks the drawer's fields"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "c71eabdb0"
 source = "gate 13c: PK86's fly-smoke spec (9338) against build_bundle.py's overview (9314)"
 discovered_from = "gap-3516d6"
 anchors = ["benchmarks/viabilitybench/showcase/build_bundle.py"]
@@ -22,6 +23,17 @@ command = "benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabi
 
 [[verify]]
 command = "test -f demo/demo-app/playwright.fly-smoke.config.ts && test -f demo/demo-app/e2e/showcase/fly-smoke.spec.ts && cd demo/demo-app && npx playwright test -c playwright.fly-smoke.config.ts"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T06:53:24Z"
+commit = "c71eabdb0"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T04:51:45Z"
+forced = false
+evidence = "Gate 14b (merged c71eabdb0): both verifies pass (test_bundle 6 passed; fly-smoke A1-A4), showcase-serve 6/6, the bench suite (D1's one failure is a load flake: 3/3 on rerun). Built bundles' overview is the R1 claims board (4 P1 tiles and M4, claims NOT_YET_MEASURED until an S09 verdict record exists), p1-head-to-head follows contracts.ts, m4-audits is left out until S05 projections exist, and the provenance carries the drawer's fields."
 +++
 
 ## Problem

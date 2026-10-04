@@ -2,15 +2,16 @@
 id = "gap-45c8fe"
 kind = "gap"
 title = "vs.label rows always carry a null prediction_id, so the audit can't see M3's own forecast per attempt"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-cli/audit", "roko-learn/telemetry"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "c71eabdb0"
 source = "wave-9 follow-up reports 2026-10-03 (PK60 gap-940e44)"
 discovered_from = "gap-940e44"
 anchors = ["crates/roko-cli/src/audit/labels.rs", "crates/roko-learn/src/telemetry/records.rs::AttemptPredictionRecord"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn vs_label_carries_the_attempt_s_prediction_id' crates/roko-cli/ && cargo test -p roko-cli vs_label_carries_the_attempt_s_prediction_id"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T06:53:23Z"
+commit = "c71eabdb0"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T04:52:59Z"
+forced = false
+evidence = "Gate 14b (merged c71eabdb0): verify vs_label_carries_the_attempt_s_prediction_id passes. The attempt's prediction id is noted with the run's lottery, carried on AuditUnit.prediction_id (also in the vault queue file) and copied into vs.label rows."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-3cd890"
 kind = "gap"
 title = "Audit tilt's inclusion_probability always gets risk=None, so risk_fg never reaches the selection draw"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch", "roko-gate/audit"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "c71eabdb0"
 source = "wave-10 follow-up reports 2026-10-04 (PK66 gap-414e56)"
 discovered_from = "gap-414e56"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/audit_select.rs", "crates/roko-cli/src/graph_task_dispatch/self_model.rs::SelfModelRuntime", "crates/roko-gate/src/audit/policy.rs::inclusion_probability"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn tilted_selection_uses_the_chain_s_risk_fg' crates/roko-cli/ && cargo test -p roko-cli tilted_selection_uses_the_chain_s_risk_fg"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T06:53:22Z"
+commit = "c71eabdb0"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T04:52:58Z"
+forced = false
+evidence = "Gate 14b (merged c71eabdb0): roko-cli lib tests and canaries pass; verify tilted_selection_uses_the_chain_s_risk_fg passes. The audit draw passes the self-model's risk_fg and the window's mean risk to inclusion_probability (VsLearner::false_green_risk). λ itself is still never computed (filed in batch 13), so production π stays ρ."
 +++
 
 ## Problem

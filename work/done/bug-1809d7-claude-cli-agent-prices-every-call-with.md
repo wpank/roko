@@ -2,15 +2,16 @@
 id = "bug-1809d7"
 kind = "bug"
 title = "Claude CLI agent prices every call with the default PricingConfig, ignoring a configured [pricing] snapshot pin"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-agent/claude-cli"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "c71eabdb0"
 source = "wave-6 follow-up reports 2026-10-03 (PK47 gap-62e1b9)"
 discovered_from = "gap-62e1b9"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::priced_observation", "crates/roko-agent/src/claude_cli_agent.rs::ClaudeCliAgent", "crates/roko-core/src/pricing_snapshot.rs::PricingConfig"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn claude_cli_prices_at_the_configured_snapshot_pin' crates/roko-agent/ && cargo test -p roko-agent claude_cli_prices_at_the_configured_snapshot_pin"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T06:53:21Z"
+commit = "c71eabdb0"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T04:53:01Z"
+forced = false
+evidence = "Gate 14b (merged c71eabdb0): roko-agent lib tests, provider parity and SSE replay pass; verify claude_cli_prices_at_the_configured_snapshot_pin passes. RokoConfig.pricing reaches ClaudeCliAgent through AgentOptions.pricing (create_agent_for_model), so priced_observation honours a [pricing] snapshot pin. Gate fixes 5a2c4a4f0 (four AgentOptions literals) and 3c85fbe9b (the test's result event needed a modelUsage session)."
 +++
 
 ## Problem

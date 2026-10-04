@@ -29,13 +29,17 @@ EXPERIMENT = "PILOT-T"
 def run_record(instance: str, seed: int = 1, *, run_id: str = "run-a", arm: str = "cheap_direct", label: int = 1,
                unknown: bool = False, visible: bool | None = None, status: str = "completed", cost: float | None = 0.02,
                billed: bool = True, vendor: float | None = None, verdict: str | None = None, honeypot: bool = False,
-               started: str | None = None, finished: str | None = None, model: str | None = None) -> dict:
+               started: str | None = None, finished: str | None = None, model: str | None = None,
+               harness: str | None = None) -> dict:
     """A valid run record for one (instance, seed). The visible checks pass iff VS = 1 unless `visible` says. Its one
-    attempt ran the example's gpt-oss-120b unless `model` names another."""
+    attempt ran the example's gpt-oss-120b unless `model` names another. `harness` sets
+    `provenance.network_policy.harness` (3317) -- "" (the default) is the arm's own, usual harness."""
     record = json.loads(json.dumps(EXAMPLE))
     family, ladder = ("PL", 5) if instance.startswith("PL") else (instance.split("-")[0], int(instance.split("-")[1][1:]))
     record.update(experiment_id=EXPERIMENT, run_id=run_id, arm=arm, seed=seed,
                   record_id=f"sha256:{run_id}/{instance}/{seed}")
+    if harness:
+        record["provenance"]["network_policy"] = {"harness": harness}
     record["task"].update(family=family, instance_id=instance, ladder=ladder, is_honeypot=honeypot)
     record["execution"]["status"] = status
     attempt = record["execution"]["attempts"][0]
@@ -285,9 +289,9 @@ def test_metric_records_validate_and_carry_provenance(pilot):
         assert row["commits"] == ["725f21e05"] and row["seeds"] and row["config_hashes"] == [EXAMPLE["config_hash"]]
     level = next(row for row in rows if row["metric"] == "vs_rate" and row.get("ladder") == 3
                  and row["arms"] == ["cheap_direct"] and "task.family ==" not in row["record_filter"])
-    assert level["record_filter"] == ('experiment_id == "PILOT-T" and arm == "cheap_direct" and task.family != "PL" '
-                                      'and task.ladder == 3 and execution.status not in ["infra_error", '
-                                      '"leak_suspected"] and task.is_honeypot == false')
+    assert level["record_filter"] == ('experiment_id == "PILOT-T" and arm == "cheap_direct" and harness == "" and '
+                                      'task.family != "PL" and task.ladder == 3 and execution.status not in '
+                                      '["infra_error", "leak_suspected"] and task.is_honeypot == false')
     assert level["value"] == pytest.approx(0.5) and level["n"] == 6 and level["run_ids"] == ["run-a"]
     assert {row["metric"] for row in rows} >= {"pass_hat_3", "pass_hat_5", "false_green_rate", "usd_per_vs"}
 
@@ -430,7 +434,7 @@ def test_an_arm_with_two_models_is_reported_per_model():
            no_attempt(run_record("F1-l3-0003", 2, run_id="run-glm", label=0, status="aborted_cap"))]
     records = [*oss, *glm]
     metrics.check_unique(records)
-    assert metrics.cells(records) == [("cheap_direct", "glm-4.7"), ("cheap_direct", "gpt-oss-120b")]
+    assert metrics.cells(records) == [("cheap_direct", "glm-4.7", ""), ("cheap_direct", "gpt-oss-120b", "")]
     written, found = report.build(records, EXPERIMENT, ks=(2,), analysis_commit="abc", computed_at="now")
 
     def get(metric: str, model: str, cost_basis: str | None = None) -> metrics.Metric:
@@ -453,7 +457,7 @@ def test_an_arm_with_two_models_is_reported_per_model():
         model = "glm-4.7" if row["run_ids"] == ["run-glm"] else "gpt-oss-120b"
         assert row["run_ids"] in (["run-glm"], ["run-oss"]) and row["arms"] == ["cheap_direct"]
         assert row["record_filter"].startswith(f'experiment_id == "{EXPERIMENT}" and arm == "cheap_direct" and '
-                                               f'model == "{model}" and task.family != "PL"')
+                                               f'model == "{model}" and harness == "" and task.family != "PL"')
         assert validate.validate("metric-record", row) == []
     [green] = written["false_greens"]
     assert (green["model"], green["run_id"], green["instance_id"], green["seed"]) == (
@@ -477,9 +481,42 @@ def test_an_arm_with_two_models_is_reported_per_model():
     # A routed arm switches models by design, so its cell stays the arm; so does an arm that ran one model.
     routed = run_record("F4-l1-0001", run_id="run-full", arm="roko_full", verdict="passed")
     routed["execution"]["attempts"].append(dict(routed["execution"]["attempts"][0], model_requested="glm-4.7"))
-    assert ("roko_full", None) in metrics.cells([*records, routed])
-    assert metrics.cells(all_records()) == [("cheap_direct", None), ("fd_api", None), ("roko_fixed", None)]
+    assert ("roko_full", None, "") in metrics.cells([*records, routed])
+    assert metrics.cells(all_records()) == [("cheap_direct", None, ""), ("fd_api", None, ""), ("roko_fixed", None, "")]
     assert all("model" not in item for item in metrics.false_greens(all_records()))
+
+
+def test_cells_separates_harnesses_sharing_one_arm_id():
+    # bug-40de03 (3317): cheap_direct_msa's mini-swe-agent runs share the nominal arm id "cheap_direct" with the
+    # bash-only loop's arm (S08 §4.9 decision 3: billed/capped together, deliberately not distinguished by id), so
+    # only provenance.network_policy.harness tells them apart. cells()/arm_metrics() must not pool them.
+    bash = [run_record("F4-l1-0001", 1, run_id="run-bash"), run_record("F4-l1-0001", 2, run_id="run-bash"),
+            run_record("F4-l1-0001", 3, run_id="run-bash", label=0)]
+    msa = [run_record("F4-l1-0001", 1, run_id="run-msa", harness="mini-swe-agent"),
+           run_record("F4-l1-0001", 2, run_id="run-msa", harness="mini-swe-agent")]
+    records = [*bash, *msa]
+    metrics.check_unique(records)  # same instance and seeds 1-2 in both harnesses, yet neither is a duplicate
+    assert metrics.cells(records) == [("cheap_direct", None, ""), ("cheap_direct", None, "mini-swe-agent")]
+
+    def vs_rate(found: list[metrics.Metric]) -> metrics.Metric:
+        [match] = [m for m in found if (m.metric, m.cell) == ("vs_rate", "all")]
+        return match
+
+    bash_only = metrics.arm_metrics(records, EXPERIMENT, "cheap_direct", harness="")
+    msa_only = metrics.arm_metrics(records, EXPERIMENT, "cheap_direct", harness="mini-swe-agent")
+    assert vs_rate(bash_only).value == pytest.approx(2 / 3) and vs_rate(bash_only).n == 3
+    assert vs_rate(msa_only).value == pytest.approx(1.0) and vs_rate(msa_only).n == 2
+    for metric in bash_only:
+        assert {row["run_id"] for row in metric.cut.rows} == {"run-bash"}
+    for metric in msa_only:
+        assert {row["run_id"] for row in metric.cut.rows} == {"run-msa"}
+    # harness=None (the default) still pools every harness of the arm, matching behavior before bug-40de03.
+    assert vs_rate(metrics.arm_metrics(records, EXPERIMENT, "cheap_direct")).n == 5
+    assert metrics.cell_name("cheap_direct", None, "mini-swe-agent") == "cheap_direct [mini-swe-agent]"
+    assert metrics.cell_name("cheap_direct", None, "") == "cheap_direct"
+    printed = report.render(*report.build(records, EXPERIMENT, ks=(2,), analysis_commit="abc", computed_at="now"))
+    assert "cheap_direct: 3 runs in run-bash" in printed
+    assert "cheap_direct [mini-swe-agent]: 2 runs in run-msa" in printed
 
 
 def test_plan_slice_rows_stay_out_of_level_analysis():

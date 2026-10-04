@@ -13,6 +13,15 @@ use crate::runner::promise_tracker::PromiseTracker;
 /// `error_patterns_k`.
 const PROMPT_ERROR_PATTERN_LIMIT: usize = 5;
 
+/// The most error patterns the prompt of an attempt that runs `theta`
+/// carries: θ's `error_patterns_k` (M1's B4, 8125), else
+/// [`PROMPT_ERROR_PATTERN_LIMIT`].
+pub(super) fn error_pattern_limit(theta: Option<&HarnessParams>) -> usize {
+    theta.map_or(PROMPT_ERROR_PATTERN_LIMIT, |theta| {
+        usize::try_from(theta.error_patterns_k).unwrap_or(usize::MAX)
+    })
+}
+
 /// What verifying an attempt found (S01 §4.3): its verdict, and what each
 /// verify step did.
 pub(super) struct VerificationReport {
@@ -1293,9 +1302,7 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         theta: Option<&HarnessParams>,
     ) -> crate::dispatch::factory::ErrorPatternSelection {
-        let limit = theta.map_or(PROMPT_ERROR_PATTERN_LIMIT, |theta| {
-            usize::try_from(theta.error_patterns_k).unwrap_or(usize::MAX)
-        });
+        let limit = error_pattern_limit(theta);
         if !self.config.learning.knowledge_error_patterns || limit == 0 {
             return crate::dispatch::factory::ErrorPatternSelection::default();
         }

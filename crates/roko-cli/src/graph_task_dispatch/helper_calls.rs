@@ -129,6 +129,13 @@ impl SideCall {
         call: &CheckCall,
         snapshot: Option<&PriceSnapshot>,
     ) -> Self {
+        // The check's tokens at the snapshot's row for its model (gap-546e8a).
+        let priced_at = snapshot.and_then(|snapshot| {
+            let tokens = crate::dispatch_v2::usage_token_counts(&call.usage);
+            let priced = snapshot.price(&call.model, &tokens)?;
+            Some((priced.api_equiv_usd, snapshot.id().to_string()))
+        });
+        let (api_equiv_usd, price_snapshot_id) = priced_at.unzip();
         Self {
             provider_id: provider_id.to_string(),
             model_slug: call.model.clone(),
@@ -144,6 +151,8 @@ impl SideCall {
                 profile,
                 &call.model,
             ),
+            api_equiv_usd,
+            price_snapshot_id,
         }
     }
 

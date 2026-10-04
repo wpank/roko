@@ -6,6 +6,7 @@ status = "open"
 triage = "verified"
 severity = "p2"
 goal = "proof"
+hold = "decision: extend the S05 audit records (a redacted per-check summary in the mirror, policy knobs on selections, audit estimates as MetricRecords with n_eff, the mirror copied into results) or change the m4-audits contract to the lottery as implemented"
 size = "M"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-04

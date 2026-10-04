@@ -1905,7 +1905,10 @@ mod tests {
             .collect();
         assert_eq!(rows, [("conventions", 400, 80)]);
         let section = &even.sections[0];
-        assert!((section.expected_excluded - 80.0).abs() < 1e-9, "{section:?}");
+        assert!(
+            (section.expected_excluded - 80.0).abs() < 1e-9,
+            "{section:?}"
+        );
         assert!(!section.mismatch && section.e_value < 1.0, "{section:?}");
 
         let skewed = srm_check(&[stream(160)]);

@@ -548,8 +548,14 @@ mod tests {
     #[test]
     fn a_run_floor_raises_allow_and_keeps_deny() {
         let stage = Some(OutboundPolicy::Stage);
-        assert_eq!(at_least(OutboundPolicy::Allow, stage), OutboundPolicy::Stage);
-        assert_eq!(at_least(OutboundPolicy::Stage, stage), OutboundPolicy::Stage);
+        assert_eq!(
+            at_least(OutboundPolicy::Allow, stage),
+            OutboundPolicy::Stage
+        );
+        assert_eq!(
+            at_least(OutboundPolicy::Stage, stage),
+            OutboundPolicy::Stage
+        );
         assert_eq!(at_least(OutboundPolicy::Deny, stage), OutboundPolicy::Deny);
         assert_eq!(at_least(OutboundPolicy::Allow, None), OutboundPolicy::Allow);
     }

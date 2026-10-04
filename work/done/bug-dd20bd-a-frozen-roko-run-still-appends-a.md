@@ -2,15 +2,16 @@
 id = "bug-dd20bd"
 kind = "bug"
 title = "A frozen roko run still appends a workflow_complete episode, because record_workflow_feedback ignores [learning] frozen"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/run"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "08caddc4c"
 source = "wave-5 follow-up reports 2026-10-02 (PK11 gap-2b5d37)"
 discovered_from = "gap-2b5d37"
 anchors = ["crates/roko-cli/src/run.rs::record_workflow_feedback", "crates/roko-core/src/config/learning.rs::LearningConfig"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn frozen_roko_run_appends_no_episode_or_efficiency_row' crates/roko-cli/ && cargo test -p roko-cli frozen_roko_run_appends_no_episode_or_efficiency_row"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T05:50:54Z"
+commit = "08caddc4c"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T04:52:55Z"
+forced = false
+evidence = "Gate 14a (merged 08caddc4c): verify frozen_roko_run_appends_no_episode_or_efficiency_row passes. record_workflow_feedback returns early for a frozen run (no workflow_complete episode, gate or completion rows, or knowledge credits); a live run is unchanged."
 +++
 
 ## Problem

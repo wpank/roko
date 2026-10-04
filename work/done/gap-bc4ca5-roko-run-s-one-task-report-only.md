@@ -2,7 +2,7 @@
 id = "gap-bc4ca5"
 kind = "gap"
 title = "roko run's one-task report only reads root episodes.jsonl, so a frozen run reports no turns, tokens or cost"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/run"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "08caddc4c"
 source = "gate-13c follow-up reports 2026-10-04 (gap-127263)"
 discovered_from = "gap-127263 (closed; fix scoped to the bench driver, not roko run's own report)"
 anchors = ["crates/roko-cli/src/run.rs::task_episodes_since", "crates/roko-core/src/config/learning.rs::LearningConfig"]
@@ -18,7 +19,14 @@ lane = "rust-hot"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn frozen_one_task_run_reports_real_turns_tokens_and_cost' crates/roko-cli/ && cargo test -p roko-cli frozen_one_task_run_reports_real_turns_tokens_and_cost"
+command = "grep -rqw 'fn frozen_roko_run_reports_its_turns_and_cost' crates/roko-cli/ && cargo test -p roko-cli frozen_roko_run_reports_its_turns_and_cost"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T05:50:55Z"
+commit = "08caddc4c"
+forced = false
+evidence = "Gate 14a (merged 08caddc4c): fixed in bug-dd20bd's branch (69773e93b): when the root log holds none of the run's episodes, roko run's report reads runs/<run_id>/episodes.jsonl. Test frozen_roko_run_reports_its_turns_and_cost passes (same turns, tokens and cost live and frozen)."
 +++
 
 ## Problem
@@ -82,3 +90,5 @@ Confirmed by reading `run.rs`'s `episodes_path`/`task_episodes_since` call chain
   genuine follow-up rather than a regression. See also `bug-dd20bd` (same file, the
   `record_workflow_feedback` frozen-episode question) — noted there too, since the per-run log
   this item reads from may be relevant to how that bug gets fixed.
+- 2026-10-04 (coordinator): fixed in bug-dd20bd's branch (69773e93b) before this item was filed; the verify names
+  that branch's test, `frozen_roko_run_reports_its_turns_and_cost`, which covers the same report.

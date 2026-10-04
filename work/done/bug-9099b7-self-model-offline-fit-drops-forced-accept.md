@@ -2,15 +2,16 @@
 id = "bug-9099b7"
 kind = "bug"
 title = "Self-model offline fit drops forced_accept verdicts; the live sink counts them as failures"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/self-model", "roko-learn/telemetry", "roko-cli/runtime-feedback"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "08caddc4c"
 source = "wave-8 follow-up reports 2026-10-03 (PK49 gap-7ec3ef)"
 discovered_from = "gap-7ec3ef"
 anchors = ["crates/roko-learn/src/self_model/ingest.rs", "crates/roko-learn/src/telemetry/records.rs::learning_label_for", "crates/roko-cli/src/runtime_feedback/self_model.rs::SelfModelOutcomeSink"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn forced_accept_labels_agree_between_offline_fit_and_the_live_sink' crates/roko-learn/ && cargo test -p roko-learn forced_accept_labels_agree_between_offline_fit_and_the_live_sink"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T05:50:53Z"
+commit = "08caddc4c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T04:53:00Z"
+forced = false
+evidence = "Gate 14a (merged 08caddc4c): roko-learn and roko-cli lib tests pass; verify forced_accept_labels_agree_between_offline_fit_and_the_live_sink passes. One label rule, Label::of_verdict (self_model/mod.rs), read by the offline fit and the live sink: a forced_accept teaches nothing on either path, per S01's learning label and SC3."
 +++
 
 ## Problem

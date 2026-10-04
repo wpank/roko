@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 13 anchor gone · 116 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 13 anchor gone · 115 changed since checked · 2 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
 - **P2** [q-bc6cc5](items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md) Confirm licence coverage for another contributor's code in apps/mirage-rs [question] · size S · verified 2026-09-29
 
-_10 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_14 more open · on hold: gap-00e882, gap-8f8544, gap-fbd580 · 4 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -24,11 +24,11 @@ _3 more open · on hold: gap-6aaee9, gap-85f86a, gap-9b5582, gap-ac1aed, gap-b90
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- **P2** [bug-dd20bd](items/bug-dd20bd-a-frozen-roko-run-still-appends-a.md) A frozen roko run still appends a workflow_complete episode, because record_workflow_feedback ignores [learning] frozen [bug] · size S · verified 2026-10-03
 - **P2** [bug-045773](items/bug-045773-a-reattached-worktree-s-base-commit-is.md) A reattached worktree's base_commit is hardcoded to None instead of read back from the original attach [bug] · size M · verified 2026-10-03
 - **P2** [bug-2410e1](items/bug-2410e1-a-resumed-run-in-a-new-process.md) A resumed run in a new process redraws its chains' arm sets; --srm has no row for per-section bandit draws [bug] · size M · verified 2026-10-03
+- **P2** [spec-65c828](items/spec-65c828-backlog-phase-1-safe-runs.md) Backlog Phase 1 — safe runs [spec] · verified 2026-10-02
 
-_16 more open · on hold: gap-3698cd · `goal = "truth"`_
+_15 more open · on hold: gap-3698cd · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -48,11 +48,11 @@ _13 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-39
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- **P2** [gap-6ff99a](items/gap-6ff99a-a-crashed-run-s-uncommitted-knowledge-batch.md) A crashed run's uncommitted knowledge batch is never recovered at the next run's start · size M · verified 2026-10-04
 - **P2** [gap-1cf555](items/gap-1cf555-a-tripped-loop-audit-state-srm-alarm.md) A tripped loop-audit state (SRM alarm, placebo move) has no clear/acknowledge command · size M · verified 2026-10-03
 - **P2** [bug-78e5ce](items/bug-78e5ce-active-mode-m3-router-pick-hides-the.md) Active-mode M3: router_pick hides the self-model's pick, streaming dispatch skips forecasting, early-climb eligibility may be stale [bug] · size M · verified 2026-10-03
+- **P2** [gap-3cd890](items/gap-3cd890-audit-tilt-s-inclusion-probability-always-gets.md) Audit tilt's inclusion_probability always gets risk=None, so risk_fg never reaches the selection draw · size S · verified 2026-10-04
 
-_34 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_31 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

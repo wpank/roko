@@ -2,7 +2,7 @@
 id = "gap-775aa6"
 kind = "gap"
 title = "roko learn rollback router leaves the WAL segment, which can replay over the restored file"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "08caddc4c"
 source = "wave-13 follow-up reports 2026-10-04 (PK72 gap-309b26, task 8139)"
 discovered_from = "gap-309b26 (open, unmerged on work/gap-309b26 at b4c8ae979)"
 anchors = ["crates/roko-learn/src/model_call_feedback.rs::load_recovered_router", "crates/roko-learn/src/model_call_feedback.rs::ModelCallJournal"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn router_rollback_survives_a_stale_wal_segment' crates/roko-cli/ crates/roko-learn/ && cargo test -p roko-cli router_rollback_survives_a_stale_wal_segment"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T05:50:55Z"
+commit = "08caddc4c"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T04:52:56Z"
+forced = false
+evidence = "Gate 14a (merged 08caddc4c): verify router_rollback_survives_a_stale_wal_segment passes. A router rollback discards unsaved router observations in dead writers' WAL segments and the shared wal.jsonl before restoring cascade-router.json; experiment outcomes still replay and a live writer's segment is left alone."
 +++
 
 ## Problem

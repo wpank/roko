@@ -2,7 +2,7 @@
 id = "gap-6ff99a"
 kind = "gap"
 title = "A crashed run's uncommitted knowledge batch is never recovered at the next run's start"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "08caddc4c"
 source = "wave-13 follow-up reports 2026-10-04 (PK71 gap-099513, tasks 8137/8138)"
 discovered_from = "gap-099513 (closed; 8137/8138 implemented, recovery path never built)"
 anchors = ["crates/roko-neuro/src/knowledge_store/commit.rs::propose_batch", "crates/roko-cli/src/graph_execution/learning_commit.rs::propose_knowledge"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn orphaned_knowledge_batch_is_recovered_at_next_run_start' crates/ && cargo test -p roko-neuro orphaned_knowledge_batch_is_recovered_at_next_run_start"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T05:50:57Z"
+commit = "08caddc4c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T04:52:57Z"
+forced = false
+evidence = "Gate 14a (merged 08caddc4c): verify orphaned_knowledge_batch_is_recovered_at_next_run_start passes (roko-neuro), plus roko-neuro integration tests and the bench suite. A run start proposes every orphaned knowledge batch through the guard under the run's checks and mode (off commits unchecked; frozen runs touch nothing); the commits row says orphaned. Gate fix 2d895fe98 (doc paragraph)."
 +++
 
 ## Problem

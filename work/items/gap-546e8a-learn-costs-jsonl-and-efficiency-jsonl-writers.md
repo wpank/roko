@@ -93,3 +93,17 @@ is always absent on every row in practice.
   names this exact follow-up explicitly: "the costs and efficiency writers don't emit it yet
   (queued for the filer)." Confirmed at main HEAD `deba5c6f8` by reading both structs and
   `UsageObservation`/`bug-1809d7`'s fix.
+
+## Progress
+
+- gap-546e8a: implemented at 60fb78212 on `work/gap-546e8a`; cargo verification deferred to the batch gate.
+  `CostRecord` and `AgentEfficiencyEvent` gain `api_equiv_usd` and `price_snapshot_id`, both serde-default and
+  left out when unknown, so old rows parse and unpriced rows are unchanged. The efficiency row's manual
+  `Serialize` writes them only when set. Graph dispatch (`graph_task_dispatch/feedback.rs`) fills both rows from
+  the settled verdict's `cost`: the Claude CLI agent's own pricing, or the attempt's tokens at the run's
+  snapshot, which is how the openai_compat path is priced. The costs row's `SettledCostRow` wrapper drops its
+  own copies of the two fields, which would otherwise duplicate keys. Helper side calls (`helper_calls.rs`)
+  are priced the same way. Plan authoring, serve, ACP, feedback-service, episode and distillation rows write
+  `None`: their sources carry no API-rate price. Every full struct literal across the workspace now sets the
+  two fields (24 sites in 6 crates). Test: `costs_and_efficiency_rows_carry_api_equiv_usd` (roko-learn
+  `costs_db.rs`), which checks both rows, old rows, and `fold_historical` preferring the populated price.

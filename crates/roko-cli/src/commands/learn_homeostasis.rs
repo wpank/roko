@@ -355,7 +355,9 @@ fn evaluated_steps(stream: &str) -> Result<(Vec<StepKind>, u64)> {
         let onset = onset
             .parse()
             .with_context(|| format!("`{onset}` is not a position"))?;
-        let steps = DisturbanceKind::DISTURB_PY.map(StepKind::of).to_vec();
+        let steps = roko_learn::homeostasis::catalog::DisturbanceKind::DISTURB_PY
+            .map(StepKind::of)
+            .to_vec();
         return Ok((steps, onset));
     }
     match StreamSpec::parse(stream).map_err(|problem| anyhow!("--stream: {problem}"))? {

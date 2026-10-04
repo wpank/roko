@@ -43,6 +43,8 @@ const Replays = lazy(() => import('./pages/showcase/Replays'));
 const ReplayView = lazy(() => (
   import('./pages/showcase/Replays').then((module) => ({ default: module.ReplayView }))
 ));
+// The passphrase login of showcase mode (S10 §4.2), outside the shell: no nav before a session.
+const Login = lazy(() => import('./pages/showcase/Login'));
 
 // Fixture-only harness routes (S10 §7). The condition is replaced at build time, so a build
 // without VITE_ALLOW_FIXTURES=1 compiles the import out.
@@ -128,6 +130,7 @@ createRoot(document.getElementById('root')!).render(
           <Suspense fallback={<RouteLoading />}>
             <Routes>
               {FixtureRoutes && <Route path="__fixtures/*" element={<FixtureRoutes />} />}
+              <Route path="login" element={<Login />} />
               <Route element={<AppShell />}>
                 {/* The showcase (S10 §4.2): measured claims at the home. */}
                 <Route index element={<Overview />} />

@@ -519,11 +519,15 @@ fn recorded_tool_policies(run_dir: &Path, plan_id: &str) -> Vec<(String, Attempt
 }
 
 /// The gate-gaming alerts in `.roko/learn/gate-gaming-alerts.jsonl` that
-/// the run wrote, at or after `since_ms` (all when `None`), for a model the
-/// plan's attempts in `records` ran on, oldest first (backlog 2125). An
-/// alert names a model, not a plan, so this is as near as the log can say.
+/// run `run_id` of plan `plan_id` raised, oldest first (backlog 2125). An
+/// alert that names its plan is the run's when it names this plan and run
+/// (gap-54b2b2). One logged before alerts named them is the run's when it
+/// is at or after `since_ms` (all when `None`) for a model the plan's
+/// attempts in `records` ran on, as near as such an alert can say.
 fn run_gaming_alerts(
     workdir: &Path,
+    plan_id: &str,
+    run_id: &str,
     records: &RunRecords,
     since_ms: Option<i64>,
 ) -> Vec<GamingAlert> {
@@ -537,8 +541,15 @@ fn run_gaming_alerts(
         .join("gate-gaming-alerts.jsonl");
     read_jsonl_lossy::<GamingAlert>(&path)
         .into_iter()
-        .filter(|alert| models.contains(alert.model_slug.as_str()))
-        .filter(|alert| since_ms.is_none_or(|since| alert.timestamp.timestamp_millis() >= since))
+        .filter(|alert| match &alert.plan_id {
+            Some(plan) => {
+                plan == plan_id && alert.run_id.as_deref().is_none_or(|run| run == run_id)
+            }
+            None => {
+                models.contains(alert.model_slug.as_str())
+                    && since_ms.is_none_or(|since| alert.timestamp.timestamp_millis() >= since)
+            }
+        })
         .collect()
 }
 
@@ -556,7 +567,8 @@ fn build_graph_report(
         .replaced_at_ms
         .and_then(|ms| i64::try_from(ms).ok());
     let records = RunRecords::load(workdir, plan_id, &checkpoint.manifest.run_id, since_ms);
-    let gate_gaming_alerts = run_gaming_alerts(workdir, &records, since_ms);
+    let run_id = &checkpoint.manifest.run_id;
+    let gate_gaming_alerts = run_gaming_alerts(workdir, plan_id, run_id, &records, since_ms);
     let definition = load_plan_definition(workdir, plan_id, &mut notes);
     let tasks = diagnose_tasks(checkpoint, definition.as_ref(), &records, verbose);
     let resume = definition
@@ -2649,6 +2661,8 @@ title = "Tidy the changelog"
             first_half_quality: 0.7,
             second_half_quality: 0.55,
             timestamp: at(timestamp),
+            plan_id: None,
+            run_id: None,
         };
         write_jsonl(
             &learn.join("gate-gaming-alerts.jsonl"),
@@ -2677,6 +2691,68 @@ title = "Tidy the changelog"
             json["gate_gaming_alerts"][0]["model_slug"],
             "claude-sonnet-4-6"
         );
+    }
+
+    /// gap-54b2b2: an alert that names its plan and run is the run's only
+    /// when it names this plan and run, though another plan's alert shares
+    /// the model and the time. An alert logged before alerts named them is
+    /// still attributed by model and time.
+    #[test]
+    fn gaming_alerts_are_attributed_by_plan_id_not_model_alone() {
+        let workspace = failed_run();
+        let root = workspace.path();
+        let run_id = inspect_canonical_checkpoint(root, PLAN_ID)
+            .expect("read checkpoint")
+            .expect("checkpoint")
+            .manifest
+            .run_id;
+        let alert = |timestamp: &str, raised_by: Option<(&str, &str)>| {
+            let alert = GamingAlert {
+                model_slug: "claude-sonnet-4-6".to_string(),
+                pass_rate_delta: 0.2,
+                quality_delta: -0.15,
+                first_half_pass_rate: 0.6,
+                second_half_pass_rate: 0.8,
+                first_half_quality: 0.7,
+                second_half_quality: 0.55,
+                timestamp: at(timestamp),
+                plan_id: None,
+                run_id: None,
+            };
+            match raised_by {
+                Some((plan, run)) => alert.raised_by(plan, run),
+                None => alert,
+            }
+        };
+        write_jsonl(
+            &root.join(".roko/learn/gate-gaming-alerts.jsonl"),
+            &[
+                alert("2026-09-29T07:21:00Z", Some((PLAN_ID, run_id.as_str()))),
+                alert("2026-09-29T07:21:00Z", Some(("other-plan", "graph-other"))),
+                alert("2026-09-29T07:22:00Z", Some((PLAN_ID, "graph-demo-0"))),
+                alert("2026-09-29T07:23:00Z", None),
+                alert("2026-09-28T09:05:00Z", None),
+            ],
+        );
+
+        let report = build_report(root, PLAN_ID, false).expect("report");
+
+        let listed: Vec<(Option<&str>, DateTime<Utc>)> = report
+            .gate_gaming_alerts
+            .iter()
+            .map(|alert| (alert.plan_id.as_deref(), alert.timestamp))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (Some(PLAN_ID), at("2026-09-29T07:21:00Z")),
+                (None, at("2026-09-29T07:23:00Z")),
+            ]
+        );
+        let text = render_text(&report, false);
+        let named = format!("in plan `{PLAN_ID}`, run `{run_id}`");
+        assert!(text.contains(&named), "{text}");
+        assert!(!text.contains("graph-other"), "{text}");
     }
 
     #[test]

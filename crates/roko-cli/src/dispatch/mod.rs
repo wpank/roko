@@ -173,6 +173,11 @@ pub struct DispatchContext {
     /// is active and its calibration gate holds; the router still draws it
     /// through S03's route table.
     pub self_model_rung: Option<usize>,
+    /// The plan's `[meta] skip_enrichment`: with it set, the prompt loads no
+    /// workspace map, `tasks.toml`, workspace context or plan brief,
+    /// whatever the execution policy and the task's `context_weight` say
+    /// (bug-19ae56).
+    pub skip_enrichment: bool,
 }
 
 // ─── Dispatcher facade ─────────────────────────────────────────────────
@@ -606,6 +611,7 @@ mod tests {
             attempt_key: None,
             arm_set: None,
             self_model_rung: None,
+            skip_enrichment: false,
         }
     }
 

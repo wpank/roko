@@ -1723,6 +1723,7 @@ mod tests {
             attempt_key: None,
             arm_set: None,
             self_model_rung: None,
+            skip_enrichment: false,
         }
     }
 

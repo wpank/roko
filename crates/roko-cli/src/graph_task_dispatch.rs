@@ -754,6 +754,14 @@ impl GraphTaskDispatcher {
             .map(|tasks| tasks.meta)
     }
 
+    /// Whether `spec`'s plan sets `[meta] skip_enrichment`, which its
+    /// prompts honour through [`DispatchContext::skip_enrichment`]
+    /// (bug-19ae56).
+    fn plan_skips_enrichment(&self, spec: &TaskExecutionSpec) -> bool {
+        self.read_plan_meta(spec)
+            .is_some_and(|meta| meta.skip_enrichment)
+    }
+
     /// Per-task spend admission against [`task_budget_ceiling_usd`], mirroring
     /// the plan ceiling: a policy that continues on exhaustion only warns, and
     /// `--no-budget` disables the check. S5's in-run budget cut lowers the
@@ -1228,6 +1236,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             attempt_key: Some(attempt.key.clone()),
             arm_set: attempt.arm_set(),
             self_model_rung: None,
+            skip_enrichment: self.plan_skips_enrichment(spec),
         };
         // M3: the self-model forecasts the attempt before it is routed (6128),
         // and in active mode proposes its start rung (6130).

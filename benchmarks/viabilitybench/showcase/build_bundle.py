@@ -2,14 +2,16 @@
 """Build a showcase replay bundle, `showcase-bundle/1` (S10 §5.5, task 9314), from one experiment's results.
 
     build_bundle.py --experiment PILOT [--results DIR] [--metrics FILE] [--mechanism DIR] [--timeline FILE]
-                    [--bundle-id ID] [--title TEXT] [--featured] [--created-at ISO-8601] [--out DIR]
+                    [--econ FILE] [--bundle-id ID] [--title TEXT] [--featured] [--created-at ISO-8601] [--out DIR]
 
 **Input.** Every run of the experiment, `<results>/<experiment>/<run_id>/records.jsonl` (`vb.run_record/1`, S08 §5.4),
 where results is `--results`, else `$VB_RESULTS`, else `~/.roko-bench/viability`; the analysis output, `--metrics`
 (default `<results>/<experiment>/metrics.json`, the `vb.metrics/1` file `report.py` writes); and, when given or present
 as `<results>/<experiment>/mechanism/`, S01's mechanism records (`<kind>.jsonl`), and a replay timeline of
 `showcase-event/1` rows. Every run record and MetricRecord must pass `schema/validate.py`, and every MetricRecord's run
-ids must name runs of the experiment.
+ids must name runs of the experiment. M3's economics report comes along when `--econ` names one or the experiment has
+one at `.roko/econ/<experiment>/econ-report.json` (S04 §5): a `vb.econ_report/1` document of this experiment alone,
+priced from the records' snapshot.
 
 **Output.** `--out` (default `.roko/showcase/bundles/<bundle_id>`), which must not exist yet:
 
@@ -20,6 +22,9 @@ ids must name runs of the experiment.
     data/metrics.jsonl     the MetricRecords: the only source of the numbers a view shows
     data/mechanism/*.jsonl the mechanism records of the bundle's runs, when there are any
     timeline/events.jsonl  the replay timeline, when one is given
+    econ/<id>/econ-report.json
+                           M3's economics report, byte for byte, when there is one: what
+                           `GET /api/showcase/economics?experiment_id=<id>` serves
     views/<view>.json      the R1 views the data makes: `overview`, the claims board, and `p1-head-to-head` when an
                            arm of the head-to-head ran (`m4-audits` waits for S05's audit records)
 
@@ -61,6 +66,8 @@ EVENT_SCHEMA = "showcase-event/1"
 DEFAULT_RESULTS = Path("~/.roko-bench/viability")
 REDACTION = {"transcripts": "excluded", "prompts": "sha256", "hidden_tests": "sha256", "diffs": "included"}
 HASHED = re.compile(r"^sha256:[0-9a-f]{64}$")
+ECON_REPORT = "econ-report.json"  # M3's economics report (S04 §5), `analysis/econ.py`'s output
+ECON_SCHEMA = "vb.econ_report/1"
 
 # A claim's state is the verdict of S09's test record (contracts.ts `ClaimState`); no results directory holds one yet.
 CLAIM_STATE = "NOT_YET_MEASURED"
@@ -188,6 +195,17 @@ def displayed_refs(node: Any) -> set[str]:
             if key not in ("metrics", "provenance"):
                 found |= displayed_refs(value)
     return found
+
+
+def econ_report_problem(report: Any, experiment: str, price_snapshot_id: Any) -> str | None:
+    """Why `report` is not M3's economics report of `experiment` alone, priced from `price_snapshot_id`, or None."""
+    if not isinstance(report, dict) or report.get("schema_version") != ECON_SCHEMA:
+        return f"it is not a {ECON_SCHEMA} report"
+    if report.get("experiments") != [experiment]:
+        return f"it reports on {report.get('experiments')}, not {experiment} alone"
+    if report.get("price_snapshot_id") != price_snapshot_id:
+        return f"it is priced from {report.get('price_snapshot_id')}, not the bundle's {price_snapshot_id}"
+    return None
 
 
 def is_prompt_key(key: str) -> bool:
@@ -443,6 +461,19 @@ def models_of(records: list[dict]) -> list[str]:
     return sorted(models)
 
 
+def read_econ_report(path: Path, experiment: str, price_snapshot_id: str) -> bytes:
+    """The bytes of M3's economics report at `path`, which a bundle copies unchanged."""
+    try:
+        data = path.read_bytes()
+        report = json.loads(data)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BuildError(f"cannot read the economics report {path}: {error}") from error
+    problem = econ_report_problem(report, experiment, price_snapshot_id)
+    if problem:
+        raise BuildError(f"the economics report {path} cannot join the bundle: {problem}")
+    return data
+
+
 def timed(record: dict) -> bool:
     """Whether `record` says when its run started and finished, as a view's provenance window needs."""
     execution = record.get("execution") or {}
@@ -515,6 +546,12 @@ def build(args: argparse.Namespace) -> Path:
         files["timeline/events.jsonl"] = jsonl_bytes(events)
         schemas["timeline/events.jsonl"] = EVENT_SCHEMA
         rows["timeline/events.jsonl"] = len(events)
+    econ = Path(args.econ) if args.econ else Path(".roko/econ") / args.experiment / ECON_REPORT
+    if args.econ or econ.is_file():
+        path = f"econ/{args.experiment}/{ECON_REPORT}"
+        files[path] = read_econ_report(econ, args.experiment, price_snapshot_id)
+        schemas[path] = ECON_SCHEMA
+        rows[path] = 1
 
     created_at = args.created_at or dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     manifest = {
@@ -564,6 +601,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--metrics", help="the vb.metrics/1 file (default: <results>/<experiment>/metrics.json)")
     parser.add_argument("--mechanism", help="a directory of S01 mechanism records, <kind>.jsonl")
     parser.add_argument("--timeline", help="a JSONL file of showcase-event/1 rows")
+    parser.add_argument(
+        "--econ", help="M3's economics report (default: .roko/econ/<experiment>/econ-report.json, when there is one)"
+    )
     parser.add_argument("--bundle-id", help="the bundle's id (default: b-<experiment>)")
     parser.add_argument("--title", help="the bundle's title")
     parser.add_argument("--featured", action="store_true", help="mark the bundle as the featured one")

@@ -188,15 +188,17 @@ injected into request extensions.
 
 ### 3.2 Scope enforcement
 
-Scope hierarchy: `admin` > `agent:write` > `plan:write` > `read`.
+Scope hierarchy: `owner` and `admin` cover every scope, `write` covers every `*:write` scope
+(`agent:write`, `plan:write`, `terminal:write`), and any key may read.
 
 | Route prefix | Required scope |
 |---|---|
-| GET/HEAD/OPTIONS (any) | `read` (always allowed) |
+| GET/HEAD/OPTIONS (any) | `read` (always allowed), except `GET /ws/terminal`, which opens a session (`terminal:write`) |
+| POST `/api/runs/{id}/share` | `admin`, although `/api/runs` is `write`: anyone holding a share link can read the run (9328) |
 | `/api/secrets`, `/api/config`, `/api/api-keys` | `admin` |
 | `/api/agents/*` | `agent:write` |
 | `/api/plans/*` | `plan:write` |
-| All other POST/PUT/PATCH/DELETE | `read` |
+| All other POST/PUT/PATCH/DELETE | the scope its prefix has in `ROUTE_SCOPE_MANIFEST` (`routes/middleware.rs`), else `write`: an unlisted route fails closed |
 
 ### 3.3 RBAC middleware
 
@@ -526,6 +528,7 @@ Hashed per-run indexes under `.roko/events-by-run/` and
 | GET | `/api/runs/{run_id}/artifacts` | Evidence artifact metadata |
 | GET | `/api/runs/{run_id}/screenshots` | Screenshot manifest (metadata only) |
 | GET | `/api/runs/{run_id}/bundle` | Evidence-bundle manifest (no download) |
+| POST | `/api/runs/{run_id}/share` | Mint a share link for the run (`admin` scope, see 3.2). Body: `{"public": bool, "no_expire": bool, "prompt": "…"}`, the prompt run once when the run does not exist. A link expires after `serve.share_ttl_days` (7); `no_expire` asks for one that never does, and only a server bound to loopback grants it (400 on any other bind) |
 | GET | `/api/shared/{token}` | Public shared transcript (opaque token) |
 | GET | `/runs/{token}` (no `/api/` prefix) | Self-contained shareable run page |
 

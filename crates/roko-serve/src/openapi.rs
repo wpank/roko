@@ -483,7 +483,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         rpc_post,
         rpc_events_ws_upgrade,
         rpc_health,
-        create_share,
+        crate::routes::shared_runs::create_share,
         incidents_handler,
         quarantine_handler,
         safety_controls_handler,
@@ -1870,7 +1870,7 @@ doc_post_value!(
 );
 
 // ── shared_runs (gap-c50b85) ───────────────────────────────────────────────────────
-doc_post_value!(create_share, "/runs/{id}/share", "shared_runs");
+// `create_share` carries its own `#[utoipa::path]` (gap-489023).
 doc_get_param!(get_shared_run, "/shared/{token}", "shared_runs", "token");
 
 // ── sse (gap-c50b85) ───────────────────────────────────────────────────────────────

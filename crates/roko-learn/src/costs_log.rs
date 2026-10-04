@@ -409,6 +409,8 @@ mod tests {
             session_id: "sess-1".to_string(),
             cost_source: CostSource::Unknown,
             priced: None,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
         }
     }
 
@@ -582,6 +584,8 @@ mod tests {
                 session_id: "sess-1".to_string(),
                 cost_source: CostSource::Unknown,
                 priced: None,
+                api_equiv_usd: None,
+                price_snapshot_id: None,
             };
 
         let two_days_ago = today - ChronoDuration::days(2);

@@ -111,6 +111,8 @@ fn arb_efficiency_event() -> impl Strategy<Value = AgentEfficiencyEvent> {
                     cache_write_tokens: 0,
                     cost_usd: 0.01,
                     cost_usd_without_cache: 0.02,
+                    api_equiv_usd: None,
+                    price_snapshot_id: None,
                     prompt_sections,
                     total_prompt_tokens: input_tokens,
                     system_prompt_tokens: input_tokens / 2,

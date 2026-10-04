@@ -68,6 +68,16 @@ pub struct CostRecord {
     /// readers then infer it (backlog 2109).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priced: Option<bool>,
+    /// The call's tokens priced at the API rates of `price_snapshot_id`
+    /// (S01 §4.4): what a subscription-billed call, whose `cost_usd` is about
+    /// $0, would cost on the API, and the figure the homeostasis cost fold
+    /// reads first (gap-e73a26). `None` when nothing priced the call, and on
+    /// a row written before this field (gap-546e8a).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_equiv_usd: Option<f64>,
+    /// The price snapshot behind `api_equiv_usd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_snapshot_id: Option<String>,
 }
 
 /// One payment entry for a paid feed request or metered session.
@@ -695,6 +705,8 @@ pub fn create_cost_record(
         // A `Usage` does not say where its tokens came from.
         cost_source: CostSource::Unknown,
         priced: None,
+        api_equiv_usd: None,
+        price_snapshot_id: None,
     }
 }
 
@@ -727,6 +739,8 @@ fn make_test_record(
         session_id: "session-1".into(),
         cost_source: CostSource::Unknown,
         priced: None,
+        api_equiv_usd: None,
+        price_snapshot_id: None,
     }
 }
 
@@ -1363,5 +1377,85 @@ mod tests {
                 "model {slug} has $0.00 pricing — add a rate or remove it"
             );
         }
+    }
+
+    /// gap-546e8a: a subscription-billed attempt's cost row and efficiency row carry its
+    /// tokens' API-rate price beside a `cost_usd` of $0, and the homeostasis cost fold reads
+    /// that price from either. A row with no price leaves the fields out, and a row written
+    /// before them still parses.
+    #[test]
+    fn costs_and_efficiency_rows_carry_api_equiv_usd() {
+        use crate::efficiency::AgentEfficiencyEvent;
+        use crate::homeostasis::resolution::fold_historical;
+
+        let snapshot = "prices-2026-09-28";
+        let cost = CostRecord {
+            timestamp: "2026-09-01T10:00:30Z".into(),
+            cost_source: CostSource::CliUsage,
+            priced: Some(true),
+            api_equiv_usd: Some(0.42),
+            price_snapshot_id: Some(snapshot.to_string()),
+            ..make_test_record("sonnet", "claude_cli", "implementer", "p", 0.0, true)
+        };
+        let efficiency = AgentEfficiencyEvent {
+            plan_id: "p".into(),
+            task_id: "t1".into(),
+            attempt_id: "run:p:t1:1".into(),
+            api_equiv_usd: Some(0.42),
+            price_snapshot_id: Some(snapshot.to_string()),
+            wall_time_ms: 60_000,
+            gate_passed: Some(true),
+            timestamp: "2026-09-01T10:01:00Z".into(),
+            ..AgentEfficiencyEvent::default()
+        };
+        let cost_line = serde_json::to_string(&cost).expect("serialize the cost row");
+        let efficiency_line =
+            serde_json::to_string(&efficiency).expect("serialize the efficiency row");
+        for line in [&cost_line, &efficiency_line] {
+            let row: serde_json::Value = serde_json::from_str(line).expect("a JSON row");
+            assert_eq!(row["cost_usd"], 0.0, "{row}");
+            assert_eq!(row["api_equiv_usd"], 0.42, "{row}");
+            assert_eq!(row["price_snapshot_id"], snapshot, "{row}");
+        }
+        let back: CostRecord = serde_json::from_str(&cost_line).expect("parse the cost row");
+        assert_eq!(back, cost);
+        let back: AgentEfficiencyEvent =
+            serde_json::from_str(&efficiency_line).expect("parse the efficiency row");
+        assert_eq!(back, efficiency);
+
+        // The fold prices the chain from its cost row, or from its efficiency row alone.
+        let (joined, _) = fold_historical([efficiency_line.as_str()], [cost_line.as_str()]);
+        let (alone, _) = fold_historical([efficiency_line.as_str()], Vec::<&str>::new());
+        for resolutions in [joined, alone] {
+            let usd: Vec<Option<f64>> = resolutions
+                .iter()
+                .map(|resolution| resolution.api_equiv_usd)
+                .collect();
+            assert_eq!(usd, [Some(0.42)]);
+        }
+
+        // An unpriced row leaves the fields out.
+        let unpriced = make_test_record("glm-4.7", "zai", "implementer", "p", 0.0, true);
+        let unpriced = serde_json::to_value(&unpriced).expect("serialize the unpriced row");
+        let default = serde_json::to_value(AgentEfficiencyEvent::default()).expect("serialize");
+        for row in [&unpriced, &default] {
+            assert!(row.get("api_equiv_usd").is_none(), "{row}");
+            assert!(row.get("price_snapshot_id").is_none(), "{row}");
+        }
+        // A row written before the fields reads `None`.
+        let mut old_cost = serde_json::to_value(&cost).expect("serialize the cost row");
+        let mut old_efficiency = serde_json::to_value(&efficiency).expect("serialize");
+        for row in [&mut old_cost, &mut old_efficiency] {
+            let fields = row.as_object_mut().expect("a JSON object");
+            fields.remove("api_equiv_usd");
+            fields.remove("price_snapshot_id");
+        }
+        let old_cost: CostRecord = serde_json::from_value(old_cost).expect("an older cost row");
+        assert_eq!(old_cost.api_equiv_usd, None);
+        assert_eq!(old_cost.price_snapshot_id, None);
+        let old_efficiency: AgentEfficiencyEvent =
+            serde_json::from_value(old_efficiency).expect("an older efficiency row");
+        assert_eq!(old_efficiency.api_equiv_usd, None);
+        assert_eq!(old_efficiency.price_snapshot_id, None);
     }
 }

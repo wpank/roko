@@ -117,6 +117,8 @@ impl DistillationSpend {
             // A `ModelCallResponse` does not say where its usage came from.
             cost_source: roko_learn::telemetry::CostSource::Unknown,
             priced: None,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
         };
         let efficiency_event = AgentEfficiencyEvent {
             agent_id: format!("{}/{DISTILLATION_ROLE}", self.episode_id),

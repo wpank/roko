@@ -354,6 +354,8 @@ pub(crate) fn derive_cost_record(
         // An episode does not say where its usage came from.
         cost_source: crate::telemetry::CostSource::Unknown,
         priced: None,
+        api_equiv_usd: None,
+        price_snapshot_id: None,
     })
 }
 

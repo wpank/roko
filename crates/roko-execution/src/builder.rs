@@ -685,8 +685,8 @@ mod tests {
         // (backlog 4203).
         let default = PromptBuildHandle::default();
         assert_eq!(
-            services.prompt.build_handle.vcg_warmup_observations,
-            default.vcg_warmup_observations
+            services.prompt.build_handle.composition_strategy,
+            default.composition_strategy
         );
     }
 
@@ -810,8 +810,8 @@ mod tests {
     fn prompt_bundle_for_test_is_fresh() {
         let bundle = PromptBundle::for_test();
         assert_eq!(
-            bundle.build_handle.vcg_warmup_observations,
-            PromptBuildHandle::default().vcg_warmup_observations
+            bundle.build_handle.composition_strategy,
+            PromptBuildHandle::default().composition_strategy
         );
     }
 

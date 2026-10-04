@@ -10,19 +10,8 @@ use roko_core::config::schema::ConfigCompositionStrategy;
 ///
 /// Constructed by [`RuntimeServicesBuilder`](crate::builder::RuntimeServicesBuilder)
 /// from the validated config and passed to the prompt assembly pipeline.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PromptBuildHandle {
     /// Composition strategy from config.
     pub composition_strategy: ConfigCompositionStrategy,
-    /// Number of VCG warmup observations before the optimizer kicks in.
-    pub vcg_warmup_observations: usize,
-}
-
-impl Default for PromptBuildHandle {
-    fn default() -> Self {
-        Self {
-            composition_strategy: ConfigCompositionStrategy::default(),
-            vcg_warmup_observations: 20,
-        }
-    }
 }

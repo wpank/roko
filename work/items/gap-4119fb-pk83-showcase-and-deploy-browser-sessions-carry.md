@@ -78,3 +78,12 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK82 (gap-9ecd37).
 - Existing work items this package covers or touches: find-c8527b. When its tasks are done, close those whose verify then passes.
 - Suggested model: opus.
+
+## Progress
+
+- 9322: implemented at 310b94366 (cargo verification deferred to the batch gate; sessions stay in memory, so a restart still revokes them: find-c8527b waits on Will)
+- 9323: implemented at d641783fb (cargo verification deferred; extends /api/auth/session as recommended, adds the public GET probe; argon2 joins roko-serve)
+- 9324: implemented at 5f757511b (cargo verification deferred; R1 view routes only, since PK71 registers /api/showcase/m1/* live; serve_bundle_view serves the R2 views' ?source=bundle: branch)
+- 9325: implemented at ac234cf19 (cargo verification deferred)
+- 9326: implemented at 0952fb503 (cargo verification deferred)
+- 9327: implemented at 4880bf2b5 (cargo verification deferred; config invariant 17; /metrics and /runs/x still reach the portal's SPA fallback in showcase mode until 9329 turns the portal off)

@@ -5,7 +5,8 @@
 //! - [`LoopAuditRecord`], `roko.loop_audit/1`: the cross-run loop-audit
 //!   ledger, `.roko/learn/loop-audit.jsonl`, since a loop's state spans runs
 //!   (its dwell is 24 h). Its kinds are `loop.registered`, `loop.health`,
-//!   `loop.transition`, `loop.canary` and `loop.paired_replay`.
+//!   `loop.transition`, `loop.canary`, `loop.paired_replay` and
+//!   `loop.audit_cleared`, a person's clear of a tripped audit.
 //! - [`FaultRecord`], `roko.fault/1`: the `loop.fault` ground truth, per run
 //!   in `.roko/runs/<run_id>/faults.jsonl`, which only the evaluation joins.
 //!
@@ -102,6 +103,9 @@ pub enum LoopAuditRow {
     /// One paired replay for ι_beh.
     #[serde(rename = "loop.paired_replay")]
     PairedReplay(PairedReplayRow),
+    /// A person cleared the tripped audit.
+    #[serde(rename = "loop.audit_cleared")]
+    AuditCleared(AuditClearedRow),
 }
 
 /// `loop.registered`: the digested `LoopSpec` (S03 §4.2).
@@ -157,7 +161,7 @@ pub struct HealthRow {
     /// The auditor's tripwires are clear: the placebo loop has not moved, and
     /// no SRM alarm or ordering violation on a clean loop has fired. `false`
     /// is S03 §4.6's `audit_broken`, which freezes every transition and
-    /// every enforcement until a human clears it.
+    /// every enforcement until a person clears it (`loop.audit_cleared`).
     pub placebo_ok: bool,
     /// Where the reason comes from: `log`, `declared` or `measured`.
     pub evidence: String,
@@ -270,6 +274,21 @@ pub struct PairedReplayRow {
     pub distance: f64,
     /// What the pair cost.
     pub cost_usd: f64,
+}
+
+/// `loop.audit_cleared`: a person cleared the tripped audit (S03 §4.6's
+/// `audit_broken`), which nothing else clears. The row's `loop_id` is `*`:
+/// the tripped audit froze every loop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditClearedRow {
+    /// Who cleared it.
+    pub by: String,
+    /// Why the audit may run again.
+    pub reason: String,
+    /// The loops whose latest health row had tripped it.
+    pub tripped: Vec<String>,
+    /// Always `human`.
+    pub actor: Actor,
 }
 
 /// A fault flag's kind (S03 §4.9).

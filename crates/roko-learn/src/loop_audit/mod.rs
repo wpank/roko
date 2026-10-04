@@ -24,7 +24,8 @@
 //! `ArmSet` asks it for a loop's layer and the policy the loop executes. At
 //! each plan run's close, [`LoopAuditor::observe_run`] is the audit tick
 //! (backlog 5126): it evaluates every measured loop and appends the
-//! `loop.health` and `loop.transition` rows.
+//! `loop.health` and `loop.transition` rows. A tripped audit stays tripped
+//! until a person clears it ([`LoopAuditor::clear_trip`]).
 
 pub mod arm_set;
 pub mod assign;
@@ -55,11 +56,12 @@ use self::assign::{EXPLORE_EPSILON, HoldoutSchedule, LoopLayer};
 use self::census::{LoopMeasurement, MeasuredLoop};
 use self::exposure::InfluenceEstimate;
 use self::ledger::{
-    BetaFields, HealthRow, IotaFields, LOOP_AUDIT_SCHEMA, Ledger, LoopAuditRecord, LoopAuditRow,
-    TransitionRow,
+    AuditClearedRow, BetaFields, HealthRow, IotaFields, LOOP_AUDIT_SCHEMA, Ledger, LoopAuditRecord,
+    LoopAuditRow, TransitionRow,
 };
 use self::state::{
-    AuditParams, Auditor, AuditorSignals, ExecutedPolicy, LoopEvidence, LoopStatus, Structural,
+    Actor, AuditParams, Auditor, AuditorSignals, ExecutedPolicy, LoopEvidence, LoopStatus,
+    Structural,
 };
 use crate::telemetry::LayerSpec;
 use crate::telemetry::RunProvenanceManifest;
@@ -70,6 +72,10 @@ use crate::telemetry::report::{RunRecords, SrmReport, srm_check};
 const HEALTH_KIND: &str = "loop.health";
 /// A `loop.transition` row's kind.
 const TRANSITION_KIND: &str = "loop.transition";
+/// A `loop.audit_cleared` row's kind.
+const CLEARED_KIND: &str = "loop.audit_cleared";
+/// The `loop_id` of a row about the whole audit rather than one loop.
+pub const ALL_LOOPS: &str = "*";
 /// Where an audit tick's health rows come from: the runs' decision rows.
 const MEASURED_EVIDENCE: &str = "measured";
 
@@ -218,8 +224,8 @@ impl LoopAuditor {
     /// a loop takes the state of its latest health or transition row, and is
     /// on probation without one. Its latest transition row starts its dwell:
     /// the row's time, and the opportunities of the health row before it.
-    /// The auditor is broken while any loop's latest health row has
-    /// `placebo_ok` false.
+    /// The auditor is broken while any loop's latest health row since the
+    /// last `loop.audit_cleared` row has `placebo_ok` false.
     #[must_use]
     pub fn from_records(
         registry: Registry,
@@ -227,12 +233,10 @@ impl LoopAuditor {
         records: &[LoopAuditRecord],
     ) -> Self {
         let mut standings: BTreeMap<LoopId, Standing> = BTreeMap::new();
-        let mut placebo_ok = BTreeMap::new();
         for record in records {
             let loop_id = record.loop_id.as_str();
             match &record.row {
                 LoopAuditRow::Health(health) => {
-                    placebo_ok.insert(loop_id, health.placebo_ok);
                     let standing = standings
                         .entry(LoopId::new(loop_id))
                         .or_insert(Standing::NEW);
@@ -257,9 +261,54 @@ impl LoopAuditor {
             registry,
             config: config.clone(),
             standings,
-            audit_broken: placebo_ok.values().any(|ok| !ok),
+            audit_broken: !tripped_loops(records).is_empty(),
             maximize: false,
         }
+    }
+
+    /// Clear the tripped audit of the workspace `workdir` (S03 §4.6's
+    /// `audit_broken`), which only a person may do: append a
+    /// `loop.audit_cleared` row at `now` naming `by`, `reason` and the loops
+    /// whose latest health row tripped it. The next audit tick audits
+    /// afresh, and trips it again while the cause remains. `None`, with no
+    /// row, when the audit is not tripped.
+    ///
+    /// # Errors
+    ///
+    /// An empty `by` or `reason`, or the ledger's read or write error.
+    pub fn clear_trip(
+        workdir: &Path,
+        by: &str,
+        reason: &str,
+        now: DateTime<Utc>,
+    ) -> std::io::Result<Option<LoopAuditRecord>> {
+        if by.trim().is_empty() || reason.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "clearing the loop audit needs who clears it and why",
+            ));
+        }
+        let learn_dir = roko_fs::RokoLayout::for_project(workdir).learn_dir();
+        let ledger = Ledger::in_learn_dir(&learn_dir);
+        let tripped = tripped_loops(&ledger.read()?);
+        if tripped.is_empty() {
+            return Ok(None);
+        }
+        let origin = RowOrigin::default();
+        let stamp = Stamp {
+            origin: &origin,
+            epoch: now.format("%Y-%m-%d").to_string(),
+            ts: now.to_rfc3339_opts(SecondsFormat::Secs, true),
+        };
+        let row = AuditClearedRow {
+            by: by.trim().to_string(),
+            reason: reason.trim().to_string(),
+            tripped,
+            actor: Actor::Human,
+        };
+        let record = stamp.record(CLEARED_KIND, ALL_LOOPS, LoopAuditRow::AuditCleared(row));
+        ledger.append(&record)?;
+        Ok(Some(record))
     }
 
     /// This auditor in maximize mode or not (`--no-holdout`, D7). Maximize
@@ -580,6 +629,26 @@ impl LoopAuditor {
     }
 }
 
+/// The loops whose latest health row since the last `loop.audit_cleared`
+/// row has `placebo_ok` false: the audit is tripped while there is one.
+fn tripped_loops(records: &[LoopAuditRecord]) -> Vec<String> {
+    let mut placebo_ok = BTreeMap::new();
+    for record in records {
+        match &record.row {
+            LoopAuditRow::Health(health) => {
+                placebo_ok.insert(record.loop_id.as_str(), health.placebo_ok);
+            }
+            LoopAuditRow::AuditCleared(_) => placebo_ok.clear(),
+            _ => {}
+        }
+    }
+    placebo_ok
+        .into_iter()
+        .filter(|(_, ok)| !ok)
+        .map(|(loop_id, _)| loop_id.to_string())
+        .collect()
+}
+
 /// The unix seconds of the RFC 3339 time `ts`, if it parses.
 fn unix_seconds(ts: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(ts)
@@ -846,5 +915,63 @@ mod tests {
         };
         let auditor = LoopAuditor::load(dir.path(), &campaign).expect("load the auditor");
         assert_eq!(auditor.epoch("gr-1", now), "gr-1");
+    }
+
+    /// gap-1cf555: a tripped audit stays tripped until a person clears it.
+    /// The clear is a `loop.audit_cleared` row naming who cleared it, why
+    /// and the loops that had tripped it; the auditor then loads unbroken,
+    /// and a later trip breaks it again. A clear needs a name and a reason,
+    /// and an audit that is not tripped writes nothing.
+    #[test]
+    fn operator_clears_a_tripped_loop_audit() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let learn = dir.path().join(".roko/learn");
+        std::fs::create_dir_all(&learn).expect("the learn dir");
+        let ledger = Ledger::in_learn_dir(&learn);
+        let config = LearningAuditConfig::default();
+        let broken = || {
+            LoopAuditor::load(dir.path(), &config)
+                .expect("load the auditor")
+                .audit_broken()
+        };
+        let now = Utc
+            .with_ymd_and_hms(2026, 10, 4, 12, 0, 0)
+            .single()
+            .expect("a valid time");
+        let clear = |by: &str, reason: &str| LoopAuditor::clear_trip(dir.path(), by, reason, now);
+
+        let live = health("L-know", AuditState::Live, None, true);
+        ledger.append(&live).expect("append a health row");
+        let none = clear("will", "nothing tripped").expect("the ledger");
+        assert!(none.is_none(), "{none:?}");
+
+        // A moved placebo trips the audit, and each loop's next row says so.
+        for loop_id in ["L-placebo", "L-know"] {
+            let tripped = health(loop_id, AuditState::Probation, None, false);
+            ledger.append(&tripped).expect("append a tripped row");
+        }
+        assert!(broken());
+        assert!(clear("", "a reason").is_err(), "no one cleared it");
+        assert!(clear("will", " ").is_err(), "and why");
+
+        let why = "the SRM alarm came from a test fixture";
+        let record = clear("will", why)
+            .expect("the clear is written")
+            .expect("a tripped audit to clear");
+        assert_eq!(record.loop_id, ALL_LOOPS);
+        let LoopAuditRow::AuditCleared(row) = &record.row else {
+            panic!("expected a cleared row, got {record:?}");
+        };
+        assert_eq!((row.by.as_str(), row.reason.as_str()), ("will", why));
+        assert_eq!(row.tripped, ["L-know", "L-placebo"]);
+        assert_eq!(row.actor, Actor::Human);
+        let rows = ledger.read().expect("read the ledger");
+        assert_eq!(rows.last(), Some(&record), "the clear is on the record");
+        assert!(!broken(), "the audit runs again");
+
+        // A later trip breaks it again.
+        let again = health("L-placebo", AuditState::Probation, None, false);
+        ledger.append(&again).expect("append a tripped row");
+        assert!(broken());
     }
 }

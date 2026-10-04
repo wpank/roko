@@ -21,6 +21,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::service_factory::{ServiceConfig, ServiceFactory};
+use crate::showcase::after;
 use roko_agent::ModelCallService;
 use roko_core::config::schema::RokoConfig;
 use roko_core::config::serve::LiveAgentOutput;
@@ -585,19 +586,105 @@ pub struct FeedAgentCatalog {
 // LocalAccess
 // ---------------------------------------------------------------------------
 
+/// What a new browser session may do, and how long it lives (S11 §4.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionGrant {
+    /// The scope the session authenticates with.
+    pub scope: String,
+    /// Absolute lifetime in seconds; `None` lives as long as the server.
+    pub ttl_secs: Option<u64>,
+    /// Idle lifetime in seconds, slid by each use; `None` never idles out.
+    pub idle_ttl_secs: Option<u64>,
+    /// The passphrase generation that minted the session; `None` for a credential exchange.
+    pub generation: Option<String>,
+    /// Most live sessions of this scope; the oldest go first.
+    pub max_sessions: Option<usize>,
+}
+
+impl SessionGrant {
+    /// A launch-token or API-key exchange: `admin`, for as long as the server runs.
+    #[must_use]
+    pub fn admin() -> Self {
+        Self {
+            scope: "admin".to_string(),
+            ttl_secs: None,
+            idle_ttl_secs: None,
+            generation: None,
+            max_sessions: None,
+        }
+    }
+
+    /// A passphrase login (S11 §4.3): `showcase`, under the passphrase `generation`.
+    ///
+    /// Its lifetimes and the session cap come from `[showcase.session]`.
+    #[must_use]
+    pub fn showcase(
+        session: &roko_core::config::showcase::ShowcaseSessionConfig,
+        generation: Option<String>,
+    ) -> Self {
+        Self {
+            scope: crate::showcase::SHOWCASE_SCOPE.to_string(),
+            ttl_secs: Some(session.ttl_secs),
+            idle_ttl_secs: Some(session.idle_ttl_secs),
+            generation,
+            max_sessions: Some(session.max_sessions as usize),
+        }
+    }
+}
+
+/// One live browser session. The map that holds it is keyed by the hash of its id.
+#[derive(Debug, Clone)]
+struct SessionRecord {
+    scope: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    idle_ttl_secs: Option<u64>,
+    idle_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    generation: Option<String>,
+}
+
+impl SessionRecord {
+    /// Whether neither lifetime has run out at `now`.
+    fn live_at(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        self.expires_at.is_none_or(|at| now < at) && self.idle_expires_at.is_none_or(|at| now < at)
+    }
+}
+
+/// What a session cookie names, as [`LocalAccess::authenticate_session`] finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionLookup {
+    /// A live session, with its scope and absolute expiry.
+    Live {
+        scope: String,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// A session minted under a passphrase that has since rotated; its record is gone now.
+    Rotated,
+    /// No live session: unknown, ended or expired.
+    Missing,
+}
+
 /// Ephemeral local-access state for this server process.
 ///
-/// Holds an optional launch token (never persisted) and a set of live sessions.
-/// Session IDs are stored as SHA-256 hashes via [`crate::routes::middleware::hash_api_key`]
-/// so raw IDs are never retained in memory or logs.
+/// Holds an optional launch token (never persisted), the live sessions and the showcase
+/// passphrase hash. Session IDs are stored as SHA-256 hashes via
+/// [`crate::routes::middleware::hash_api_key`] so raw IDs are never retained in memory or logs.
+/// Each session carries a scope, its lifetimes and the passphrase generation that minted it
+/// (S11 §4.3); sessions do not survive a restart.
 ///
 /// The launch token comparison uses
 /// [`crate::routes::middleware::constant_time_eq`] to resist timing attacks.
 pub struct LocalAccess {
     /// SHA-256 hash of the optional launch token (never the raw token).
     launch_token_hash: Option<String>,
-    /// SHA-256 hashes of active session ids.
-    sessions: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Live sessions by the SHA-256 hash of their id.
+    sessions: std::sync::Mutex<HashMap<String, SessionRecord>>,
+    /// The showcase passphrase's Argon2id PHC string (`ROKO_SHOWCASE_PASSPHRASE_HASH`).
+    passphrase_hash: std::sync::RwLock<Option<String>>,
+    /// Passphrase verification behind a bounded queue, made on the first login (9323).
+    login: std::sync::OnceLock<crate::showcase::auth::PassphraseVerifier>,
+    /// Failed passphrase logins, per client address and in total (9325).
+    lockout: crate::showcase::lockout::LoginLockout,
 }
 
 impl LocalAccess {
@@ -608,7 +695,10 @@ impl LocalAccess {
     pub fn new(launch_token: Option<String>) -> Self {
         Self {
             launch_token_hash: launch_token.map(|t| crate::routes::middleware::hash_api_key(&t)),
-            sessions: std::sync::Mutex::new(std::collections::HashSet::new()),
+            sessions: std::sync::Mutex::new(HashMap::new()),
+            passphrase_hash: std::sync::RwLock::new(None),
+            login: std::sync::OnceLock::new(),
+            lockout: crate::showcase::lockout::LoginLockout::default(),
         }
     }
 
@@ -628,31 +718,136 @@ impl LocalAccess {
         )
     }
 
-    /// Create a new session and return its raw 64-hex-character ID.
+    /// Install the showcase passphrase's PHC string; an empty one counts as none.
+    ///
+    /// Sessions minted under another hash stop authenticating: rotating the secret revokes them.
+    pub fn set_passphrase_hash(&self, hash: Option<String>) {
+        let hash = hash.filter(|hash| !hash.trim().is_empty());
+        *self
+            .passphrase_hash
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = hash;
+    }
+
+    /// The showcase passphrase's PHC string, when one is installed.
+    pub fn passphrase_hash(&self) -> Option<String> {
+        self.passphrase_hash
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The passphrase verifier, made on first use with `concurrency` slots (S11 §4.3).
+    pub fn login_verifier(&self, concurrency: u32) -> &crate::showcase::auth::PassphraseVerifier {
+        self.login
+            .get_or_init(|| crate::showcase::auth::PassphraseVerifier::new(concurrency as usize))
+    }
+
+    /// The failed-login counters that block bursts of wrong passphrases (S11 §4.3).
+    pub fn login_lockout(&self) -> &crate::showcase::lockout::LoginLockout {
+        &self.lockout
+    }
+
+    /// `hex(sha256(PHC))[..16]` of the installed passphrase hash (S11 §4.3).
+    pub fn passphrase_generation(&self) -> Option<String> {
+        let hash = self.passphrase_hash()?;
+        let mut generation = crate::routes::middleware::hash_api_key(&hash);
+        generation.truncate(16);
+        Some(generation)
+    }
+
+    /// Create an `admin` session that lives as long as the server, and return its raw
+    /// 64-hex-character ID: a launch-token or API-key exchange.
     ///
     /// The raw ID is returned to the caller exactly once and is not stored;
     /// only its SHA-256 hash is retained so a dump of server state cannot
     /// replay sessions.
     pub fn create_session(&self) -> String {
+        self.create_scoped_session(&SessionGrant::admin(), chrono::Utc::now())
+    }
+
+    /// Create a session with `grant`'s scope, lifetimes and generation at `now`, and return its
+    /// raw ID.
+    ///
+    /// Expired sessions are dropped first; when the grant caps its scope, the oldest sessions of
+    /// that scope make room.
+    pub fn create_scoped_session(
+        &self,
+        grant: &SessionGrant,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> String {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         // {:032x} pads to exactly 32 hex chars per UUID = 64 chars total = 32 bytes.
         let id = format!("{:032x}{:032x}", a.as_u128(), b.as_u128());
-        let hash = crate::routes::middleware::hash_api_key(&id);
-        self.sessions
+        let record = SessionRecord {
+            scope: grant.scope.clone(),
+            created_at: now,
+            expires_at: grant.ttl_secs.and_then(|secs| after(now, secs)),
+            idle_ttl_secs: grant.idle_ttl_secs,
+            idle_expires_at: grant.idle_ttl_secs.and_then(|secs| after(now, secs)),
+            generation: grant.generation.clone(),
+        };
+        let mut sessions = self
+            .sessions
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(hash);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions.retain(|_, session| session.live_at(now));
+        if let Some(cap) = grant.max_sessions {
+            let mut same_scope: Vec<(chrono::DateTime<chrono::Utc>, String)> = sessions
+                .iter()
+                .filter(|(_, session)| session.scope == grant.scope)
+                .map(|(hash, session)| (session.created_at, hash.clone()))
+                .collect();
+            same_scope.sort_unstable();
+            let excess = (same_scope.len() + 1).saturating_sub(cap.max(1));
+            for (_, hash) in same_scope.into_iter().take(excess) {
+                sessions.remove(&hash);
+            }
+        }
+        sessions.insert(crate::routes::middleware::hash_api_key(&id), record);
         id
+    }
+
+    /// Look up the session `session_id` names at `now`, sliding its idle expiry when it is live.
+    ///
+    /// A session minted under a passphrase generation other than the installed one is removed
+    /// and reported as [`SessionLookup::Rotated`].
+    pub fn authenticate_session(
+        &self,
+        session_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> SessionLookup {
+        let generation = self.passphrase_generation();
+        let hash = crate::routes::middleware::hash_api_key(session_id);
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(session) = sessions.get_mut(&hash) else {
+            return SessionLookup::Missing;
+        };
+        if !session.live_at(now) {
+            sessions.remove(&hash);
+            return SessionLookup::Missing;
+        }
+        if session.generation.is_some() && session.generation != generation {
+            sessions.remove(&hash);
+            return SessionLookup::Rotated;
+        }
+        session.idle_expires_at = session.idle_ttl_secs.and_then(|secs| after(now, secs));
+        SessionLookup::Live {
+            scope: session.scope.clone(),
+            expires_at: session.expires_at,
+        }
     }
 
     /// Return `true` when `session_id` matches a live session.
     pub fn session_valid(&self, session_id: &str) -> bool {
-        let hash = crate::routes::middleware::hash_api_key(session_id);
-        self.sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&hash)
+        matches!(
+            self.authenticate_session(session_id, chrono::Utc::now()),
+            SessionLookup::Live { .. }
+        )
     }
 
     /// End the session for `session_id`.
@@ -665,6 +860,7 @@ impl LocalAccess {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&hash)
+            .is_some()
     }
 }
 
@@ -917,10 +1113,14 @@ pub struct AppState {
     /// read by plan run handlers to forward the setting into each run.
     pub(crate) live_agent_output: AtomicBool,
 
-    /// Ephemeral local-access state: the optional launch token hash and the
-    /// set of active session hashes for this process lifetime.
+    /// Ephemeral local-access state: the optional launch token hash, the live
+    /// sessions with their scopes and lifetimes, and the showcase passphrase hash.
     /// Never persisted; reset on every server start.
     pub local_access: LocalAccess,
+
+    /// The showcase bundles the loader checked, loaded on first use and on an admin reload
+    /// (S10 §4.5).
+    pub(crate) showcase_bundles: crate::routes::showcase::bundles::BundleCache,
 
     /// Job execution service shared by `POST /api/jobs/{id}/cancel` and the
     /// job runner, so a cancel reaches the run it targets (gap-2a9ed7).
@@ -1526,6 +1726,7 @@ impl AppState {
                 .filter(|s| !s.is_empty()),
             live_agent_output: AtomicBool::new(false),
             local_access: LocalAccess::new(None),
+            showcase_bundles: crate::routes::showcase::bundles::BundleCache::default(),
             job_execution,
         })
     }
@@ -2342,6 +2543,66 @@ mod tests {
             access.session_valid(&id2),
             "second session must be unaffected"
         );
+    }
+
+    /// 9322: a session expires after its idle TTL unless used, and after its absolute TTL however
+    /// often it is used; each use slides the idle expiry.
+    #[test]
+    fn session_expires_after_idle_ttl() {
+        let access = LocalAccess::new(None);
+        let grant = SessionGrant {
+            scope: "showcase".to_string(),
+            ttl_secs: Some(100),
+            idle_ttl_secs: Some(10),
+            generation: None,
+            max_sessions: None,
+        };
+        let start = chrono::Utc::now();
+        let at = |secs| start + chrono::TimeDelta::seconds(secs);
+        let live = |id: &str, secs| {
+            matches!(
+                access.authenticate_session(id, at(secs)),
+                SessionLookup::Live { .. }
+            )
+        };
+
+        let idle = access.create_scoped_session(&grant, start);
+        assert!(live(&idle, 9));
+        // The use at 9 s slid the idle expiry to 19 s.
+        assert!(live(&idle, 18));
+        assert!(!live(&idle, 29));
+
+        let busy = access.create_scoped_session(&grant, start);
+        for secs in (5..100).step_by(5) {
+            assert!(live(&busy, secs), "{secs}");
+        }
+        assert_eq!(
+            access.authenticate_session(&busy, at(100)),
+            SessionLookup::Missing
+        );
+    }
+
+    /// A capped scope drops its oldest session to make room; other scopes keep theirs.
+    #[test]
+    fn session_cap_drops_the_oldest_of_its_scope() {
+        let access = LocalAccess::new(None);
+        let grant = SessionGrant {
+            max_sessions: Some(2),
+            ..SessionGrant::showcase(
+                &roko_core::config::showcase::ShowcaseSessionConfig::default(),
+                None,
+            )
+        };
+        let start = chrono::Utc::now();
+        let admin = access.create_session();
+        let first = access.create_scoped_session(&grant, start);
+        let second = access.create_scoped_session(&grant, start + chrono::TimeDelta::seconds(1));
+        let third = access.create_scoped_session(&grant, start + chrono::TimeDelta::seconds(2));
+
+        assert!(!access.session_valid(&first));
+        assert!(access.session_valid(&second));
+        assert!(access.session_valid(&third));
+        assert!(access.session_valid(&admin));
     }
 
     // ── (existing tests continue below) ─────────────────────────────────────

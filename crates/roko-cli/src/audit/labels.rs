@@ -8,8 +8,9 @@
 //! green verdict and its result tree, visible_clean is A2, hidden is B1, and
 //! integrity is G. Strict VS is 1 only when every check is known and passes,
 //! so a unit phase B did not draw, which has no B1, has an unknown VS unless
-//! another check failed. `prediction_id` is null: the audit does not see M3's
-//! forecast.
+//! another check failed. `prediction_id` names M3's forecast of the attempt,
+//! which the lottery noted when its prediction row was logged, and is null
+//! when M3 made none.
 //!
 //! A known VS teaches the run's self-model with weight 1/π, through S04's
 //! late-label hook (6129, [`VsLearner`]): its target is P(VS), not P(gate
@@ -108,7 +109,7 @@ pub fn vs_label(unit: &AuditUnit, report: &AuditReport<'_>) -> VsLabel {
         task_id: unit.task_id.clone(),
         seed: None,
         arm: "prod".to_string(),
-        prediction_id: None,
+        prediction_id: unit.prediction_id.clone(),
         vs_source: VsSource::Audit,
         pi: report.pi_eff.unwrap_or(unit.pi),
         verdict: None,
@@ -240,6 +241,7 @@ mod tests {
             base_tree: Some("base".to_string()),
             result_tree: Some("result".to_string()),
             model: "glm-4.7".to_string(),
+            prediction_id: None,
             task: AuditTask::default(),
         }
     }

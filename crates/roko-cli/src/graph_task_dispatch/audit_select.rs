@@ -37,6 +37,10 @@
 //!   attempt's chain, r, weighs its π against r̄, the mean of r^α over the
 //!   units lately drawn with a risk (at most `[audit] window_units` of the
 //!   last `window_hours`). Without a risk, or at λ = 0, π is ρ.
+//! - The id of M3's forecast of an attempt (its prediction row, S01 §5.6) is
+//!   noted when the row is logged ([`AuditSelector::note_prediction`]); a
+//!   selected unit carries it, and so does the `vs.label` row its audit
+//!   writes.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -89,6 +93,8 @@ pub(super) struct AuditSelector {
     tasks: parking_lot::Mutex<HashMap<String, AuditTask>>,
     /// Attempt key → its task's tier, the class M1's audit coupling names.
     classes: parking_lot::Mutex<HashMap<String, String>>,
+    /// Attempt key → the id of M3's forecast of it, from its prediction row.
+    predictions: parking_lot::Mutex<HashMap<String, String>>,
     runs: parking_lot::Mutex<HashMap<String, RunDraws>>,
     vault: AuditVault,
     config: AuditConfig,
@@ -158,6 +164,7 @@ impl AuditSelector {
             trees: parking_lot::Mutex::new(HashMap::new()),
             tasks: parking_lot::Mutex::new(HashMap::new()),
             classes: parking_lot::Mutex::new(HashMap::new()),
+            predictions: parking_lot::Mutex::new(HashMap::new()),
             runs: parking_lot::Mutex::new(HashMap::new()),
             vault,
             config: config.clone(),
@@ -315,6 +322,13 @@ impl AuditSelector {
         self.trees.lock().insert(attempt_key.to_string(), trees);
     }
 
+    /// Note `prediction_id`, the id of M3's forecast of the attempt
+    /// `attempt_key`, which the attempt's `vs.label` row names.
+    pub(super) fn note_prediction(&self, attempt_key: &str, prediction_id: &str) {
+        let id = prediction_id.to_string();
+        self.predictions.lock().insert(attempt_key.to_string(), id);
+    }
+
     /// DP1: draw `verdict`'s attempt when it is green, and scan its output
     /// for canaries; a selected unit goes to the run's audit worker. The
     /// attempt ran θ's audit `boost` (1 without M1). Logs and returns; never
@@ -324,6 +338,7 @@ impl AuditSelector {
         let trees = self.trees.lock().remove(&identity.attempt_key);
         let task = self.tasks.lock().remove(&identity.attempt_key);
         let class = self.classes.lock().remove(&identity.attempt_key);
+        let prediction_id = self.predictions.lock().remove(&identity.attempt_key);
         if let Some(output) = output {
             self.scan(output);
         }
@@ -387,6 +402,7 @@ impl AuditSelector {
             base_tree: base_tree.clone(),
             result_tree: result_tree.clone(),
             model: model.clone(),
+            prediction_id,
             task,
         });
         let event = AuditEvent::Selection {
@@ -611,13 +627,17 @@ fn stratum_of(tag: GateVerdictTag) -> (&'static str, bool) {
 
 #[cfg(test)]
 mod tests {
+    use roko_core::audit_types::AuditLabels;
     use roko_gate::audit::feedback::{TrustBook, trust_path};
     use roko_gate::audit::ledger::{LedgerRecord, records, verify_chain};
     use roko_gate::audit::policy::{Selection, verify_reveal};
     use roko_graph::cells::NoopAttemptRecorder;
+    use roko_learn::telemetry::records::AttemptPredictionRecord;
     use roko_learn::telemetry::{AttemptIdentity, AttemptKey};
 
     use super::*;
+    use crate::audit::labels::{AuditReport, vs_label};
+    use crate::audit::worker::queue_dir;
     use crate::graph_task_dispatch::diff_snapshot::tests::commit_repo;
     use crate::graph_task_dispatch::tests::{
         VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, recording_feedback,
@@ -1113,5 +1133,51 @@ mod tests {
         assert!(close("T2", 3.0 / 35.0), "{pis:?}");
         assert!(close("T3", 17.0 / 65.0), "{pis:?}");
         assert!(close("T4", 0.2), "{pis:?}");
+    }
+
+    /// gap-45c8fe (S05 §5): M3 logged a forecast of T1 and none of T2, and
+    /// both are selected. T1's unit carries the forecast's id through the
+    /// vault's queue, so its `vs.label` row names it; T2's row names none.
+    #[test]
+    fn vs_label_carries_the_attempt_s_prediction_id() {
+        let (_temp, selector) = worker_less_lottery(0.10);
+        selector.census();
+        let forecast = AttemptKey::new(RUN, "plan", "T1", 1).attempt_key();
+        let prediction_id = AttemptPredictionRecord::prediction_id(&forecast, "m3-v1");
+        selector.note_prediction(&forecast, &prediction_id);
+        for task in ["T1", "T2"] {
+            selector.draw(&green(task), None, 1);
+        }
+
+        let checks = serde_json::Map::new();
+        let report = AuditReport {
+            labels: AuditLabels {
+                y: Some(false),
+                g: Some(false),
+                w: None,
+            },
+            checks: &checks,
+            findings: &[],
+            pi_eff: None,
+            cost_usd: 0.0,
+        };
+        let queue = queue_dir(selector.vault());
+        let rows: BTreeMap<String, Option<String>> = std::fs::read_dir(&queue)
+            .expect("the queue")
+            .filter_map(Result::ok)
+            .map(|entry| {
+                let text = std::fs::read_to_string(entry.path()).expect("a queued unit");
+                let unit: AuditUnit = serde_json::from_str(&text).expect("a unit");
+                let row = vs_label(&unit, &report);
+                (row.task_id, row.prediction_id)
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            BTreeMap::from([
+                ("T1".to_string(), Some(prediction_id)),
+                ("T2".to_string(), None),
+            ])
+        );
     }
 }

@@ -79,6 +79,13 @@ impl LiveAgentOutput {
     }
 }
 
+/// The groups of routes `roko serve` can mount without authentication (G1): `/health`,
+/// `/ready`, `/metrics`, the GitHub and Slack webhook receivers, webhook triggers, the share
+/// readers (`/api/shared/{token}`, `/runs/{id}`), and the 403 answers of a disabled terminal.
+pub const PUBLIC_ROUTE_GROUPS: [&str; 7] = [
+    "health", "ready", "metrics", "webhooks", "triggers", "shared", "terminal",
+];
+
 /// API serving options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -159,6 +166,12 @@ pub struct ServeConfig {
     /// Limits on runs a chat host starts over `POST /mcp` (9116).
     #[serde(default)]
     pub mcp: ServeMcpConfig,
+    /// The unauthenticated route groups to mount, from [`PUBLIC_ROUTE_GROUPS`] (G1, 9327).
+    ///
+    /// The default is all of them. A showcase deploy lists only `health` and `ready`; in showcase
+    /// mode the socket, relay, MCP and terminal routes are not mounted either way.
+    #[serde(default = "default_public_routes")]
+    pub public_routes: Vec<String>,
 }
 
 /// `[serve.mcp]`: limits on the runs a chat host starts over `POST /mcp`.
@@ -226,8 +239,13 @@ impl Default for ServeConfig {
             live_agent_output: LiveAgentOutput::default(),
             tracing: TracingConfig::default(),
             mcp: ServeMcpConfig::default(),
+            public_routes: default_public_routes(),
         }
     }
+}
+
+fn default_public_routes() -> Vec<String> {
+    Vec::from(PUBLIC_ROUTE_GROUPS.map(String::from))
 }
 
 fn default_share_ttl_days() -> u64 {

@@ -317,7 +317,12 @@ pub fn build_router(
         unsafe_public: roko_config.server.unsafe_public_cors,
         auth_enabled: api_auth.enabled,
     });
-    let terminal_enabled = roko_config.serve.terminal_enabled;
+    // Showcase mode (S11 §4.2) mounts no socket, relay, MCP or terminal routes, and only the
+    // public route groups `serve.public_routes` lists (G1).
+    let showcase_mode = roko_config.showcase.enabled;
+    let terminal_enabled = roko_config.serve.terminal_enabled && !showcase_mode;
+    let public_routes = &roko_config.serve.public_routes;
+    let public = |group: &str| public_routes.iter().any(|listed| listed == group);
 
     // Per-route keyed rate limiters for expensive endpoint groups.
     // These are checked per-caller (key = API key hash or client IP) and bound
@@ -459,8 +464,10 @@ pub fn build_router(
                 terminal_create_limiter,
                 keyed_rate_limit_middleware,
             ))
-    } else {
+    } else if public("terminal") && !showcase_mode {
         crate::terminal::disabled_routes()
+    } else {
+        Router::new()
     };
 
     let ws = if api_auth.enabled {
@@ -514,29 +521,45 @@ pub fn build_router(
         middleware::scrub_secrets,
     ));
 
-    let router = Router::new()
+    // The unauthenticated groups, each only when `serve.public_routes` lists it.
+    let mut router = Router::new();
+    if public("health") {
         // Top-level liveness probe — no auth, no /api prefix.
-        .route("/health", get(top_level_health))
+        router = router.route("/health", get(top_level_health));
+    }
+    if public("ready") {
         // Top-level readiness probe — no auth, no /api prefix.
-        .route("/ready", get(top_level_ready))
+        router = router.route("/ready", get(top_level_ready));
+    }
+    if public("metrics") {
         // Standard Prometheus scrape endpoint — no auth, no /api prefix.
-        .route("/metrics", get(metrics::metrics_handler))
-        .merge(webhooks::public_routes())
-        .merge(triggers::public_routes())
+        router = router.route("/metrics", get(metrics::metrics_handler));
+    }
+    if public("webhooks") {
+        router = router.merge(webhooks::public_routes());
+    }
+    if public("triggers") {
+        router = router.merge(triggers::public_routes());
+    }
+    if public("shared") {
         // Public share-receipt reader: no auth required so recipients can
         // open share links without a roko API key.
-        .merge(shared_runs::public_routes())
+        router = router.merge(shared_runs::public_routes());
+    }
+    let router = router
         // Session minting: outside require_api_key (it IS how you get a
         // credential) but still covered by the global rate limiter.
         .merge(auth_session::routes())
         // PTY terminal sessions for web UI — gated by config and bind policy.
         .merge(terminal)
-        .nest("/api", api)
-        .merge(ws)
-        .merge(relay)
-        .merge(mcp)
-        // API/WS typos are JSON 404s; browser routes retain the SPA fallback.
-        .fallback(crate::serve_api_or_spa_fallback);
+        .nest("/api", api);
+    let router = if showcase_mode {
+        router
+    } else {
+        router.merge(ws).merge(relay).merge(mcp)
+    };
+    // API/WS typos are JSON 404s; browser routes retain the SPA fallback.
+    let router = router.fallback(crate::serve_api_or_spa_fallback);
 
     let rate_limiter = build_global_rate_limiter(roko_config.server.rate_limit_per_sec);
     let keyed_limiter = build_keyed_rate_limiter(roko_config.server.rate_limit_per_key_per_sec);
@@ -738,6 +761,63 @@ mod tests {
         );
         let router = build_router(Arc::clone(&state), &[], config.serve.auth.clone());
         (state, router)
+    }
+
+    async fn get_text(router: &axum::Router, uri: &str) -> (StatusCode, String) {
+        let req = Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("build request");
+        let resp = router.clone().oneshot(req).await.expect("oneshot");
+        let status = resp.status();
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// G1 (9327): by default every public route group is mounted, as before the allowlist.
+    #[tokio::test]
+    async fn default_public_routes_match_todays_router() {
+        let config = RokoConfig::default();
+        let groups = roko_core::config::serve::PUBLIC_ROUTE_GROUPS.map(String::from);
+        assert_eq!(config.serve.public_routes, groups);
+        let (_dir, router) = build_test_router(config);
+
+        let (status, _) = get_text(&router, "/health").await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, metrics) = get_text(&router, "/metrics").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(metrics.contains("roko_uptime_seconds"), "{metrics}");
+        // The disabled terminal answers 403 rather than 404.
+        let (status, body) = get_json(&router, "/api/terminal/sessions").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        let (status, _) = get_json(&router, "/ws/terminal/x").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// G1 (9327): showcase mode with `public_routes = ["health", "ready"]` mounts no other public
+    /// group, no socket and no terminal answer. (Until 9329 turns the portal off in showcase
+    /// mode, its SPA fallback still answers browser paths such as `/metrics`.)
+    #[tokio::test]
+    async fn showcase_router_mounts_no_public_extras() {
+        let mut config = RokoConfig::default();
+        config.showcase.enabled = true;
+        config.serve.public_routes = vec!["health".to_string(), "ready".to_string()];
+        let (_dir, router) = build_test_router(config);
+
+        let (status, _) = get_text(&router, "/health").await;
+        assert_eq!(status, StatusCode::OK);
+        for uri in ["/api/shared/x", "/ws/terminal/x", "/api/terminal/sessions", "/ws"] {
+            let (status, body) = get_json(&router, uri).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+            assert_eq!(body["error"], "not_found", "{uri}");
+        }
+        let (_, metrics) = get_text(&router, "/metrics").await;
+        assert!(!metrics.contains("roko_uptime_seconds"), "{metrics}");
     }
 
     async fn get_json(router: &axum::Router, uri: &str) -> (StatusCode, Value) {

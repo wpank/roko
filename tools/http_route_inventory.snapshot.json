@@ -2079,7 +2079,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 411,
+      "line": 416,
       "router_fn": "build_router",
       "path": "/workflow/events",
       "method": "GET",
@@ -2087,7 +2087,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 519,
+      "line": 528,
       "router_fn": "build_router",
       "path": "/health",
       "method": "GET",
@@ -2095,7 +2095,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 521,
+      "line": 532,
       "router_fn": "build_router",
       "path": "/ready",
       "method": "GET",
@@ -2103,7 +2103,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 523,
+      "line": 536,
       "router_fn": "build_router",
       "path": "/metrics",
       "method": "GET",

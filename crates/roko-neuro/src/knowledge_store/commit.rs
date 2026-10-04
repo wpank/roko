@@ -2,8 +2,8 @@
 //!
 //! What a run adds to the knowledge store waits in a batch. A store made
 //! for the run ([`KnowledgeStore::with_commit_batch`]) tags each entry it
-//! ingests with `commit_batch = <run id>`, and other runs' retrieval skips
-//! every uncommitted entry. At the run's end (decision 8103)
+//! ingests with `commit_batch = <run id>`; the run's process sees the
+//! batch, and other runs' retrieval skips every uncommitted entry. At the run's end (decision 8103)
 //! [`propose_batch`] proposes the batch to the `knowledge` [`GuardedStore`]:
 //! a commit clears the batch id, so that every run sees the entries, and a
 //! rollback deletes them.
@@ -328,6 +328,7 @@ pub fn propose_batch(
     if decision != CommitDecision::RolledBack {
         state.commit().map_err(|error| store_error(store, &error))?;
     }
+    KnowledgeStore::release_batch(batch);
     Ok(Some(decision))
 }
 

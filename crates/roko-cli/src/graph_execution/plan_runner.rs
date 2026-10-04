@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, anyhow};
 use futures::StreamExt as _;
 use roko_core::config::homeostasis::HomeostasisMode;
+use roko_core::config::learning::GuardedCommitMode;
 use roko_fs::RokoLayout;
 
 use super::plan_set::{BlockReason, PlanConflicts, PlanOutcome, PlanSetOrder, PlanSetScheduler};
@@ -1330,12 +1331,19 @@ async fn run_graph_plan_body(
             ),
         )
     });
+    // P21 (8138): what the run adds to the knowledge store waits in the
+    // run's batch until the run's end proposes it to the store's guard; an
+    // unguarded or frozen run adds straight to the store.
+    let guarded = roko_config.learning.guarded_commit != GuardedCommitMode::Off;
+    let knowledge_batch = (guarded && !roko_config.learning.frozen)
+        .then(|| run_id.clone().unwrap_or_else(super::batch::new_batch_run_id));
     let mut graph_feedback = build_graph_feedback_context(
         workdir,
         &roko_config,
         graph_run_config.cascade_router.as_ref(),
         cascade_journal.as_ref(),
         shared_factory.error_pattern_store(),
+        knowledge_batch.as_deref(),
     );
     // CLI dispatch turns record with their run's provenance sink (gap-ca8022).
     graph_feedback.provenance_sinks = Some(provenance_sinks.clone());
@@ -2120,24 +2128,33 @@ async fn run_graph_plan_body(
                 ),
             });
     }
-    // ── Persist cascade router observations (UX34) ─────────────────
+    // ── Save or propose the run's learning (UX34; P21, 8138) ─────────
     //
     // Save learned routing state (confidence stats, LinUCB weights, Pareto
     // frontier) so that force_backend override outcomes and all other
     // routing observations survive across runs. Saving through the run's
     // journal truncates it once the snapshot holds its observations, so a
     // later load does not replay them again (bug-dfb28f). If the save fails,
-    // the journal keeps them for that load. A frozen run saves none.
-    if !roko_config.learning.frozen
-        && let (Some(cascade), Some(journal)) = (&graph_run_config.cascade_router, &cascade_journal)
-        && let Err(err) = journal.save(cascade)
-    {
-        tracing::warn!(
-            path = %journal.snapshot_path().display(),
-            error = %err,
-            "failed to persist cascade router state (non-fatal)"
-        );
-    }
+    // the journal keeps them for that load. `[learning] guarded_commit`
+    // proposes the router's merge and the run's knowledge batch to their
+    // guards, whatever the run's outcome; `off` saves the router unchecked.
+    // A frozen run saves and proposes nothing.
+    let plan_run_ids: Vec<String> = plans
+        .iter()
+        .filter_map(|plan| graph_task_dispatcher.plan_run_id(&plan.id))
+        .collect();
+    let router = graph_run_config
+        .cascade_router
+        .as_deref()
+        .zip(cascade_journal.as_deref());
+    super::learning_commit::commit_run_learning(&super::learning_commit::RunLearning {
+        workdir,
+        config: &roko_config,
+        batch: knowledge_batch.as_deref(),
+        router,
+        run_ids: &plan_run_ids,
+        notices: Some(&state_hub),
+    });
 
     // ── Persist the section bandit (S02 L9) ─────────────────────────
     //
@@ -2404,6 +2421,7 @@ pub fn build_graph_feedback_context(
     cascade_router: Option<&Arc<roko_learn::cascade_router::CascadeRouter>>,
     cascade_journal: Option<&Arc<roko_learn::model_call_feedback::ModelCallJournal>>,
     error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
+    knowledge_batch: Option<&str>,
 ) -> crate::graph_task_dispatch::GraphFeedbackContext {
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
@@ -2446,6 +2464,7 @@ pub fn build_graph_feedback_context(
             error_patterns,
             self_model.as_ref(),
             homeostasis.as_ref(),
+            knowledge_batch,
         )),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
         costs_path: Some(graph_learn_dir.join("costs.jsonl")),
@@ -2531,6 +2550,7 @@ pub fn build_graph_feedback_facade(
     error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
     self_model: Option<&Arc<crate::graph_task_dispatch::self_model::SelfModelRuntime>>,
     homeostasis: Option<&Arc<crate::runtime_feedback::HomeostasisSink>>,
+    knowledge_batch: Option<&str>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
     // A frozen run (decision 2218) registers no sink. Each learning sink
     // writes learned state: episodes, hindsight, knowledge, error patterns,
@@ -2543,6 +2563,12 @@ pub fn build_graph_feedback_facade(
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
     let graph_episodes_path = graph_layout.root_episodes_path();
+    // The knowledge a guarded run admits joins its batch (8138).
+    let verified_knowledge = crate::runtime_feedback::VerifiedKnowledgeSink::for_workdir(workdir);
+    let verified_knowledge = match knowledge_batch {
+        Some(batch) => verified_knowledge.with_commit_batch(batch),
+        None => verified_knowledge,
+    };
     let mut facade = crate::runtime_feedback::FeedbackFacade::new()
         .with_sink(std::sync::Arc::new(
             crate::runtime_feedback::EpisodeSink::at(&graph_episodes_path)
@@ -2560,9 +2586,7 @@ pub fn build_graph_feedback_facade(
         ))
         // Gate-verified attempts grow durable knowledge (tier
         // progression included) under `.roko/neuro/`.
-        .with_sink(std::sync::Arc::new(
-            crate::runtime_feedback::VerifiedKnowledgeSink::for_workdir(workdir),
-        ))
+        .with_sink(std::sync::Arc::new(verified_knowledge))
         // A failure of the agent's work goes into the error-pattern store
         // dispatch formats into prompts, and to `learn/error-patterns.json`.
         .with_sink(std::sync::Arc::new(
@@ -5674,6 +5698,7 @@ max_retries = 0
             Some(&router),
             Some(&journal),
             factory.error_pattern_store(),
+            None,
         );
         let frozen = config.learning.frozen;
         assert_eq!(feedback.playbook_dir.is_none(), frozen);

@@ -18,7 +18,7 @@ pub(crate) mod scoring;
 mod tests;
 pub mod types;
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -45,6 +45,11 @@ pub use types::{
     KnowledgeQueryHit, KnowledgeSimilarityHit, KnowledgeStats, QUERY_SCORE_FLOOR,
     RESURRECTION_CONFIDENCE,
 };
+
+/// The batches this process's runs write (P21, 8137): every store in the
+/// process sees their uncommitted entries, which other processes' stores
+/// skip until the batches commit.
+static PROCESS_BATCHES: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// Persistent knowledge store backed by an append-only JSONL file.
 ///
@@ -90,11 +95,13 @@ impl KnowledgeStore {
 
     /// This store for the run `batch` (P21, 8137): the entries it ingests
     /// carry `commit_batch = batch` until a guarded commit clears it
-    /// ([`commit::propose_batch`]), and its retrieval sees them, where other
-    /// runs' retrieval skips every uncommitted entry.
+    /// ([`commit::propose_batch`]). Every store of this process sees them;
+    /// other runs' retrieval skips every uncommitted entry.
     #[must_use]
     pub fn with_commit_batch(mut self, batch: impl Into<String>) -> Self {
-        self.commit_batch = Some(batch.into());
+        let batch = batch.into();
+        PROCESS_BATCHES.lock().insert(batch.clone());
+        self.commit_batch = Some(batch);
         self
     }
 
@@ -105,12 +112,18 @@ impl KnowledgeStore {
     }
 
     /// Whether this store's retrieval sees `entry`: a committed entry, or
-    /// one of its own run's batch.
+    /// one of a batch this process writes.
     pub(crate) fn visible(&self, entry: &KnowledgeEntry) -> bool {
-        entry
-            .commit_batch
-            .as_deref()
-            .is_none_or(|batch| self.commit_batch.as_deref() == Some(batch))
+        let Some(batch) = entry.commit_batch.as_deref() else {
+            return true;
+        };
+        self.commit_batch.as_deref() == Some(batch) || PROCESS_BATCHES.lock().contains(batch)
+    }
+
+    /// Stop seeing the uncommitted entries of `batch` from this process's
+    /// other stores: the batch has committed or rolled back.
+    pub(crate) fn release_batch(batch: &str) {
+        PROCESS_BATCHES.lock().remove(batch);
     }
 
     /// Construct a store from a `.roko/` root.

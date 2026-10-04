@@ -61,6 +61,22 @@ def build_from(results: Path, out: Path) -> int:
     return build_bundle.main(["--experiment", "FIXTURE-P1", "--results", str(results), "--out", str(out)])
 
 
+def write_econ_report(path: Path, **changes) -> bytes:
+    """An M3 economics report of the fixture experiment at `path` (`analysis/econ.py`'s layout), and its bytes."""
+    report = {
+        "schema_version": "vb.econ_report/1",
+        "experiments": ["FIXTURE-P1"],
+        "price_snapshot_id": "prices-2026-09-28",
+        "arms": {"roko_fixed": {"cpr_usd": 0.0418}},
+        "policies": {},
+        **changes,
+    }
+    data = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return data
+
+
 def rows(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -114,6 +130,7 @@ def test_fixture_bundle_builds_and_verifies(tmp_path: Path) -> None:
     assert manifest["kind"] == "replay" and manifest["simulated"] is False
     assert manifest["run_ids"] == ["vb-fixture-f1", "vb-fixture-r1", "vb-fixture-r2"]
     assert manifest["views"] == ["overview", "p1-head-to-head"]
+    assert not (bundle / "econ").exists()  # the fixture experiment has no economics report
 
     # Redacted: no transcript, the prompt and the failed hidden checks only as hashes.
     records = rows(bundle / "data" / "records.jsonl")
@@ -321,6 +338,58 @@ def test_a_record_with_no_run_behind_it_is_shown_nowhere(tmp_path: Path) -> None
         text = path.read_text(encoding="utf-8")
         assert ref not in text, path.name
         assert guard_refusals(json.loads(text)) == [], path.name
+
+
+def test_build_copies_the_econ_report_into_the_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /api/showcase/economics serves econ/<id>/econ-report.json from a verified bundle, which no built bundle
+    had: the builder copies M3's report from .roko/econ/<id>/ byte for byte and lists it, and the verifier checks it."""
+    monkeypatch.chdir(tmp_path)
+    report = write_econ_report(tmp_path / ".roko" / "econ" / "FIXTURE-P1" / "econ-report.json")
+    bundle = build(tmp_path)
+    path = "econ/FIXTURE-P1/econ-report.json"
+    assert (bundle / path).read_bytes() == report
+    digest = build_bundle.sha256_hex(report)
+    assert f"{digest}  {path}" in (bundle / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    manifest = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))
+    entry = {"path": path, "schema": "vb.econ_report/1", "sha256": digest, "rows": 1}
+    assert entry in manifest["files"]
+    assert validate.schema_errors(manifest, contract("bundle")) == []
+    assert verify_bundle.check(bundle) == []
+
+    # An explicit --econ names the report wherever it is.
+    elsewhere = write_econ_report(tmp_path / "reports" / "econ.json", arms={})
+    out = tmp_path / "b-elsewhere"
+    argv = ["--experiment", "FIXTURE-P1", "--results", str(FIXTURES), "--out", str(out)]
+    assert build_bundle.main([*argv, "--econ", str(tmp_path / "reports" / "econ.json")]) == 0
+    assert (out / path).read_bytes() == elsewhere
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"experiments": ["PILOT"]}, {"experiments": ["FIXTURE-P1", "PILOT"]}, {"price_snapshot_id": "prices-2026-01-01"}],
+)
+def test_an_econ_report_of_other_runs_is_refused(tmp_path: Path, changes: dict) -> None:
+    """A report on other experiments, or priced from another snapshot, does not describe the bundle's runs."""
+    write_econ_report(tmp_path / "econ.json", **changes)
+    out = tmp_path / "b-refused"
+    argv = ["--experiment", "FIXTURE-P1", "--results", str(FIXTURES), "--out", str(out)]
+    assert build_bundle.main([*argv, "--econ", str(tmp_path / "econ.json")]) == 1
+    assert build_bundle.main([*argv, "--econ", str(tmp_path / "missing.json")]) == 1
+    assert not out.exists()
+
+
+def test_a_foreign_econ_report_fails_its_rule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The verifier holds the economics report to the builder's rule, and to its path."""
+    monkeypatch.chdir(tmp_path)
+    write_econ_report(tmp_path / ".roko" / "econ" / "FIXTURE-P1" / "econ-report.json")
+    bundle = build(tmp_path)
+    write_econ_report(bundle / "econ" / "FIXTURE-P1" / "econ-report.json", experiments=["PILOT"])
+    write_econ_report(bundle / "econ" / "PILOT" / "econ-report.json", experiments=["PILOT"])
+    build_bundle.write_sums(bundle)
+    details = [detail for rule, detail in verify_bundle.check(bundle) if rule == "econ"]
+    assert any(detail.startswith("econ/FIXTURE-P1/econ-report.json: it reports on") for detail in details)
+    assert any(detail.startswith("econ/PILOT/econ-report.json is not") for detail in details)
+    assert verify_bundle.main([str(bundle)]) == 1
 
 
 def test_a_written_bundle_is_never_overwritten(tmp_path: Path) -> None:

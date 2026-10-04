@@ -44,7 +44,7 @@ const EMBEDDED_ORIGIN: &str = "the embedded loop registry";
 /// The registry's array of tables, `[[loop]]`.
 const LOOPS_KEY: &str = "loop";
 
-/// A loop's registry id: `L-` and a name, e.g. `L-route` or `L-dream-bias`.
+/// A loop's registry id: `L-` and a name, e.g. `L-route` or `L-model-exp`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct LoopId(String);
@@ -62,7 +62,7 @@ impl LoopId {
     }
 
     /// The name after `L-` in snake case, which names a nested loop's
-    /// layer: `L-dream-bias` gives `dream_bias`.
+    /// layer: `L-model-exp` gives `model_exp`.
     #[must_use]
     pub fn slug(&self) -> String {
         let name = self.0.strip_prefix("L-").unwrap_or(self.0.as_str());
@@ -84,7 +84,7 @@ impl fmt::Display for LoopId {
 
 /// An assignment layer: one per decision point (S03 §4.3), e.g. `route`,
 /// `knowledge` or `placebo`. A nested loop decides on its parent's layer and
-/// draws on `<layer>.<loop slug>` (`route.dream_bias`), only inside the
+/// draws on `<layer>.<loop slug>` (`route.linucb`), only inside the
 /// parent's learned arm.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -103,7 +103,7 @@ impl Layer {
     }
 
     /// The layer `loop_id` draws on when it is nested in a loop on this
-    /// layer: `route` and `L-dream-bias` give `route.dream_bias`.
+    /// layer: `route` and `L-linucb` give `route.linucb`.
     #[must_use]
     pub fn nested(&self, loop_id: &LoopId) -> Self {
         Self(format!("{}.{}", self.0, loop_id.slug()))
@@ -413,7 +413,7 @@ pub struct LoopSpec {
     /// The layer of the decision point. A nested loop names its parent's.
     pub layer: Layer,
     /// The parent loop, for a loop drawn only inside the parent's learned
-    /// arm (L-dream-bias and L-linucb inside L-route).
+    /// arm (L-linucb inside L-route, L-rag11 inside L-know).
     #[serde(default)]
     pub nested_in: Option<LoopId>,
     /// What the layer randomizes: the task chain unless stated.
@@ -1029,9 +1029,8 @@ receipt = "artifact_hash_in_request"
     fn embedded_registry_declares_every_loop() {
         // S03 v1.1 §6 T1's loops, plus the retry-budget reader of the gate
         // thresholds (5103 option a).
-        const EXPECTED: [&str; 21] = [
+        const EXPECTED: [&str; 20] = [
             "L-route",
-            "L-dream-bias",
             "L-linucb",
             "L-model-exp",
             "L-routing-log",
@@ -1094,17 +1093,10 @@ receipt = "artifact_hash_in_request"
                 Some((loop_spec.id.as_str(), parent.as_str()))
             })
             .collect();
-        let expected = [
-            ("L-dream-bias", "L-route"),
-            ("L-linucb", "L-route"),
-            ("L-rag11", "L-know"),
-        ];
+        let expected = [("L-linucb", "L-route"), ("L-rag11", "L-know")];
         assert_eq!(nested, expected);
         assert_eq!(spec("L-M3").layer, spec("L-route").layer);
-        assert_eq!(
-            spec("L-dream-bias").assignment_layer().as_str(),
-            "route.dream_bias"
-        );
+        assert_eq!(spec("L-linucb").assignment_layer().as_str(), "route.linucb");
 
         // Every receipt kind proves at least one loop's exposure.
         let receipts = [
@@ -1148,7 +1140,6 @@ receipt = "artifact_hash_in_request"
         let facts = [
             ("L-route", "model_routing.rs::ModelRouter::route"),
             ("L-route", "::ladder_choice"),
-            ("L-dream-bias", "::cascade_pick"),
             ("L-prompt-exp", "prompt_experiment.rs::context"),
             ("L-prompt-exp", "::RETRIEVAL_STRATEGY_EXPERIMENT_ID"),
             ("L-gate-thr", "retry_budget.rs::AdaptiveThresholds"),

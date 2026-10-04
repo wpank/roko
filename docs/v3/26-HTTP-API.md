@@ -407,7 +407,7 @@ sequenceDiagram
 | `task_started` | `plan_id`, `task_id`, `title`, `phase` |
 | `task_completed` | `plan_id`, `task_id`, `outcome` |
 | `task_phase_changed` | `plan_id`, `task_id`, `old_phase`, `new_phase` |
-| `agent_spawned` | `agent_id`, `role`, `model` |
+| `agent_spawned` | `agent_id`, `role`, `model`, and `provider` (e.g. `claude-cli`) when the emitter knows it |
 | `agent_output` | `agent_id`, `content` |
 | `agent_completed` | `agent_id`, `role`, `episode_id`, `passed` |
 | `gate_result` | `plan_id`, `task_id`, `gate`, `rung`, `passed` |

@@ -41,30 +41,6 @@ pointer = "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::ladder_ch
 verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
 
 [[loop]]
-id = "L-dream-bias"
-name = "dream routing bias"
-decision_point = "dispatch::model_routing::ModelRouter::effective_bias -> CascadeRouter::route_with_bias"
-layer = "route"
-nested_in = "L-route"
-opportunity = "dream routing advice exists for the task category"
-default_policy = "the router's pick without the bias"
-receipt = "executed_model"
-notes = [
-    "Decision 3108 removes RoutingBias (task 3109); the loop retires with it.",
-]
-
-[[loop.static_findings]]
-claim = "With provider health attached, cascade_pick calls route_with_health_scored, which takes no bias, so the dream bias never reaches the pick."
-pointer = "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::cascade_pick"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
-reason = "dormant:write_only"
-
-[[loop.static_findings]]
-claim = "The dispatch factory always attaches provider health to the router."
-pointer = "crates/roko-cli/src/dispatch/factory.rs::with_provider_health"
-verified_at = "976220c3ebb91d3879e9d7701fa4aec5d9723d1f"
-
-[[loop]]
 id = "L-linucb"
 name = "LinUCB stage of the cascade router"
 decision_point = "roko_learn::cascade_router::CascadeRouter (LinUCB stage)"

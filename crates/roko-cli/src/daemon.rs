@@ -535,7 +535,7 @@ pub async fn daemon_stop(workdir: &Path) -> Result<()> {
         }
     };
 
-    let socket_path = daemon_socket_path(&workdir);
+    let socket_path = daemon_bound_socket_path(&workdir);
     let mut ipc_stopped = false;
     if let Ok(mut stream) = UnixStream::connect(&socket_path).await {
         if stream.write_all(b"stop").await.is_ok() {
@@ -745,7 +745,7 @@ pub async fn daemon_status(workdir: &Path) -> Result<()> {
     }
 
     // PID is alive and HTTP is healthy — fetch richer IPC status.
-    let socket_path = daemon_socket_path(&workdir);
+    let socket_path = daemon_bound_socket_path(&workdir);
     let ipc_result: Option<DaemonStatusResponse> = match UnixStream::connect(&socket_path).await {
         Err(_) => None,
         Ok(mut stream) => {
@@ -776,7 +776,7 @@ pub async fn daemon_status(workdir: &Path) -> Result<()> {
 /// Reload daemon templates and subscriptions without restarting active agents.
 #[instrument(skip_all, fields(workdir = %workdir.display()))]
 pub async fn daemon_reload(workdir: &Path) -> Result<()> {
-    let socket_path = daemon_socket_path(&workdir);
+    let socket_path = daemon_bound_socket_path(&workdir);
     let mut stream = UnixStream::connect(&socket_path)
         .await
         .with_context(|| format!("connect {}", socket_path.display()))?;
@@ -861,6 +861,34 @@ fn daemon_socket_path(workdir: &Path) -> PathBuf {
     daemon_root_dir(workdir).join("daemon.sock")
 }
 
+/// Where the daemon's control socket listens: `.roko/daemon.sock`, or the
+/// short path its pointer file `daemon.sock.path` names when that is too
+/// long for `sun_path` (gap-604ff6, as for the StateHub socket, 1224).
+fn daemon_bound_socket_path(workdir: &Path) -> PathBuf {
+    crate::state_hub_ipc::bound_socket_path(&daemon_socket_path(workdir))
+}
+
+/// Bind the daemon's control socket, owner-only: at `.roko/daemon.sock`, or
+/// under a deep checkout in a short private directory that
+/// `daemon.sock.path` names for clients ([`daemon_bound_socket_path`]).
+/// Returns the listener and the path it is bound at.
+fn bind_daemon_socket(workdir: &Path) -> Result<(UnixListener, PathBuf)> {
+    let home = daemon_socket_path(workdir);
+    if let Some(parent) = home.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    crate::state_hub_ipc::bind_socket(workdir, &home)
+}
+
+/// Remove the daemon's control socket, wherever it is bound, and its
+/// pointer file.
+fn remove_daemon_socket(workdir: &Path) {
+    let home = daemon_socket_path(workdir);
+    let _ = fs::remove_file(daemon_bound_socket_path(workdir));
+    let _ = fs::remove_file(crate::state_hub_ipc::socket_pointer_path(&home));
+    let _ = fs::remove_file(home);
+}
+
 fn log_path(workdir: &Path, name: &str) -> PathBuf {
     daemon_logs_dir(workdir).join(name)
 }
@@ -919,26 +947,23 @@ fn write_daemon_json(workdir: &Path, info: &DaemonInfo) -> Result<()> {
 fn cleanup_stale_runtime_files(workdir: &Path) {
     let json_path = daemon_json_path(workdir);
     let pid_path = daemon_pid_path(workdir);
-    let socket_path = daemon_socket_path(workdir);
     let _ = fs::remove_file(json_path);
     let _ = fs::remove_file(pid_path);
-    let _ = fs::remove_file(socket_path);
+    remove_daemon_socket(workdir);
 }
 
 fn cleanup_daemon_files(workdir: &Path) {
     let json_path = daemon_json_path(workdir);
     let pid_path = daemon_pid_path(workdir);
-    let socket_path = daemon_socket_path(workdir);
     let _ = fs::remove_file(json_path);
     let _ = fs::remove_file(pid_path);
-    let _ = fs::remove_file(socket_path);
+    remove_daemon_socket(workdir);
 }
 
 fn cleanup_shutdown_runtime_files(workdir: &Path) {
     let pid_path = daemon_pid_path(workdir);
-    let socket_path = daemon_socket_path(workdir);
     let _ = fs::remove_file(pid_path);
-    let _ = fs::remove_file(socket_path);
+    remove_daemon_socket(workdir);
 }
 
 fn pid_is_alive(pid: u32) -> Result<bool> {
@@ -1153,17 +1178,8 @@ async fn start_ipc_server(
     state: Arc<AppState>,
     shutdown_request: CancellationToken,
 ) -> Result<JoinHandle<()>> {
-    let socket_path = daemon_socket_path(&state.workdir);
-    if let Some(parent) = socket_path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    if socket_path.exists() {
-        fs::remove_file(&socket_path)
-            .with_context(|| format!("remove {}", socket_path.display()))?;
-    }
-
-    let listener = UnixListener::bind(&socket_path)
-        .with_context(|| format!("bind {}", socket_path.display()))?;
+    let (listener, socket_path) = bind_daemon_socket(&state.workdir)?;
+    let pointer = crate::state_hub_ipc::socket_pointer_path(&daemon_socket_path(&state.workdir));
 
     Ok(tokio::spawn(async move {
         loop {
@@ -1193,6 +1209,7 @@ async fn start_ipc_server(
         }
 
         let _ = tokio::fs::remove_file(&socket_path).await;
+        let _ = tokio::fs::remove_file(&pointer).await;
     }))
 }
 
@@ -2243,6 +2260,35 @@ mod tests {
             DaemonHealthState::Stale,
             DaemonHealthState::Degraded { reason: "x".into() }
         );
+    }
+
+    /// gap-604ff6: under a workdir too deep for `sun_path`, the daemon's
+    /// control socket binds in a short private directory that
+    /// `daemon.sock.path` names, a client reaches it there, and removing the
+    /// socket removes the pointer too, as for the StateHub socket (1224).
+    #[tokio::test]
+    async fn daemon_socket_binds_under_a_deep_workdir() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let workdir = root
+            .path()
+            .join("a-checkout-nested-deeply-enough".repeat(3));
+        std::fs::create_dir_all(&workdir).expect("create the deep workdir");
+        let home = daemon_socket_path(&workdir);
+        assert!(home.as_os_str().len() > 110, "{}", home.display());
+
+        let (listener, bound) = bind_daemon_socket(&workdir).expect("bind the daemon socket");
+        assert_ne!(bound, home, "the socket is bound away from its home");
+        assert_eq!(daemon_bound_socket_path(&workdir), bound);
+        let accepted = tokio::spawn(async move { listener.accept().await.map(|_| ()) });
+        UnixStream::connect(daemon_bound_socket_path(&workdir))
+            .await
+            .expect("a client connects");
+        accepted.await.expect("join").expect("the daemon accepts");
+
+        remove_daemon_socket(&workdir);
+        assert!(!bound.exists(), "the socket is removed");
+        let pointer = crate::state_hub_ipc::socket_pointer_path(&home);
+        assert!(!pointer.exists(), "the pointer is removed");
     }
 
     /// Verify that a dead PID results in `Stale` and that stale runtime files

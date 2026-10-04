@@ -85,3 +85,7 @@ only, and both conversion directions actively discard it rather than merely defa
   note names this exact follow-up: "Serve's `ServerEvent::AgentSpawned` drops the provider field
   altogether: a separate gap." Confirmed by reading `events.rs` and both `lib.rs` bridge
   functions directly.
+
+## Progress
+
+- gap-511268: implemented at b1260c64f. `ServerEvent::AgentSpawned` has an optional `provider` (left out of the wire when unknown), and both bridge conversions carry it; docs/v3/26-HTTP-API.md's event catalog and the demo app's `DashboardEvent` type list it. The verify's grep passes; cargo verification is deferred to the batch gate (`agent_spawned_provider_survives_the_serve_bridge`).

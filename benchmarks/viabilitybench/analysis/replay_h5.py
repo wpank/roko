@@ -26,10 +26,16 @@ attempts carry a gate verdict, which only the Roko arms record; `--arm LABEL` (t
 **Seeds.** S05's lotteries are keyed by a seed text; the adapter derives it from the replay's generator
 (`r-h5-<64 bits>`), so one replay seed always gives the same lotteries and the same bytes.
 
+**The draw order.** `estimate` folds each lottery into its cells. A sequential estimand needs the draws themselves:
+`draw_order` gives each lottery's draw for each unit, keyed the same way, and `stream_units` one stream's units in its
+own position order (X3's false-green step, `replay_closure.py`).
+
 API:
     SELECTIONS, PRIMARY, STREAMS, LOTTERIES
     estimate(matrix, rng, reps=LOTTERIES, risk=None, lam=None, arm=None) -> dict
     units(matrix, *, arm=None, streams=STREAMS, risk=None) -> list[audit.replay.Unit]
+    stream_units(matrix, stream, *, arm=None) -> list[audit.replay.Unit]
+    draw_order(units, rng, reps=LOTTERIES) -> dict
 """
 
 from __future__ import annotations
@@ -59,6 +65,22 @@ def units(found: replay_runner.OutcomeMatrix, *, arm: str | None = None, streams
     chosen = [record for row, record in zip(found.rows, found.records)
               if row.stream in streams and (row.arm == arm if arm is not None else _gated(record))]
     return lottery_replay.units_from_labels(audit_labels.label_rows(chosen), risk)
+
+
+def stream_units(found: replay_runner.OutcomeMatrix, stream: str, *,
+                 arm: str | None = None) -> list[lottery_replay.Unit]:
+    """The green census units of one stream, in its position order: one arm's, or every gated (Roko) record's."""
+    chosen = sorted((record for row, record in zip(found.rows, found.records)
+                     if row.stream == stream and (row.arm == arm if arm is not None else _gated(record))),
+                    key=lambda record: record["stream"].get("position") or 0)
+    return lottery_replay.units_from_labels(audit_labels.label_rows(chosen))
+
+
+def draw_order(drawn: Sequence[lottery_replay.Unit], rng: random.Random, reps: int = LOTTERIES) -> dict:
+    """The lottery replay's per-position draw order over `drawn`: each of `reps` lotteries' draw for each unit, in
+    order, with the seed `estimate` would derive from `rng`."""
+    seed = f"r-h5-{rng.getrandbits(64):016x}"
+    return {"seed": seed, "lotteries": int(reps), "draws": lottery_replay.draw_order(drawn, runs=int(reps), seed=seed)}
 
 
 def estimate(found: replay_runner.OutcomeMatrix, rng: random.Random, reps: int = LOTTERIES, risk: str | None = None,

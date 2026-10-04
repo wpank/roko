@@ -126,6 +126,10 @@ pub enum ServerEvent {
         role: String,
         #[serde(default)]
         model: String,
+        /// The provider label (e.g. `"claude-cli"`, `"codex-cli"`), when the
+        /// emitter knows it; left out otherwise, as before it existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
     },
 
     /// Incremental agent output (streamed, sanitized for consumers).

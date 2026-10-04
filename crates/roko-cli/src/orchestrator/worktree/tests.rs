@@ -2668,6 +2668,39 @@ async fn ensure_for_plan_reattaches_untracked_on_disk_worktree() {
     assert_eq!(ensured.branch, original.branch);
 }
 
+/// bug-045773: a re-attached checkout keeps the commit it was made from,
+/// which its creation recorded in its administrative directory, though the
+/// base branch has moved on since, so a resumed attempt still diffs from
+/// where it started.
+#[tokio::test]
+async fn reattached_handle_keeps_its_original_base_commit() {
+    let Some((_tmp, mgr)) = make_manager() else {
+        return;
+    };
+    let original = mgr.create_for_plan("09-base").await.unwrap();
+    let base = original.base_commit.clone().expect("its base");
+    let repo = mgr.config.repo_root.clone();
+    let moved = StdCommand::new("git")
+        .current_dir(&repo)
+        .args(["commit", "--allow-empty", "-q", "-m", "main moves on"])
+        .status()
+        .unwrap()
+        .success();
+    assert!(moved, "git commit failed");
+
+    let mgr2 = WorktreeManager::new(WorktreeConfig {
+        repo_root: repo,
+        base_branch: "main".to_string(),
+        worktrees_root: original.path.parent().unwrap().to_path_buf(),
+        max_live: None,
+        idle_ttl: Duration::from_secs(3600),
+    });
+    let reattached = mgr2.ensure_for_plan("09-base").await.unwrap();
+
+    assert_eq!(reattached.path, original.path);
+    assert_eq!(reattached.base_commit.as_deref(), Some(base.as_str()));
+}
+
 #[tokio::test]
 async fn ensure_rejects_stale_snapshot_registry_identity() {
     let Some((_tmp, mgr)) = make_manager() else {

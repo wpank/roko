@@ -18,8 +18,9 @@
 //! 3. `occurrences`, `plan_ids`, and `task_ids` are updated atomically.
 //! 4. `ErrorPatternStore::top_patterns` returns the most frequent unresolved
 //!    patterns for prompt injection.
-//! 5. After a fix is confirmed, `ErrorPatternStore::mark_resolved` annotates the
-//!    pattern with a resolution string and removes it from future prompt context.
+//! 5. After a verified attempt fixes it, `ErrorPatternStore::record_resolution`
+//!    records the fix on the pattern, which stays unresolved so that prompts
+//!    show it ([`ErrorPatternStore::resolved_for`]).
 //!
 //! # Pattern Categorisation
 //!
@@ -48,8 +49,8 @@
 //!
 //! The store is a single JSON file at `.roko/learn/error-patterns.json`. Writes
 //! use atomic tmp-rename (`error-patterns.json.tmp` → rename) to avoid corruption
-//! on crash. There is no upper bound on pattern count, but `mark_resolved` and
-//! periodic GC remove stale entries.
+//! on crash. There is no upper bound on pattern count, but periodic GC
+//! ([`ErrorPatternStore::gc`]) removes stale entries.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;

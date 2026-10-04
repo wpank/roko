@@ -251,7 +251,7 @@ export type DashboardEvent =
   | { type: 'task_started'; plan_id: string; task_id: string; title: string; phase: string }
   | { type: 'task_completed'; plan_id: string; task_id: string; outcome: string }
   | { type: 'task_phase_changed'; plan_id: string; task_id: string; old_phase: string; new_phase: string }
-  | { type: 'agent_spawned'; agent_id: string; plan_id: string; task_id: string; attempt: number; role: string; model: string }
+  | { type: 'agent_spawned'; agent_id: string; plan_id: string; task_id: string; attempt: number; role: string; model: string; provider?: string }
   | { type: 'agent_output'; agent_id: string; plan_id: string; task_id: string; attempt: number; content: string }
   | { type: 'gate_result'; plan_id: string; task_id: string; gate: string; passed: boolean }
   | { type: 'phase_transition'; plan_id: string; from: string; to: string }

@@ -9,6 +9,7 @@ Run from the repository root with the benchmark venv:
 from __future__ import annotations
 
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -19,9 +20,11 @@ if str(_DRIVER_DIR) not in sys.path:  # campaign.py, for closure_4's census_repo
     sys.path.insert(0, str(_DRIVER_DIR))
 
 import campaign  # noqa: E402
+import replay  # noqa: E402
 import replay_closure  # noqa: E402
 import replay_h6  # noqa: E402
 import replay_runner  # noqa: E402
+from test_analysis import run_record, write_run  # noqa: E402
 from test_replay_h5 import EXPERIMENT, log1_tree  # noqa: E402
 
 
@@ -47,8 +50,8 @@ def fake_census(live: list[str]) -> object:
 
 def test_closure_replays_emit_their_preregistered_estimands(tmp_path, monkeypatch):
     """X1 is evaluated once --h5 is given (a real delta_brier with a bootstrap CI); X2, X3 and X4 are not, each
-    with its own reason (3357's H6 adapter is not wired yet, no per-position lottery data, no LOG1 policy
-    cells); closure 4 reports the three loops' LIVE status from a faked census."""
+    with its own reason (3357's H6 adapter is not wired yet, no block E stream to follow X3's step, no LOG1
+    policy cells); closure 4 reports the three loops' LIVE status from a faked census."""
     results, _false_keys = log1_tree(tmp_path)
     h5_path = write_h5(tmp_path, results)
     h6_path = write_h6(tmp_path, results, [{"arm": "A0", "disturbance": "provider_fault",
@@ -72,7 +75,7 @@ def test_closure_replays_emit_their_preregistered_estimands(tmp_path, monkeypatc
     for kind, cell in x2["kinds"].items():
         assert not cell["evaluated"] and "A3, A4, A3-mis not evaluated" in cell["reason"]
 
-    assert not found["x3"]["evaluated"] and "per-position" in found["x3"]["reason"]
+    assert not found["x3"]["evaluated"] and "block E" in found["x3"]["reason"]
     assert not found["x4"]["evaluated"] and "policies" in found["x4"]["reason"]
 
     closure = found["closure_4"]
@@ -88,6 +91,51 @@ def test_x1_and_x2_are_not_evaluated_without_their_replay_documents(tmp_path, mo
     assert not found["x1"]["evaluated"] and "--h5" in found["x1"]["reason"]
     assert not found["x2"]["evaluated"] and "--h6" in found["x2"]["reason"]
     assert found["closure_4"]["all_live"] is True
+
+
+def step_tree(root: Path, before: int = 60, after: int = 120) -> Path:
+    """Block A and E-shaped records for X3's false-green step: roko_fixed on `before` p1_core tasks, every one a true
+    green, then on `after` F8 honeypots (stream log1_f8_honeypots), every one green and every other a false green."""
+    results = root / "results"
+    blocks = (("roko-a", "p1_core", "F1", before), ("roko-e", "log1_f8_honeypots", "F8", after))
+    for run_id, stream, family, count in blocks:
+        records = []
+        for position in range(1, count + 1):
+            instance = f"{family}-l{position % 5 + 1}-{position:04d}"
+            false_green = stream == "log1_f8_honeypots" and position % 2 == 0
+            record = run_record(instance, 1, run_id=run_id, arm="roko_fixed", label=int(not false_green),
+                                visible=True, verdict="passed", honeypot=stream == "log1_f8_honeypots")
+            record["stream"].update(id=stream, position=position)
+            records.append(record)
+        write_run(results / EXPERIMENT, records)
+    return results
+
+
+def test_x3_evaluates_from_a_false_green_step_replay(tmp_path, monkeypatch):
+    """X3 replays one draw order per lottery at S05's 5% floor and at M1's 2x audit boost: after the step the
+    boost confirms S06's E3 breach sooner, with a CI excluding 0, while its audits stay within SC6's 12%."""
+    assert replay_closure.beta_tail(0.10, 1, 9) == pytest.approx(0.9 ** 9)
+    results = step_tree(tmp_path)
+    monkeypatch.setattr(campaign, "census_report", fake_census(list(replay_closure.CLOSURE_4_LOOPS)))
+    first = replay_runner.run(results, [EXPERIMENT], "closure", seed=3, params={"reps": 200})
+    again = replay_runner.run(results, [EXPERIMENT], "closure", seed=3, params={"reps": 200})
+    assert replay_runner.canonical(first) == replay_runner.canonical(again)
+
+    x3 = first["estimates"]["x3"]
+    assert x3["evaluated"], x3
+    assert (x3["step"], x3["n_units"], x3["post_step_units"], x3["lotteries"]) == (40, 160, 120, 200)
+    assert x3["theta_post"] == 0.5 and x3["rates"] == {"floor": 0.05, "boost": 0.10}
+    assert x3["median_delay"]["boost"] < x3["median_delay"]["floor"]
+    low, high = x3["ci95"]
+    assert 0 < low <= x3["delta_median_delay"] <= high
+    assert x3["audit_share"]["boost"] <= replay_closure.X3_SHARE_MAX and x3["guard_passes"]
+    assert x3["pays"] and x3["rule"] == "ci95_excludes_0"
+
+    # With fewer block A units than the step needs, X3 is not evaluated, and says why.
+    short = step_tree(tmp_path / "short", before=30)
+    matrix = replay_runner.matrix(replay.load(short, [EXPERIMENT]))
+    found = replay_closure.x3_from_matrix(matrix, random.Random(1), 5)
+    assert not found["evaluated"] and "30 green block A" in found["reason"]
 
 
 def test_delta_iae_x2_evaluates_once_every_arm_of_a_kind_is_live():

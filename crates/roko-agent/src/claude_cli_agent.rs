@@ -3193,10 +3193,22 @@ mod tests {
                 snapshot: "prices-2030-01-01".to_string(),
             },
         );
-        let usage = ClaudeCliAgent::parse_stream_usage(
-            r#"{"type":"result","model":"pin-test-model","usage":{"input_tokens":1000,"output_tokens":1000}}"#,
-            "pin-test-model",
-        );
+        // The snapshot prices the result event's `modelUsage` sessions, as a real run reports them.
+        let result = serde_json::json!({
+            "type": "result",
+            "model": "pin-test-model",
+            "usage": { "input_tokens": 1_000, "output_tokens": 1_000 },
+            "modelUsage": {
+                "pin-test-model": {
+                    "inputTokens": 1_000,
+                    "outputTokens": 1_000,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                    "costBasis": "list"
+                }
+            }
+        });
+        let usage = ClaudeCliAgent::parse_stream_usage(&result.to_string(), "pin-test-model");
         let observed = agent.priced_observation(&usage, 0);
         assert_eq!(
             observed.price_snapshot_id.as_deref(),

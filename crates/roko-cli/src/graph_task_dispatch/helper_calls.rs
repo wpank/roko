@@ -17,6 +17,7 @@ use roko_learn::telemetry::{CostSource, HelperCallsUsage};
 use super::served_model::{is_cli_backend, same_model};
 use super::tui_forward::append_jsonl_line_async;
 use super::*;
+use crate::audit::worker::CheckCall;
 
 /// `role` of a helper call's cost and efficiency rows.
 const HELPER_ROLE: &str = "helper";
@@ -116,6 +117,33 @@ impl SideCall {
             ),
             api_equiv_usd,
             price_snapshot_id,
+        }
+    }
+
+    /// The model call `call` of an inline audit check (gap-73c98e), to the
+    /// model `profile` names on `provider_id`, in a run that prices from
+    /// `snapshot`.
+    pub(super) fn of_check(
+        provider_id: &str,
+        profile: Option<&roko_core::config::schema::ModelProfile>,
+        call: &CheckCall,
+        snapshot: Option<&PriceSnapshot>,
+    ) -> Self {
+        Self {
+            provider_id: provider_id.to_string(),
+            model_slug: call.model.clone(),
+            model_reported: None,
+            usage: call.usage,
+            cost_source: CostSource::Unknown,
+            turns: None,
+            duration_ms: call.usage.wall_ms,
+            success: call.success,
+            priced: crate::dispatch_v2::usage_is_priced(
+                &call.usage,
+                snapshot,
+                profile,
+                &call.model,
+            ),
         }
     }
 

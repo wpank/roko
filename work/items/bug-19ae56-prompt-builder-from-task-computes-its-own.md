@@ -84,3 +84,15 @@ function. The two mechanisms (policy/context-weight-derived local variable vs. t
 
 - Confirm `TaskDef` actually carries the meta flag by the time it reaches `from_task` (it may currently be a
   property of a wrapping struct, not `TaskDef` itself) before assuming the one-line fix above is sufficient.
+
+## Progress
+
+- 2026-10-04 (w4-length): implemented on `work/bug-19ae56` at c309ab07c; cargo verification deferred to the batch
+  gate. The flag lives in the plan's `TaskMeta`, not in `TaskDef`. `DispatchContext` gains `skip_enrichment`, which
+  both Graph dispatch paths fill from the plan's meta (`plan_skips_enrichment`, through `read_plan_meta`).
+  `from_task` ORs it with the policy and `context_weight` checks. Every other `DispatchContext` literal sets it to
+  `false`, and `TaskMeta`'s doc says what the flag now does. Test:
+  `task_meta_skip_enrichment_suppresses_prompt_builder_sections`.
+- Effect to know about: `roko run`'s prompt plans (run.rs) and every ViabilityBench Roko-arm plan (planemit's
+  `skip_enrichment = true` default) now run unenriched. Their prompts drop the `tasks.toml` dump, workspace map,
+  workspace context and plan brief. That changes the bench arms' prompts before the pre-registration lock.

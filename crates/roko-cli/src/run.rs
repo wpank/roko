@@ -661,7 +661,12 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
     let duration = started.elapsed();
 
     let snapshot = hub.current_snapshot();
-    let episodes = task_episodes_since(&episodes_path, episodes_offset, &run_id);
+    let mut episodes = task_episodes_since(&episodes_path, episodes_offset, &run_id);
+    if episodes.is_empty() {
+        // A run with learning frozen keeps its episodes in its own run
+        // directory, not in the workspace's log (gap-127263).
+        episodes = task_episodes_since(&run_dir.join("episodes.jsonl"), 0, &run_id);
+    }
     let success = exit_code == crate::exit_codes::EXIT_SUCCESS;
     let last = episodes.last();
     let report = WorkflowRunReport {
@@ -1331,6 +1336,63 @@ frozen = {frozen}
             let workflow = episodes.iter().any(|kind| kind == "workflow_complete");
             assert_eq!(recorded, !frozen, "frozen = {frozen}: {efficiency:?}");
             assert_eq!(workflow, !frozen, "frozen = {frozen}: {episodes:?}");
+        }
+    }
+
+    /// A run with learning frozen keeps its episodes in its own run directory
+    /// (gap-127263), and `roko run`'s report reads them there: the frozen
+    /// run reports the turns, tokens and cost its agent reported, as the same
+    /// run does live.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn frozen_roko_run_reports_its_turns_and_cost() {
+        for frozen in [false, true] {
+            let tmp = fake_agent_workspace(&format!(
+                r#"
+[[gates.rungs]]
+name = "check"
+command = "test -f README.md"
+
+[learning]
+frozen = {frozen}
+"#
+            ));
+            std::fs::write(
+                tmp.path().join("fake-provider.sh"),
+                r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"run","model":"claude-sonnet-4-6","total_cost_usd":0.25,"num_turns":3,"usage":{"input_tokens":120,"output_tokens":30},"is_error":false}'
+"#,
+            )
+            .expect("provider script");
+            let report = run_prompt(PromptRun {
+                prompt: "Say done",
+                workdir: tmp.path(),
+                tier: "focused",
+                overrides: &CliOverrides::default(),
+                max_retries: Some(0),
+                quiet: true,
+                state_hub: None,
+                run_id: None,
+                cancel: None,
+                domain: None,
+                max_usd: None,
+                origin: RunOrigin::Cli,
+                no_holdout: false,
+            })
+            .await
+            .expect("roko run completes");
+
+            assert!(report.success, "frozen = {frozen}");
+            assert_eq!(report.agent_turns, 3, "frozen = {frozen}");
+            assert_eq!(report.input_tokens, 120, "frozen = {frozen}");
+            assert_eq!(report.output_tokens, 30, "frozen = {frozen}");
+            assert_eq!(report.token_usage, 150, "frozen = {frozen}");
+            assert_eq!(report.cost, Some(0.25), "frozen = {frozen}");
+            let in_root = tmp.path().join(".roko/episodes.jsonl").exists();
+            assert_eq!(in_root, !frozen, "frozen = {frozen}");
         }
     }
 

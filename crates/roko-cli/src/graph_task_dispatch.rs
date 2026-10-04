@@ -1330,10 +1330,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
         );
         if let Some(tui) = &self.tui_bridge {
             // The slug and provider the planned model key resolves to, as
-            // dispatch resolves them (`glm-4.7` on `zai`) and as a failover
-            // row names them (backlog 1128), not the backend family's label,
-            // which named every OpenAI-compatible model `codex_cli`; a model
-            // that does not resolve keeps that label (backlog 1127).
+            // dispatch resolves them (`glm-4.7` on `zai`, a Claude model on
+            // the direct API on `anthropic`) and as a failover row names them
+            // (backlog 1128), not the backend family's label, which named
+            // every OpenAI-compatible model `codex_cli` and every Claude model
+            // `claude_cli` (bug-2e5429); a model that does not resolve keeps
+            // that label (backlog 1127).
             let planned =
                 crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
                     .resolve(&request.model_key);
@@ -3346,5 +3348,108 @@ sleep 30
         let (_, model, provider) = spawned.first().expect("an agent_spawned event");
         assert_eq!(provider, "zai", "{spawned:?}");
         assert_eq!(model, "glm-4.7", "{spawned:?}");
+    }
+
+    /// bug-2e5429: a Claude model on the direct Anthropic API shows that provider in the
+    /// `agent_spawned` event published before dispatch, not `claude_cli`: the label comes from
+    /// the provider the model resolves to, since the backend family the old label came from
+    /// folds the direct API into the CLI.
+    #[tokio::test]
+    async fn agent_spawned_label_reflects_anthropic_api() {
+        assert_eq!(
+            ProviderKind::from(ProviderKind::AnthropicApi.to_backend()),
+            ProviderKind::ClaudeCli,
+            "the backend family loses the direct API"
+        );
+        // The API refuses the key, so nothing runs past the event.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let base_url = format!("http://{}/v1", listener.local_addr().expect("mock addr"));
+        std::thread::spawn(move || {
+            use std::io::Write;
+
+            let body = r#"{"type":"error","error":{"type":"authentication_error","message":"no"}}"#;
+            let wire = format!(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: \
+                 {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            for _ in 0..4 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                if read_mock_request(&mut stream).is_some() {
+                    let _ = stream.write_all(wire.as_bytes());
+                }
+            }
+        });
+        let temp = tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "claude-model".to_string();
+        config.agent.bare_mode = false;
+        // `PATH` is always set, standing in for an API key.
+        config.providers.insert(
+            "anthropic".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::AnthropicApi,
+                base_url: Some(base_url),
+                api_key_env: Some("PATH".to_string()),
+                timeout_ms: Some(15_000),
+                ..ProviderConfig::default()
+            },
+        );
+        // Keys in the environment must not synthesize other usable providers.
+        for (id, kind) in [
+            ("openai", ProviderKind::OpenAiCompat),
+            ("gemini", ProviderKind::GeminiApi),
+            ("perplexity", ProviderKind::PerplexityApi),
+        ] {
+            let keyless = ProviderConfig {
+                kind,
+                api_key_env: Some("ROKO_TEST_ANTHROPIC_LABEL_KEY_NEVER_SET".to_string()),
+                ..ProviderConfig::default()
+            };
+            config.providers.insert(id.to_string(), keyless);
+        }
+        config.models.insert(
+            "claude-model".to_string(),
+            ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                context_window: 200_000,
+                max_output: Some(1_024),
+                max_tools: Some(32),
+                supports_tools: true,
+                tool_format: "anthropic_blocks".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let config = Arc::new(config);
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let hub = crate::state_hub::shared_state_hub();
+        let mut events = hub.subscribe_events();
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_tui_bridge(TuiBridge::new(hub.sender()));
+        let task = TaskDef {
+            model_hint: Some("claude-model".to_string()),
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
+            verify: vec![verify_step("structural", "true")],
+            ..make_task_def("focused")
+        };
+        // Only the event published before the provider call matters here.
+        let _ = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await;
+
+        let spawned = spawned_agents(&mut events);
+        let (_, model, provider) = spawned.first().expect("an agent_spawned event");
+        assert_eq!(provider, "anthropic", "{spawned:?}");
+        assert_ne!(provider, ProviderKind::ClaudeCli.label(), "{spawned:?}");
+        assert_eq!(model, "claude-sonnet-4-6", "{spawned:?}");
     }
 }

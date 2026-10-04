@@ -1,3 +1,7 @@
+/**
+ * Lab only: `FAKE_LINES` is invented terminal output, retired from the showcase (S10 §4.4).
+ * No showcase route may import this; e2e/showcase/retired.spec.ts checks.
+ */
 import './TerminalPreview.css';
 
 interface TerminalPreviewProps {

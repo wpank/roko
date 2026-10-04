@@ -236,6 +236,18 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         ));
     }
 
+    // The showcase's section (S11 §4.7): the public origin is an origin,
+    // lifetimes and counts are positive, the caps nest and prices are money.
+    // The startup rules that read the environment are serve's.
+    for (key, problem) in config.showcase.problems() {
+        results.push(invariant(
+            15,
+            InvariantSeverity::Error,
+            format!("showcase.{key}"),
+            problem,
+        ));
+    }
+
     // 9119: each gate rung has what its kind needs, such as a command for a
     // `command` rung and artefacts for a `citations` one.
     for (key, problem) in config.gates.rung_problems() {

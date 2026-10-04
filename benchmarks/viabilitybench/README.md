@@ -62,6 +62,7 @@ benchmarks/viabilitybench/
   analysis/{lock, blind}.py                                 # the pre-registration lock, and blinded arm labels
   analysis/models/{glmm, irt}.py                            # the secondaries on numpy and scipy (decision 3336)
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
+  showcase/{build_bundle, verify_bundle}.py  fixtures/      # S10 §5.5's replay bundle: built from records, verified
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
   manifest.json  order-<seed>.json  records.jsonl  ledger.jsonl  reservations.jsonl  errors.jsonl  metrics.json
   proxy.jsonl  egress.jsonl  s01/  archives/  private/  transcripts/ (opt-in)

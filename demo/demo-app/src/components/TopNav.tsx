@@ -24,7 +24,10 @@ const NAV_LINKS: NavItem[] = [
   { to: '/lab', label: 'LAB', full: 'Legacy pages (local only)' },
 ];
 
-/** The legacy pages, shown in a second row while a /lab page is open (D23). */
+/**
+ * The legacy pages, shown in a second row while a /lab page is open (D23). The Demo scenario
+ * player stays here: S10 §4.4 retires it from the showcase nav.
+ */
 const LAB_LINKS: NavItem[] = [
   { to: '/lab/demo', label: 'DEMO', full: 'Interactive Demo Scenarios' },
   { to: '/lab/dashboard', label: 'DASH', full: 'System Dashboard' },

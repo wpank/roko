@@ -58,6 +58,7 @@ use commands::research::{ResearchBackend, ResearchCmd, SearchRecency};
 use commands::run_index::RunIndexCmd;
 use commands::safety::SafetyCmd;
 use commands::server::{DaemonCmd, DeployCmd};
+use commands::showcase::ShowcaseCmd;
 use commands::tune::{ConfigPresetCmd, TuneCmd};
 use commands::util::{CompletionShell, IndexCmd};
 use octocrab::Octocrab;
@@ -764,6 +765,15 @@ Examples:
     Effects {
         #[command(subcommand)]
         cmd: EffectsCmd,
+    },
+    /// Operate the public showcase: make or hash its login passphrase.
+    #[command(after_help = "\
+Examples:
+  roko showcase passphrase new
+  printf '%s' \"$PASSPHRASE\" | roko showcase passphrase hash")]
+    Showcase {
+        #[command(subcommand)]
+        cmd: ShowcaseCmd,
     },
     /// What M4's random deep audits found, read-only: window estimates, the
     /// strictness ladder, routing trust, a lottery replay, a run's draws
@@ -1988,6 +1998,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         Command::RunIndex { cmd } => commands::run_index::cmd_run_index(cli, cmd).await,
         Command::Safety { cmd } => commands::safety::cmd_safety(cli, cmd).await,
         Command::Effects { cmd } => commands::effects::cmd_effects(cli, cmd).await,
+        Command::Showcase { cmd } => commands::showcase::cmd_showcase(cmd),
         Command::Audit { cmd } => commands::audit::cmd_audit(cli, cmd),
         Command::Setup {
             workdir,

@@ -102,6 +102,7 @@ use tracing::{debug, info, warn};
 
 use roko_core::Signal;
 use roko_core::config::schema::RokoConfig;
+use roko_core::config::showcase::PASSPHRASE_HASH_ENV;
 use roko_core::connector::{ConnectorHealth, ConnectorInfo, ConnectorKind, ConnectorStatus};
 use roko_core::dashboard_snapshot::DashboardEvent;
 use roko_core::feed::{FeedAccess, FeedInfo, FeedKind};
@@ -390,6 +391,8 @@ impl ServerBuilder {
         );
         let roko_config = state.load_roko_config();
         validate_bind_safety(&addr, &roko_config.serve)?;
+        let passphrase_hash = std::env::var(PASSPHRASE_HASH_ENV).ok();
+        validate_showcase_mode(&roko_config, passphrase_hash.as_deref())?;
         state.configure_listener_security(&effective_bind, roko_config.serve.auth.enabled);
         let (live_setting, live_msg) =
             live_agent_output_for_bind(roko_config.serve.live_agent_output, &effective_bind);
@@ -958,6 +961,49 @@ pub(crate) fn warn_if_auth_misconfigured(auth: &roko_core::config::ServeAuthConf
     }
 }
 
+/// Refuse to start a showcase serve that is half configured (S11 §4.7, 9320).
+///
+/// With `[showcase] enabled = true`, serve starts only when auth is on in `enforce` mode,
+/// `showcase.public_origin` is set, `passphrase_hash` (`ROKO_SHOWCASE_PASSPHRASE_HASH`) is an
+/// Argon2id PHC string and no Privy app id is configured. Otherwise it would come up fail-open
+/// while looking configured. The error names every rule that fails.
+///
+/// # Errors
+///
+/// Returns an error when showcase mode is on and a rule fails.
+pub fn validate_showcase_mode(config: &RokoConfig, passphrase_hash: Option<&str>) -> Result<()> {
+    let showcase = &config.showcase;
+    if !showcase.enabled {
+        return Ok(());
+    }
+    let auth = &config.serve.auth;
+    let mut missing = Vec::new();
+    if !auth.enabled {
+        missing.push("serve.auth.enabled must be true");
+    }
+    if auth.enforcement_mode != roko_core::config::EnforcementMode::Enforce {
+        missing.push("serve.auth.enforcement_mode must be \"enforce\"");
+    }
+    let origin = showcase.public_origin.as_deref().unwrap_or_default();
+    if origin.trim().is_empty() {
+        missing.push("showcase.public_origin must be set");
+    }
+    if !passphrase_hash.is_some_and(|hash| hash.starts_with("$argon2id$")) {
+        missing
+            .push("ROKO_SHOWCASE_PASSPHRASE_HASH must hold an Argon2id PHC string ($argon2id$...)");
+    }
+    if auth.privy_app_id.is_some() {
+        missing.push("serve.auth.privy_app_id must not be set");
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "showcase mode is half configured, so serve will not start: {}",
+        missing.join("; ")
+    );
+}
+
 pub fn validate_bind_safety(addr: &str, serve: &ServeConfig) -> Result<()> {
     if is_loopback_addr(addr) || serve.auth.enabled {
         return Ok(());
@@ -995,6 +1041,8 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
 
     let addr = format!("{bind}:{port}");
     validate_bind_safety(&addr, &roko_config.serve)?;
+    let passphrase_hash = std::env::var(PASSPHRASE_HASH_ENV).ok();
+    validate_showcase_mode(&roko_config, passphrase_hash.as_deref())?;
     state.configure_listener_security(bind, roko_config.serve.auth.enabled);
     if !roko_config.serve.auth.enabled {
         tracing::warn!(
@@ -3795,9 +3843,10 @@ fn init_otlp_tracing(endpoint: &str, service_name: &str, _sample_rate: f64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ServerBuildConfig, ServerBuilder, build_app_state, drain_within,
+        RokoConfig, ServerBuildConfig, ServerBuilder, build_app_state, drain_within,
         resolve_bind_with_port_env, run_cold_archival_tick, run_server_with_state,
-        serve_api_or_spa_fallback, start_telemetry_producer_bridge, warn_if_auth_misconfigured,
+        serve_api_or_spa_fallback, start_telemetry_producer_bridge, validate_showcase_mode,
+        warn_if_auth_misconfigured,
     };
 
     use axum::body::{Body, to_bytes};
@@ -4764,6 +4813,45 @@ mod tests {
             ..Default::default()
         };
         warn_if_auth_misconfigured(&auth);
+    }
+
+    /// 9320: with `[showcase] enabled = true`, serve refuses to start unless every rule holds:
+    /// auth on and enforcing, a public origin, an Argon2id passphrase hash, and no Privy. Each
+    /// case breaks one rule, and the error names it.
+    #[test]
+    fn showcase_mode_refuses_to_start_half_configured() {
+        const HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA";
+        let mut ready = RokoConfig::default();
+        ready.showcase.enabled = true;
+        ready.showcase.public_origin = Some("https://roko-showcase.fly.dev".to_string());
+        assert!(validate_showcase_mode(&ready, Some(HASH)).is_ok());
+        // Showcase mode off: nothing to check.
+        assert!(validate_showcase_mode(&RokoConfig::default(), None).is_ok());
+
+        let mut auth_off = ready.clone();
+        auth_off.serve.auth.enabled = false;
+        let mut audit_only = ready.clone();
+        audit_only.serve.auth.enforcement_mode = roko_core::config::EnforcementMode::Audit;
+        let mut no_origin = ready.clone();
+        no_origin.showcase.public_origin = None;
+        let mut privy = ready.clone();
+        privy.serve.auth.privy_app_id = Some("privy-app".to_string());
+        let argon2i = Some("$argon2i$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA");
+        let cases = [
+            (auth_off, Some(HASH), "serve.auth.enabled"),
+            (audit_only, Some(HASH), "serve.auth.enforcement_mode"),
+            (no_origin, Some(HASH), "showcase.public_origin"),
+            (ready.clone(), None, "ROKO_SHOWCASE_PASSPHRASE_HASH"),
+            (ready.clone(), argon2i, "ROKO_SHOWCASE_PASSPHRASE_HASH"),
+            (privy, Some(HASH), "serve.auth.privy_app_id"),
+        ];
+        for (config, hash, rule) in cases {
+            let error = validate_showcase_mode(&config, hash).expect_err(rule);
+            let message = error.to_string();
+            assert!(message.contains(rule), "{message}");
+            assert!(message.contains("half configured"), "{message}");
+            assert_eq!(message.matches(" must ").count(), 1, "{message}");
+        }
     }
 
     // ── live_agent_output_honours_the_bind ───────────────────────────────────

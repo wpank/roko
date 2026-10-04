@@ -151,6 +151,10 @@ pub struct RokoConfig {
     pub statehub: StateHubConfig,
     #[serde(default)]
     pub serve: ServeConfig,
+    /// The passphrase-gated public showcase (S11 §4.7). Off by default; serve refuses to
+    /// start half configured in showcase mode.
+    #[serde(default)]
+    pub showcase: super::showcase::ShowcaseConfig,
     #[serde(default)]
     pub scheduler: SchedulerConfig,
     #[serde(default)]
@@ -518,6 +522,7 @@ impl Default for RokoConfig {
             timeouts: super::timeouts::TimeoutConfig::default(),
             statehub: StateHubConfig::default(),
             serve: ServeConfig::default(),
+            showcase: super::showcase::ShowcaseConfig::default(),
             scheduler: SchedulerConfig::default(),
             webhooks: WebhooksConfig::default(),
             github: GitHubConfig::default(),

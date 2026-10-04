@@ -1,0 +1,9 @@
+{
+  "arm": "fd_claude",
+  "experiment_id": "FIXTURE-P1",
+  "run_id": "vb-fixture-f1",
+  "schema_version": "vb.fixture_manifest/1",
+  "seeds": [
+    1
+  ]
+}

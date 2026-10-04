@@ -2,9 +2,10 @@
 //! every θ change must pass (S06 §4.6).
 //!
 //! [`ViabilityPolicy`] is `.roko/policy/viability.toml`: the EV bounds and
-//! inner bands, the drive's weights, the tiers, the minimum verify rungs,
-//! the audit floor and ceiling, and the holdout rate. A human writes it and
-//! edits it; this module opens it to read and has no way to write it.
+//! inner bands, the drive's weights, the tiers, the minimum verify rungs
+//! and the ceiling of M1's verify-depth floor, the audit floor and ceiling,
+//! and the holdout rate. A human writes it and edits it; this module opens
+//! it to read and has no way to write it.
 //!
 //! [`SafetyBox::validate`] admits a change θ_old → θ_new only when:
 //!
@@ -19,7 +20,8 @@
 //! 3. the task budget share never exceeds θ₀'s and a search move never
 //!    raises it (B8 is decrease-only), and a search move waits while the
 //!    adaptation spend is over A_max of run spend;
-//! 4. the boosted audit rate stays within S5's `p_max`;
+//! 4. the boosted audit rate stays within S5's `p_max`, and M1's
+//!    verify-depth floor (B3) within S5's `verify.max_floor`;
 //! 5. search, relaxation and rollback change one notch of one knob (an
 //!    adjacent provider swap counts as one), and relaxation moves toward θ₀;
 //! 6. a holdout row runs θ₀;
@@ -62,7 +64,8 @@ pub struct ViabilityPolicy {
     /// (decision 8101), so M1 reads this map but no check needs it yet.
     #[serde(default)]
     pub tiers: BTreeMap<String, Vec<String>>,
-    /// The verify rungs every task keeps.
+    /// The verify rungs every task keeps, and how deep a floor M1 may ask
+    /// for.
     #[serde(default)]
     pub verify: VerifyPolicy,
     /// The audit rate's floor and ceiling.
@@ -77,21 +80,33 @@ const fn default_holdout() -> f64 {
     DEFAULT_HOLDOUT
 }
 
-/// The verify rungs every task keeps whatever M1 does.
+/// The verify rungs every task keeps whatever M1 does, and the ceiling of
+/// the verify-depth floor M1 may request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VerifyPolicy {
     /// `authored` (the task's own verify steps, always kept) and verify
     /// depths `V0`..`V4` on S05 §4.6's scale.
     pub min_rungs: Vec<String>,
+    /// The deepest verify-depth floor B3 may request: S5's ceiling, as
+    /// `p_max` is B7's. S05's ladder may still check deeper on its own. V4,
+    /// the top of B3's ladder, when the policy names none.
+    #[serde(default = "top_floor")]
+    pub max_floor: VerifyDepth,
 }
 
 impl Default for VerifyPolicy {
     fn default() -> Self {
         Self {
             min_rungs: vec!["authored".to_string()],
+            max_floor: top_floor(),
         }
     }
+}
+
+/// The top of B3's ladder: S5's verify-depth ceiling when it names none.
+const fn top_floor() -> VerifyDepth {
+    VerifyDepth::V4
 }
 
 /// The audit rate's bounds (M4).
@@ -368,6 +383,13 @@ pub enum Violation {
         /// S5's `p_max`.
         max: f64,
     },
+    /// M1's verify-depth floor (B3) passes S5's ceiling.
+    FloorAboveMax {
+        /// The floor θ requests.
+        floor: VerifyDepth,
+        /// S5's `verify.max_floor`.
+        max: VerifyDepth,
+    },
     /// The change spans several blocks.
     SeveralBlocks {
         /// The blocks.
@@ -420,6 +442,8 @@ pub struct SafetyBox {
     theta0: HarnessParams,
     ladders: HarnessLadders,
     audit: AuditPolicy,
+    /// S5's ceiling of B3's verify-depth floor.
+    max_floor: VerifyDepth,
 }
 
 impl SafetyBox {
@@ -430,6 +454,7 @@ impl SafetyBox {
             theta0,
             ladders,
             audit: policy.audit,
+            max_floor: policy.verify.max_floor,
         }
     }
 
@@ -462,6 +487,7 @@ impl SafetyBox {
         }
         self.check_budget(old, new, context, &mut violations);
         self.check_audit(new, &mut violations);
+        self.check_floor(new, &mut violations);
         if context.kind != ChangeKind::Restore {
             self.check_one_notch(old, new, context.kind, &mut violations);
         }
@@ -516,6 +542,15 @@ impl SafetyBox {
             violations.push(Violation::AuditAboveMax {
                 rate,
                 max: self.audit.p_max,
+            });
+        }
+    }
+
+    fn check_floor(&self, new: &HarnessParams, violations: &mut Vec<Violation>) {
+        if new.extra_rungs > self.max_floor {
+            violations.push(Violation::FloorAboveMax {
+                floor: new.extra_rungs,
+                max: self.max_floor,
             });
         }
     }
@@ -608,7 +643,7 @@ mod tests {
     use super::*;
 
     /// S06 §5's example policy, with a tighter audit ceiling so boosts can
-    /// break it, and a V1 verify minimum.
+    /// break it, a V1 verify minimum and a V3 ceiling on M1's floor.
     const POLICY: &str = r#"
 policy_version = 1
 ev.pass_rate = { lo = 0.70, inner = 0.75 }
@@ -617,7 +652,7 @@ ev.false_green = { hi = 0.10 }
 ev.latency_p90_s = { hi = 900, inner = 810 }
 drive = { n = 3, m = 2, weights = { pass_rate = 1.0, usd_per_verified_success = 1.0, false_green = 2.0, latency_p90_s = 0.5 } }
 tiers = { cheap = ["gpt-oss-120b"], mid = ["glm-4.7"], strong = ["kimi-k2.6"] }
-verify = { min_rungs = ["authored", "V1"] }
+verify = { min_rungs = ["authored", "V1"], max_floor = "V3" }
 audit = { p_floor = 0.10, p_max = 0.25 }
 "#;
 
@@ -838,6 +873,44 @@ audit = { p_floor = 0.10, p_max = 0.25 }
         );
     }
 
+    /// gap-86286e: S5's `verify.max_floor` bounds B3 as `p_max` bounds B7.
+    /// Under the policy's V3 ceiling a search raises M1's floor from V2 to
+    /// V3 but not to V4, and no restore reaches V4 either. A policy that
+    /// names no ceiling keeps B3's ladder up to V4, and an unknown depth
+    /// does not parse.
+    #[test]
+    fn b3_is_bounded_by_the_s5_verify_depth_ceiling() {
+        let (safety, theta0, ladders, policy) = fixture();
+        assert_eq!(policy.verify.max_floor, VerifyDepth::V3);
+        let search = context(ChangeKind::Search);
+        let floor = |extra_rungs| HarnessParams {
+            extra_rungs,
+            ..theta0.clone()
+        };
+        let (v2, v3, v4) = (
+            floor(VerifyDepth::V2),
+            floor(VerifyDepth::V3),
+            floor(VerifyDepth::V4),
+        );
+        assert!(safety.validate(&v2, &v3, &search).passed());
+        let above = Violation::FloorAboveMax {
+            floor: VerifyDepth::V4,
+            max: VerifyDepth::V3,
+        };
+        let raised = safety.validate(&v3, &v4, &search).violations;
+        assert_eq!(raised, [above.clone()]);
+        let restored = safety.validate(&theta0, &v4, &context(ChangeKind::Restore));
+        assert_eq!(restored.violations, [above]);
+
+        let text = POLICY.replace(", max_floor = \"V3\"", "");
+        let uncapped = ViabilityPolicy::parse(&text).expect("a policy without a ceiling");
+        assert_eq!(uncapped.verify.max_floor, VerifyDepth::V4);
+        let open = SafetyBox::new(theta0, ladders, &uncapped);
+        assert!(open.validate(&v3, &v4, &search).passed());
+        let bad = POLICY.replace("max_floor = \"V3\"", "max_floor = \"V9\"");
+        assert!(ViabilityPolicy::parse(&bad).is_err());
+    }
+
     /// A candidate θ: usually one notch, sometimes several knobs or
     /// notches, sometimes a raw value off its ladder, sometimes nothing.
     fn propose(
@@ -934,6 +1007,9 @@ audit = { p_floor = 0.10, p_max = 0.25 }
         }
         if f64::from(new.audit_boost) * policy.audit.p_floor > policy.audit.p_max {
             return Some("an audit rate above p_max");
+        }
+        if new.extra_rungs > policy.verify.max_floor {
+            return Some("a verification floor above S5's ceiling");
         }
         let cap_usd = context.adaptation_spend_max_frac * context.run_spend_usd;
         if search && context.adaptation_spend_usd > cap_usd {

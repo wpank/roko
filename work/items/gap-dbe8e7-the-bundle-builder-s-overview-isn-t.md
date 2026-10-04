@@ -63,3 +63,7 @@ draws the badges and the negatives strip but no tiles.
 ## Done when
 
 - [ ] Both `[[verify]]` commands pass.
+
+## Progress
+
+- gap-dbe8e7: implemented at 08879cfb2 (bench venv pytest showcase/ 19/19, verify 1 included; fly-smoke A1-A4 and showcase-serve 5/5 with a copy of the batch binary; every built view and the manifest follow the demo app's schemas; m4-audits is no longer written, and claims stay NOT_YET_MEASURED until a results directory records S09 verdicts)

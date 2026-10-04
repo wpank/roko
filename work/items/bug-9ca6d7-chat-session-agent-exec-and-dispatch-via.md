@@ -101,3 +101,26 @@ call `record_provider_outcome_at` directly (which needs the workdir's `.roko/lea
   string in `crates/roko-serve/src/dispatch.rs` (only session-budget-exhaustion messages there) — roko-serve
   may delegate to the CLI path and inherit the good message, or may have its own gap under different wording;
   worth a closer look before writing the fix, but ACP's gap is confirmed and anchorable now.
+
+## Progress
+
+- 2026-10-04 (w4-length): implemented on `work/bug-9ca6d7` at dd0aa2bca; cargo verification deferred to the batch
+  gate.
+  - `record_persisted_provider_health(workdir, provider, success)` became `record_persisted_provider_outcome(workdir,
+    provider, failure: Option<&str>)`. It classifies the failure's text with `ErrorClass::from_failure_text`, the
+    shared classifier (`classify_failure_text`) that Graph dispatch's provider health uses, and records it through
+    `record_provider_outcome_at`. Each call site passes the text it already had: `agent_exec` the agent's output,
+    `chat_session` the stream setup error or the stream's `Failed` error, and `dispatch_via_model_call_service` the
+    service's error.
+  - roko-learn's `record_provider_health_for_workdir` and `record_provider_health_at`, the two layers that
+    hard-coded `Unknown`, had no other caller and are removed. `tools/status_matrix.py --check` pins its anchors at
+    a43288b5f and still passes.
+  - The openai_compat 401 question from bug-0b7695 is the same classifier and was settled there (d687e060a,
+    `AUTH_FAILURE_MARKER`): "provider error: authentication failed" is `AuthFailure`. The new test pins it on this
+    path too.
+  - Test `classified_failure_through_agent_exec_is_not_recorded_as_unknown`: an auth failure, a rate limit and a
+    timeout, sent through `persist_capture_episode`, each land in `provider-health.json` under their class, and
+    unknown text stays `Unknown`.
+- Not done here: ACP's "no usable provider for the prompt: {why}" message, which has no credentials hint (the second
+  pass above). It is a separate facet and still needs its own item.
+

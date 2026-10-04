@@ -54,6 +54,7 @@ max_task_retry_usd = 0.43
 max_turn_usd = 0.043
 
 [learning]
+frozen = true
 auto_playbook_refresh = false
 dream_on_completion = false
 

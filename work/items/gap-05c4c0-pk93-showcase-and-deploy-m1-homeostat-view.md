@@ -87,3 +87,20 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK27 (gap-5ddf9b), PK44 (gap-85d176), PK59 (gap-147c4d), PK62 (gap-f7bab8), PK71 (gap-099513), PK83 (gap-4119fb), PK84 (gap-59ebfd), PK85 (gap-fcb44c), PK89 (gap-93c748), PK90 (gap-fbd580), PK91 (gap-799698), PK92 (gap-ba9965).
 - On hold until Will takes the deferred decision(s) 3346, 7101, 9303 (spend or a public release); see `DECISIONS.md`.
 - Suggested model: opus.
+- 2026-10-04 (gate-13c follow-up, PK85 gap-fcb44c, task 9330): confirmed at main HEAD
+  `908f7ec40`. 9330 (closed) deliberately deferred its SSE idle-close and `event: shutdown`
+  wiring — `crates/roko-serve/src/showcase/idle.rs`'s own doc comment says "the live slices'
+  showcase stream, which closes after `sse_max_idle_secs` of silence, lands with that stream" —
+  and `/api/showcase/stream` is confirmed not routed anywhere (`routes/showcase/mod.rs::routes`
+  has no `/showcase/stream` entry; the only mention is an auth-scope allowlist entry in
+  `showcase/scope.rs:75`, not a handler). Task 5 here (9356) is that stream, and its own title
+  already says "with ... idle close," so this is already in scope — when 9356 is implemented,
+  make sure it actually wires the idle timer's shutdown into the stream (an `event: shutdown`
+  frame before close) rather than leaving `idle.rs`'s side of this still undone after the
+  stream exists. No new item filed; this note exists so the two sides of the deferred wiring
+  (9330's comment and 9356's scope) are cross-referenced instead of silently assumed to match.
+- 2026-10-04 (gate-13c follow-up, PK86 gap-3516d6, task 9337): `deploy/showcase/preflight.sh`'s
+  P8 stream check also SKIPs rather than FAILs today for the same reason (`/api/showcase/stream`
+  404s) — self-documented in the script's own header (lines 21-24). No fix needed in
+  preflight.sh; once 9356 lands here, P8 becomes a hard check (a real SSE frame within 5s)
+  automatically. Flagging for the same reason as the note above.

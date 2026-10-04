@@ -63,3 +63,10 @@ The tasks were checked against `2c3ea9f73` on 2026-10-02. Re-check each task's a
 - Waits on: PK10 (gap-f61823), PK12 (gap-08120e), PK13 (gap-9e3134), PK83 (gap-4119fb), PK85 (gap-fcb44c).
 - On hold until Will takes the deferred decision(s) 9303 (spend or a public release); see `DECISIONS.md`.
 - Suggested model: opus.
+- 2026-10-04 (gate-13c follow-up, PK86 gap-3516d6, task 9337): confirmed at main HEAD
+  `908f7ec40`. `deploy/showcase/preflight.sh`'s P9 check (`POST /api/showcase/admin/freeze`)
+  SKIPs rather than FAILs today, because that route 404s — self-documented in the script's own
+  header (lines 21-24: "They stop being skipped the day a route answers something other than
+  404"). No fix needed in preflight.sh itself; once this item's admin-freeze route (9352) lands,
+  P9 becomes a hard PASS/FAIL check automatically. Flagging so whoever implements 9352 knows
+  `deploy/showcase/preflight.sh` is already watching for it.

@@ -59,3 +59,9 @@ The builder and verifier pass on a fixture bundle; Pilots A (gap-c33709) and B (
 
 - Full specs: `tmp/backlog/2026-10-02-complete-and-wire/9315-*.md` and `9316-*.md`.
 - Left PK82's package item at gate 12b (2026-10-04).
+- 2026-10-04 (gate-13c follow-up, PK85 gap-fcb44c, task 9333): confirmed at main HEAD
+  `908f7ec40`. 9333 (`showcase-replay` Playwright project, serve-manifest tests) is implemented
+  (`gap-fcb44c`'s done-note, `1d3d95fc3`: 5 serve-manifest tests pass), but running the R1 specs
+  against serve for real waits on this item (9316, held here on the pilot runs). No new item
+  filed; this item is already the right place for 9333's remaining dependency once Pilot A/B
+  run.

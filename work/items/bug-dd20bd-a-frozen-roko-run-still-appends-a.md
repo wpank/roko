@@ -77,3 +77,14 @@ change — it does not yet receive the config at all, per the current signature 
 - Keep the non-frozen behavior byte-identical; this is an early-return guard, not a rewrite of the feedback shape.
 - `roko run` and `roko plan run` share no code at this call site today (confirmed: `record_workflow_feedback` is
   local to `run.rs`), so this fix is independent of anything on the Graph plan-dispatch path.
+- 2026-10-04 (gate-13c follow-up): consider the same per-run log `gap-127263` established
+  (`EpisodeSink::per_run`, `.roko/runs/<run_id>/episodes.jsonl`) as an alternative to a plain
+  early-return guard here. `crates/roko-core/src/config/learning.rs:196-198`'s own doc comment
+  says a frozen run's telemetry stays on ("Telemetry stays on: the run's `.roko/runs/<run_id>/`
+  files..."), so redirecting the `workflow_complete`/gate-result feedback events to the run's
+  own per-run log (consistent with how task-attempt episodes are already redirected there)
+  might fit that philosophy better than suppressing them outright — worth deciding alongside
+  this fix rather than defaulting to early-return without considering it. See also
+  `gap-bc4ca5`, filed the same day: `roko run`'s one-task report doesn't read the per-run log
+  either, so a frozen run's report shows empty turns/tokens/cost; the two fixes touch adjacent
+  code in the same file and should be sequenced or combined.

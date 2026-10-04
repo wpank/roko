@@ -127,8 +127,7 @@ pub struct AuditUnit {
     /// The implementing model.
     pub model: String,
     /// The id of M3's forecast of the attempt (S01 §5.6), which its
-    /// `vs.label` row names; `None` without one, or for a unit taken up
-    /// from its selection alone.
+    /// `audit.selection` and its `vs.label` row name; `None` without one.
     pub prediction_id: Option<String>,
     /// The task, when its attempt was noted.
     pub task: AuditTask,
@@ -147,6 +146,7 @@ impl AuditUnit {
             selected: true,
             base_tree,
             result_tree,
+            prediction_id,
             ..
         } = &record.event
         else {
@@ -162,7 +162,7 @@ impl AuditUnit {
             base_tree: base_tree.clone(),
             result_tree: result_tree.clone(),
             model: stratum.model.clone(),
-            prediction_id: None,
+            prediction_id: prediction_id.clone(),
             task: AuditTask::default(),
         })
     }
@@ -1159,6 +1159,15 @@ fn lock(queue: &Path, sel_id: &str) -> Option<std::fs::File> {
 fn load_unit(queue: &Path, sel_id: &str) -> Option<AuditUnit> {
     let text = std::fs::read_to_string(queue.join(format!("{sel_id}.json"))).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// The selected units a worker of `context` takes up first: each one the
+/// ledger holds without a result, from its queue file or else from its
+/// selection alone.
+#[cfg(test)]
+pub(crate) fn pending_units(context: WorkerContext) -> std::io::Result<Vec<AuditUnit>> {
+    let ledger = AuditLedger::open(&context.vault)?;
+    Ok(Worker::new(context, ledger).pending())
 }
 
 #[cfg(test)]

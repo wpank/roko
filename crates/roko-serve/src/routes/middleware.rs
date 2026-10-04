@@ -777,6 +777,73 @@ fn session_credential(state: &AppState, req: &Request<Body>) -> Result<AuthConte
     }
 }
 
+/// Query parameters that carry a key somewhere; showcase mode refuses a request that has one.
+const QUERY_CREDENTIALS: [&str; 4] = ["api_key", "key", "token", "access_token"];
+
+/// [`require_api_key`] in showcase mode (S11 §4.2, 9326).
+///
+/// Only the admin key in `X-Api-Key` and a passphrase session's cookie authenticate. Every
+/// other credential is refused with 401 before any lookup: a bearer token of any kind (Privy,
+/// agent, relay, sidecar or API key), a worker token, a key in the query, the launch token and a
+/// named key. A session reaches only what [`crate::showcase::scope::session_may_access`]
+/// allows; anything else is `403 forbidden_for_session`.
+async fn require_showcase_credential(
+    state: &AppState,
+    config: &roko_core::config::schema::RokoConfig,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    let refused = || {
+        ApiError::unauthorized("showcase mode accepts only the admin key or a passphrase session")
+            .into_response()
+    };
+    let headers = req.headers();
+    let query_key = req.uri().query().is_some_and(|query| {
+        query
+            .split('&')
+            .filter_map(|pair| pair.split('=').next())
+            .any(|name| QUERY_CREDENTIALS.contains(&name))
+    });
+    if headers.contains_key(AUTHORIZATION)
+        || headers.contains_key("X-Roko-Worker-Token")
+        || query_key
+    {
+        return refused();
+    }
+    let context = if let Some(value) = headers.get("X-Api-Key") {
+        let admin_key = config.serve.auth.api_key.as_bytes();
+        let supplied = value.as_bytes();
+        if admin_key.is_empty() || !constant_time_eq(supplied, admin_key) {
+            return refused();
+        }
+        AuthContext {
+            method: AuthMethod::ApiKey,
+            scope: "admin".to_string(),
+            user_id: Some("admin".to_string()),
+        }
+    } else {
+        match session_credential(state, &req) {
+            Ok(context) if context.scope == crate::showcase::SHOWCASE_SCOPE => context,
+            Ok(_) => return refused(),
+            Err(response) => return response,
+        }
+    };
+    let live_enabled = config.showcase.live_enabled;
+    let allowed = context.method != AuthMethod::Session
+        || crate::showcase::scope::session_may_access(req.method(), req.uri().path(), live_enabled);
+    if !allowed {
+        return showcase_forbidden("forbidden_for_session");
+    }
+    let method = context.method;
+    req.extensions_mut().insert(context);
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        "X-Auth-Method",
+        axum::http::HeaderValue::from_static(method.header_value()),
+    );
+    response
+}
+
 /// `403 {"error": code}`: a showcase session request refused by its CSRF header or origin.
 fn showcase_forbidden(code: &'static str) -> Response {
     (
@@ -831,12 +898,19 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 ///
 /// Expired keys return 401 with `X-Key-Expired: true` so clients can
 /// distinguish "wrong key" from "key needs rotation".
+///
+/// In showcase mode only the admin key and a passphrase session authenticate
+/// ([`require_showcase_credential`]).
 pub async fn require_api_key(
     State(state): State<Arc<AppState>>,
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let auth = state.load_roko_config().serve.auth.clone();
+    let config = state.load_roko_config();
+    if config.showcase.enabled {
+        return Ok(require_showcase_credential(&state, &config, req, next).await);
+    }
+    let auth = config.serve.auth.clone();
     let named_api_keys = state.auth_registry.api_keys_snapshot().await;
     let route_label = format!("{} {}", req.method(), req.uri().path());
 
@@ -4738,6 +4812,145 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // --- showcase mode (9326) ---------------------------------------------------
+
+    const SHOWCASE_ADMIN_KEY: &str = "showcase-admin-key";
+    const SHOWCASE_LAUNCH_TOKEN: &str = "showcase-launch-token";
+
+    /// A showcase-mode server with an admin key and a launch token.
+    fn showcase_test_state() -> Arc<AppState> {
+        let tempdir = tempdir().expect("invariant: tempdir creates");
+        let mut config = RokoConfig::default();
+        config.serve.auth = ServeAuthConfig {
+            enabled: true,
+            api_key: SHOWCASE_ADMIN_KEY.to_string(),
+            ..Default::default()
+        };
+        config.showcase.enabled = true;
+        config.showcase.public_origin = Some("https://showcase.test".to_string());
+        let mut state = AppState::new(
+            tempdir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            Arc::new(ManualBackend::default()),
+        )
+        .expect("AppState::new");
+        state.local_access =
+            crate::state::LocalAccess::new(Some(SHOWCASE_LAUNCH_TOKEN.to_string()));
+        Arc::new(state)
+    }
+
+    /// Routes standing in for the API, behind `require_api_key`.
+    fn showcase_test_app(state: Arc<AppState>) -> Router {
+        let ok = || async { StatusCode::NO_CONTENT };
+        Router::new()
+            .route("/config", get(ok))
+            .route("/secrets", get(ok))
+            .route("/run", post(ok))
+            .route("/showcase/manifest", get(ok))
+            .route("/showcase/admin/bundles/reload", post(ok))
+            .layer(axum::middleware::from_fn_with_state(state, require_api_key))
+    }
+
+    #[tokio::test]
+    async fn showcase_scope_session_gets_403_on_config_and_secrets() {
+        let state = showcase_test_state();
+        let config = state.load_roko_config();
+        let grant = crate::state::SessionGrant::showcase(&config.showcase.session, None);
+        let access = &state.local_access;
+        let session_id = access.create_scoped_session(&grant, Utc::now());
+        let app = showcase_test_app(Arc::clone(&state));
+        let request = |method: Method, uri: &str| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("Cookie", format!("__Host-roko_session={session_id}"))
+                .header("X-Roko-CSRF", "1")
+                .header("Origin", "https://showcase.test")
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let refused = [
+            (Method::GET, "/config"),
+            (Method::GET, "/secrets"),
+            (Method::POST, "/run"),
+            (Method::POST, "/showcase/admin/bundles/reload"),
+        ];
+        for (method, uri) in refused {
+            let resp = app.clone().oneshot(request(method, uri)).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{uri}");
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "forbidden_for_session", "{uri}");
+        }
+        let resp = app
+            .clone()
+            .oneshot(request(Method::GET, "/showcase/manifest"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(resp.headers()["x-auth-method"], "session");
+
+        // The admin key reaches the rest of the API.
+        for uri in ["/config", "/secrets"] {
+            let admin = Request::builder()
+                .uri(uri)
+                .header("X-Api-Key", SHOWCASE_ADMIN_KEY)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(admin).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::NO_CONTENT, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn showcase_scope_rejects_privy_and_agent_tokens() {
+        let app = showcase_test_app(showcase_test_state());
+        let bearer = |token: &str| {
+            Request::builder()
+                .uri("/showcase/manifest")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let key = |key: &str| {
+            Request::builder()
+                .uri("/config")
+                .header("X-Api-Key", key)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let query = Request::builder()
+            .uri(format!("/showcase/manifest?api_key={SHOWCASE_ADMIN_KEY}"))
+            .body(Body::empty())
+            .unwrap();
+        let requests = [
+            bearer("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJkaWQ6cHJpdnk6eCJ9.c2lnbmF0dXJl"),
+            bearer("roko_agent_0123456789abcdef"),
+            bearer("roko_relay_0123456789abcdef"),
+            bearer(SHOWCASE_ADMIN_KEY),
+            bearer(SHOWCASE_LAUNCH_TOKEN),
+            key(SHOWCASE_LAUNCH_TOKEN),
+            key("not-the-admin-key"),
+            query,
+        ];
+        for request in requests {
+            let label = format!("{:?}", request.headers());
+            let resp = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{label}");
+        }
+        // Without any credential the session cookie is required.
+        let anonymous = Request::builder()
+            .uri("/showcase/manifest")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(anonymous).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 

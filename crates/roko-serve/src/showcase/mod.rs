@@ -3,10 +3,11 @@
 //! A passphrase login mints a session with the narrow [`SHOWCASE_SCOPE`]; its record lives in
 //! [`crate::state::LocalAccess`], with the passphrase generation that minted it. [`auth`] checks
 //! the passphrase and the CSRF header and origin of every session request; [`lockout`] counts
-//! failed logins and blocks bursts.
+//! failed logins and blocks bursts; [`scope`] keeps a session to the showcase routes.
 
 pub mod auth;
 pub mod lockout;
+pub mod scope;
 
 use chrono::{DateTime, TimeDelta, Utc};
 

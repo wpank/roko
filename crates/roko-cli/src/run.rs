@@ -707,7 +707,8 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
                 }
             })
     };
-    record_workflow_feedback(layout.root(), &report, outcome, duration).await;
+    let frozen = model_config.learning.frozen;
+    record_workflow_feedback(layout.root(), &report, outcome, duration, frozen).await;
     Ok(report)
 }
 
@@ -937,15 +938,21 @@ fn task_output(snapshot: &DashboardSnapshot, plan_id: &str) -> String {
 
 /// Record the run's gate verdicts and completion through the learning
 /// feedback service, which appends them to `learn/efficiency.jsonl` and one
-/// `workflow_complete` episode to the root episode log.
+/// `workflow_complete` episode to the root episode log. A `frozen` run
+/// (decision 2218) records none of it: the episode, and the knowledge
+/// outcomes the service credits for the run, are learned state (bug-dd20bd).
 async fn record_workflow_feedback(
     roko_dir: &Path,
     report: &WorkflowRunReport,
     outcome: String,
     duration: std::time::Duration,
+    frozen: bool,
 ) {
     use roko_core::foundation::{FeedbackEvent, FeedbackSink as _};
 
+    if frozen {
+        return;
+    }
     let feedback =
         roko_learn::feedback_service::FeedbackService::from_roko_dir_with_episodes(roko_dir);
     let gate_events = report.gates.iter().map(|gate| FeedbackEvent::GateResult {
@@ -1258,6 +1265,73 @@ command = "test -f README.md"
             .expect("read the manifest")
             .expect("the run's manifest");
         assert_eq!(manifest.run_id, report.run_id);
+    }
+
+    /// The `kind` of each row of the workspace's `learn/efficiency.jsonl`
+    /// and of each episode in its `.roko/episodes.jsonl`, in order.
+    #[cfg(unix)]
+    fn efficiency_and_episode_kinds(workdir: &Path) -> (Vec<String>, Vec<String>) {
+        let roko = workdir.join(".roko");
+        let kinds = |path: std::path::PathBuf| -> Vec<String> {
+            std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .map(|row| row["kind"].as_str().unwrap_or_default().to_string())
+                .collect()
+        };
+        (
+            kinds(roko.join("learn/efficiency.jsonl")),
+            kinds(roko.join("episodes.jsonl")),
+        )
+    }
+
+    /// bug-dd20bd: a `roko run` with learning frozen (decision 2218) records
+    /// no workflow feedback: no `workflow_complete` episode in the
+    /// workspace's episode log and no gate or completion row in
+    /// `learn/efficiency.jsonl`. The same run, live, records both.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn frozen_roko_run_appends_no_episode_or_efficiency_row() {
+        for frozen in [false, true] {
+            let tmp = fake_agent_workspace(&format!(
+                r#"
+[[gates.rungs]]
+name = "check"
+command = "test -f README.md"
+
+[learning]
+frozen = {frozen}
+"#
+            ));
+            let report = run_prompt(PromptRun {
+                prompt: "Say done",
+                workdir: tmp.path(),
+                tier: "focused",
+                overrides: &CliOverrides::default(),
+                max_retries: Some(0),
+                quiet: true,
+                state_hub: None,
+                run_id: None,
+                cancel: None,
+                domain: None,
+                max_usd: None,
+                origin: RunOrigin::Cli,
+                no_holdout: false,
+            })
+            .await
+            .expect("roko run completes");
+            assert!(report.success, "frozen = {frozen}");
+
+            let (efficiency, episodes) = efficiency_and_episode_kinds(tmp.path());
+            let feedback = ["gate_result", "workflow_completed"];
+            let recorded = efficiency
+                .iter()
+                .any(|kind| feedback.contains(&kind.as_str()));
+            let workflow = episodes.iter().any(|kind| kind == "workflow_complete");
+            assert_eq!(recorded, !frozen, "frozen = {frozen}: {efficiency:?}");
+            assert_eq!(workflow, !frozen, "frozen = {frozen}: {episodes:?}");
+        }
     }
 
     /// gap-29fe0a: `roko run --no-holdout` reaches the run. With it, every

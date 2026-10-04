@@ -93,3 +93,7 @@ only the data source is missing.
   to its precise code-level cause; `gap-ed1a08`'s closing evidence (done) independently
   confirms the same gap at a higher level ("X3 (per-position lottery breach timing)... [has] no
   data behind [it] in this codebase").
+
+## Progress
+
+- gap-90fae4: implemented at 2b79bf255. `audit/replay.py::draw_order` and `replay_h5.draw_order`/`stream_units` expose the lottery's per-position draws; `replay_closure` evaluates X3 from a false-green step (block A's first 40 units, then block E's) at the 5% floor and the 2x `audit_boost`, with S06's E3 breach rule, a paired bootstrap CI and the 12% audit-share guard. The verify passes (bench venv), and so do test_replay_closure, test_replay_h5, test_replay_runner and audit/tests (67).

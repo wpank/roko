@@ -2,7 +2,7 @@
 id = "gap-9ecd37"
 kind = "gap"
 title = "PK82 Showcase and deploy: Showcase bundle builder and verifier (Python, in ViabilityBench) (+7 more)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -10,8 +10,9 @@ rank = 82
 size = "L"
 subsystem = ["benchmarks/viabilitybench/showcase"]
 created = 2026-10-02
-updated = 2026-10-02
-last_verified = 2026-10-02
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "04eec7f39"
 source = "tmp/backlog/2026-10-02-complete-and-wire PK82"
 anchors = ["Cargo.lock", "Cargo.toml", "crates/roko-cli/Cargo.toml", "crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/main.rs", "crates/roko-cli/src/serve_runtime.rs", "crates/roko-core/src/config/loader.rs", "crates/roko-core/src/config/mod.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-serve/src/lib.rs", "crates/roko-serve/src/routes/bench.rs", "crates/roko-serve/src/runtime.rs", "demo/demo-app/src/components/CostRace.tsx", "demo/demo-app/src/components/TerminalPreview.tsx", "demo/demo-app/src/components/TopNav.tsx", "demo/demo-app/src/lib/prd-pipeline-sample.ts", "demo/demo-app/src/pages/Bench.tsx"]
 lane = "rust-cold"
@@ -35,6 +36,17 @@ command = "test -f crates/roko-core/src/config/showcase.rs && grep -rqw 'fn show
 
 [[verify]]
 command = "grep -q 'name = \"argon2\"' Cargo.lock && grep -rqw 'fn passphrase_hash_round_trips' crates/roko-cli/src/ && cargo test -p roko-cli passphrase_hash_round_trips"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T00:46:09Z"
+commit = "04eec7f39"
+executor = "claude-agent"
+via = "work-batch"
+size = "L"
+claimed_at = "2026-10-03T23:12:35Z"
+forced = false
+evidence = "Gate 12b (work/backlog-batch-12b, merged into main as 04eec7f39): cargo check --workspace --tests (Cargo.lock gains argon2), nightly fmt, cargo clippy --workspace -D warnings, nextest --lib 6,557 tests over roko-cli, roko-core and roko-serve, roko-cli bin 441 passed and the golden-path canaries pass (plan_validate: only bug-2a31bc's two known alias tests fail), demo tsc --noEmit clean, Playwright copy-rules/retired (13 passed) and no-simulated (1 passed), the showcase bundle tests 9 passed with the bench venv; every [[verify]] passes. PK82 6/8: the bundle builder and verifier, the retired demo pieces and Bench's Demo strategy, RunResult::verdict's no-gate rule, the [showcase] table (invariant 15) with serve refusing a half-configured showcase, argon2 and roko showcase passphrase. 9315 and 9316 are a held follow-up (no pilot runs). Gate fix 7cd9bf40a (test imports)."
 +++
 
 ## Problem

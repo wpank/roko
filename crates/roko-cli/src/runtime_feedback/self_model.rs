@@ -1,18 +1,18 @@
 //! M3's outcome sink (S04 T10; backlog 6129): each settled verdict teaches the self-model the
 //! attempt it forecast before routing (6128), and feeds the calibration gate's window (6122).
 //!
-//! Labels follow S01 §4.1. A learning label of 1 or 0 is a gate label, and `forced_accept`
-//! counts as 0. Unverified, provider, infra and harness outcomes teach nothing, and neither does
-//! an attempt a provider failover ran on a substitute model, since nobody chose it. The plan
-//! runner saves the state when the run ends, and a resumed run loads it again. A frozen run
-//! registers no such sink (decision 2218). Late VS labels from S05 come in through
-//! [`SelfModelOutcomeSink::observe_label`].
+//! Labels follow S01 §4.1 through `Label::of_verdict`, as the offline fit's do (bug-9099b7): a
+//! learning label of 1 or 0 is a gate label. Unverified, forced-accept, provider, infra and
+//! harness outcomes teach nothing, and neither does an attempt a provider failover ran on a
+//! substitute model, since nobody chose it. The plan runner saves the state when the run ends,
+//! and a resumed run loads it again. A frozen run registers no such sink (decision 2218). Late
+//! VS labels from S05 come in through [`SelfModelOutcomeSink::observe_label`].
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use roko_learn::self_model::{ArmKey, Label, LabelSource, Unit};
-use roko_learn::telemetry::{AttemptKey, AttemptOutcome, AttemptVerdictRecord, LadderReason};
+use roko_learn::telemetry::{AttemptKey, AttemptVerdictRecord, LadderReason};
 
 use super::{FeedbackEvent, FeedbackSink};
 use crate::graph_task_dispatch::self_model::{AttemptForecast, SelfModelRuntime};
@@ -76,18 +76,10 @@ impl FeedbackSink for SelfModelOutcomeSink {
     }
 }
 
-/// The gate label of `verdict` (S01 §4.1): its learning label, with `forced_accept` a fail.
-fn gate_label(verdict: &AttemptVerdictRecord) -> Option<bool> {
-    match verdict.outcome {
-        AttemptOutcome::ForcedAccept => Some(false),
-        _ => verdict.learning_success(),
-    }
-}
-
 /// The unit `verdict` teaches, with the features its forecast kept; `None` when it teaches
 /// nothing.
 fn unit_of(verdict: &AttemptVerdictRecord, forecast: &AttemptForecast) -> Option<Unit> {
-    let passed = gate_label(verdict)?;
+    let label = Label::of_verdict(verdict)?;
     let executed = &verdict.executed;
     if !executed.failover_chain.is_empty() {
         return None;
@@ -118,12 +110,7 @@ fn unit_of(verdict: &AttemptVerdictRecord, forecast: &AttemptForecast) -> Option
         attempt: identity.attempt,
         prior_failure: features.has_prior_failure,
         failure_class: features.error_class.clone(),
-        label: Label {
-            y_gate: Some(passed),
-            y_vs: None,
-            weight: 1.0,
-            source: LabelSource::GatePassed,
-        },
+        label,
         api_equiv_usd: verdict.cost.api_equiv_usd,
         cost_source: verdict.cost.source,
         latency_s: latency_s(verdict),
@@ -148,7 +135,7 @@ mod tests {
     use roko_core::pricing_snapshot::PriceSnapshot;
     use roko_learn::self_model::features::TaskFeatures;
     use roko_learn::self_model::model::{SelfModel, StateLoad};
-    use roko_learn::telemetry::AttemptIdentity;
+    use roko_learn::telemetry::{AttemptIdentity, AttemptOutcome};
 
     use super::*;
 
@@ -193,9 +180,10 @@ mod tests {
         FeedbackEvent::AttemptSettled(Arc::new(verdict))
     }
 
-    /// 6129: a settled pass, an agent failure and a forced accept move the state; an
-    /// unverified attempt and a failover substitute do not; every forecast leaves the cache;
-    /// the state survives a reload; a late VS label reaches a settled attempt only.
+    /// 6129: a settled pass and an agent failure move the state; a forced accept, an unverified
+    /// attempt and a failover substitute do not, the forced accept as in the offline fit
+    /// (bug-9099b7); every forecast leaves the cache; the state survives a reload; a late VS
+    /// label reaches a settled attempt only.
     #[tokio::test]
     async fn settled_verdict_updates_self_model_state() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -212,9 +200,9 @@ mod tests {
         let cases = [
             ("T1", AttemptOutcome::Passed, 1),
             ("T2", AttemptOutcome::GateFailed, 2),
-            ("T3", AttemptOutcome::ForcedAccept, 3),
-            ("T4", AttemptOutcome::Unverified, 3),
-            ("T5", AttemptOutcome::ProviderError, 3),
+            ("T3", AttemptOutcome::ForcedAccept, 2),
+            ("T4", AttemptOutcome::Unverified, 2),
+            ("T5", AttemptOutcome::ProviderError, 2),
         ];
         for (task, outcome, learned) in cases {
             let key = forecast(&runtime, &snapshot, task);
@@ -241,17 +229,17 @@ mod tests {
             .expect("the sink takes the verdict");
         assert_eq!(
             runtime.outcomes(),
-            3,
+            2,
             "a failover substitute teaches nothing"
         );
         assert!(runtime.take_forecast(&key).is_none());
-        // The three labelled attempts reached the calibration gate's window.
-        assert_eq!(runtime.gate().n, 3);
+        // The two labelled attempts reached the calibration gate's window.
+        assert_eq!(runtime.gate().n, 2);
 
         runtime.save().expect("save the state");
         let (reloaded, load) = SelfModel::load_or_new(&state, &snapshot).expect("reload");
         assert_eq!(load, StateLoad::Loaded);
-        assert_eq!(reloaded.outcomes, 3);
+        assert_eq!(reloaded.outcomes, 2);
 
         let passed = AttemptKey::new(RUN, "plan", "T1", 1).attempt_key();
         assert!(sink.observe_label(&passed, false, 4.0, LabelSource::Vs));
@@ -259,7 +247,7 @@ mod tests {
         assert!(!sink.observe_label(&unknown, true, 4.0, LabelSource::Vs));
         assert_eq!(
             runtime.outcomes(),
-            3,
+            2,
             "a late VS label is not another outcome"
         );
     }

@@ -4,9 +4,10 @@
 //! Every Graph attempt writes a `roko.attempt_open/1` line before its prompt is assembled and a
 //! `roko.verdict/1` line when it settles. [`read_runs`] joins the two by attempt key. An open
 //! line with no verdict is an abandoned attempt: it is counted and skipped. The label is the
-//! verdict's `learning_label` (S01 §4.1): `1` a pass, `0` an agent failure, and none for an
-//! unverified attempt or a provider or harness outcome. An attempt a provider failover
-//! substituted is marked and kept out of training, as `RoutingObservationSink` does.
+//! verdict's `learning_label` (S01 §4.1), through [`Label::of_verdict`] as in the live outcome
+//! sink: `1` a pass, `0` an agent failure, and none for an unverified attempt, a forced accept
+//! or a provider or harness outcome. An attempt a provider failover substituted is marked and
+//! kept out of training, as `RoutingObservationSink` does.
 //!
 //! Read-only: nothing here writes under `.roko/`.
 
@@ -15,7 +16,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::{ArmKey, Label, LabelSource, Unit};
+use super::{ArmKey, Label, Unit};
 use crate::telemetry::records::{ATTEMPT_OPEN_SCHEMA, VERDICT_SCHEMA};
 use crate::telemetry::{AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord};
 
@@ -207,7 +208,7 @@ fn unit_of(
     open: Option<&AttemptOpenRecord>,
     previous: Option<&AttemptVerdictRecord>,
 ) -> Option<Unit> {
-    let passed = verdict.learning_success()?;
+    let label = Label::of_verdict(verdict)?;
     let identity = &verdict.identity;
     let executed = &verdict.executed;
     let model = executed
@@ -242,12 +243,7 @@ fn unit_of(
         attempt: identity.attempt,
         prior_failure: failed_before.is_some(),
         failure_class: failed_before.and_then(failure_class_of),
-        label: Label {
-            y_gate: Some(passed),
-            y_vs: None,
-            weight: 1.0,
-            source: LabelSource::GatePassed,
-        },
+        label,
         api_equiv_usd: verdict.cost.api_equiv_usd,
         cost_source: verdict.cost.source,
         latency_s: latency_s(verdict),
@@ -286,7 +282,8 @@ fn latency_s(verdict: &AttemptVerdictRecord) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::telemetry::CostSource;
+    use crate::self_model::LabelSource;
+    use crate::telemetry::{AttemptIdentity, CostSource};
 
     fn fixture_runs() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/self_model/runs")
@@ -354,6 +351,52 @@ mod tests {
             4,
             "the failover unit is left out"
         );
+    }
+
+    /// bug-9099b7: the offline fit labels each verdict as the live outcome sink does, both
+    /// through [`Label::of_verdict`]: a pass and an agent failure teach, while a forced accept,
+    /// like an unverified attempt, teaches nothing on either path (S01 §4.1 and its SC3).
+    #[test]
+    fn forced_accept_labels_agree_between_offline_fit_and_the_live_sink() {
+        let outcomes = [
+            ("T1", AttemptOutcome::Passed),
+            ("T2", AttemptOutcome::GateFailed),
+            ("T3", AttemptOutcome::ForcedAccept),
+            ("T4", AttemptOutcome::Unverified),
+        ];
+        let verdicts: Vec<AttemptVerdictRecord> = outcomes
+            .into_iter()
+            .map(|(task, outcome)| {
+                let identity = AttemptIdentity::new(&AttemptKey::new("run-f", "plan-f", task, 1));
+                let mut verdict = AttemptVerdictRecord::settle(identity, outcome, true);
+                verdict.executed.provider = Some("cerebras".to_string());
+                verdict.executed.model_dispatched = Some("gpt-oss-120b".to_string());
+                verdict
+            })
+            .collect();
+        // The run's attempt log, each verdict stamped as the run writer stamps it.
+        let text: String = verdicts
+            .iter()
+            .map(|verdict| {
+                let mut line = serde_json::to_value(verdict).expect("serialize the verdict");
+                line["schema_version"] = VERDICT_SCHEMA.into();
+                format!("{line}\n")
+            })
+            .collect();
+        let mut report = IngestReport::default();
+        read_run(&text, &mut report);
+
+        for verdict in &verdicts {
+            let task = verdict.identity.task_id.as_str();
+            let offline = report.units.iter().find(|unit| unit.task_id == task);
+            let live = Label::of_verdict(verdict);
+            assert_eq!(offline.map(|unit| &unit.label), live.as_ref(), "{task}");
+        }
+        let forced = &verdicts[2];
+        assert_eq!(forced.outcome, AttemptOutcome::ForcedAccept);
+        assert_eq!(Label::of_verdict(forced), None, "a forced accept teaches nothing");
+        assert_eq!(report.audit.labelled, 2);
+        assert_eq!(report.audit.unlabelled, 2);
     }
 
     #[test]

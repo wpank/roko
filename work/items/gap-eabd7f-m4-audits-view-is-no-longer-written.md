@@ -83,3 +83,12 @@ but nothing projects it into the showcase bundle's view format.
   out until S05's audit records exist (the page shows 'not yet measured')." Related to
   `gap-2da8ec` (S09 verdict records/writer), filed the same day from the same branch — different
   data source (S05 audit records vs. S09 hypothesis verdicts), so kept separate.
+
+## Progress
+
+- gap-eabd7f: blocked: S05's records lack fields the `m4-audits` contract (contracts.ts `M4AuditsView`, `m4-audits.schema.json`) requires, so no honest view can be written yet. Checked at deba5c6f8:
+  1. `by_check` (A1/A2/B1 `run` and `failed`, B2 `run` and `mean_score`, B3 `run` and `agree_with_B1`) and each draw's `checks[{kind, passed}]`: per-check outcomes exist only in the vault's `audit.result.checks`. The workspace mirror `.roko/audit/audits.jsonl` stores `checks` as `"<redacted>"` (`ledger::redact_for_mirror`), `AuditLabels` carry only `y`, `g` and `w`, and the worker leaves `vs.label`'s `battery` unset (`labels.rs`).
+  2. `policy.pi_base`, `pi_honeypot` and `pi_gaming_prone`: `policy.rs` has one π formula, clip(ρ·tilt, ε_floor, π_max), with no honeypot or gaming-prone π. The records hold each unit's π (`audit.selection.pi`) and `audit.policy_change` moves of ρ and λ, never a base π.
+  3. `false_green` (and `gaming_rate`, `series`): the estimate (θ̂_H, ci, ci_method, n_eff) is an `audit.estimate` ledger record, not a `vb.metric_record/1` row, so it has no `metric_ref` the guard's `metrics` index can hold; `vb.metric_record/1` has no `n_eff`.
+  4. No experiment's results hold audit records yet: `run_roko.py` doesn't copy the mirror, `records.py` leaves the run record's `audit` field unset, and the builder's mechanism copy keeps only rows with a `run_id`, which `audit.result`, `audit.estimate` and `vs.label` lookups by `sel_id` or window would lose.
+  Available from the mirror: `visible_passes` (selection rows), `audited` and `caught` (results, `labels.y`), each draw's `audit_id`, `attempt_key`, `pi` and `outcome`, and `detector.honeypots` (audited `vs.label` rows with `honeypot`). Needs a decision: extend the records (a redacted per-check summary in the mirror, the policy knobs on selections, audit estimates as MetricRecords with `n_eff`, the mirror copied into results), or change the contract to the implemented lottery.

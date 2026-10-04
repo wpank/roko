@@ -1,6 +1,6 @@
 {
-  "total_registrations": 470,
-  "canonical_registrations": 410,
+  "total_registrations": 478,
+  "canonical_registrations": 418,
   "alias_count": 60,
   "conflict_count": 0,
   "unparsed_count": 0,
@@ -2079,7 +2079,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 409,
+      "line": 411,
       "router_fn": "build_router",
       "path": "/workflow/events",
       "method": "GET",
@@ -2087,7 +2087,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 517,
+      "line": 519,
       "router_fn": "build_router",
       "path": "/health",
       "method": "GET",
@@ -2095,7 +2095,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 519,
+      "line": 521,
       "router_fn": "build_router",
       "path": "/ready",
       "method": "GET",
@@ -2103,7 +2103,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 521,
+      "line": 523,
       "router_fn": "build_router",
       "path": "/metrics",
       "method": "GET",
@@ -3020,6 +3020,70 @@
       "path": "/runs/{id}",
       "method": "GET",
       "handler": "get_run_html"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 22,
+      "router_fn": "routes",
+      "path": "/showcase/manifest",
+      "method": "GET",
+      "handler": "views::manifest"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 23,
+      "router_fn": "routes",
+      "path": "/showcase/bundles",
+      "method": "GET",
+      "handler": "views::bundles"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 24,
+      "router_fn": "routes",
+      "path": "/showcase/bundles/{id}",
+      "method": "GET",
+      "handler": "views::bundle"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 25,
+      "router_fn": "routes",
+      "path": "/showcase/bundles/{id}/files/{*path}",
+      "method": "GET",
+      "handler": "views::bundle_file"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 26,
+      "router_fn": "routes",
+      "path": "/showcase/overview",
+      "method": "GET",
+      "handler": "views::overview"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 27,
+      "router_fn": "routes",
+      "path": "/showcase/p1/head-to-head",
+      "method": "GET",
+      "handler": "views::p1_head_to_head"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 28,
+      "router_fn": "routes",
+      "path": "/showcase/m4/audits",
+      "method": "GET",
+      "handler": "views::m4_audits"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 29,
+      "router_fn": "routes",
+      "path": "/showcase/admin/bundles/reload",
+      "method": "POST",
+      "handler": "admin::reload_bundles"
     },
     {
       "source_file": "crates/roko-serve/src/routes/sse.rs",

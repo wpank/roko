@@ -1115,6 +1115,10 @@ pub struct AppState {
     /// Never persisted; reset on every server start.
     pub local_access: LocalAccess,
 
+    /// The showcase bundles the loader checked, loaded on first use and on an admin reload
+    /// (S10 §4.5).
+    pub(crate) showcase_bundles: crate::routes::showcase::bundles::BundleCache,
+
     /// Job execution service shared by `POST /api/jobs/{id}/cancel` and the
     /// job runner, so a cancel reaches the run it targets (gap-2a9ed7).
     pub job_execution: roko_core::JobExecutionService,
@@ -1719,6 +1723,7 @@ impl AppState {
                 .filter(|s| !s.is_empty()),
             live_agent_output: AtomicBool::new(false),
             local_access: LocalAccess::new(None),
+            showcase_bundles: crate::routes::showcase::bundles::BundleCache::default(),
             job_execution,
         })
     }

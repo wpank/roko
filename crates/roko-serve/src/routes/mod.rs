@@ -58,6 +58,7 @@ mod runs;
 mod safety;
 mod secrets;
 pub mod shared_runs;
+pub(crate) mod showcase;
 pub(crate) mod sse;
 mod status;
 mod subscriptions;
@@ -401,6 +402,7 @@ pub fn build_router(
         .merge(effects::routes())
         .merge(affect::routes())
         .merge(shared_runs::auth_routes())
+        .merge(showcase::routes())
         .merge(webhooks::authenticated_routes())
         .nest("/providers", providers::router())
         .nest("/models", providers::models_router())
@@ -2540,6 +2542,7 @@ mod tests {
             ("/api/learn/loops/L-know/canary", "admin"),
             ("/api/learn/loops/L-know/fault", "admin"),
             ("/api/showcase/m2/loops/L-know/break", "admin"),
+            ("/api/showcase/admin/bundles/reload", "admin"),
             // agent:write
             ("/api/agents/register", "agent:write"),
             ("/api/agents/create", "agent:write"),

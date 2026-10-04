@@ -1200,6 +1200,11 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         prefix: "/api/showcase/m2/loops",
         scope: "admin",
     },
+    // The showcase's admin routes (S11): bundle reload, login unlock.
+    RouteScopeEntry {
+        prefix: "/api/showcase/admin",
+        scope: "admin",
+    },
     RouteScopeEntry {
         prefix: "/api/agent-tokens",
         scope: "admin",

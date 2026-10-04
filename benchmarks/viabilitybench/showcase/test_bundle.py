@@ -173,15 +173,11 @@ def test_metric_kinds_follow_the_metric_names() -> None:
 
 
 def test_overview_tiles_follow_the_claims_board(tmp_path: Path) -> None:
-    """The Overview draws only claims-board tiles (contracts.ts `OverviewTile`), so a built bundle showed no tile.
-    Every built view and the manifest follow the page's JSON Schemas, and the tiles are the R1 catalogue's."""
+    """The Overview draws only claims-board tiles (contracts.ts `OverviewTile`), so a built bundle showed no tile:
+    the tiles are the R1 catalogue's, in the page's schema, with rows copied by metric_ref."""
     bundle = build(tmp_path)
-    manifest = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))
-    assert validate.schema_errors(manifest, contract("bundle")) == []
-    for name in manifest["views"]:
-        assert validate.schema_errors(view(bundle, name), contract(name)) == [], name
-
     overview = view(bundle, "overview")
+    assert validate.schema_errors(overview, contract("overview")) == []
     tiles = {tile["id"]: tile for tile in overview["tiles"]}
     assert list(tiles) == [tile["id"] for tile in build_bundle.OVERVIEW_TILES]
     assert {tile["pillar"] for tile in overview["tiles"]} == {"P1", "P2"}
@@ -201,18 +197,67 @@ def test_overview_tiles_follow_the_claims_board(tmp_path: Path) -> None:
         assert (tiles[name]["rows"], tiles[name]["view"]) == ([], None), name
     assert overview["negatives"] == []
 
-    head_to_head = view(bundle, "p1-head-to-head")
+
+@pytest.mark.parametrize("name", ["overview", "p1-head-to-head"])
+def test_r1_views_follow_the_page_contracts(tmp_path: Path, name: str) -> None:
+    """Each R1 view the bundle carries follows the page's JSON Schema for it, so the page draws it: past the guard,
+    the old head-to-head threw ("reading 'frontier_arms'")."""
+    bundle = build(tmp_path)
+    manifest = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))
+    assert validate.schema_errors(manifest, contract("bundle")) == []
+    assert name in manifest["views"]
+    assert validate.schema_errors(view(bundle, name), contract(name)) == []
+
+
+def test_r1_views_follow_the_page_contracts_head_to_head_arms(tmp_path: Path) -> None:
+    """The head-to-head's arms carry the contract's fields: the label, tier, harness and role of the arm, and the
+    models, tasks, trials and cost source of its run records."""
+    head_to_head = view(build(tmp_path), "p1-head-to-head")
     arms = {arm["arm"]: arm for arm in head_to_head["arms"]}
-    roko = arms["roko_fixed"]
+    assert list(arms) == ["roko_fixed", "fd_claude"]
+    roko, frontier = arms["roko_fixed"], arms["fd_claude"]
     assert (roko["label"], roko["tier"], roko["harness"], roko["role"]) == ("cheap·roko", "cheap", "roko", "arm")
-    assert (roko["n_trials"], arms["fd_claude"]["n_trials"]) == (2, 1)
-    assert arms["fd_claude"]["models"] == ["anthropic/claude-sonnet-4-6"]
-    assert head_to_head["claim"]["state"] == "NOT_YET_MEASURED"
-    provenance = overview["provenance"]
-    assert provenance["window"] == {"from": "2026-10-03T09:00:00Z", "to": "2026-10-03T10:29:31Z"}
-    assert (provenance["n"], provenance["seeds"], provenance["cost_usd"]) == (3, [1, 2], 0.2828)
-    assert provenance["record_filter"] == 'experiment_id == "FIXTURE-P1"'
-    assert [source["sha256_verified"] for source in provenance["sources"]] == [False]
+    assert (frontier["label"], frontier["tier"], frontier["harness"]) == ("frontier·direct", "frontier", "direct")
+    assert (roko["models"], frontier["models"]) == (["cerebras/gpt-oss-120b"], ["anthropic/claude-sonnet-4-6"])
+    assert (roko["n_trials"], frontier["n_trials"], roko["cost_source"]) == (2, 1, "provider_usage")
+    assert (roko["resolve"]["value"], roko["usd_per_verified"]["value"]) == (0.5, 0.0418)
+    assert roko["pass_hat_k"] is None  # the fixture has pass^1 only, and the contract wants 1, 3 and 5
+    assert head_to_head["claim"] == {
+        "hypothesis": "H1",
+        "state": "NOT_YET_MEASURED",
+        "prereg_id": None,
+        "planned_in": ["LOG1"],
+        "text": build_bundle.H1_TEXT,
+    }
+    assert (head_to_head["pareto"]["frontier_arms"], head_to_head["envelope"]) == ([], [])
+
+
+def test_r1_views_follow_the_page_contracts_m4_waits_for_audits(tmp_path: Path) -> None:
+    """A contract m4-audits view needs S05's audit records (its policy, draws and checks), which no R1 bundle holds,
+    so the builder leaves it out and the page says "not yet measured" instead of throwing ("reading 'state'")."""
+    bundle = build(tmp_path)
+    manifest = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))
+    assert "m4-audits" not in manifest["views"]
+    assert not (bundle / "views" / "m4-audits.json").exists()
+
+
+def test_r1_views_follow_the_page_contracts_envelope(tmp_path: Path) -> None:
+    """The provenance envelope has every field the drawer reads, copied from the run records and the manifest: n,
+    seeds and the window of the runs, and pointers to each metric's own estimator and interval."""
+    bundle = build(tmp_path)
+    manifest = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))
+    records = rows(bundle / "data" / "records.jsonl")
+    files = {file["path"]: file for file in manifest["files"]}
+    for name in manifest["views"]:
+        provenance = view(bundle, name)["provenance"]
+        assert validate.schema_errors(provenance, contract(name)["properties"]["provenance"]) == [], name
+        assert provenance["n"] == files["data/records.jsonl"]["rows"] == len(records)
+        assert provenance["seeds"] == sorted({record["seed"] for record in records}) == [1, 2]
+        assert provenance["window"] == {"from": "2026-10-03T09:00:00Z", "to": "2026-10-03T10:29:31Z"}
+        assert provenance["cost_usd"] == manifest["cost_usd"] == 0.2828
+        assert provenance["record_filter"] == 'experiment_id == "FIXTURE-P1"'
+        assert provenance["estimator"] == provenance["ci"]["method"] == build_bundle.PER_METRIC
+        assert [source["sha256_verified"] for source in provenance["sources"]] == [False]
 
 
 def test_the_m4_tile_shows_only_an_audit_estimate(tmp_path: Path) -> None:

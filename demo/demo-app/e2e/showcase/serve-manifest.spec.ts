@@ -59,4 +59,27 @@ test('the showcase at /demo/ renders the replay bundle through the api source', 
   await page.goto('/demo/');
   const overview = page.locator('[data-showcase-page="overview"] [data-view="overview"]');
   await expect(overview).toBeVisible({ timeout: 20_000 });
+  await expect(overview.locator('[data-tile]').first()).toBeVisible();
+});
+
+test("the replay bundle's head-to-head and audits render, with a provenance drawer", async ({
+  page,
+}) => {
+  await page.goto('/demo/p1/head-to-head');
+  const headToHead = page.locator(
+    '[data-showcase-page="head-to-head"] [data-view="p1-head-to-head"]',
+  );
+  await expect(headToHead).toBeVisible({ timeout: 20_000 });
+  await expect(headToHead.locator('[data-claim-state]')).toBeVisible();
+  await headToHead.locator('.sc-prov-btn').first().click();
+  const drawer = page.locator('.sc-drawer[role="dialog"]');
+  await expect(drawer.locator('[data-prov-field="window"]')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(drawer).toHaveCount(0);
+
+  // Without S05's audit records a bundle has no m4-audits view, and the page says so.
+  await page.goto('/demo/p2/audits');
+  const audits = page.locator('[data-showcase-page="audits"]');
+  const drawn = audits.locator('[data-view="m4-audits"], [data-not-measured]');
+  await expect(drawn.first()).toBeVisible({ timeout: 20_000 });
 });

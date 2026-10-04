@@ -1,8 +1,9 @@
 # Roko Railway image.
 #
-# Two build targets:
+# Three build targets:
 #   runtime   — full Railway service with sidecars (mirage-rs, agent-relay, Claude CLI, Rust toolchain)
 #   distroless — minimal roko-cli-only image using gcr.io/distroless/cc-debian12
+#   showcase-replay — the replay-only Fly showcase (S11 F1): roko alone on Debian slim, < 250 MB
 #
 # The sidecars are required build artifacts for the `runtime` target. A deploy must
 # fail if they do not build, instead of silently shipping a half-functional control plane.
@@ -10,6 +11,9 @@
 # Usage:
 #   docker build --target runtime   -t roko:railway .       # Full Railway deploy
 #   docker build --target distroless -t roko:slim .          # Minimal distroless image
+#   docker build --target showcase-replay -t roko:showcase . # Fly showcase (fly.showcase.toml)
+#
+# `runtime` stays the last stage, so a build without --target still makes the Railway image.
 
 # ---- Frontend (Vite) -------------------------------------------------------
 FROM node:22-bookworm-slim AS frontend
@@ -84,6 +88,68 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 
 ENTRYPOINT ["/usr/local/bin/roko"]
 CMD ["serve"]
+
+# ---- Frontend for the showcase (the api source, served by roko at /demo) ----
+FROM frontend AS frontend-showcase
+ENV VITE_SHOWCASE_SOURCE=api
+RUN npm run build
+
+# ---- Rust: roko alone (the showcase images) --------------------------------
+# Only the roko binary, with default features and both UIs embedded: no mirage-rs, agent-relay
+# or chain features, so the build and the image stay small.
+FROM rust:1.96.1-slim-bookworm AS builder-core
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        libssl-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . .
+COPY --from=frontend-showcase /app/demo/demo-app/dist ./demo/demo-app/dist
+COPY --from=portal /app/apps/portal/out ./apps/portal/out
+
+# Fail instead of embedding the fallback page (crates/roko-serve/build.rs).
+ENV ROKO_REQUIRE_EMBEDDED_UI=1
+
+RUN cargo build --release -p roko-cli --bin roko \
+    && strip target/release/roko \
+    && cp target/release/roko /tmp/roko
+
+# ---- Showcase, replay only (S11 F1) ----------------------------------------
+# roko on Debian slim, serving the showcase at /demo from bundles on the /data volume. tini
+# reaps and forwards signals; the entrypoint checks the passphrase hash, links state to the
+# volume and drops to the roko user with gosu. Small for fast cold starts after an idle exit.
+FROM debian:bookworm-slim AS showcase-replay
+
+LABEL org.opencontainers.image.title="roko showcase (replay)" \
+      org.opencontainers.image.description="Roko showcase: replay only, passphrase-gated" \
+      org.opencontainers.image.source="https://github.com/nunchi/roko"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        gosu \
+        libssl3 \
+        tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 1000 --create-home --shell /usr/sbin/nologin roko \
+    && mkdir -p /workspace \
+    && chown roko:roko /workspace
+
+COPY --from=builder-core /tmp/roko /usr/local/bin/roko
+COPY docker/showcase.roko.toml /workspace/roko.toml
+COPY docker/showcase-entrypoint.sh /usr/local/bin/showcase-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/showcase-entrypoint.sh
+
+WORKDIR /workspace
+ENV RUST_LOG=info
+EXPOSE 6677
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/showcase-entrypoint.sh"]
 
 # ---- Runtime (full) -------------------------------------------------------
 # Compiled binaries + Rust toolchain (for gate pipeline) + Claude CLI (for agent dispatch).

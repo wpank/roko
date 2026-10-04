@@ -37,18 +37,21 @@ contracts/broadcast/
 *.key
 
 # Logs / temp
-*.log
-*.tmp
+**/*.log
+**/*.tmp
 tmp/
 
 # Node (a bare `node_modules/` would match only the context root)
 **/node_modules/
 *.tsbuildinfo
 **/.next/
-dist/
-# The images build both embedded UIs in their own stages.
+# Build outputs anywhere in the tree: the images build both embedded UIs in their own stages.
+**/dist/
+**/out/
 apps/portal/out/
 demo/demo-app/dist/
+# The docs site's build output (untracked, large on a macOS host).
+docs/v3/.vitepress/
 
 # Cargo local config (sccache paths are macOS-specific)
 .cargo/

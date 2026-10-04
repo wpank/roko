@@ -3844,9 +3844,10 @@ fn init_otlp_tracing(endpoint: &str, service_name: &str, _sample_rate: f64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ServerBuildConfig, ServerBuilder, build_app_state, drain_within,
+        RokoConfig, ServerBuildConfig, ServerBuilder, build_app_state, drain_within,
         resolve_bind_with_port_env, run_cold_archival_tick, run_server_with_state,
-        serve_api_or_spa_fallback, start_telemetry_producer_bridge, warn_if_auth_misconfigured,
+        serve_api_or_spa_fallback, start_telemetry_producer_bridge, validate_showcase_mode,
+        warn_if_auth_misconfigured,
     };
 
     use axum::body::{Body, to_bytes};

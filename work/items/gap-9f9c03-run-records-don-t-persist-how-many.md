@@ -85,3 +85,34 @@ Unfixed; `n_known=false` is the documented, intentional signal of this gap today
 - See the dated Notes line added to `tmp/backlog/2026-10-02-complete-and-wire/7120-audit-only-a1-kinds.md` for a
   related, separate finding (Rust `roko-gate` audit-only diff-finding kinds should reuse `tamper.py`'s exact kind
   names) — not the same bug, just found by the same worker in the same area.
+
+## Progress
+
+- Confirmed the harness already knows the count, without needing a new field in `hidden.py`'s own output: every
+  family's `hidden.py` already returns `{"passed": bool, "checks": [{"id", "passed", "detail"}], ...}` (the
+  identical contract docstring in all eight `families/*/hidden.py` files), and `census.py::run_census` already
+  stores the whole verdict dict, checks list included, as `result.hidden_output`. So Plan step 1 ("have the
+  harness report the count") turned out to already be true; the actual gap was narrower than the Plan assumed --
+  `driver/records.py::build` read `failed`/`truth_suite_version` off `hidden_output` but never the checks list's
+  own length.
+- `driver/records.py::build`: added `hidden_checks = len(hidden_output["checks"])` (None when `hidden_output` is
+  absent or its `"checks"` is not a list, e.g. an infra_error or an older Roko binary's output) to the record's
+  `vs` object, alongside the existing informal `verifier_version`/`sandbox` passthrough fields gap-8c3752 added the
+  same way (no `additionalProperties: false` on `schema/run-record.schema.json`'s `vs`, so no schema edit needed,
+  matching that precedent).
+- `audit/labels.py::_hidden`: reads `vs.get("hidden_checks")`; when it is a non-negative int (and not a bool --
+  `isinstance(True, int)` is true in Python, guarded the same way `run_roko.py::_from_unix_ms` already guards
+  against it), `n` is the real count and `n_known` is True, and `failed` is the exact named-failure count (`named`)
+  rather than the old `max(named, 1)` floor. Verified `named <= total` holds structurally: `census.py` names one
+  `hidden.<id>` failure per check dict with `passed is not True`, so it can never exceed the checks list's own
+  length, which keeps `audit.__init__.py::_rule_errors`'s `0 <= failed <= n` invariant satisfied. Without
+  `hidden_checks` (a record from before the fix), the exact old formula runs unchanged -- confirmed by
+  `test_battery.py::test_label_rows_validate_with_the_battery_beside_the_census`'s pre-existing pinned
+  `{"n": 0, "failed": 0, "n_known": False}` assertion, still passing untouched (its fixture record predates this
+  field).
+- `audit/tests/test_labels.py` did not exist; created it with the named test plus coverage of the known-and-failed,
+  known-but-nothing-named, pre-fix-fallback and malformed-`hidden_checks` cases. Verified the test is load-bearing
+  by reverting just the `_hidden` fix and re-running: fails on the exact `n`/`n_known` values, then passes restored.
+- Verify: named `[[verify]]` command -> 1 passed. Full `benchmarks/viabilitybench/audit` suite: 62 passed (0
+  regressions, including the pinned test above). `driver/test_run_cli.py` (exercises `census.run_census` +
+  `records.build` for the direct/CLI arms): 26 passed.

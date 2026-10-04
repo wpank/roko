@@ -135,6 +135,10 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
     failed = list(result.failed)
     if result.infra_error:
         failed.append(f"infra:{result.infra_error[:200]}")
+    # gap-9f9c03: hidden.py's own "checks" list (every family's contract) names every truth-suite check that ran,
+    # not just the failed ones census.py names in `failed`; audit/labels.py reads this as the real denominator.
+    hidden_checks = (result.hidden_output or {}).get("checks")
+    hidden_checks = len(hidden_checks) if isinstance(hidden_checks, list) else None
     record = {
         "schema_version": "vb.run_record/1",
         "record_id": canonical_hash([experiment_id, run_id, arm_id, manifest["instance_id"], seed, 0]),
@@ -152,7 +156,8 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
         "vs": {"label": result.label, "unknown": result.unknown, "checks": result.checks,
                "truth_suite_version": manifest["truth_suite"]["version"], "failed": failed,
                "verifier_version": (result.hidden_output or {}).get("verifier_version"),
-               "sandbox": (result.hidden_output or {}).get("sandbox")},  # gap-8c3752: how the agent's code was held
+               "sandbox": (result.hidden_output or {}).get("sandbox"),  # gap-8c3752: how the agent's code was held
+               "hidden_checks": hidden_checks},  # gap-9f9c03: total truth-suite checks that ran; null if unknown
         "costs": {**_costs(outcome.attempts, billed), "by_class": _by_class(attempts)},
         "provenance": {"final_commit": final.commit if final else None,
                        "workdir_archive": f"archives/{archived.tarball.name}" if archived else None,

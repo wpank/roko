@@ -259,7 +259,7 @@ read_files = [
     { path = "plans/portal-programme/08f-final-polish/accept/checkExit.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
     { path = "apps/portal/src/lib/checks.ts", why = "Digest and the start of the parser", lines = "1-125" },
     { path = "apps/portal/src/components/stream/Checks.tsx", why = "the failed step's rendering", lines = "145-249" },
-    { path = "apps/portal/src/components/stream/StreamPane.tsx", why = "the tab badges", lines = "255-330" },
+    { path = "apps/portal/src/components/stream/StreamPane.tsx", why = "the tab badges", lines = "185-241" },
 ]
 anti_patterns = [
     "Do not treat a ✗ line in the middle of the output as the step's ending.",

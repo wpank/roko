@@ -1166,3 +1166,65 @@ gates = [{ id = "compile", kind = "compile", command = "cargo check -p roko-cli"
             .any(|task| task.acceptance_contract.is_some())
     );
 }
+
+/// bug-261c02: five tracked plans failed `roko plan validate` with staleness unrelated to PK14's
+/// own work (which only noticed them). Three (two line ranges in
+/// `portal-programme/08d-portal-legibility` and `08f-final-polish`, one symbol anchor in
+/// `workspace-doctor-improvements`) named code that moved, shrank or was renamed, and are fixed in
+/// place: `plan validate` passes against the real tree, since their `read_files` entries point at
+/// files scattered across the repository, not a synthetic fixture. The other two
+/// (`portal-plan-execution`, `wire-http-plan-execute`) named code and files that were never built
+/// as the plans described -- a portal editor page with a `StatusLED` atom and `TaskEditorRow`
+/// component that do not exist anywhere under `apps/portal/src`, and an `execute_plan` HTTP
+/// handler already switched to the graph engine by a later, unrelated refactor -- and are marked
+/// archived or done/superseded instead, per this item's own "or deliberately archived" allowance,
+/// rather than patched with fabricated content.
+#[test]
+fn five_stale_plans_pass_plan_validate() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for dir in [
+        "plans/portal-programme/08d-portal-legibility",
+        "plans/portal-programme/08f-final-polish",
+        "plans/workspace-doctor-improvements",
+    ] {
+        let assert = Command::cargo_bin("roko")
+            .unwrap()
+            .current_dir(&repo)
+            .arg("plan")
+            .arg("validate")
+            .arg(dir)
+            .assert();
+        let output = assert.get_output();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{dir} should pass `roko plan validate`:\n{stdout}"
+        );
+    }
+
+    for (old_dir, archived_dir, meta_status) in [
+        (
+            "plans/portal-plan-execution",
+            "plans/archive/portal-plan-execution",
+            "archived",
+        ),
+        (
+            "plans/wire-http-plan-execute",
+            "plans/archive/wire-http-plan-execute",
+            "done",
+        ),
+    ] {
+        assert!(
+            !repo.join(old_dir).exists(),
+            "{old_dir} should have moved to plans/archive/, not stayed live and unvalidatable"
+        );
+        let tasks_toml = fs::read_to_string(repo.join(archived_dir).join("tasks.toml"))
+            .unwrap_or_else(|err| panic!("read {archived_dir}/tasks.toml: {err}"));
+        let needle = format!("status = \"{meta_status}\"");
+        assert!(
+            tasks_toml.contains(&needle),
+            "{archived_dir}/tasks.toml should set [meta] {needle}"
+        );
+    }
+}

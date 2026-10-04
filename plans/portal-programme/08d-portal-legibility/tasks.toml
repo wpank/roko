@@ -624,7 +624,7 @@ files = [
 [task.context]
 read_files = [
     { path = "plans/portal-programme/08d-portal-legibility/accept/band.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
-    { path = "apps/portal/src/components/run/RunBand.tsx", why = "the cells, empty line and rungs", lines = "136-225" },
+    { path = "apps/portal/src/components/run/RunBand.tsx", why = "the cells, empty line and rungs", lines = "136-224" },
     { path = "apps/portal/src/components/run/RunBand.accept.test.tsx", why = "the 08b test whose expectations change", lines = "1-" },
 ]
 anti_patterns = [
@@ -748,7 +748,7 @@ files = [
 read_files = [
     { path = "plans/portal-programme/08d-portal-legibility/accept/streamLegibility.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
     { path = "apps/portal/src/components/stream/Checks.tsx", why = "opacity and em sizes", lines = "40-245" },
-    { path = "apps/portal/src/components/stream/StreamPane.tsx", why = "bar separators and badges", lines = "215-370" },
+    { path = "apps/portal/src/components/stream/StreamPane.tsx", why = "bar separators and badges", lines = "185-263" },
     { path = "apps/portal/src/components/stream/Transcript.tsx", why = "opacity, em sizes and small classes" },
 ]
 anti_patterns = [

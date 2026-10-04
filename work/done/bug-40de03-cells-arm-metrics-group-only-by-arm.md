@@ -2,15 +2,16 @@
 id = "bug-40de03"
 kind = "bug"
 title = "cells()/arm_metrics() group only by (arm, model), so cheap_direct_msa's mini-swe-agent runs pool into cheap_direct's cell"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "2539f2c77"
 source = "wave-4 follow-up reports 2026-10-02 (PK21)"
 discovered_from = "gap-1149aa (PK21's own package); arms/cheap_direct_msa.toml's header comment, which currently misdescribes this as already handled"
 anchors = ["benchmarks/viabilitybench/analysis/metrics.py::cells", "benchmarks/viabilitybench/analysis/metrics.py::arm_metrics", "benchmarks/viabilitybench/arms/cheap_direct_msa.toml"]
@@ -20,6 +21,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_cells_separates_harnesses_sharing_one_arm_id' benchmarks/viabilitybench/analysis/test_analysis.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_analysis.py -k test_cells_separates_harnesses_sharing_one_arm_id -q"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T08:38:29Z"
+commit = "2539f2c77"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T06:54:05Z"
+forced = false
+evidence = "Gate 15b (merged 2539f2c77): verify test_cells_separates_harnesses_sharing_one_arm_id passes; bench suite 741 passed. cells() and arm_metrics() group by harness as well as (arm, model) in metrics.py, envelope.py and report.py, so cheap_direct_msa's mini-swe-agent runs no longer pool into cheap_direct."
 +++
 
 ## Problem

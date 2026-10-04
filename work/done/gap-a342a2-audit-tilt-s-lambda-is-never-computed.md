@@ -2,7 +2,7 @@
 id = "gap-a342a2"
 kind = "gap"
 title = "Audit tilt's lambda is never computed; policy::tilt has no caller and InclusionParams.lam stays 0"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "2539f2c77"
 source = "wave-14 follow-up reports 2026-10-04 (gap-3cd890, gate 14b)"
 discovered_from = "gap-3cd890 (in flight, work/gap-3cd890; its risk/mean_risk fix doesn't touch lambda)"
 anchors = ["crates/roko-gate/src/audit/policy.rs::tilt", "crates/roko-cli/src/graph_task_dispatch/self_model.rs::SelfModelRuntime"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn audit_tilt_lambda_rises_with_measured_false_green_ece' crates/ && cargo test -p roko-cli audit_tilt_lambda_rises_with_measured_false_green_ece"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T08:38:27Z"
+commit = "2539f2c77"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T06:54:01Z"
+forced = false
+evidence = "Gate 15b (merged 2539f2c77): verify audit_tilt_lambda_rises_with_measured_false_green_ece passes. The lottery computes λ at open from the vault ledger: audit.selection logs risk_r, each vs.label with a known VS scores its unit's risk against false green with weight 1/π, and the IPW-ECE (10 equal-mass bins, latest 100 labels; λ = 0 below 50) goes to policy::tilt, per S05 §4.2 (λ falls as ECE grows). Window choice: 100 labels (S04's calibration window)."
 +++
 
 ## Problem

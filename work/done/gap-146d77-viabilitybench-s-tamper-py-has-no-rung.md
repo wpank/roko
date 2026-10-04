@@ -2,15 +2,16 @@
 id = "gap-146d77"
 kind = "gap"
 title = "ViabilityBench's tamper.py has no rung_file_edited kind, unlike the Rust attempt_diff.rs it ports"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/audit"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "2539f2c77"
 source = "wave-7 follow-up reports 2026-10-03 (PK59, bug-d5d55f)"
 discovered_from = "bug-d5d55f"
 anchors = ["benchmarks/viabilitybench/audit/tamper.py::KINDS"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_rung_file_edited_in_the_same_diff_is_tamper' benchmarks/viabilitybench/audit/tests/test_tamper.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/audit/tests/test_tamper.py -k test_rung_file_edited_in_the_same_diff_is_tamper -q"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T08:38:30Z"
+commit = "2539f2c77"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T06:54:07Z"
+forced = false
+evidence = "Gate 15b (merged 2539f2c77): verify test_rung_file_edited_in_the_same_diff_is_tamper passes; the audit suite passes. tamper.py has the rung_file_edited kind, ported from attempt_diff.rs, with a planted case in audit/fixtures/tamper.json."
 +++
 
 ## Problem

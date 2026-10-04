@@ -2,15 +2,16 @@
 id = "bug-2e5429"
 kind = "bug"
 title = "Pre-dispatch agent_spawned shows AnthropicApi tasks as claude_cli (AgentBackend can't represent the direct API)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
 size = "M"
 subsystem = ["roko-cli/graph-task-dispatch", "roko-core/agent"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "2539f2c77"
 source = "wave-5 follow-up reports 2026-10-02 (PK74 gap-ce1d11)"
 discovered_from = "gap-ce1d11"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher", "crates/roko-core/src/agent.rs::AgentBackend", "crates/roko-core/src/agent.rs::ProviderKind"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn agent_spawned_label_reflects_anthropic_api' crates/roko-cli/ && cargo test -p roko-cli agent_spawned_label_reflects_anthropic_api"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T08:38:25Z"
+commit = "2539f2c77"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T06:54:09Z"
+forced = false
+evidence = "Gate 15b (merged 2539f2c77): the premise was already fixed at BASE by backlog 1127 (1013f307f), which labels the pre-dispatch agent_spawned with the provider the model key resolves to; regression test agent_spawned_label_reflects_anthropic_api (a Claude model on an AnthropicApi provider behind a 401 mock shows anthropic, not claude_cli) passes."
 +++
 
 ## Problem

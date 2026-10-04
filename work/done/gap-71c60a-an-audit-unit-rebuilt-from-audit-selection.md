@@ -2,7 +2,7 @@
 id = "gap-71c60a"
 kind = "gap"
 title = "An audit unit rebuilt from audit.selection alone has no prediction_id: the event doesn't carry one"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/audit"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "2539f2c77"
 source = "wave-14 follow-up reports 2026-10-04 (gap-45c8fe, gate 14b)"
 discovered_from = "gap-45c8fe (in flight on work/gap-3cd890; fixes the normal path, not this fallback)"
 anchors = ["crates/roko-gate/src/audit/ledger.rs::AuditEvent", "crates/roko-cli/src/audit/worker.rs::AuditUnit"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn unit_rebuilt_from_selection_alone_keeps_its_prediction_id' crates/ && cargo test -p roko-cli unit_rebuilt_from_selection_alone_keeps_its_prediction_id"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T08:38:28Z"
+commit = "2539f2c77"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T06:54:02Z"
+forced = false
+evidence = "Gate 15b (merged 2539f2c77): verify unit_rebuilt_from_selection_alone_keeps_its_prediction_id passes; roko-gate test suites pass. audit.selection carries prediction_id (omitted when None, so older records parse and re-hash unchanged) and from_selection reads it back."
 +++
 
 ## Problem

@@ -2,15 +2,16 @@
 id = "gap-dadd56"
 kind = "gap"
 title = "L-route's dormant:mask registry finding is stale since 4113, not re-verified"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/loop-audit"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "e37dd2c5e"
 source = "wave-6 follow-up reports 2026-10-03 (PK40 gap-1f4bec)"
 discovered_from = "gap-1f4bec"
 anchors = ["crates/roko-learn/src/loop_audit/loops.toml", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'verified_at = \"976220c3ebb91d3879e9d7701fa4aec5d9723d1f\"' crates/roko-learn/src/loop_audit/loops.toml"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T14:16:00Z"
+commit = "e37dd2c5e"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T12:50:35Z"
+forced = false
+evidence = "Gate 18 (merged e37dd2c5e): its verify passes; census canaries pass. L-route's mask claim was false at 00a28ea0c (guards mask before the argmax; fallbacks are labelled), so it was rewritten and its dormant:mask reason dropped; all 20 findings pinned at 976220c3e were re-checked and re-pinned."
 +++
 
 ## Problem

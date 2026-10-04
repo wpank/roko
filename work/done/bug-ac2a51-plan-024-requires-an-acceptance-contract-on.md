@@ -2,15 +2,16 @@
 id = "bug-ac2a51"
 kind = "bug"
 title = "PLAN_024 requires an acceptance_contract on architecture-queue tasks while PLAN_046 always warns when one is present"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan-validate"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "e37dd2c5e"
 source = "wave-5 follow-up reports 2026-10-02 (PK19 gap-de0b87)"
 discovered_from = "gap-de0b87 (PLAN_024/PLAN_046, decision 3205)"
 anchors = ["crates/roko-cli/src/plan_validate.rs::validate_architecture_queue_task"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn architecture_queue_task_with_acceptance_criteria_has_no_contract_warning' crates/roko-cli/ && cargo test -p roko-cli architecture_queue_task_with_acceptance_criteria_has_no_contract_warning"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T14:16:02Z"
+commit = "e37dd2c5e"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T12:50:38Z"
+forced = false
+evidence = "Gate 18 (merged e37dd2c5e): verify architecture_queue_task_with_acceptance_criteria_has_no_contract_warning passes; plan_validate's other tests pass apart from bug-2a31bc's two. PLAN_024 asks for checked acceptance (covered criteria or [task.accept]) and PLAN_046 warns only when a contract is the task's only acceptance."
 +++
 
 ## Problem

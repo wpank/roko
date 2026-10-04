@@ -2,15 +2,16 @@
 id = "gap-ba5006"
 kind = "gap"
 title = "A copied Codex home's refresh-token rotation can stale the operator's real login with no warning"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "e37dd2c5e"
 source = "wave-8 follow-up reports 2026-10-03 (PK30 gap-2ca903)"
 discovered_from = "gap-2ca903"
 anchors = ["benchmarks/viabilitybench/driver/run_codex.py"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_rotated_refresh_token_prints_a_login_warning' benchmarks/viabilitybench/driver/test_run_codex.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_codex.py -k test_rotated_refresh_token_prints_a_login_warning -q"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T14:16:12Z"
+commit = "e37dd2c5e"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T12:50:43Z"
+forced = false
+evidence = "Gate 18 (merged e37dd2c5e): verify test_rotated_refresh_token_prints_a_login_warning passes. The driver fingerprints the session's sandboxed Codex home before and after a run and warns to log in again when the refresh token rotated, without naming the token."
 +++
 
 ## Problem

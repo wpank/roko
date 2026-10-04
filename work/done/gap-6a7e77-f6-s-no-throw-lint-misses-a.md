@@ -2,15 +2,16 @@
 id = "gap-6a7e77"
 kind = "gap"
 title = "F6's no-throw lint misses a throw hidden inside a template literal's ${} expression"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/families/f6_tsresult"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "e37dd2c5e"
 source = "wave-4 follow-up reports 2026-10-02 (PK23)"
 discovered_from = "gap-eb1aa3"
 anchors = ["benchmarks/viabilitybench/families/f6_tsresult/hidden.py::domain_has_throw"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_throw_inside_template_interpolation_is_detected' benchmarks/viabilitybench/families/f6_tsresult/test_f6.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/families/f6_tsresult/test_f6.py -k test_throw_inside_template_interpolation_is_detected -q"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T14:16:11Z"
+commit = "e37dd2c5e"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T12:50:41Z"
+forced = false
+evidence = "Gate 18 (merged e37dd2c5e): verify test_throw_inside_template_interpolation_is_detected passes; bench suite 750 passed. F6's no-throw lint looks inside template-literal ${} interpolations."
 +++
 
 ## Problem

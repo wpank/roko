@@ -2,15 +2,16 @@
 id = "bug-2410e1"
 kind = "bug"
 title = "A resumed run in a new process redraws its chains' arm sets; --srm has no row for per-section bandit draws"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph-task-dispatch", "roko-learn/telemetry"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "e37dd2c5e"
 source = "wave-7 follow-up reports 2026-10-03 (PK41 gap-c2b1a3)"
 discovered_from = "gap-c2b1a3"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/attempt.rs::RunAttempts", "crates/roko-learn/src/telemetry/report.rs::srm_check", "crates/roko-learn/src/section_effect.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn resumed_run_in_a_new_process_keeps_its_arm_sets' crates/roko-cli/ && cargo test -p roko-cli resumed_run_in_a_new_process_keeps_its_arm_sets"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T14:15:59Z"
+commit = "e37dd2c5e"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T12:50:33Z"
+forced = false
+evidence = "Gate 18 (merged e37dd2c5e): verify resumed_run_in_a_new_process_keeps_its_arm_sets passes, plus srm_check_reports_each_sections_bandit_draws. Each chain's first arm-set draw is kept in the run directory (arm-sets.jsonl with its epoch) and read back on resume; sections rows carry the bandit's draws and --srm reports one row per section."
 +++
 
 ## Problem

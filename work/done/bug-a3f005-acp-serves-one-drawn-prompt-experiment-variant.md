@@ -2,15 +2,16 @@
 id = "bug-a3f005"
 kind = "bug"
 title = "ACP serves one drawn prompt-experiment variant but settles its receipt against a differently-drawn one"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "M"
 subsystem = ["roko-acp", "roko-learn/prompt-experiment"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "e37dd2c5e"
 source = "wave-7 follow-up reports 2026-10-03 (PK42 gap-2b3c1b)"
 discovered_from = "gap-2b3c1b"
 anchors = ["crates/roko-acp/src/bridge_events/experiments.rs::assign_acp_experiment", "crates/roko-learn/src/prompt_experiment.rs::prepare_attempt_assignments_unlocked"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn acp_settles_the_same_variant_it_served' crates/roko-acp/ && cargo test -p roko-acp acp_settles_the_same_variant_it_served"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T14:15:58Z"
+commit = "e37dd2c5e"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T12:50:31Z"
+forced = false
+evidence = "Gate 18 (merged e37dd2c5e): verify acp_settles_the_same_variant_it_served passes (40 dispatches over four variants: served and settled variants match, attempts distinct). ACP prepares the receipt first and serves the experiment and variant it drew; with no receipt it serves the control and records the outcome directly. ExperimentStore::next_attempt_for gives each dispatch its own attempt, so a session's later turns no longer reuse the first turn's settled receipt."
 +++
 
 ## Problem

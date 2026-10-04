@@ -2,15 +2,16 @@
 id = "bug-261c02"
 kind = "bug"
 title = "Five tracked plans fail roko plan validate, predating PK14"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/plan-validate"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "e37dd2c5e"
 source = "wave-6 follow-up reports 2026-10-03 (PK14 gap-997366)"
 discovered_from = "gap-997366"
 anchors = ["plans/portal-plan-execution/tasks.toml", "plans/portal-programme/08d-portal-legibility/tasks.toml", "plans/portal-programme/08f-final-polish/tasks.toml", "plans/wire-http-plan-execute/tasks.toml", "plans/workspace-doctor-improvements/tasks.toml", "crates/roko-cli/src/plan_validate.rs"]
@@ -18,6 +19,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn five_stale_plans_pass_plan_validate' crates/roko-cli/tests/ && cargo test -p roko-cli --test plan_validate five_stale_plans_pass_plan_validate"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T14:16:03Z"
+commit = "e37dd2c5e"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T12:50:39Z"
+forced = false
+evidence = "Gate 18 (merged e37dd2c5e): verify five_stale_plans_pass_plan_validate passes. Three plans' stale read ranges and a renamed symbol are fixed; two plans describing never-built or superseded code are archived with the plan index regenerated."
 +++
 
 ## Problem

@@ -2,15 +2,16 @@
 id = "bug-38a412"
 kind = "bug"
 title = "roko-agent's chain feature doesn't enable roko-std/chain, so its own tool catalog test fails in isolation"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-agent"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "e37dd2c5e"
 source = "wave-6 follow-up reports 2026-10-03 (gate 6b)"
 discovered_from = "gate 6b"
 anchors = ["crates/roko-agent/Cargo.toml", "crates/roko-agent/tests/provider_parity.rs::catalog_count_matches_expected_default"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["spec-c89168", "gap-425d9e"],
 
 [[verify]]
 command = "! grep -q '^chain = \\[\\]$' crates/roko-agent/Cargo.toml"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T14:15:59Z"
+commit = "e37dd2c5e"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T12:50:32Z"
+forced = false
+evidence = "Gate 18 (merged e37dd2c5e): its verify passes; cargo check -p roko-agent --features chain --tests and roko-cli --features chain pass. roko-agent's chain feature forwards roko-std/chain, as roko-serve's does."
 +++
 
 ## Problem

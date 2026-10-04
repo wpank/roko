@@ -2,15 +2,16 @@
 id = "gap-c8bfc8"
 kind = "gap"
 title = "QuickReviewer/AutoFixer's zero context budget drops verify commands and gate feedback, not just cross-plan context"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "M"
 subsystem = ["roko-compose/budget", "roko-cli/prompt-builder"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "e37dd2c5e"
 source = "wave-4 follow-up reports 2026-10-02 (PK10)"
 discovered_from = "PK10's reviewer-role prompt work"
 anchors = ["crates/roko-compose/src/templates/common.rs", "crates/roko-compose/src/system_prompt_builder.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs::build_runner_context"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn quick_reviewer_prompt_includes_verify_commands_and_gate_feedback' crates/roko-cli/ && cargo test -p roko-cli quick_reviewer_prompt_includes_verify_commands_and_gate_feedback"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T14:16:01Z"
+commit = "e37dd2c5e"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T12:50:36Z"
+forced = false
+evidence = "Gate 18 (merged e37dd2c5e): verify quick_reviewer_prompt_includes_verify_commands_and_gate_feedback passes, plus review_and_fix_roles_keep_a_runner_context and trivial_keeps_the_runner_context. PromptBudget's new runner_context caps the task's context layer and gate feedback, so QuickReviewer and AutoFixer get their verify commands and the failing gate's feedback while context stays 0 for cross-plan sections."
 +++
 
 ## Problem

@@ -2,15 +2,16 @@
 id = "gap-1a4563"
 kind = "gap"
 title = "Tool-call staging doesn't cover roko graph run, chat-host-direct plan submission, or CLI-agent backends"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 size = "M"
 subsystem = ["roko-cli/graph", "roko-cli/task-parser", "roko-agent/dispatcher"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "e37dd2c5e"
 source = "wave-7 follow-up reports 2026-10-03 (PK76 gap-99c9ae)"
 discovered_from = "gap-99c9ae"
 anchors = ["crates/roko-cli/src/commands/graph.rs", "crates/roko-cli/src/task_parser.rs::TaskDef", "crates/roko-agent/src/dispatcher/production_safety_chain.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn direct_plan_submission_from_a_chat_host_sets_stage' crates/roko-cli/ && cargo test -p roko-cli direct_plan_submission_from_a_chat_host_sets_stage"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T14:16:01Z"
+commit = "e37dd2c5e"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T12:50:29Z"
+forced = false
+evidence = "Gate 18 (merged e37dd2c5e): verify direct_plan_submission_from_a_chat_host_sets_stage passes, plus a_run_floor_raises_allow_and_keeps_deny, graph_run_refuses_agent_work_it_cannot_grant_and_says_why and agents_that_run_their_own_tools_cannot_take_a_staged_contract. Chat-host plans get an outbound floor of stage; roko graph run refuses agent work it cannot grant; own-tool agents (CLIs, ACP, Hermes, OpenClaw) refuse a stage/deny contract so failover moves the task to an API provider or fails closed (a behavior change for CLI-only workspaces, reported to Will)."
 +++
 
 ## Problem

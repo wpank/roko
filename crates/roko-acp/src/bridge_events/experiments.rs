@@ -36,7 +36,8 @@ pub(crate) struct AcpExperimentAssignment {
     pub(crate) content: String,
     pub(crate) model_slug: Option<String>,
     /// P1-21: Durable receipt key for the canonical experiment lifecycle.
-    /// Populated when `prepare_attempt_assignments` succeeds.
+    /// Populated when `prepare_attempt_assignments` drew this dispatch's
+    /// variant (bug-a3f005); `None` records the outcome directly.
     pub(crate) attempt_key: Option<PromptAttemptKey>,
     /// Assignment IDs returned by `prepare_attempt_assignments`, needed by
     /// `mark_attempt_dispatched` to record the exact included subset.

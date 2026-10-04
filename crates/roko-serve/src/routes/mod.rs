@@ -2662,7 +2662,7 @@ mod tests {
             ("/api/jobs/123/execute", "write"),
             ("/api/jobs/123/cancel", "write"),
             ("/api/run", "write"),
-            ("/api/runs/123/share", "write"),
+            ("/api/runs/123/share", "admin"),
             ("/api/dream/run", "write"),
             ("/api/deployments", "write"),
             ("/api/deployments/123/task", "write"),

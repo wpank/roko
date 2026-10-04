@@ -160,7 +160,6 @@ public_routes = ["health", "ready"]
 [serve.auth]
 enabled = true
 enforcement_mode = "enforce"
-api_key = "$SHOWCASE_ADMIN_KEY"
 
 [showcase]
 enabled = true
@@ -168,7 +167,8 @@ public_origin = "$BASE_URL"
 session = { cookie_name = "roko_session", cookie_secure = false }
 EOF
 
-  ROKO_SHOWCASE_PASSPHRASE_HASH=$PASSPHRASE_HASH \
+  # roko refuses a roko.toml that holds a secret, so the admin key goes in the environment.
+  ROKO_SHOWCASE_PASSPHRASE_HASH=$PASSPHRASE_HASH ROKO__SERVE__AUTH__API_KEY=$SHOWCASE_ADMIN_KEY \
     "$ROKO_BIN" serve --bind 127.0.0.1 --port "$PORT" --workdir "$WORKDIR" \
     >"$WORKDIR/serve.log" 2>&1 &
   SERVE_PID=$!
@@ -348,7 +348,8 @@ else
 fi
 
 if [ -n "${SHOWCASE_ADMIN_KEY:-}" ]; then
-  UNLOCK_STATUS=$(status_of POST /api/showcase/admin/login-unlock -H "X-Api-Key: $SHOWCASE_ADMIN_KEY")
+  UNLOCK_STATUS=$(status_of POST /api/showcase/admin/login-unlock -H "X-Api-Key: $SHOWCASE_ADMIN_KEY" \
+    -H 'X-Roko-CSRF: 1')
   if [ "$UNLOCK_STATUS" = "204" ] || [ "$UNLOCK_STATUS" = "200" ]; then
     RETRY_STATUS=$(status_of POST /api/auth/session -H 'X-Roko-CSRF: 1' -H "Origin: $U" \
       -H 'Content-Type: application/json' --data "$LOGIN_BODY")

@@ -70,9 +70,9 @@ pub mod scheduler;
 pub mod service_factory;
 pub mod showcase;
 pub mod state;
-// The relay bridge that consumes this needs `relay` (9220); the journal and
-// status types also back `GET /api/subscriptions/relay/status`.
-#[cfg_attr(not(feature = "relay"), allow(dead_code))]
+// The relay bridge's durable consumer (9220): its journal and status back
+// `GET /api/subscriptions/relay/status`, which a build without `relay` parks.
+#[cfg(feature = "relay")]
 mod subscription_relay;
 mod telemetry_observer;
 pub mod templates;

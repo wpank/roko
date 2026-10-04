@@ -52,6 +52,7 @@ use roko_agent::{Agent, AgentResult, create_agent_for_model};
 use roko_core::agent::{ProviderKind, resolve_model, try_resolve_model};
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
 use roko_core::pricing_snapshot::{PriceSnapshot, PricingConfig, TokenCounts};
+use roko_core::tool::OutboundPolicy;
 use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
 use roko_core::{Body, Context, Kind, Signal};
 use roko_learn::model_call_feedback::{ModelCallFeedback, ModelCallFeedbackRecorder};
@@ -1934,12 +1935,26 @@ fn target_supports_per_call_local_mcp(target: &ProviderDispatchSpec) -> bool {
 /// Refuse a provider that cannot enforce the request's agent contract.
 ///
 /// Codex's built-in tools have no binding allowlist, so it cannot honour a
-/// contract that names the only tools a role may use (gap-baab0a); Graph
-/// failover moves such a task to a provider that can.
+/// contract that names the only tools a role may use (gap-baab0a). An agent
+/// that runs its own tools cannot stage or refuse a tool call that acts on
+/// the outside world, so it cannot honour a contract whose outbound policy
+/// is `stage` or `deny` (9131, gap-1a4563). Graph failover moves such a task
+/// to a provider that can, and fails it when none is left.
 pub(crate) fn validate_contract_support(
     request: &AgentDispatchRequest,
     target: &ProviderDispatchSpec,
 ) -> Result<(), DispatchV2Error> {
+    let outbound = request
+        .agent_contract
+        .as_ref()
+        .map_or(OutboundPolicy::Allow, AgentContract::outbound_policy);
+    if outbound != OutboundPolicy::Allow && runs_own_tools(target) {
+        return Err(DispatchV2Error::OutboundPolicyUnsupported {
+            provider_id: target.provider_id.clone(),
+            kind: target.provider_kind,
+            policy: outbound,
+        });
+    }
     let allowlist = request
         .agent_contract
         .as_ref()
@@ -1974,6 +1989,26 @@ pub(crate) fn validate_contract_support(
         provider_id: target.provider_id.clone(),
         kind: target.provider_kind,
     })
+}
+
+/// Whether `target`'s agent runs its own tools, out of reach of roko's tool
+/// dispatcher, which alone stages or refuses a tool call that acts on the
+/// outside world (9131): a CLI agent, an ACP agent, or an agent runtime such
+/// as Hermes or OpenClaw. Only the API providers run roko's own tool loop.
+fn runs_own_tools(target: &ProviderDispatchSpec) -> bool {
+    let kind = match &target.runtime {
+        ProviderRuntime::Cli(_) => return true,
+        ProviderRuntime::AgentResultBridge { provider_kind } => *provider_kind,
+        ProviderRuntime::Unsupported(_) => target.provider_kind,
+    };
+    !matches!(
+        kind,
+        ProviderKind::AnthropicApi
+            | ProviderKind::OpenAiCompat
+            | ProviderKind::PerplexityApi
+            | ProviderKind::GeminiApi
+            | ProviderKind::CerebrasApi
+    )
 }
 
 /// Classify a provider error from output text into an error kind string
@@ -2782,6 +2817,11 @@ pub enum DispatchV2Error {
         provider_id: String,
         kind: ProviderKind,
     },
+    OutboundPolicyUnsupported {
+        provider_id: String,
+        kind: ProviderKind,
+        policy: OutboundPolicy,
+    },
     ResourceLimitEnforcement {
         provider_id: String,
         message: String,
@@ -2836,6 +2876,17 @@ impl fmt::Display for DispatchV2Error {
             Self::ContractUnsupported { provider_id, kind } => write!(
                 f,
                 "provider `{provider_id}` ({kind}) cannot enforce the resolved agent contract"
+            ),
+            Self::OutboundPolicyUnsupported {
+                provider_id,
+                kind,
+                policy,
+            } => write!(
+                f,
+                "provider `{provider_id}` ({kind}) runs its own tools, so it cannot honour the \
+                 task's `{}` policy for tool calls that act on the outside world: only roko's \
+                 own tool loop can stage or refuse them",
+                policy.label()
             ),
             Self::ResourceLimitEnforcement {
                 provider_id,
@@ -3524,6 +3575,61 @@ mod tests {
             ..AgentContract::default()
         });
         assert!(validate_contract_support(&request, &codex).is_ok());
+    }
+
+    /// gap-1a4563: only roko's own tool loop can stage or refuse a tool call
+    /// that acts on the outside world (9131). A contract that stages or
+    /// denies such calls is refused for every agent that runs its own tools,
+    /// a CLI or ACP agent or an agent runtime, so failover moves the task to
+    /// an API provider; a CLI runtime counts whatever its provider's kind.
+    /// The API providers take it, and a contract that allows such calls goes
+    /// anywhere.
+    #[test]
+    fn agents_that_run_their_own_tools_cannot_take_a_staged_contract() {
+        let own_tools = [
+            ProviderKind::ClaudeCli,
+            ProviderKind::CodexCli,
+            ProviderKind::GeminiCli,
+            ProviderKind::CursorCli,
+            ProviderKind::CursorAcp,
+            ProviderKind::Hermes,
+            ProviderKind::OpenClaw,
+        ];
+        let api = [
+            ProviderKind::AnthropicApi,
+            ProviderKind::OpenAiCompat,
+            ProviderKind::PerplexityApi,
+            ProviderKind::GeminiApi,
+            ProviderKind::CerebrasApi,
+        ];
+        // A legacy `openai_compat` provider whose command is `codex`.
+        let mut cli = kind_target(ProviderKind::OpenAiCompat);
+        cli.runtime = ProviderRuntime::Cli(CliProviderConfig::codex("p", "codex"));
+        let mut request = fake_claude_request(Path::new("."), 1_000);
+        for policy in [OutboundPolicy::Stage, OutboundPolicy::Deny] {
+            request.agent_contract = Some(AgentContract::default().with_outbound_policy(policy));
+            for kind in own_tools {
+                let refused = validate_contract_support(&request, &kind_target(kind));
+                assert!(
+                    matches!(
+                        refused,
+                        Err(DispatchV2Error::OutboundPolicyUnsupported { policy: p, .. })
+                            if p == policy
+                    ),
+                    "{kind:?}: {refused:?}"
+                );
+            }
+            assert!(validate_contract_support(&request, &cli).is_err());
+            for kind in api {
+                let taken = validate_contract_support(&request, &kind_target(kind));
+                assert!(taken.is_ok(), "{kind:?}: {taken:?}");
+            }
+        }
+        request.agent_contract = Some(AgentContract::default());
+        for kind in own_tools {
+            assert!(validate_contract_support(&request, &kind_target(kind)).is_ok());
+        }
+        assert!(validate_contract_support(&request, &cli).is_ok());
     }
 
     /// gap-baab0a: a Codex attempt records the tool policy its contract

@@ -25,8 +25,9 @@
 //!
 //! Both cells need the `llm` capability. A trigger's graph has it unless its
 //! Space withholds it; `roko graph run` grants only `read_fs`, `bus` and
-//! `shell`, so there they refuse to start. Their runs take the workspace
-//! runner lock, so a node fails at once while another run holds it.
+//! `shell`, so it refuses a graph with either cell before any node runs, and
+//! says why (gap-1a4563). Their runs take the workspace runner lock, so a
+//! node fails at once while another run holds it.
 //!
 //! The cognitive loop's `act` and `claude-agent` cells stay refused stubs,
 //! since gap-3d5cce owns `ActCell`: `agent.task` is the cell that starts agent
@@ -588,6 +589,7 @@ fn run_plan(
                 frozen_learning: false,
                 no_holdout: false,
                 metrics: None,
+                outbound_floor: None,
             },
             Some(run_id),
         )

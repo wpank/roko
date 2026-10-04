@@ -927,6 +927,28 @@ pub struct GraphPlanRunParams {
     /// tracing fields: serve passes the one `/metrics` renders (gap-d8c39a).
     /// `None` keeps the tracing fields only.
     pub metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    /// The least strict policy every task of the run gets for tool calls
+    /// that act on the outside world (9131), whatever its plan's `[meta]
+    /// outbound` or its domain says: [`outbound_floor`] of where the run's
+    /// request came from. A chat host's run stages them (decision 9107), so a
+    /// plan it submits directly holds them for approval as the plan `roko
+    /// run` writes for it does (gap-1a4563). `None` leaves the plan and domain
+    /// to decide.
+    pub outbound_floor: Option<roko_core::tool::OutboundPolicy>,
+}
+
+/// The outbound floor ([`GraphPlanRunParams::outbound_floor`]) of a run that
+/// `origin` started: `stage` for a chat host's run (decision 9107), none
+/// for the CLI's or the HTTP API's.
+#[must_use]
+pub const fn outbound_floor(
+    origin: &roko_serve::runtime::RunOrigin,
+) -> Option<roko_core::tool::OutboundPolicy> {
+    if origin.is_chat() {
+        Some(roko_core::tool::OutboundPolicy::Stage)
+    } else {
+        None
+    }
 }
 
 /// Execute plans via the Graph Engine path.
@@ -1114,6 +1136,7 @@ async fn run_graph_plan_body(
         frozen_learning,
         no_holdout,
         metrics,
+        outbound_floor,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
     // FAST lane (`./dev.sh fast`): stop the run when its deadline elapses.
@@ -1464,6 +1487,7 @@ async fn run_graph_plan_body(
     .with_reflex_store(reflex_store)
     .with_tui_bridge(dispatcher_tui_bridge)
     .with_live_agent_output(live_agent_output)
+    .with_outbound_floor(outbound_floor)
     .with_metrics(metrics.clone());
 
     // ── Whole-plan checks (gap-60233f) ──
@@ -4468,6 +4492,7 @@ files = ["README.md"]
             frozen_learning: false,
             no_holdout: false,
             metrics: None,
+            outbound_floor: None,
         })
         .await
         .expect("run plan set");
@@ -4683,6 +4708,7 @@ max_retries = 0
             frozen_learning,
             no_holdout: false,
             metrics: None,
+            outbound_floor: None,
         })
         .await
         .expect("run plan set");
@@ -7241,6 +7267,7 @@ exec sleep 60
             frozen_learning: false,
             no_holdout: false,
             metrics: None,
+            outbound_floor: None,
         })
         .await
         .expect_err("the rich topology needs per-task worktrees");
@@ -7426,6 +7453,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             frozen_learning: false,
             no_holdout: false,
             metrics: None,
+            outbound_floor: None,
         }
     }
 

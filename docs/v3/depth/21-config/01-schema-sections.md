@@ -306,6 +306,26 @@ The `dreams` and `knowledge` fields are the two sub-tables below.
 
 ---
 
+## `[sections]` -- SectionsConfig
+
+The prompt sections the section bandit (S02 L9, loop `L-sec`) never leaves out, on top of the
+built-in pinned ones: the role's identity, the task spec, the verify instructions, the tool policy
+and the safety rules. On the learned arm of its chain, a Graph attempt's prompt may leave a
+droppable section out, at most 20% of the time over the section's first 100 opportunities and 50%
+after, so that the section's effect on verified passes can be measured. Defaults come from
+`SectionsConfig` (`crates/roko-core/src/config/sections.rs`).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `pinned` | Vec\<String\> | `[]` | Canonical section names (`conventions`, `domain_context`, ...) the section bandit never leaves out of a prompt |
+
+```toml
+[sections]
+pinned = ["conventions"]
+```
+
+---
+
 ## `[pipeline]` -- PipelineConfig
 
 Four complexity bands with per-band retry overrides:

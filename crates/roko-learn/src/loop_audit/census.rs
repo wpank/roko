@@ -46,7 +46,7 @@ use crate::routing_log::{DecisionState, RoutingDecisionLog};
 use crate::runtime_feedback::LearningPaths;
 use crate::telemetry::records::{
     AuditFields, ContentDecisionPoint, ContentDecisionRecord, DecisionSource, ExecutedModel,
-    HarnessPolicyDecisionRecord, HarnessStamp,
+    ExposureItemKind, HarnessPolicyDecisionRecord, HarnessStamp,
 };
 use crate::telemetry::report::{RunRecords, undated};
 
@@ -64,7 +64,9 @@ pub const MIN_ROUTER_OBSERVATIONS: u64 = 30;
 const ATTENTION_BIDDERS: &str = "attention-bidders.json";
 /// The prompt assembler's per-section outcomes, under the learn directory.
 const SECTION_OUTCOMES: &str = "section-outcomes.jsonl";
-/// Graph dispatch's retrieval outcomes, under the learn directory.
+/// Graph dispatch's retrieval outcomes, under the learn directory. Nothing
+/// writes them since 4129, when exposure rows took over; L-know reads them
+/// only for a workspace whose runs record no exposures.
 const RETRIEVAL_OUTCOMES: &str = "retrieval-outcomes.jsonl";
 /// The retired `HoldoutExperiment`'s state, under the learn directory.
 const HOLDOUT_STATE: &str = "holdout-state.json";
@@ -229,7 +231,7 @@ pub fn run_with(
     registry: &Registry,
     harness_sha: Option<&str>,
 ) -> CensusReport {
-    let logs = Logs::read(paths);
+    let logs = Logs::read(paths, runs);
     let measured = measure(runs);
     let rows = registry
         .loops()
@@ -898,7 +900,12 @@ struct Logs {
     bidder_posteriors: Vec<(f64, f64)>,
     section_outcomes: usize,
     sections_included: usize,
-    retrievals: usize,
+    /// Exposure rows of every kind in the runs (S01 P0-9).
+    exposures: usize,
+    /// Knowledge entries the runs' prompts retrieved, by their exposure rows.
+    knowledge_exposures: usize,
+    /// Rows of the retired retrieval log, read only without exposures.
+    legacy_retrievals: usize,
     episodes: usize,
     episodes_with_knowledge: usize,
     episodes_with_playbooks: usize,
@@ -912,7 +919,7 @@ struct Logs {
 }
 
 impl Logs {
-    fn read(paths: &LearningPaths) -> Self {
+    fn read(paths: &LearningPaths, runs: &[RunRecords]) -> Self {
         let mut logs = Self::default();
         if let Some(router) = read_json(&paths.cascade_router_json) {
             logs.router_observations = router["total_observations"].as_u64();
@@ -934,7 +941,15 @@ impl Logs {
             logs.section_outcomes += 1;
             logs.sections_included += usize::from(row["included"].as_bool() == Some(true));
         }
-        logs.retrievals = read_jsonl(&paths.root.join(RETRIEVAL_OUTCOMES)).len();
+        for exposure in runs.iter().flat_map(|run| &run.exposures) {
+            let row = &exposure.record;
+            logs.exposures += 1;
+            let knowledge = row.item_kind == ExposureItemKind::Knowledge && row.retrieved;
+            logs.knowledge_exposures += usize::from(knowledge);
+        }
+        if logs.exposures == 0 {
+            logs.legacy_retrievals = read_jsonl(&paths.root.join(RETRIEVAL_OUTCOMES)).len();
+        }
         for episode in read_jsonl(&paths.episodes_jsonl) {
             logs.episodes += 1;
             let knowledge = has_ids(&episode["knowledge_ids_injected"]);
@@ -1024,12 +1039,19 @@ impl Logs {
                 }
             }
             "L-know" => {
-                let unlogged = self.retrievals > 0
+                // Exposure rows say what the prompts retrieved (4129); a
+                // workspace whose runs record none keeps its retired log.
+                let (retrievals, source) = if self.exposures > 0 {
+                    (self.knowledge_exposures, "knowledge exposures")
+                } else {
+                    (self.legacy_retrievals, "retired retrieval-log rows")
+                };
+                let unlogged = retrievals > 0
                     && self.episodes_with_knowledge == 0
                     && self.efficiency_with_knowledge == 0;
                 facts.push(format!(
-                    "{} retrievals; {}/{} episodes and {}/{} efficiency rows carry knowledge ids",
-                    self.retrievals,
+                    "{retrievals} {source}; {}/{} episodes and {}/{} efficiency rows carry \
+                     knowledge ids",
                     self.episodes_with_knowledge,
                     self.episodes,
                     self.efficiency_with_knowledge,
@@ -1122,8 +1144,8 @@ mod tests {
     use crate::telemetry::assign::{Arm, Assignment, AssignmentUnit};
     use crate::telemetry::records::{
         AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, ContentCandidate,
-        ContentProposals, DECISION_SCHEMA, DecisionAssignment, DecisionReceipt, RunFile, Stamped,
-        VERDICT_SCHEMA,
+        ContentProposals, DECISION_SCHEMA, DecisionAssignment, DecisionReceipt, EXPOSURE_SCHEMA,
+        ExposureRecord, RunFile, Stamped, VERDICT_SCHEMA,
     };
 
     /// The 09-29 snapshot fixture (backlog 5105), laid out like `.roko`.
@@ -1605,5 +1627,65 @@ mod tests {
         assert_eq!(m4.n_opp, 10);
         assert_eq!(m4.eps.est, 0.9, "{m4:?}");
         assert_eq!(m4.eps.reach, 0.9, "the excluded model ran once");
+    }
+
+    /// gap-6c8965: L-know's log rule counts the knowledge items the runs'
+    /// exposure rows say a prompt retrieved, since 4129 retired the
+    /// retrieval log. A workspace whose runs record no exposures keeps its
+    /// retired log's rows. Once a run records exposures the log is not read:
+    /// section exposures alone leave L-know unflagged, and two knowledge
+    /// exposures no episode names flag it unlogged, until an episode names
+    /// one.
+    #[test]
+    fn census_l_know_counts_exposures_not_the_retired_retrieval_log() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let roko = dir.path().join(".roko");
+        let learn = roko.join("learn");
+        std::fs::create_dir_all(&learn).expect("the learn dir");
+        let registry = Registry::embedded().expect("the embedded registry");
+        let know = || {
+            let report = run(dir.path(), &registry, None);
+            let row = report.row("L-know").expect("L-know");
+            (row.reason, row.facts.first().cloned().unwrap_or_default())
+        };
+        let retired = "{\"query\":\"q\"}\n".repeat(5);
+        std::fs::write(learn.join(RETRIEVAL_OUTCOMES), retired).expect("the retired log");
+        let (reason, fact) = know();
+        assert_eq!(reason, Some(ReasonCode::Unlogged), "{fact}");
+        assert!(fact.starts_with("5 retired retrieval-log rows;"), "{fact}");
+
+        let run_dir = roko.join(RUNS_DIR).join("gr-exposed");
+        std::fs::create_dir_all(&run_dir).expect("the run dir");
+        let identity = AttemptIdentity::new(&AttemptKey::new("gr-exposed", "plan", "t1", 1));
+        let exposures = |items: &[(ExposureItemKind, &str)]| {
+            let rows: String = items
+                .iter()
+                .enumerate()
+                .map(|(index, &(kind, id))| {
+                    let row = ExposureRecord::new(identity.clone(), kind, id);
+                    line(EXPOSURE_SCHEMA, index as u64 + 1, row)
+                })
+                .collect();
+            std::fs::write(RunFile::Exposures.path_in(&run_dir), rows).expect("exposures");
+        };
+        exposures(&[(ExposureItemKind::Section, "conventions")]);
+        let (reason, fact) = know();
+        assert_eq!(reason, None, "{fact}");
+        assert!(fact.starts_with("0 knowledge exposures;"), "{fact}");
+
+        let knowledge = ExposureItemKind::Knowledge;
+        exposures(&[
+            (knowledge, "kn-1"),
+            (knowledge, "kn-2"),
+            (ExposureItemKind::Section, "conventions"),
+        ]);
+        let (reason, fact) = know();
+        assert_eq!(reason, Some(ReasonCode::Unlogged), "{fact}");
+        assert!(fact.starts_with("2 knowledge exposures;"), "{fact}");
+
+        let episode = "{\"knowledge_ids_injected\":[\"kn-1\"]}\n";
+        std::fs::write(roko.join("episodes.jsonl"), episode).expect("an episode");
+        let (reason, fact) = know();
+        assert_eq!(reason, None, "{fact}");
     }
 }

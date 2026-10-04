@@ -2138,6 +2138,8 @@ exit 1
             session_id: "earlier-run".to_string(),
             cost_source: roko_learn::telemetry::CostSource::CliUsage,
             priced: None,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
         }
     }
 

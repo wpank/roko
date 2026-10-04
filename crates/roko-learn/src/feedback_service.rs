@@ -917,6 +917,8 @@ fn model_call_cost_record(event: &FeedbackEvent) -> Option<CostRecord> {
         // A model-call event does not say where its usage came from.
         cost_source: CostSource::Unknown,
         priced: None,
+        api_equiv_usd: None,
+        price_snapshot_id: None,
     })
 }
 

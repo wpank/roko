@@ -1,4 +1,23 @@
+import { SERVE_URL } from '../lib/serve-url';
+import { goToLogin, loggedOut, probeSession, type SessionProbe } from './api';
+
 export type SseStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'failed';
+
+/** How long a hidden tab keeps its streams open, by default (S11 §4.6). */
+const HIDDEN_CLOSE_MS = 120_000;
+
+/**
+ * The delay before reconnect attempt `attempt` (1-based): `baseMs` doubling up to `maxMs`, so
+ * 1, 2, 4 and 8 s, then every 15 s with the defaults.
+ */
+export function backoffDelayMs(attempt: number, baseMs = 1000, maxMs = 15_000): number {
+  return Math.min(baseMs * 2 ** (attempt - 1), maxMs);
+}
+
+/** The session probe of a browser: none outside one, so tests and Node never call out. */
+function defaultProbe(): Promise<SessionProbe | null> {
+  return typeof window === 'undefined' ? Promise.resolve(null) : probeSession(SERVE_URL);
+}
 
 const KNOWN_SSE_EVENT_TYPES = [
   // `/api/events` sends DashboardEvent payloads as unnamed SSE messages. Its
@@ -19,6 +38,19 @@ export interface SseAdapterConfig {
   maxBackoffMs?: number;
   /** Base backoff delay in ms. Default: 1_000. */
   baseBackoffMs?: number;
+  /**
+   * Asked after a stream error, while the reconnect waits (9331). When the server takes
+   * passphrase logins and this browser holds no session, `onUnauthenticated` runs and the
+   * adapter stops instead of retrying a stream that can only fail. Default: the session endpoint.
+   */
+  probeSession?: () => Promise<SessionProbe | null>;
+  /** What a logged-out visitor sees instead. Default: the login page. */
+  onUnauthenticated?: () => void;
+  /**
+   * Close the stream after the tab has been hidden this long, and reopen it when the tab shows
+   * again, so a forgotten tab does not keep the server awake. Default: 2 minutes.
+   */
+  hiddenCloseMs?: number;
 }
 
 export class SseAdapter {
@@ -31,6 +63,9 @@ export class SseAdapter {
   private retryTimer: ReturnType<typeof setTimeout> | null;
   private es: EventSource | null;
   private destroyed: boolean;
+  private hiddenTimer: ReturnType<typeof setTimeout> | null;
+  private closedWhileHidden: boolean;
+  private readonly onVisibilityChange = (): void => this.handleVisibility();
 
   constructor(config: SseAdapterConfig) {
     this.config = config;
@@ -40,6 +75,50 @@ export class SseAdapter {
     this.retryTimer = null;
     this.es = null;
     this.destroyed = false;
+    this.hiddenTimer = null;
+    this.closedWhileHidden = false;
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisibilityChange);
+    }
+  }
+
+  /** A hidden tab closes its stream after `hiddenCloseMs`; showing it again reopens the stream. */
+  private handleVisibility(): void {
+    if (this.destroyed) return;
+    if (document.visibilityState === 'hidden') {
+      if (this.hiddenTimer === null && this.status !== 'idle') {
+        this.hiddenTimer = setTimeout(() => {
+          this.hiddenTimer = null;
+          if (document.visibilityState === 'hidden') {
+            this.disconnect();
+            this.closedWhileHidden = true;
+          }
+        }, this.config.hiddenCloseMs ?? HIDDEN_CLOSE_MS);
+      }
+      return;
+    }
+    if (this.hiddenTimer !== null) {
+      clearTimeout(this.hiddenTimer);
+      this.hiddenTimer = null;
+    }
+    if (this.closedWhileHidden) {
+      this.closedWhileHidden = false;
+      this.connect();
+    }
+  }
+
+  /** Stop retrying, and send a logged-out visitor to the login page, when the probe says so. */
+  private async checkSession(): Promise<void> {
+    const probe = await (this.config.probeSession ?? defaultProbe)();
+    if (this.destroyed || !loggedOut(probe)) return;
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.es?.close();
+    this.es = null;
+    this.setStatus('failed');
+    (this.config.onUnauthenticated ?? goToLogin)();
   }
 
   private setStatus(s: SseStatus): void {
@@ -125,8 +204,9 @@ export class SseAdapter {
       this.setStatus('reconnecting');
       const baseMs = this.config.baseBackoffMs ?? 1000;
       const maxMs = this.config.maxBackoffMs ?? 15_000;
-      const delay = Math.min(baseMs * 2 ** (this.retryCount - 1), maxMs);
+      const delay = backoffDelayMs(this.retryCount, baseMs, maxMs);
       this.retryTimer = setTimeout(() => this.connect(), delay);
+      void this.checkSession();
     };
   }
 
@@ -147,6 +227,13 @@ export class SseAdapter {
   /** Close + set status to 'idle'. After destroy(), connect() is a no-op. */
   destroy(): void {
     this.destroyed = true;
+    if (this.hiddenTimer !== null) {
+      clearTimeout(this.hiddenTimer);
+      this.hiddenTimer = null;
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    }
     this.disconnect();
   }
 }

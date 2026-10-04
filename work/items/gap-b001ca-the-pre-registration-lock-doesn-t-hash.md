@@ -20,8 +20,6 @@ links = { depends_on = [], blocks = ["gap-394f28"], related = ["gap-394f28", "ga
 [[verify]]
 command = "benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_lock.py -q -k lock_hashes_experiments_and_arms"
 
-[[verify]]
-command = "benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_planemit.py -q -k emitted_config_freezes_learning"
 +++
 
 ## Problem
@@ -84,3 +82,7 @@ As above. The lock hasn't been taken (gap-394f28 holds it for Will's go-ahead), 
 - No arm needs `learning_frozen`'s explicit opt-out today (checked `arms/*.toml`'s harness/models_allow): the
   5 roko-harness arms split cleanly into pinned (roko_fixed, fr_claude) and routed (roko_ladder, roko_plan,
   roko_full), matching G2's census exactly.
+
+- Gate 13b (2026-10-04, coordinator): part 2 (planemit's frozen learning, 7629f434f) was reverted in 202fb29b2.
+  A frozen run writes no episodes, so the driver reported every pinned-mode Roko run as model_unverified and six
+  real-roko bench tests failed. Its verify moved to gap-127263, which reconciles G2's census with the driver.

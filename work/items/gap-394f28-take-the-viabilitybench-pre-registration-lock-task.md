@@ -56,11 +56,10 @@ Before taking the lock:
 2. **Done (gap-b001ca).** The lock's HASHED list also covers `experiments/` (log1.toml, budget.toml) and `arms/`,
    excluding the lock file itself from its own hash list; today LOG1's cells, caps and models could change after
    the lock without being caught.
-3. **Done (gap-b001ca).** planemit's emitted roko.toml sets `[learning] frozen = true` for a pinned-mode arm
-   (roko_fixed, fr_claude; false for a routed, ladder-mode one), or G2's frozen-loop check fails on real LOG1
-   Roko runs. Confirmed from the Rust source (`crates/roko-core/src/config/learning.rs`,
-   `crates/roko-cli/src/graph_execution/run_manifest.rs`) that `[learning].frozen` is what a real run's S01
-   manifest reads into `ablation_flags = ["learning_frozen"]`.
+3. planemit's emitted roko.toml sets `[learning] frozen = true` for a pinned-mode arm (roko_fixed, fr_claude),
+   or G2's frozen-loop check fails on real LOG1 Roko runs. **Reopened at gate 13b:** a frozen run writes no
+   `.roko/episodes.jsonl`, so the driver saw no attempts and six real-roko bench tests failed; gap-b001ca's
+   planemit change was reverted (202fb29b2) and gap-127263 reconciles the two.
 4. q-ab27d3 (fd_claude_lite's model) is answered, and Will confirms the lock.
 
 Then run 3345 as its spec says.

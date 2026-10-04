@@ -20,14 +20,18 @@ ids must name runs of the experiment.
     data/metrics.jsonl     the MetricRecords: the only source of the numbers a view shows
     data/mechanism/*.jsonl the mechanism records of the bundle's runs, when there are any
     timeline/events.jsonl  the replay timeline, when one is given
-    views/<view>.json      the R1 views, `overview`, `p1-head-to-head` and `m4-audits`
+    views/<view>.json      the R1 views the data makes: `overview`, the claims board, and `p1-head-to-head` when an
+                           arm of the head-to-head ran (`m4-audits` waits for S05's audit records)
 
 No statistic is computed here: a view copies MetricRecord values, each with a `metric_ref` that names its record, and
-`verify_bundle.py` re-derives every view from `data/metrics.jsonl` byte for byte. Each view lists the records it shows
-in `metrics` (`ViewMetric` in `demo/demo-app/src/showcase/contracts.ts`), so the page's render guard can check the n and
-interval of every number before it draws one; a record with n below 1 has no run behind it and no view shows it. A
-view's provenance envelope (`showcase-provenance/1`) comes from the manifest; the reader that checks the bundle's
-checksums says so (`sha256_verified`), so the stored view does not.
+`verify_bundle.py` re-derives every view from `data/metrics.jsonl` and `data/records.jsonl` byte for byte. Each view
+follows its JSON Schema in `demo/demo-app/src/showcase/schemas/` and lists the records it shows in `metrics`
+(`ViewMetric` in `contracts.ts`), so the page's render guard can check the n and interval of every number before it
+draws one; a record with n below 1 has no run behind it and no view shows it. Claim states are S09's test records'
+verdicts, and no results directory records one yet, so every claim is NOT_YET_MEASURED and names where it will be
+measured. A view's provenance envelope (`showcase-provenance/1`) comes from the manifest and the run records, so every
+record needs `execution.started_at` and `finished_at`, and a known `costs.billed_usd`; its source's `sha256_verified`
+is stored false, for the reader that checks the bundle's checksums to set.
 
 Exit status: 0 when the bundle is written, 1 when the input is refused, 2 on a usage error.
 """
@@ -54,11 +58,57 @@ PROVENANCE_SCHEMA = "showcase-provenance/1"
 RECORD_SCHEMA = "vb.run_record/1"
 METRIC_SCHEMA = "vb.metric_record/1"
 EVENT_SCHEMA = "showcase-event/1"
-VIEWS = ("overview", "p1-head-to-head", "m4-audits")
 DEFAULT_RESULTS = Path("~/.roko-bench/viability")
 REDACTION = {"transcripts": "excluded", "prompts": "sha256", "hidden_tests": "sha256", "diffs": "included"}
 HASHED = re.compile(r"^sha256:[0-9a-f]{64}$")
-PASS_HAT = re.compile(r"^pass_hat_(\d+)$")
+
+# A claim's state is the verdict of S09's test record (contracts.ts `ClaimState`); no results directory holds one yet.
+CLAIM_STATE = "NOT_YET_MEASURED"
+# A view shows numbers of several estimators: its provenance points at each metric's own, listed with the numbers.
+PER_METRIC = "per metric (listed below)"
+CI_LEVEL = 0.95  # every interval the analysis reports is a 95% one (alpha = 0.05 throughout analysis/)
+H1_TEXT = "dependability economics (the envelope)"  # S09 §4.4's H1
+
+# The R1 claims board (S10 §4.3 A, §5.2): the P1 tiles and M4's. A tile's rows are one headline MetricRecord of its
+# `metric` per arm; a tile without one is not yet measured, and `planned_in` names the S09 experiments that will.
+OVERVIEW_TILES = (
+    {"id": "p1-usd-per-verified", "pillar": "P1", "mechanism": None, "title": "$/verified success",
+     "hypothesis": "H1", "metric": "usd_per_vs", "view": "p1-head-to-head", "planned_in": ["LOG1"]},
+    {"id": "p1-consistency", "pillar": "P1", "mechanism": None, "title": "consistency pass^3",
+     "hypothesis": "H2", "metric": "pass_hat_3", "view": "p1-head-to-head", "planned_in": ["LOG1"]},
+    {"id": "p1-routing", "pillar": "P1", "mechanism": None, "title": "routing saving",
+     "hypothesis": "H4", "metric": None, "view": None, "planned_in": ["R-H4"]},
+    {"id": "p1-spec-effect", "pillar": "P1", "mechanism": None, "title": "spec effect",
+     "hypothesis": "H3", "metric": None, "view": None, "planned_in": ["LOG1"]},
+    # M4's rate is the audit lottery's estimate of VS (S05), so a census rate (`vs_census`) is not M4's.
+    {"id": "p2-m4-false-green", "pillar": "P2", "mechanism": "M4", "title": "false-green rate",
+     "hypothesis": "H5", "metric": "false_green_rate", "label_source": "vs_estimated", "view": "m4-audits",
+     "planned_in": ["E-H5-live"]},
+)
+# The arms' display labels, as their files give them (`arms/<arm>.toml`); test_bundle.py keeps the two in step.
+ARM_LABELS = {
+    "cheap_direct": "cheap·direct",
+    "roko_fixed": "cheap·roko",
+    "roko_full": "full·roko",
+    "fd_claude": "frontier·direct",
+    "fr_claude": "frontier·roko",
+    "fd_claude_lite": "frontier·direct (lite)",
+    "fd_codex": "frontier·direct (Codex)",
+    "fd_api": "billed check",
+    "roko_ladder": "ladder·roko",
+    "roko_plan": "plan·roko",
+}
+# The P1 head-to-head's arms (S10 §4.3 B; S09's D1 and D2) with their tier, harness and role; no other arm is in it.
+HEAD_TO_HEAD = {
+    "cheap_direct": ("cheap", "direct", "arm"),
+    "roko_fixed": ("cheap", "roko", "arm"),
+    "roko_full": ("cheap", "roko", "arm"),
+    "fd_claude": ("frontier", "direct", "arm"),
+    "fr_claude": ("frontier", "roko", "probe"),
+    "fd_claude_lite": ("frontier", "direct", "extra"),
+    "fd_codex": ("frontier", "direct", "extra"),
+    "fd_api": ("frontier", "direct", "extra"),
+}
 
 
 class BuildError(Exception):
@@ -149,14 +199,38 @@ def is_hidden_key(key: str) -> bool:
     return "hidden" in key.lower()
 
 
-def provenance_envelope(manifest: dict, metrics: list[dict], metrics_bytes: bytes) -> dict:
-    """The `showcase-provenance/1` envelope of every view (S10 §5.1), from the manifest and the metrics file."""
+def instant(text: Any) -> dt.datetime:
+    """`text`, an ISO 8601 time, as an aware datetime; anything else sorts last."""
+    try:
+        moment = dt.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return dt.datetime.max.replace(tzinfo=dt.UTC)
+    return moment if moment.tzinfo else moment.replace(tzinfo=dt.UTC)
+
+
+def run_window(records: list[dict]) -> dict:
+    """When the runs of `records` happened: the first `execution.started_at` and the last `finished_at`."""
+    executions = [record.get("execution") or {} for record in records]
+    starts = [execution["started_at"] for execution in executions if isinstance(execution.get("started_at"), str)]
+    ends = [execution["finished_at"] for execution in executions if isinstance(execution.get("finished_at"), str)]
+    return {"from": min(starts, key=instant, default=""), "to": max(ends, key=instant, default="")}
+
+
+def arm_order(arm: str) -> tuple[int, str]:
+    """Where `arm` sits in a view: the head-to-head's order, then any other arm by name."""
+    return (list(ARM_LABELS).index(arm) if arm in ARM_LABELS else len(ARM_LABELS), arm)
+
+
+def provenance_envelope(manifest: dict, metrics: list[dict], metrics_bytes: bytes, records: list[dict]) -> dict:
+    """The `showcase-provenance/1` envelope of every view (S10 §5.1), from the manifest, the metrics file and the run
+    records: n, seeds and window describe the runs, and each number's estimator and interval are its metric's."""
+    experiments = manifest.get("experiment_ids") or []
     return {
         "schema": PROVENANCE_SCHEMA,
         "kind": manifest.get("kind"),
         "simulated": manifest.get("simulated"),
         "bundle_id": manifest.get("bundle_id"),
-        "experiment_ids": manifest.get("experiment_ids"),
+        "experiment_ids": experiments,
         "run_ids": manifest.get("run_ids"),
         "sources": [
             {
@@ -165,6 +239,7 @@ def provenance_envelope(manifest: dict, metrics: list[dict], metrics_bytes: byte
                 "sha256": sha256_hex(metrics_bytes),
                 "rows": len(metrics),
                 "simulated": False,
+                "sha256_verified": False,
             }
         ],
         "harness_commit": manifest.get("harness_commit"),
@@ -173,16 +248,22 @@ def provenance_envelope(manifest: dict, metrics: list[dict], metrics_bytes: byte
         "config_hashes": manifest.get("config_hashes"),
         "price_snapshot_id": manifest.get("price_snapshot_id"),
         "models": manifest.get("models"),
+        "n": len(records),
+        "seeds": sorted({record["seed"] for record in records if isinstance(record.get("seed"), int)}),
+        "window": run_window(records),
+        "estimator": PER_METRIC,
+        "record_filter": " or ".join(f"experiment_id == {json.dumps(experiment)}" for experiment in experiments),
+        "ci": {"method": PER_METRIC, "strata": [], "level": CI_LEVEL, "resamples": None},
         "cost_usd": manifest.get("cost_usd"),
         "generated_at": manifest.get("created_at"),
         "reproduce": manifest.get("reproduce"),
     }
 
 
-def project_views(manifest: dict, metrics: list[dict], metrics_bytes: bytes) -> dict[str, bytes]:
-    """The R1 views, as the bytes of `views/<view>.json`: MetricRecord values copied, never computed, and each view's
-    `metrics` index of the records it shows."""
-    provenance = provenance_envelope(manifest, metrics, metrics_bytes)
+def project_views(manifest: dict, metrics: list[dict], metrics_bytes: bytes, records: list[dict]) -> dict[str, bytes]:
+    """The R1 views the data makes, as the bytes of `views/<view>.json`: MetricRecord values copied, never computed,
+    in the shapes of the page's contracts, each view with its `metrics` index of the records it shows."""
+    provenance = provenance_envelope(manifest, metrics, metrics_bytes, records)
     # The guard refuses a number with no sample size, so a record with n below 1 (its value null) is shown nowhere.
     refs = [
         (metric_ref(record), record)
@@ -191,63 +272,94 @@ def project_views(manifest: dict, metrics: list[dict], metrics_bytes: bytes) -> 
     ]
     by_ref = dict(refs)
 
+    def headline(arm: str, metric: str | None, label_source: str | None = None) -> dict | None:
+        """The Estimate of `arm`'s first headline record of `metric`: one with that arm alone and no ladder level."""
+        for ref, record in refs:
+            if (
+                record.get("arms") == [arm]
+                and record.get("ladder") is None
+                and record.get("metric") == metric
+                and label_source in (None, record.get("label_source"))
+            ):
+                return {"value": record.get("value"), "ci": record.get("ci"), "metric_ref": ref}
+        return None
+
     def indexed(view: dict) -> dict:
         view["metrics"] = [view_metric(ref, by_ref[ref]) for ref in sorted(displayed_refs(view))]
         return view
 
-    def shown(ref: str, record: dict) -> dict:
-        return {
-            "value": record.get("value"),
-            "ci": record.get("ci"),
-            "ci_method": record.get("ci_method"),
-            "n": record.get("n"),
-            "metric_ref": ref,
-        }
-
-    tiles = [
-        {"metric": record.get("metric"), "arms": record.get("arms"), "ladder": record.get("ladder"), **shown(ref, record)}
-        for ref, record in refs
-    ]
-    tiles.sort(key=lambda tile: (str(tile["metric"]), json.dumps(tile["arms"]), str(tile["ladder"]), tile["metric_ref"]))
-
-    # A cell of one arm with no ladder level is the arm's headline row.
-    cells: dict[str, dict[str, tuple[str, dict]]] = {}
-    for ref, record in refs:
-        arms = record.get("arms") or []
-        if len(arms) == 1 and record.get("ladder") is None:
-            cells.setdefault(arms[0], {}).setdefault(str(record.get("metric")), (ref, record))
-
-    def cell_value(arm: str, metric: str) -> dict | None:
-        found = cells.get(arm, {}).get(metric)
-        return shown(*found) if found else None
-
-    head_to_head = []
-    audits = []
-    for arm in sorted(cells):
-        pass_hat = {
-            match.group(1): shown(*cells[arm][metric])
-            for metric in sorted(cells[arm])
-            if (match := PASS_HAT.match(metric))
-        }
-        usd = cell_value(arm, "usd_per_vs")
-        if usd is not None:
-            usd["cost_basis"] = cells[arm]["usd_per_vs"][1].get("cost_basis")
-        head_to_head.append(
-            {"arm": arm, "resolve": cell_value(arm, "vs_rate"), "usd_per_verified": usd, "pass_hat_k": pass_hat}
-        )
-        audits.append(
+    runs: dict[str, list[dict]] = {}
+    for record in records:
+        runs.setdefault(str(record.get("arm")), []).append(record)
+    arms = []
+    for arm in sorted(set(runs) & set(HEAD_TO_HEAD), key=arm_order):
+        tier, harness, role = HEAD_TO_HEAD[arm]
+        sources = {(run.get("costs") or {}).get("source") for run in runs[arm]}
+        pass_hat = {k: headline(arm, f"pass_hat_{k}") for k in ("1", "3", "5")}
+        arms.append(
             {
                 "arm": arm,
-                "false_green_rate": cell_value(arm, "false_green_rate"),
-                "false_greens": cell_value(arm, "false_greens"),
+                "label": ARM_LABELS[arm],
+                "tier": tier,
+                "harness": harness,
+                "role": role,
+                "note": None,
+                "models": models_of(runs[arm]),
+                "status": "run",
+                "reason": None,
+                # The arm's run records in the bundle, and their distinct tasks.
+                "n_tasks": len({str((run.get("task") or {}).get("instance_id")) for run in runs[arm]}),
+                "n_trials": len(runs[arm]),
+                "resolve": headline(arm, "vs_rate"),
+                "usd_per_verified": headline(arm, "usd_per_vs"),
+                "cost_source": next(iter(sources)) if sources in ({"provider_usage"}, {"cli_usage"}) else None,
+                "pass_hat_k": pass_hat if all(pass_hat.values()) else None,
+                "outcome_sd": None,
             }
         )
-    # Results against the thesis come from S09's test records, which this builder does not read yet: no negatives.
-    views = {
-        "overview": {"schema": "showcase-view/overview/1", "tiles": tiles, "negatives": []},
-        "p1-head-to-head": {"schema": "showcase-view/p1-head-to-head/1", "arms": head_to_head},
-        "m4-audits": {"schema": "showcase-view/m4-audits/1", "arms": audits},
-    }
+    made = {"overview", "p1-head-to-head"} if arms else {"overview"}
+
+    # A tile's rows: each arm with a headline record of the tile's metric, in the head-to-head's order.
+    shown = sorted({record["arms"][0] for _, record in refs if len(record.get("arms") or []) == 1}, key=arm_order)
+    tiles = []
+    for tile in OVERVIEW_TILES:
+        rows = []
+        for arm in shown:
+            estimate = headline(arm, tile["metric"], tile.get("label_source"))
+            if estimate is not None:
+                rows.append({"label": ARM_LABELS.get(arm, arm), "estimate": estimate})
+        tiles.append(
+            {
+                "id": tile["id"],
+                "pillar": tile["pillar"],
+                "mechanism": tile["mechanism"],
+                "title": tile["title"],
+                "hypothesis": tile["hypothesis"],
+                "claim_state": CLAIM_STATE,
+                "rows": rows,
+                "planned_in": list(tile["planned_in"]),
+                "view": tile["view"] if rows and tile["view"] in made else None,
+            }
+        )
+
+    # Results against the thesis come from S09's test records, which no results directory holds yet: no negatives.
+    views = {"overview": {"schema": "showcase-view/overview/1", "tiles": tiles, "negatives": []}}
+    if arms:
+        prereg_ids = {record.get("prereg_id") for record in metrics}
+        views["p1-head-to-head"] = {
+            "schema": "showcase-view/p1-head-to-head/1",
+            "claim": {
+                "hypothesis": "H1",
+                "state": CLAIM_STATE,
+                "prereg_id": next(iter(prereg_ids)) if len(prereg_ids) == 1 else None,
+                "planned_in": list(OVERVIEW_TILES[0]["planned_in"]),
+                "text": H1_TEXT,
+            },
+            "arms": arms,
+            # S10 §5.2: the frontier is computed offline, and no analysis writes one yet.
+            "pareto": {"x": "usd_per_verified", "y": "resolve", "frontier_arms": []},
+            "envelope": [],
+        }
     return {name: canonical_json({**indexed(view), "provenance": provenance}) for name, view in views.items()}
 
 
@@ -331,6 +443,13 @@ def models_of(records: list[dict]) -> list[str]:
     return sorted(models)
 
 
+def timed(record: dict) -> bool:
+    """Whether `record` says when its run started and finished, as a view's provenance window needs."""
+    execution = record.get("execution") or {}
+    unknown = dt.datetime.max.replace(tzinfo=dt.UTC)
+    return all(instant(execution.get(key)) != unknown for key in ("started_at", "finished_at"))
+
+
 def only(values: set, what: str) -> Any:
     if len(values) != 1:
         raise BuildError(f"the records name {len(values)} {what}s, and a bundle names one: {sorted(map(str, values))}")
@@ -362,13 +481,22 @@ def build(args: argparse.Namespace) -> Path:
     price_snapshot_id = only({record["price_snapshot_id"] for record in records}, "price snapshot")
     if metrics_doc.get("price_snapshot_id", price_snapshot_id) != price_snapshot_id:
         raise BuildError("the metrics file and the records use different price snapshots")
+    untimed = [record["record_id"] for record in records if not timed(record)]
+    if untimed:
+        raise BuildError(f"{len(untimed)} run record(s) lack execution.started_at or finished_at, which a view's "
+                         f"provenance window needs: {', '.join(untimed[:3])}")
+    unbilled = [record["record_id"] for record in records if record["costs"]["billed_usd"] is None]
+    if unbilled:
+        raise BuildError(f"{len(unbilled)} run record(s) have an unknown billed cost, and a bundle states what its "
+                         f"runs cost (S10 §5.1): {', '.join(unbilled[:3])}")
 
     bundle_id = args.bundle_id or f"b-{args.experiment.lower()}"
     out = Path(args.out) if args.out else Path(".roko/showcase/bundles") / bundle_id
     if out.exists():
         raise BuildError(f"{out} exists: a bundle is written once")
+    redacted = [redact_record(record) for record in records]
     files: dict[str, bytes] = {
-        "data/records.jsonl": jsonl_bytes([redact_record(record) for record in records]),
+        "data/records.jsonl": jsonl_bytes(redacted),
         "data/metrics.jsonl": jsonl_bytes(metrics),
     }
     schemas = {"data/records.jsonl": RECORD_SCHEMA, "data/metrics.jsonl": METRIC_SCHEMA}
@@ -389,7 +517,6 @@ def build(args: argparse.Namespace) -> Path:
         rows["timeline/events.jsonl"] = len(events)
 
     created_at = args.created_at or dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    billed = [record["costs"].get("billed_usd") for record in records]
     manifest = {
         "schema": BUNDLE_SCHEMA,
         "bundle_id": bundle_id,
@@ -406,8 +533,7 @@ def build(args: argparse.Namespace) -> Path:
         "config_hashes": sorted({record["config_hash"] for record in records}),
         "price_snapshot_id": price_snapshot_id,
         "models": models_of(records),
-        "views": list(VIEWS),
-        "cost_usd": None if any(amount is None for amount in billed) else round(sum(billed), 6),
+        "cost_usd": round(sum(record["costs"]["billed_usd"] for record in records), 6),
         "redaction": dict(REDACTION),
         "files": [
             {"path": path, "schema": schemas[path], "sha256": sha256_hex(data), "rows": rows[path]}
@@ -415,7 +541,9 @@ def build(args: argparse.Namespace) -> Path:
         ],
         "reproduce": [f"vb run --experiment {args.experiment}", f"vb report --experiment {args.experiment}"],
     }
-    views = project_views(manifest, metrics, files["data/metrics.jsonl"])
+    # The views come from the files as the bundle holds them, as verify_bundle.py re-derives them.
+    views = project_views(manifest, metrics, files["data/metrics.jsonl"], redacted)
+    manifest["views"] = list(views)
 
     out.mkdir(parents=True)
     for path, data in files.items():

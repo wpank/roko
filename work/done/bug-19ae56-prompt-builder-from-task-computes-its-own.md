@@ -2,15 +2,16 @@
 id = "bug-19ae56"
 kind = "bug"
 title = "prompt_builder::from_task computes its own skip_enrichment, ignoring the task's real [meta] flag"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "8b51d004a"
 source = "wave-6 follow-up reports 2026-10-03 (PK14 gap-997366)"
 discovered_from = "gap-997366"
 anchors = ["crates/roko-cli/src/dispatch/prompt_builder.rs::from_task", "crates/roko-cli/src/task_parser.rs", "crates/roko-cli/src/plan_brief.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn task_meta_skip_enrichment_suppresses_prompt_builder_sections' crates/roko-cli/ && cargo test -p roko-cli task_meta_skip_enrichment_suppresses_prompt_builder_sections"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T09:31:25Z"
+commit = "8b51d004a"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T07:57:42Z"
+forced = false
+evidence = "Gate 16a (merged 8b51d004a): verify task_meta_skip_enrichment_suppresses_prompt_builder_sections passes; bench suite and canaries pass. DispatchContext.skip_enrichment is filled from the plan's [meta] on both Graph paths and ORed into from_task, so a plan's skip_enrichment drops the workspace map, context, tasks.toml dump and plan brief. Bench Roko arms (planemit default) and roko run set it, as designed; noted on gap-394f28 before the lock."
 +++
 
 ## Problem

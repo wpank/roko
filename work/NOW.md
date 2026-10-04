@@ -44,7 +44,7 @@ _1 more open · on hold: gap-634954, gap-c013c5, gap-e1fdb3 · 4 unchecked (`TRI
 - **P1** [dec-3d5714](items/dec-3d5714-s09-4-1-s-two-stage-bootstrap.md) S09 §4.1's two-stage bootstrap over-covers (0.975): change to task-only n_h-1 resampling, or accept, before the lock [decision] · size S · verified 2026-10-03
 - **P2** [gap-a2f86a](items/gap-a2f86a-f7-s-in-tree-cargo-target-build.md) F7's in-tree .cargo-target build directory lands in commit_final's archived c_i · size S · verified 2026-10-02
 
-_15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_16 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-394f28, gap-4a5109, gap-50346f, gap-681741, gap-7c9a9c, gap-8c2535, gap-942f88, gap-aa60f2, gap-b7f99e, gap-ba9965, gap-e9218e, gap-eabd7f · 9 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -52,7 +52,7 @@ _15 more open · on hold: gap-057cc7, gap-05c4c0, gap-11cec6, gap-31e1b0, gap-39
 - **P2** [bug-78e5ce](items/bug-78e5ce-active-mode-m3-router-pick-hides-the.md) Active-mode M3: router_pick hides the self-model's pick, streaming dispatch skips forecasting, early-climb eligibility may be stale [bug] · size M · verified 2026-10-03
 - **P2** [spec-446a41](items/spec-446a41-backlog-phase-4-loops-re-closed-s02.md) Backlog Phase 4 — loops re-closed (S02) [spec] · verified 2026-10-02
 
-_29 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_28 more open · on hold: gap-3d37e8, gap-799698, gap-8a26fc, gap-93c748, gap-fd96c8 · 2 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -68,7 +68,7 @@ _10 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P2** [gap-ade918](items/gap-ade918-acp-s-no-usable-provider-error-has.md) ACP's no-usable-provider error has no login hint for an auth quarantine · size S · verified 2026-10-03
 - **P2** [bug-a0f01e](items/bug-a0f01e-long-running-operation-handles-never-record-completion.md) Long-running operation handles never record completion [bug] · verified 2026-10-01
 
-_2 more open · `goal = "visibility"`_
+_3 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -84,7 +84,7 @@ _5 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee
 - **P2** [spec-c89168](items/spec-c89168-feature-gate-chain-alloy-out-of-the.md) Feature-gate chain/Alloy out of the default CLI build: remaining benchmark evidence, all-feature test matrix and release jobs [spec] · size M · verified 2026-09-29
 - **P2** [gap-082a14](items/gap-082a14-graph-runs-never-write-task-status-back.md) Graph runs never write task status back to tasks.toml · verified 2026-10-01
 
-_15 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_14 more open · 3 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

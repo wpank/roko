@@ -2,7 +2,7 @@
 id = "gap-1a8ee7"
 kind = "gap"
 title = "Homeostat replay's Evaluator has no CLI entry point; every R-H6 cell reports evaluated:false"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/homeostasis", "roko-cli/commands"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "8b51d004a"
 source = "wave-10 follow-up reports 2026-10-04 (PK67 gap-ed1a08)"
 discovered_from = "gap-ed1a08; checked against PK71's in-progress 8133 on work/gap-099513 at 3571b431a"
 anchors = ["crates/roko-learn/src/homeostasis/replay.rs::Evaluator"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn homeostasis_replay_reports_the_evaluator_s_verdict' crates/roko-cli/ && cargo test -p roko-cli homeostasis_replay_reports_the_evaluator_s_verdict"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T09:31:24Z"
+commit = "8b51d004a"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T07:57:41Z"
+forced = false
+evidence = "Gate 16a (merged 8b51d004a): verify homeostasis_replay_reports_the_evaluator_s_verdict passes; bench suite 742 passed. roko learn homeostasis replay --evaluate [--arm] [--seeds] runs Evaluator::evaluate over synthetic:<kind>@<t> or synthetic:all@<t> and writes ArmReport rows in the table shape replay_h6.py reads, so R-H6 cells with an iae and no note report evaluated:true (A3-gated and A3-mis wait for M3 predictions). Gate fixes 8d725969d and 5d0efe89f (the catalog's DisturbanceKind; a test-only import)."
 +++
 
 ## Problem

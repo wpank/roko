@@ -2,15 +2,16 @@
 id = "gap-54b2b2"
 kind = "gap"
 title = "GamingAlert carries no plan or run id, so roko diagnose attributes alerts by model and timestamp alone"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-learn/gate-gaming", "roko-cli/diagnose"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "8b51d004a"
 source = "wave-4 follow-up reports 2026-10-02 (PK08)"
 discovered_from = "gap-a0043b (task 2125 built run_gaming_alerts with this approximation already named in its own doc comment, no follow-up filed)"
 anchors = ["crates/roko-learn/src/gate_gaming.rs::GamingAlert", "crates/roko-learn/src/gate_gaming.rs::detect", "crates/roko-cli/src/commands/diagnose.rs::run_gaming_alerts"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn gaming_alerts_are_attributed_by_plan_id_not_model_alone' crates/roko-cli/ && cargo test -p roko-cli gaming_alerts_are_attributed_by_plan_id_not_model_alone"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T09:31:26Z"
+commit = "8b51d004a"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T07:57:43Z"
+forced = false
+evidence = "Gate 16a (merged 8b51d004a): verify gaming_alerts_are_attributed_by_plan_id_not_model_alone passes. GamingAlert gains optional plan_id and run_id (old rows parse); the audit worker attributes each alert to the unit whose label tipped the window, and roko diagnose matches plan+run exactly with a model+time fallback for old rows."
 +++
 
 ## Problem

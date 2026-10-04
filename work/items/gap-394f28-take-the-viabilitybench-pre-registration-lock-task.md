@@ -74,3 +74,25 @@ Then run 3345 as its spec says.
 - Before LOG1 itself (not the lock): task 3349 picks block B's best cheap model (provisionally glm-4.7), the Moonshot
   base URL needs checking, fd_codex needs a live probe and D42 confirmed, and a copied Codex home can rotate the
   operator's refresh token (a fresh `codex login` may be needed).
+- 2026-10-04 (wave-15 follow-up, gap-1a8ee7): `q-55c52f` must be decided before this lock is
+  taken. S09 closure test X4 needs LOG1 blocks run under the `no_gate`, `always_refine` and
+  `always_escalate` policies; `experiments/log1.toml` defines none today (confirmed: no match
+  for any of the three, or `refine_spec`). Adding them changes LOG1's cell count and planned
+  spend, which the lock is meant to freeze — so whether to add them (and re-verify the billed
+  total against BL1's cap), skip X4 for this run, or simulate the counterfactuals instead needs
+  Will's answer before this item is actioned, not after.
+- 2026-10-04 (wave-15 follow-up, bug-19ae56, work/bug-19ae56 not yet merged): a plan's own
+  `[meta] skip_enrichment` now actually takes effect in `prompt_builder::from_task` (it was
+  previously computed from unrelated inputs and silently ignored the task's real flag).
+  `planemit.py` sets `skip_enrichment: bool = True` for every Roko bench arm it emits
+  (`driver/planemit.py:313`, `123`), and S09 (`specs/S09-experiments.md:246`) requires every arm
+  to share "the same `skip_enrichment`" for a valid comparison — so this is the intended design,
+  not a bug to fix before locking. But it is a real change to what `roko run`'s prompt plans and
+  every ViabilityBench Roko-arm plan actually send: confirmed in `from_task`
+  (`prompt_builder.rs:213-261`) that `workspace_map`, `tasks_toml`, `workspace_context` and
+  `plan_brief` all now go empty when `skip_enrichment` is true, where before this fix they did
+  not reliably go empty even when the meta flag was set. Any prompt baseline, golden snapshot,
+  or shakedown expectation captured before this lands may no longer match. Flagging only — no
+  action needed on this lock item itself, since the behavior is correct; whoever takes the lock
+  should know the bench prompts changed shape immediately before it, in case a baseline needs
+  re-capturing.

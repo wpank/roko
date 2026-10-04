@@ -2,15 +2,16 @@
 id = "gap-fd0c0b"
 kind = "gap"
 title = "extract_finish_reason_raw misses Anthropic/Gemini native bodies, and hermes/safety-data-llm never check it at all"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "M"
 subsystem = ["roko-agent/translate", "roko-agent/streaming"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-4 follow-up reports 2026-10-02 (bug-e3940b's worker)"
 discovered_from = "bug-e3940b"
 anchors = ["crates/roko-agent/src/translate/mod.rs::extract_finish_reason_raw", "crates/roko-agent/src/provider/anthropic_api/tool_loop.rs::normalize_response", "crates/roko-agent/src/tool_loop/backends/gemini_native.rs", "crates/roko-agent/src/hermes/http_adapter.rs", "crates/roko-agent/src/safety/data_llm.rs"]
@@ -22,6 +23,17 @@ command = "grep -rqw 'fn anthropic_native_stop_reason_reaches_extract_finish_rea
 
 [[verify]]
 command = "grep -rqw 'fn hermes_adapter_flags_a_length_truncated_turn' crates/roko-agent/ && cargo test -p roko-agent hermes_adapter_flags_a_length_truncated_turn"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:37Z"
+commit = "d16bc9969"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T10:35:21Z"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): both verifies pass; agent provider parity and SSE replay pass. extract_finish_reason_raw reads Anthropic's stop_reason and Gemini's finishReason; one BackendResponse::hit_length_limit check serves the tool loop, Hermes (fails a cut-off turn, keeps usage) and the data LLM (withholds it). An Anthropic final turn at max_tokens now stops as a BackendError, like OpenAI's length."
 +++
 
 ## Problem

@@ -2,15 +2,16 @@
 id = "gap-26c055"
 kind = "gap"
 title = "Four minor M1/ladder bookkeeping gaps: a hardcoded exposure-count label, a static last-chance check, and two edge cases"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-9 follow-up reports 2026-10-03 (PK63 gap-eb39c1)"
 discovered_from = "gap-eb39c1"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/decision_log.rs", "crates/roko-cli/src/graph_task_dispatch/ladder.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn last_chance_reads_the_live_retry_budget' crates/roko-cli/ && cargo test -p roko-cli last_chance_reads_the_live_retry_budget"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:40Z"
+commit = "d16bc9969"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T10:35:26Z"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): verify last_chance_reads_the_live_retry_budget passes, plus a_floor_raised_after_a_climb_stops_at_the_cap and error_pattern_policy_names_the_live_pattern_count. The error-pattern label names theta's k, the last-chance check reads the live retry budget, routed_task keeps a mid-climb floor under the cap, and the theta-swap window is documented."
 +++
 
 ## Problem

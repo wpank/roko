@@ -2,13 +2,14 @@
 id = "reg-cc50d3"
 kind = "regression"
 title = "figlib.BASE_FIELDS lacks harness, so Inputs.where() finds no report.py MetricRecord of any arm"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-10-04
 updated = 2026-10-04
 last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-17 follow-up (gap-889682's own end-to-end check)"
 discovered_from = "bug-40de03"
 anchors = ["benchmarks/viabilitybench/analysis/figlib.py::BASE_FIELDS", "benchmarks/viabilitybench/analysis/figlib.py::Rec"]
@@ -17,6 +18,13 @@ links = { depends_on = [], blocks = [], related = ["bug-40de03", "gap-889682"], 
 
 [[verify]]
 command = "grep -qw 'def test_p1_figures_find_a_record_whose_only_extra_clause_is_its_own_harness' benchmarks/viabilitybench/analysis/test_figures_p1.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_figures_p1.py -k test_p1_figures_find_a_record_whose_only_extra_clause_is_its_own_harness -q"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:33Z"
+commit = "d16bc9969"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): its verify passes. figlib.BASE_FIELDS gains harness (bug-40de03 added it to every cell's cut), so figure and table scripts find report.py and econ.py MetricRecords again; regression test added."
 +++
 
 ## Problem

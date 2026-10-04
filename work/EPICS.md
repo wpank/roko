@@ -42,8 +42,8 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 ## [spec-567e52](items/spec-567e52-epic-pilot-benchmark.md) pilot benchmark
 
-- **52/65 closed** · goal `proof` · severity p1
-- open by lane: bench 13
+- **53/65 closed** · goal `proof` · severity p1
+- open by lane: bench 12
 - next: [gap-a2f86a](items/gap-a2f86a-f7-s-in-tree-cargo-target-build.md) F7's in-tree .cargo-target build directory lands in commit_final's archived c_i
 
 ## [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) cybernetic core
@@ -100,12 +100,12 @@ Progress per epic: its children (items whose `parent` is the epic, plus its `dep
 
 | Lane | Closed | Total | Open (verified) |
 |---|---|---|---|
-| bench | 73 | 116 | 43 (34) |
+| bench | 76 | 118 | 42 (33) |
 | docs | 19 | 25 | 6 (5) |
 | frontend | 3 | 6 | 3 (3) |
 | none | 346 | 423 | 77 (77) |
 | paper | 61 | 77 | 16 (13) |
-| rust-cold | 225 | 265 | 40 (30) |
-| rust-hot | 193 | 229 | 36 (33) |
+| rust-cold | 227 | 265 | 38 (28) |
+| rust-hot | 200 | 234 | 34 (31) |
 | tests | 1 | 1 | 0 (0) |
 | tracker | 21 | 24 | 3 (2) |

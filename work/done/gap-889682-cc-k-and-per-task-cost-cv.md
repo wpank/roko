@@ -2,15 +2,16 @@
 id = "gap-889682"
 kind = "gap"
 title = "cc_<k> and per-task cost_cv MetricRecords have no producer; fig_f4 panel d and tab_t3's CC column stay empty"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-8 follow-up reports 2026-10-03 (PK49 gap-7ec3ef)"
 discovered_from = "gap-7ec3ef"
 anchors = ["benchmarks/viabilitybench/analysis/fig_f4_passk.py", "benchmarks/viabilitybench/analysis/tab_t3_headline.py", "benchmarks/viabilitybench/analysis/econ.py"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_cc_k_metric_is_produced' benchmarks/viabilitybench/analysis/test_econ.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_econ.py -k test_cc_k_metric_is_produced -q"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:33Z"
+commit = "d16bc9969"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T10:31:59Z"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): verify test_cc_k_metric_is_produced passes. econ.py::cc_metrics produces cc_<k> and per-task cost_cv MetricRecords, with a task-cluster bootstrap for cc_k's interval."
 +++
 
 ## Problem

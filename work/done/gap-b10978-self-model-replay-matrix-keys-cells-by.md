@@ -2,15 +2,16 @@
 id = "gap-b10978"
 kind = "gap"
 title = "Self-model replay matrix keys cells by (task, arm) only, collapsing arms that ran several models into one"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/self-model", "benchmarks/viabilitybench/analysis"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-8 follow-up reports 2026-10-03 (PK49 gap-7ec3ef)"
 discovered_from = "gap-7ec3ef"
 anchors = ["crates/roko-learn/src/self_model/replay.rs::Matrix"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn matrix_keeps_one_cell_per_task_arm_and_model' crates/roko-learn/ && cargo test -p roko-learn matrix_keeps_one_cell_per_task_arm_and_model"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:37Z"
+commit = "d16bc9969"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T10:31:57Z"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): verify matrix_keeps_one_cell_per_task_arm_and_model passes, plus its Python twin in test_econ.py. The self-model replay matrix keys (task, arm, model); multi-model arms split as arm[model]."
 +++
 
 ## Problem

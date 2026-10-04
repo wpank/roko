@@ -2,15 +2,16 @@
 id = "gap-9f9c03"
 kind = "gap"
 title = "Run records don't persist how many truth-suite checks ran, so labels.py's hidden.n is always a lower bound"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/audit"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-4 follow-up reports 2026-10-02 (PK53)"
 discovered_from = "audit/labels.py's own module docstring and _hidden's n_known=False"
 anchors = ["benchmarks/viabilitybench/audit/labels.py::_hidden", "benchmarks/viabilitybench/driver/records.py::build"]
@@ -20,6 +21,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_hidden_n_known_true_when_record_has_check_count' benchmarks/viabilitybench/audit/tests/test_labels.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/audit/tests/test_labels.py -k test_hidden_n_known_true_when_record_has_check_count -q"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:32Z"
+commit = "d16bc9969"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T10:31:58Z"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): verify test_hidden_n_known_true_when_record_has_check_count passes; bench suite 748 passed. records.py persists vs.hidden_checks (the length of hidden.py's checks list) and labels.py reports the real hidden n with n_known=True when present."
 +++
 
 ## Problem

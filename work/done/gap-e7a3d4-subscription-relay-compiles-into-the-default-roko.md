@@ -2,15 +2,16 @@
 id = "gap-e7a3d4"
 kind = "gap"
 title = "subscription_relay compiles into the default roko-serve build; it isn't behind the relay feature"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 size = "M"
 subsystem = ["roko-serve"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-6 follow-up reports 2026-10-03 (PK79 gap-425d9e)"
 discovered_from = "gap-425d9e"
 anchors = ["crates/roko-serve/src/lib.rs", "crates/roko-serve/src/state.rs::AppState", "crates/roko-serve/src/relay.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn default_build_has_no_subscription_relay' crates/roko-serve/ && cargo test -p roko-serve default_build_has_no_subscription_relay"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:34Z"
+commit = "d16bc9969"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T10:35:23Z"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): verify default_build_has_no_subscription_relay passes; roko-serve builds and is clippy-clean with and without relay, and the relay build's subscriptions and openapi lib tests pass. subscription_relay, its state field and dispatch hook are behind the relay feature; without it the status route is parked (501, required_feature relay)."
 +++
 
 ## Problem

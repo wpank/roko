@@ -2,15 +2,16 @@
 id = "gap-1cf555"
 kind = "gap"
 title = "A tripped loop-audit state (SRM alarm, placebo move) has no clear/acknowledge command"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/loop-audit"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-8 follow-up reports 2026-10-03 (PK43 gap-c1d920)"
 discovered_from = "gap-c1d920; checked against PK44/gap-85d176 (5132-5134), which does not own this"
 anchors = ["crates/roko-learn/src/loop_audit/state.rs::Auditor", "crates/roko-learn/src/loop_audit/faults.rs::clear"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn operator_clears_a_tripped_loop_audit' crates/roko-learn/ && cargo test -p roko-learn operator_clears_a_tripped_loop_audit"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:35Z"
+commit = "d16bc9969"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T10:31:54Z"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): verify operator_clears_a_tripped_loop_audit passes, plus learn_loops_clear_records_who_and_why. roko learn loops clear --reason [--by] appends a loop.audit_cleared row (who, why, the tripped loops) and the auditor starts afresh after the latest clear."
 +++
 
 ## Problem

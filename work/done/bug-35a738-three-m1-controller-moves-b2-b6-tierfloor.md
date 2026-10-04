@@ -2,15 +2,16 @@
 id = "bug-35a738"
 kind = "bug"
 title = "Three M1 controller moves (B2, B6, TierFloor-down) are inert under current defaults and sequencing"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-cli/runner", "roko-cli/graph-task-dispatch", "roko-learn/homeostasis"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-9 follow-up reports 2026-10-03 (PK63 gap-eb39c1)"
 discovered_from = "gap-eb39c1"
 anchors = ["crates/roko-cli/src/runner/promise_tracker.rs::PromiseTracker", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs", "crates/roko-learn/src/homeostasis/catalog.rs::KnobKind"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn b2_retry_delta_has_room_to_move_on_a_ladder_routed_task' crates/roko-cli/ && cargo test -p roko-cli b2_retry_delta_has_room_to_move_on_a_ladder_routed_task"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:39Z"
+commit = "d16bc9969"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T10:35:25Z"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): verify b2_retry_delta_has_room_to_move_on_a_ladder_routed_task passes, plus search_never_turns_an_inert_knob; homeostat_disturbances passes. SafetyBox rule 8 (InertMove) refuses B6 and TierFloor-down below theta0 as search moves; B2 stays admissible and moves once S5 widens the box. Room for B2 at the defaults is Will's call (q-85792e)."
 +++
 
 ## Problem

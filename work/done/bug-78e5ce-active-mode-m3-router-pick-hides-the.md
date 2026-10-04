@@ -2,15 +2,16 @@
 id = "bug-78e5ce"
 kind = "bug"
 title = "Active-mode M3: router_pick hides the self-model's pick, streaming dispatch skips forecasting, early-climb eligibility may be stale"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-9 follow-up reports 2026-10-03 (gap-d2d750)"
 discovered_from = "gap-d2d750"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/ladder.rs::AttemptLadder", "crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/self_model.rs::SelfModelRuntime"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn streaming_dispatch_forecasts_through_the_self_model' crates/roko-cli/ && cargo test -p roko-cli streaming_dispatch_forecasts_through_the_self_model"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:36Z"
+commit = "d16bc9969"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T10:31:56Z"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): verify streaming_dispatch_forecasts_through_the_self_model passes (fix 6dd7afe09: the fixture's rung models call tools). Streaming dispatch forecasts through the self-model as the batch path does, restoring refine/abandon reports, the active start and the cached forecast; eligibility is documented as fixed at run start. router_pick moved to bug-7dff88 and streaming's attempt 0 to bug-b087ea."
 +++
 
 ## Problem

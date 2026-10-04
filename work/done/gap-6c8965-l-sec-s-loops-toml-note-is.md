@@ -2,15 +2,16 @@
 id = "gap-6c8965"
 kind = "gap"
 title = "L-sec's loops.toml note is stale, the census's L-know check reads a dead file, [sections] is undocumented, and 4131's fixture has no knowledge store"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "M"
 subsystem = ["roko-learn/loop-audit", "roko-core/config", "roko-cli/tests"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-7 follow-up reports 2026-10-03 (PK38 gap-894977)"
 discovered_from = "gap-894977"
 anchors = ["crates/roko-learn/src/loop_audit/loops.toml", "crates/roko-learn/src/loop_audit/census.rs::RETRIEVAL_OUTCOMES", "crates/roko-core/src/config/sections.rs", "crates/roko-cli/tests/learning_wiring_census.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn census_l_know_counts_exposures_not_the_retired_retrieval_log' crates/roko-learn/ && cargo test -p roko-learn census_l_know_counts_exposures_not_the_retired_retrieval_log"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:35Z"
+commit = "d16bc9969"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-04T10:31:55Z"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): verify census_l_know_counts_exposures_not_the_retired_retrieval_log passes. The census's L-know counts the runs' exposures (the retired retrieval log only when no run records exposures), the L-sec note is updated, and [sections] is documented. The fourth point (a knowledge store in the 4131 census fixture) moved to gap-5b8767."
 +++
 
 ## Problem

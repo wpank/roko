@@ -2,15 +2,16 @@
 id = "gap-ade918"
 kind = "gap"
 title = "ACP's no-usable-provider error has no login hint for an auth quarantine"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
 size = "S"
 subsystem = ["roko-acp", "roko-learn/provider-failover"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-04
+last_verified = 2026-10-04
+last_verified_rev = "d16bc9969"
 source = "wave-6 follow-up reports 2026-10-03 (health bundle, gap-d90a93)"
 discovered_from = "gap-d90a93, related to bug-9ca6d7 (same health-bundle report, message/UX half)"
 anchors = ["crates/roko-acp/src/bridge_events/mod.rs", "crates/roko-learn/src/provider_failover.rs::Failover", "crates/roko-cli/src/graph_task_dispatch/failover.rs::no_usable_provider"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["bug-9ca6d7", "gap-d90a93"], 
 
 [[verify]]
 command = "grep -rqw 'fn acp_auth_quarantine_message_includes_a_login_hint' crates/roko-acp/ && cargo test -p roko-acp acp_auth_quarantine_message_includes_a_login_hint"
+
+[closed]
+at = 2026-10-04
+at_ts = "2026-10-04T13:06:38Z"
+commit = "d16bc9969"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-04T10:35:22Z"
+forced = false
+evidence = "Gate 17b (merged d16bc9969): verify acp_auth_quarantine_message_includes_a_login_hint passes. The credentials hint lives in roko_learn::provider_failover, shared by the CLI's failover, ACP's no-usable-provider error and serve's bench dispatch."
 +++
 
 ## Problem

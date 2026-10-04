@@ -962,7 +962,7 @@ State machine: `open -> assigned/in_progress -> submitted -> completed/failed`.
 | GET | `/api/subscriptions` | List subscriptions |
 | POST | `/api/subscriptions` | Create subscription |
 | GET | `/api/subscriptions/catalog` | Supported trigger/filter shapes |
-| GET | `/api/subscriptions/relay/status` | Durable relay diagnostics |
+| GET | `/api/subscriptions/relay/status` | Durable relay diagnostics; a build without the `relay` feature answers 501 |
 | PUT | `/api/subscriptions/{id}` | Replace subscription |
 | DELETE | `/api/subscriptions/{id}` | Delete subscription |
 | POST | `/api/subscriptions/{id}/enable` | Enable subscription |

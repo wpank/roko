@@ -37,8 +37,9 @@ fault-injection = ["roko-learn/fault-injection"]
 # /groups and /invitations routes). Parked: plan runs never use them (9219).
 groups = []
 # Relay client side: workspace registration, the subscription and feed
-# relay bridge, and the /relay proxy. Parked: no workspace sets a relay
-# url (9220). The relay health and subscription status types stay compiled.
+# relay bridge with its durable consumer journal, and the /relay proxy.
+# Parked: no workspace sets a relay url (9220). Without it the relay health
+# type stays compiled, and /api/subscriptions/relay/status answers 501.
 relay = []
 # Enables OpenTelemetry Protocol (OTLP) trace/metric export. Configure OTEL_EXPORTER_OTLP_ENDPOINT to use.
 otlp = [

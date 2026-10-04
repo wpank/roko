@@ -38,10 +38,18 @@ pub fn routes() -> Router<Arc<AppState>> {
 /// `GET /api/subscriptions/relay/status` — durable relay-consumer cursor and
 /// reconciliation diagnostics. The parent API router applies normal read
 /// authentication/scope enforcement when serve auth is enabled.
+#[cfg(feature = "relay")]
 async fn relay_subscription_status(
     State(state): State<Arc<AppState>>,
 ) -> Json<crate::subscription_relay::SubscriptionRelayStatus> {
     Json(state.subscription_relay.status().await)
+}
+
+/// `GET /api/subscriptions/relay/status` in a build without `relay`: no relay
+/// consumer runs, so the route is parked like the relay proxy (gap-e7a3d4).
+#[cfg(not(feature = "relay"))]
+async fn relay_subscription_status() -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    super::chain_disabled::parked("the relay subscription consumer", "relay")
 }
 
 /// `GET /api/subscriptions/catalog` — describe available trigger types and filter fields.
@@ -402,6 +410,74 @@ mod tests {
             )
             .await
             .expect("response");
-        assert_eq!(authenticated.status(), StatusCode::OK);
+        // A build without `relay` parks the route behind the same authentication.
+        let served = if cfg!(feature = "relay") {
+            StatusCode::OK
+        } else {
+            StatusCode::NOT_IMPLEMENTED
+        };
+        assert_eq!(authenticated.status(), served);
+    }
+
+    /// gap-e7a3d4: a build without `relay` has no subscription relay. Its status
+    /// route is parked like the relay proxy (501, naming the feature), and the
+    /// OpenAPI document holds none of its schemas.
+    #[cfg(not(feature = "relay"))]
+    #[tokio::test]
+    async fn default_build_has_no_subscription_relay() {
+        let dir = tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = false;
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config.clone(),
+                deploy_backend,
+            )
+            .expect("app state"),
+        );
+        let app = build_router(Arc::clone(&state), &[], config.serve.auth.clone());
+
+        let status = app
+            .clone()
+            .oneshot(
+                Request::get("/api/subscriptions/relay/status")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(status.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = axum::body::to_bytes(status.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let parked: serde_json::Value = serde_json::from_slice(&body).expect("parked json");
+        assert_eq!(parked["required_feature"], "relay");
+
+        let doc = app
+            .oneshot(
+                Request::get("/api/openapi.json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let body = axum::body::to_bytes(doc.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let doc: serde_json::Value = serde_json::from_slice(&body).expect("openapi json");
+        let schemas = &doc["components"]["schemas"];
+        for name in [
+            "SubscriptionRelayStatus",
+            "ServeRelayConnectionStatus",
+            "ReconciliationRecord",
+            "RelayStreamBinding",
+        ] {
+            assert!(schemas.get(name).is_none(), "{name} without relay");
+        }
+        assert!(doc["paths"]["/subscriptions/relay/status"]["get"]["responses"]["501"].is_object());
     }
 }

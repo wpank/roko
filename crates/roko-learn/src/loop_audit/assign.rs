@@ -11,7 +11,7 @@
 //!   as does a bench campaign's fixed rate, and maximize mode
 //!   (`--no-holdout`, D7) withholds nothing. S02.P1-14's `ArmSet` builds its
 //!   layers here.
-//! - [`assign_nested`]: a nested loop (`route.dream_bias`) is drawn only in
+//! - [`assign_nested`]: a nested loop (`route.linucb`) is drawn only in
 //!   its parent's learned arm, and otherwise takes π⁰ with its parent.
 //! - The all-learning-off arm is the chain's draw on the `global` layer, so
 //!   it switches every layer to π⁰ at once ([`takes_default`]), and each
@@ -122,7 +122,7 @@ impl LoopLayer {
         h.max(self.schedule.min).min(1.0)
     }
 
-    /// `spec`'s layer for an epoch: where its arm is drawn (`route.dream_bias`
+    /// `spec`'s layer for an epoch: where its arm is drawn (`route.linucb`
     /// for a loop nested in L-route), its unit, its h, and g, which maximize
     /// mode turns off.
     #[must_use]
@@ -561,14 +561,14 @@ mod tests {
         const CHAINS: usize = 20_000;
         let registry = registry();
         let route = layer_of(&registry, "L-route", AuditState::Probation);
-        let bias = layer_of(&registry, "L-dream-bias", AuditState::Probation);
-        assert_eq!(bias.layer, "route.dream_bias");
+        let linucb = layer_of(&registry, "L-linucb", AuditState::Probation);
+        assert_eq!(linucb.layer, "route.linucb");
         let (mut learned_parents, mut held_out) = (0_u32, 0_u32);
         for index in 0..CHAINS {
             let key = chain(index);
             let parent = assign(&route, &key);
-            let nested = assign_nested(&parent, &bias, &key);
-            assert_eq!(nested.layer, "route.dream_bias");
+            let nested = assign_nested(&parent, &linucb, &key);
+            assert_eq!(nested.layer, "route.linucb");
             assert_eq!(nested.unit, AssignmentUnit::Chain);
             if parent.arm != Arm::Learned {
                 // π⁰ with the parent: its arm and its propensity.
@@ -579,16 +579,16 @@ mod tests {
             learned_parents += 1;
             let conditional = if nested.arm == Arm::Default {
                 held_out += 1;
-                bias.h
+                linucb.h
             } else {
                 assert_eq!(nested.arm, Arm::Learned);
-                1.0 - bias.h
+                1.0 - linucb.h
             };
             assert!((nested.propensity - parent.propensity * conditional).abs() < 1e-12);
         }
         let share = f64::from(held_out) / f64::from(learned_parents);
         assert!(
-            (share - bias.h).abs() < 0.02,
+            (share - linucb.h).abs() < 0.02,
             "nested default share {share}"
         );
     }
@@ -696,11 +696,11 @@ mod tests {
         assert_eq!((layer.h, layer.g), (0.0, 0.0));
 
         // A nested loop draws on its own layer, with its unit and h.
-        let bias = layers.layer_spec(spec(&registry, "L-dream-bias"), Live, EPOCH, SEED, G);
-        assert_eq!(bias.layer, "route.dream_bias");
-        assert_eq!((bias.h, bias.g, bias.run_seed), (0.05, G, SEED));
-        assert_eq!(bias.unit, AssignmentUnit::Chain);
-        assert_eq!(bias.epoch, EPOCH);
+        let linucb = layers.layer_spec(spec(&registry, "L-linucb"), Live, EPOCH, SEED, G);
+        assert_eq!(linucb.layer, "route.linucb");
+        assert_eq!((linucb.h, linucb.g, linucb.run_seed), (0.05, G, SEED));
+        assert_eq!(linucb.unit, AssignmentUnit::Chain);
+        assert_eq!(linucb.epoch, EPOCH);
     }
 
     #[test]

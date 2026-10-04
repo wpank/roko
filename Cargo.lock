@@ -6840,6 +6840,7 @@ dependencies = [
  "alloy-primitives",
  "anyhow",
  "arc-swap",
+ "argon2",
  "async-trait",
  "axum 0.8.9",
  "base64 0.22.1",

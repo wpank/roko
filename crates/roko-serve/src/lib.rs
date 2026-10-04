@@ -68,6 +68,7 @@ pub mod runtime_event_bridge;
 pub mod sanitize;
 pub mod scheduler;
 pub mod service_factory;
+pub mod showcase;
 pub mod state;
 // The relay bridge that consumes this needs `relay` (9220); the journal and
 // status types also back `GET /api/subscriptions/relay/status`.
@@ -393,6 +394,7 @@ impl ServerBuilder {
         validate_bind_safety(&addr, &roko_config.serve)?;
         let passphrase_hash = std::env::var(PASSPHRASE_HASH_ENV).ok();
         validate_showcase_mode(&roko_config, passphrase_hash.as_deref())?;
+        state.local_access.set_passphrase_hash(passphrase_hash);
         state.configure_listener_security(&effective_bind, roko_config.serve.auth.enabled);
         let (live_setting, live_msg) =
             live_agent_output_for_bind(roko_config.serve.live_agent_output, &effective_bind);
@@ -1043,6 +1045,7 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     validate_bind_safety(&addr, &roko_config.serve)?;
     let passphrase_hash = std::env::var(PASSPHRASE_HASH_ENV).ok();
     validate_showcase_mode(&roko_config, passphrase_hash.as_deref())?;
+    state.local_access.set_passphrase_hash(passphrase_hash);
     state.configure_listener_security(bind, roko_config.serve.auth.enabled);
     if !roko_config.serve.auth.enabled {
         tracing::warn!(

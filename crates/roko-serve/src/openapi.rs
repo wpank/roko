@@ -306,6 +306,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         retrieval_query,
         create_auth_session,
         end_auth_session,
+        probe_auth_session,
         affect_state_handler,
         list_agent_tokens,
         issue_agent_token,
@@ -381,6 +382,15 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         learn_homeostasis_ack,
         showcase_m1_essential_variables,
         showcase_m1_episodes,
+        showcase_manifest,
+        showcase_bundles,
+        showcase_bundle,
+        showcase_bundle_file,
+        showcase_overview,
+        showcase_p1_head_to_head,
+        showcase_m4_audits,
+        showcase_reload_bundles,
+        showcase_unlock_login,
         list_effects,
         decide_effect,
         sse_handler,
@@ -1444,7 +1454,9 @@ doc_get!(retrieval_query, "/retrieval/query", "neuro");
     tag = "auth",
     responses(
         (status = 204, description = "Session created; `Set-Cookie` carries `roko_session`"),
-        (status = 401, description = "Missing or invalid credential", body = ApiErrorResponse)
+        (status = 401, description = "Missing or invalid credential", body = ApiErrorResponse),
+        (status = 403, description = "Showcase mode: no `X-Roko-CSRF: 1` or a foreign origin"),
+        (status = 429, description = "Showcase mode: the passphrase queue is full")
     )
 )]
 fn create_auth_session() {}
@@ -1455,6 +1467,15 @@ fn create_auth_session() {}
     responses((status = 204, description = "Session ended and its cookie cleared"))
 )]
 fn end_auth_session() {}
+#[utoipa::path(
+    get,
+    path = "/auth/session",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Whether the caller holds a live session", body = Value)
+    )
+)]
+fn probe_auth_session() {}
 
 // ── affect (gap-c50b85) ────────────────────────────────────────────────────────────
 doc_get!(affect_state_handler, "/affect/state", "affect");
@@ -1594,6 +1615,43 @@ doc_get!(
     "learning"
 );
 doc_get!(showcase_m1_episodes, "/showcase/m1/episodes", "learning");
+
+// ── showcase (S10 §5.2): read routes over verified bundles, and their admin ──
+doc_get!(showcase_manifest, "/showcase/manifest", "showcase");
+doc_get!(showcase_bundles, "/showcase/bundles", "showcase");
+doc_get_param!(showcase_bundle, "/showcase/bundles/{id}", "showcase", "id");
+#[utoipa::path(
+    get,
+    path = "/showcase/bundles/{id}/files/{path}",
+    tag = "showcase",
+    params(
+        ("id" = String, Path, description = "Bundle id"),
+        ("path" = String, Path, description = "A file the bundle's SHA256SUMS lists")
+    ),
+    responses(
+        (status = 200, description = "The file, with its SHA-256 as the ETag"),
+        (status = 404, description = "Not a file of the bundle", body = ApiErrorResponse),
+        (status = 409, description = "The bundle was rejected", body = ApiErrorResponse)
+    )
+)]
+fn showcase_bundle_file() {}
+doc_get!(showcase_overview, "/showcase/overview", "showcase");
+doc_get!(
+    showcase_p1_head_to_head,
+    "/showcase/p1/head-to-head",
+    "showcase"
+);
+doc_get!(showcase_m4_audits, "/showcase/m4/audits", "showcase");
+doc_post_value!(
+    showcase_reload_bundles,
+    "/showcase/admin/bundles/reload",
+    "showcase"
+);
+doc_post_value!(
+    showcase_unlock_login,
+    "/showcase/admin/login-unlock",
+    "showcase"
+);
 
 // ── event_ingest (gap-c50b85) ──────────────────────────────────────────────────────
 doc_post_value!(ingest_event, "/events/ingest", "event_ingest");

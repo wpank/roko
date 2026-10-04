@@ -248,6 +248,20 @@ pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
         ));
     }
 
+    // 9327: `serve.public_routes` names route groups that exist, so a typo
+    // cannot quietly unmount `/health`.
+    for group in &config.serve.public_routes {
+        if !super::serve::PUBLIC_ROUTE_GROUPS.contains(&group.as_str()) {
+            let known = super::serve::PUBLIC_ROUTE_GROUPS.join(", ");
+            results.push(invariant(
+                17,
+                InvariantSeverity::Error,
+                "serve.public_routes",
+                format!("unknown route group {group:?}; the groups are {known}"),
+            ));
+        }
+    }
+
     // 9119: each gate rung has what its kind needs, such as a command for a
     // `command` rung and artefacts for a `citations` one.
     for (key, problem) in config.gates.rung_problems() {

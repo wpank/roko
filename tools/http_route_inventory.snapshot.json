@@ -1,6 +1,6 @@
 {
-  "total_registrations": 474,
-  "canonical_registrations": 414,
+  "total_registrations": 484,
+  "canonical_registrations": 424,
   "alias_count": 60,
   "conflict_count": 0,
   "unparsed_count": 0,
@@ -447,7 +447,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/auth_session.rs",
-      "line": 282,
+      "line": 453,
       "router_fn": "routes",
       "path": "/api/auth/session",
       "method": "DELETE",
@@ -455,7 +455,15 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/auth_session.rs",
-      "line": 282,
+      "line": 453,
+      "router_fn": "routes",
+      "path": "/api/auth/session",
+      "method": "GET",
+      "handler": "session_probe"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/auth_session.rs",
+      "line": 453,
       "router_fn": "routes",
       "path": "/api/auth/session",
       "method": "POST",
@@ -2111,7 +2119,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 409,
+      "line": 416,
       "router_fn": "build_router",
       "path": "/workflow/events",
       "method": "GET",
@@ -2119,7 +2127,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 517,
+      "line": 528,
       "router_fn": "build_router",
       "path": "/health",
       "method": "GET",
@@ -2127,7 +2135,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 519,
+      "line": 532,
       "router_fn": "build_router",
       "path": "/ready",
       "method": "GET",
@@ -2135,7 +2143,7 @@
     },
     {
       "source_file": "crates/roko-serve/src/routes/mod.rs",
-      "line": 521,
+      "line": 536,
       "router_fn": "build_router",
       "path": "/metrics",
       "method": "GET",
@@ -3052,6 +3060,78 @@
       "path": "/runs/{id}",
       "method": "GET",
       "handler": "get_run_html"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 22,
+      "router_fn": "routes",
+      "path": "/showcase/manifest",
+      "method": "GET",
+      "handler": "views::manifest"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 23,
+      "router_fn": "routes",
+      "path": "/showcase/bundles",
+      "method": "GET",
+      "handler": "views::bundles"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 24,
+      "router_fn": "routes",
+      "path": "/showcase/bundles/{id}",
+      "method": "GET",
+      "handler": "views::bundle"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 25,
+      "router_fn": "routes",
+      "path": "/showcase/bundles/{id}/files/{*path}",
+      "method": "GET",
+      "handler": "views::bundle_file"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 29,
+      "router_fn": "routes",
+      "path": "/showcase/overview",
+      "method": "GET",
+      "handler": "views::overview"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 30,
+      "router_fn": "routes",
+      "path": "/showcase/p1/head-to-head",
+      "method": "GET",
+      "handler": "views::p1_head_to_head"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 31,
+      "router_fn": "routes",
+      "path": "/showcase/m4/audits",
+      "method": "GET",
+      "handler": "views::m4_audits"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 32,
+      "router_fn": "routes",
+      "path": "/showcase/admin/bundles/reload",
+      "method": "POST",
+      "handler": "admin::reload_bundles"
+    },
+    {
+      "source_file": "crates/roko-serve/src/routes/showcase/mod.rs",
+      "line": 36,
+      "router_fn": "routes",
+      "path": "/showcase/admin/login-unlock",
+      "method": "POST",
+      "handler": "admin::unlock_login"
     },
     {
       "source_file": "crates/roko-serve/src/routes/sse.rs",

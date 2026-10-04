@@ -7,21 +7,22 @@
 //! first failure, and `fault <id> <kind>` breaks the loop in a
 //! fault-injection build with `ROKO_FAULTS=1` and shows where the canary
 //! finds the break. Without that build it says how to get one and exits 2.
+//! `clear --reason <why>` clears a tripped audit (gap-1cf555), on the record.
 
 use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::Context as _;
 use roko_learn::loop_audit::faults::FaultKind;
-use roko_learn::loop_audit::ledger::CanaryRow;
-use roko_learn::loop_audit::{Registry, census};
+use roko_learn::loop_audit::ledger::{CanaryRow, LoopAuditRow};
+use roko_learn::loop_audit::{LoopAuditor, Registry, census};
 
 use crate::loop_canary::DryCanaryRunner;
 
 /// The exit code of a `fault` the build or the environment cannot run.
 pub const EXIT_NO_FAULTS: i32 = 2;
 
-/// `roko learn loops canary|fault` (S03 §5; backlog 5134).
+/// `roko learn loops canary|fault|clear` (S03 §5; backlog 5134).
 #[derive(Debug, Clone, PartialEq, Eq, clap::Subcommand)]
 pub enum LoopsCmd {
     /// Trace a loop's canary, dry and in-process: write its nonce artifact,
@@ -38,6 +39,18 @@ pub enum LoopsCmd {
         /// How to break it: cut, stale, degenerate, mask, unlogged or
         /// label_only (HARMFUL runs live only, never here).
         kind: String,
+    },
+    /// Clear a tripped loop audit (an SRM alarm, a moved placebo), which
+    /// freezes every loop's transitions and enforcement until a person
+    /// clears it. The loop-audit ledger records who cleared it and why; the
+    /// next audit tick trips it again if the cause remains.
+    Clear {
+        /// Why the audit may run again.
+        #[arg(long)]
+        reason: String,
+        /// Who clears it (default: `$USER`).
+        #[arg(long)]
+        by: Option<String>,
     },
 }
 
@@ -66,7 +79,40 @@ pub fn loops_cmd_output(
                 .with_context(|| format!("unknown fault kind {kind:?}"))?;
             break_loop(workdir, id, kind, json)
         }
+        LoopsCmd::Clear { reason, by } => clear_audit(workdir, by.as_deref(), reason, json),
     }
+}
+
+/// Clear the tripped loop audit of `workdir` for `reason`, as `by` (else
+/// `$USER`), and say what was cleared; an audit that is not tripped is left
+/// as it is.
+fn clear_audit(
+    workdir: &Path,
+    by: Option<&str>,
+    reason: &str,
+    json: bool,
+) -> anyhow::Result<(String, i32)> {
+    let by = by
+        .map(str::to_string)
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_default();
+    let cleared = LoopAuditor::clear_trip(workdir, &by, reason, chrono::Utc::now())
+        .context("clear the loop audit (pass --by and --reason)")?;
+    if json {
+        return Ok((serde_json::to_string_pretty(&cleared)? + "\n", 0));
+    }
+    let Some(record) = cleared else {
+        let idle = "the loop audit is not tripped: nothing to clear\n";
+        return Ok((idle.to_string(), 0));
+    };
+    let tripped = match &record.row {
+        LoopAuditRow::AuditCleared(row) => row.tripped.join(", "),
+        _ => String::new(),
+    };
+    let by = by.trim();
+    let reason = reason.trim();
+    let out = format!("cleared the tripped loop audit ({tripped}) as {by}: {reason}\n");
+    Ok((out, 0))
 }
 
 /// `row`, `loop_id`'s canary trace, as JSON or as one line per probe.
@@ -266,5 +312,54 @@ mod tests {
             kind: "sideways".into(),
         };
         assert!(loops_cmd_output(temp.path(), &unknown, false).is_err());
+    }
+
+    /// A loop-audit ledger whose placebo's health row tripped the audit.
+    const TRIPPED: &str = concat!(
+        r#"{"schema_version":"roko.loop_audit/1","kind":"loop.health","loop_id":"L-placebo","#,
+        r#""state":"probation","h":0.5,"n_opp":0,"n_L":0,"n_D":0,"#,
+        r#""eps":{"est":0.0,"ucb":0.0,"read":0.0,"reach":0.0,"honest":0.0,"receipt":0.0},"#,
+        r#""iota":{"act":0.0,"aa":0.0,"net":0.0,"lcb":0.0},"beta":{"est":null},"#,
+        r#""srm_evalue":40.0,"placebo_ok":false,"evidence":"measured"}"#,
+        "\n"
+    );
+
+    /// gap-1cf555: `roko learn loops clear --reason <why> --by <who>`
+    /// parses, says so when nothing is tripped, and clears a tripped audit
+    /// with a `loop.audit_cleared` row in the ledger.
+    #[test]
+    fn learn_loops_clear_records_who_and_why() {
+        use clap::Parser as _;
+
+        #[derive(clap::Parser)]
+        struct Loops {
+            #[command(subcommand)]
+            cmd: LoopsCmd,
+        }
+
+        let args = ["loops", "clear", "--reason", "srm fixture", "--by", "will"];
+        let clear = Loops::try_parse_from(args).expect("parse clear").cmd;
+        let expected = LoopsCmd::Clear {
+            reason: "srm fixture".into(),
+            by: Some("will".into()),
+        };
+        assert_eq!(clear, expected);
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (out, code) = loops_cmd_output(temp.path(), &clear, false).expect("nothing to clear");
+        assert_eq!(code, 0);
+        assert!(out.contains("nothing to clear"), "{out}");
+
+        let learn = temp.path().join(".roko/learn");
+        std::fs::create_dir_all(&learn).expect("the learn dir");
+        std::fs::write(learn.join("loop-audit.jsonl"), TRIPPED).expect("a tripped ledger");
+        let (out, code) = loops_cmd_output(temp.path(), &clear, false).expect("the clear");
+        assert_eq!(code, 0);
+        assert!(
+            out.contains("cleared the tripped loop audit (L-placebo) as will: srm fixture"),
+            "{out}"
+        );
+        let ledger = std::fs::read_to_string(learn.join("loop-audit.jsonl")).expect("the ledger");
+        assert!(ledger.contains("loop.audit_cleared"), "{ledger}");
     }
 }

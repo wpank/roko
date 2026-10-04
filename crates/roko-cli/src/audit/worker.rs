@@ -761,6 +761,8 @@ impl Worker {
         let Some(alert) = self.context.gaming.audited(&unit.model, y, unit.pi) else {
             return;
         };
+        // The unit whose label tipped the window raised it (gap-54b2b2).
+        let alert = alert.raised_by(&unit.plan_id, &unit.run_id);
         if !self.alerted.insert(alert.model_slug.clone()) {
             return;
         }

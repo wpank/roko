@@ -110,15 +110,37 @@ pub struct GamingAlert {
     pub second_half_quality: f64,
     /// Wall-clock time the alert was generated.
     pub timestamp: DateTime<Utc>,
+    /// The plan whose attempt's observation raised the alert
+    /// ([`Self::raised_by`]); `None` in an alert logged before alerts named
+    /// it (gap-54b2b2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<String>,
+    /// The run of that attempt; `None` as for `plan_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 impl GamingAlert {
+    /// This alert, attributed to the attempt of plan `plan_id` in run
+    /// `run_id` whose observation raised it (gap-54b2b2).
+    #[must_use]
+    pub fn raised_by(mut self, plan_id: &str, run_id: &str) -> Self {
+        self.plan_id = Some(plan_id.to_string());
+        self.run_id = Some(run_id.to_string());
+        self
+    }
+
     /// Return a human-readable one-line summary suitable for log output.
     #[must_use]
     pub fn summary(&self) -> String {
+        let raised_by = match (&self.plan_id, &self.run_id) {
+            (Some(plan), Some(run)) => format!(" in plan `{plan}`, run `{run}`"),
+            (Some(plan), None) => format!(" in plan `{plan}`"),
+            _ => String::new(),
+        };
         format!(
-            "gate gaming detected for model `{}`: pass_rate +{:.1}pp, quality -{:.1}pp \
-             (first_half: pass={:.1}% q={:.2}, second_half: pass={:.1}% q={:.2})",
+            "gate gaming detected for model `{}`{raised_by}: pass_rate +{:.1}pp, quality \
+             -{:.1}pp (first_half: pass={:.1}% q={:.2}, second_half: pass={:.1}% q={:.2})",
             self.model_slug,
             self.pass_rate_delta * 100.0,
             -self.quality_delta * 100.0,
@@ -276,6 +298,8 @@ impl GateGamingDetector {
                 first_half_quality,
                 second_half_quality,
                 timestamp: Utc::now(),
+                plan_id: None,
+                run_id: None,
             })
         } else {
             None
@@ -802,6 +826,8 @@ mod tests {
             first_half_quality: 0.75,
             second_half_quality: 0.60,
             timestamp: Utc::now(),
+            plan_id: None,
+            run_id: None,
         };
 
         let good_line = serde_json::to_string(&alert).expect("serialize");
@@ -827,12 +853,39 @@ mod tests {
             first_half_quality: 0.75,
             second_half_quality: 0.60,
             timestamp: Utc::now(),
+            plan_id: None,
+            run_id: None,
         };
 
         let summary = alert.summary();
         assert!(summary.contains("test-model"), "summary: {summary}");
         assert!(summary.contains("20.0"), "summary: {summary}");
         assert!(summary.contains("15.0"), "summary: {summary}");
+        assert!(!summary.contains("in plan"), "summary: {summary}");
+
+        let raised = alert.raised_by("demo", "graph-demo-1").summary();
+        let named = "model `test-model` in plan `demo`, run `graph-demo-1`: ";
+        assert!(raised.contains(named), "summary: {raised}");
+    }
+
+    /// gap-54b2b2: an alert names the plan and run that raised it, and a row
+    /// logged before alerts did still parses, with neither.
+    #[test]
+    fn gaming_alert_rows_with_and_without_plan_and_run_parse() {
+        let old = r#"{"model_slug":"m","pass_rate_delta":0.2,"quality_delta":-0.15,
+            "first_half_pass_rate":0.4,"second_half_pass_rate":0.6,"first_half_quality":0.75,
+            "second_half_quality":0.6,"timestamp":"2026-09-29T07:25:00Z"}"#;
+        let alert: GamingAlert = serde_json::from_str(old).expect("an old alert row");
+        assert!(alert.plan_id.is_none() && alert.run_id.is_none());
+        let line = serde_json::to_string(&alert).expect("serialize");
+        assert!(!line.contains("plan_id"), "{line}");
+
+        let raised = alert.raised_by("demo", "graph-demo-1");
+        let line = serde_json::to_string(&raised).expect("serialize");
+        let parsed: GamingAlert = serde_json::from_str(&line).expect("a new alert row");
+        assert_eq!(parsed, raised);
+        assert_eq!(parsed.plan_id.as_deref(), Some("demo"));
+        assert_eq!(parsed.run_id.as_deref(), Some("graph-demo-1"));
     }
 
     // -----------------------------------------------------------------------

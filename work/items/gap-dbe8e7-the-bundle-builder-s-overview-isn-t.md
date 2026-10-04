@@ -1,7 +1,7 @@
 +++
 id = "gap-dbe8e7"
 kind = "gap"
-title = "The bundle builder's overview isn't the claims board: its tiles lack pillar, title, claim_state and rows, so a real bundle's Overview shows no tile"
+title = "The bundle builder's R1 views don't follow the page's contracts: overview tiles lack pillar and claim_state, head-to-head and m4-audits crash the page, and the provenance lacks the drawer's fields"
 status = "open"
 triage = "verified"
 severity = "p2"
@@ -18,7 +18,7 @@ lane = "bench"
 links = { depends_on = [], blocks = [], related = ["gap-9ecd37", "gap-3516d6", "gap-fcb44c", "gap-b7f99e"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/showcase/test_bundle.py -q -k overview_tiles_follow_the_claims_board"
+command = "benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/showcase/test_bundle.py -q -k 'overview_tiles_follow_the_claims_board or r1_views_follow_the_page_contracts'"
 
 [[verify]]
 command = "test -f demo/demo-app/playwright.fly-smoke.config.ts && test -f demo/demo-app/e2e/showcase/fly-smoke.spec.ts && cd demo/demo-app && npx playwright test -c playwright.fly-smoke.config.ts"
@@ -59,7 +59,17 @@ draws the badges and the negatives strip but no tiles.
    `planned_in`; never compute a statistic in the builder. Rows copy MetricRecord values by metric_ref, as now.
 3. Validate each built view against the demo app's JSON Schema for its view (tiles included) in test_bundle.py, and
    make verify_bundle.py re-derive the new shape.
+4. Bring `p1-head-to-head` and `m4-audits` to contracts.ts too: with the metrics index in place they pass the guard
+   and the pages throw ("reading 'frontier_arms'", "reading 'state'") instead of showing RefusedPanel.
+5. Give the provenance envelope the fields the provenance drawer reads (n, seeds, window, estimator,
+   record_filter, ci), copied from the records and the manifest.
 
 ## Done when
 
 - [ ] Both `[[verify]]` commands pass.
+
+## Notes
+
+- 2026-10-04 (coordinator): widened after gap-fcb44c-fix (012c75cf1). w3-pk73 probed the fixture bundle: head-to-head
+  and m4-audits crash the page once they pass the guard, and the provenance envelope lacks n, seeds, window,
+  estimator, record_filter and ci, which the drawer reads. All of it must land before 9315 (gap-b7f99e).

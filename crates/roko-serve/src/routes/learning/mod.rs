@@ -947,6 +947,8 @@ mod tests {
             cache_write_tokens: 0,
             cost_usd,
             cost_usd_without_cache: cost_usd,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
             prompt_sections: Vec::new(),
             total_prompt_tokens: input_tokens,
             system_prompt_tokens: 0,

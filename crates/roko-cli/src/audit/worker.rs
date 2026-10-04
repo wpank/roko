@@ -168,6 +168,25 @@ impl AuditUnit {
     }
 }
 
+/// One model call a phase-B check made.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CheckCall {
+    /// The model's slug.
+    pub model: String,
+    /// What the call used and cost.
+    pub usage: roko_core::Usage,
+    /// Whether it succeeded.
+    pub success: bool,
+}
+
+impl CheckCall {
+    /// What the call cost, in USD.
+    #[must_use]
+    pub fn cost_usd(&self) -> f64 {
+        f64::from(self.usage.cost_usd)
+    }
+}
+
 /// What one phase-B check found.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CheckOutcome {
@@ -176,6 +195,9 @@ pub struct CheckOutcome {
     pub labels: AuditLabels,
     /// What its model calls cost, in USD.
     pub cost_usd: f64,
+    /// Each model call it made, whose costs `cost_usd` adds up: the spend an
+    /// inline check accounts like a dispatch (gap-73c98e).
+    pub calls: Vec<CheckCall>,
     /// Its detail, for the result's `checks`.
     pub detail: Value,
 }

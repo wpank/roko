@@ -145,17 +145,12 @@ impl SectionOutcomes {
 /// (S01 §4.3). The row's own `success` keeps its meaning, which `roko
 /// status` and `roko show costs` read. `R` is the [`CostRecord`] with the
 /// verdict's executed-model columns ([`roko_learn::efficiency::ExecutedRow`]);
-/// the record's `cost_source` is the verdict's `cost.source`.
+/// the record's `cost_source` is the verdict's `cost.source`, and its
+/// `api_equiv_usd` and `price_snapshot_id` the verdict's (backlog 2115).
 #[derive(serde::Serialize)]
 struct SettledCostRow<R> {
     outcome: AttemptOutcome,
     learning_label: Option<u8>,
-    /// The verdict's `cost.api_equiv_usd`: the attempt's tokens at the rates
-    /// of `price_snapshot_id`, `null` when that snapshot does not list the
-    /// model or the usage is unknown (backlog 2115).
-    api_equiv_usd: Option<f64>,
-    /// The price snapshot behind `api_equiv_usd` (backlog 2115).
-    price_snapshot_id: Option<String>,
     #[serde(flatten)]
     row: R,
 }
@@ -436,6 +431,10 @@ impl GraphTaskDispatcher {
                 cache_write_tokens: u64::from(dispatch.result.usage.cache_create_tokens),
                 cost_usd,
                 cost_usd_without_cache: eff_cost_without_cache,
+                // The attempt's tokens at API rates, as its verdict settled
+                // them (gap-546e8a).
+                api_equiv_usd: settled.verdict.cost.api_equiv_usd,
+                price_snapshot_id: settled.verdict.cost.price_snapshot_id.clone(),
                 prompt_sections: eff_prompt_sections,
                 total_prompt_tokens: tokens_in,
                 system_prompt_tokens: u64::from(eff_system_prompt_tokens),
@@ -538,14 +537,18 @@ impl GraphTaskDispatcher {
                     dispatch.target.model_profile.as_ref(),
                     &dispatch.target.model_slug,
                 )),
+                // The verdict's API-equivalent figures: the attempt's tokens
+                // at the rates of the run's price snapshot, `null` when that
+                // snapshot does not list the model or the usage is unknown
+                // (backlog 2115, gap-546e8a).
+                api_equiv_usd: settled.verdict.cost.api_equiv_usd,
+                price_snapshot_id: settled.verdict.cost.price_snapshot_id.clone(),
             };
             let row = AttemptKeyed {
                 attempt_key: attempt_key.to_string(),
                 row: SettledCostRow {
                     outcome: settled.verdict.outcome,
                     learning_label: settled.verdict.learning_label,
-                    api_equiv_usd: settled.verdict.cost.api_equiv_usd,
-                    price_snapshot_id: settled.verdict.cost.price_snapshot_id.clone(),
                     row: roko_learn::efficiency::ExecutedRow::new(
                         &cost_record,
                         &settled.verdict.executed,

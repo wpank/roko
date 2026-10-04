@@ -107,3 +107,66 @@ other full-suite runs. No diagnostic captures the raw `ends[]`/proxy-row `ts` va
   `deba5c6f8` by reading the exact matching algorithm the failure message comes from. Not
   reproduced; this item records the mechanism analysis so a future occurrence (or a deliberate
   repro attempt) has concrete hypotheses to check against, per the diagnostics in the Plan.
+
+## Progress
+
+- Confirmed mechanism 1 (episode-write delay), not just hypothesized: traced
+  `completed_at` to `verdict.timing.settled_at = now_ms()`
+  (`crates/roko-cli/src/graph_task_dispatch/attempt.rs:623`), sampled
+  synchronously inside `AttemptState::settle()` once an attempt's helper
+  calls are already known -- a wall-clock read that a busy machine can
+  delay getting scheduled, same class of risk as any timestamp sampled on
+  a loaded host. Did not trace the async call graph far enough to prove
+  `settle()` can run after the next attempt's first request fires (would
+  need live load plus cargo to settle definitively, both out of this
+  wave's reach); confirmed the mechanism instead at the level that
+  matters, the matching algorithm itself: constructed the exact data
+  shape (an episode `completed_at` later than a later attempt's own
+  proxy row, while S01's verdict independently shows that attempt
+  started before the stamp) and showed the pre-fix code misattributes
+  it deterministically, no sleeps. This is the "regression test exercises
+  the confirmed mechanism directly" path the Done-when explicitly allows
+  in place of reproducing under real load.
+- Fix (`driver/run_roko.py::_meter_from_proxy`): each attempt's own
+  `timing.attempt_started_at` (S01's verdict, already read into
+  `attempt.started_at` by `_meter_from_verdict` before `_meter_from_proxy`
+  runs) is an independent signal of when it truly began, uncorrelated with
+  how late its predecessor's episode got written. Cap `ends[i]` at
+  `starts[i+1]` whenever the recorded end would otherwise land after the
+  next attempt's recorded start -- a contradiction, since an attempt
+  cannot start before its predecessor truly ends. The cap only ever
+  shrinks `ends[i]`, never grows it, so it cannot newly misattribute a
+  row that was already correctly assigned; it degrades to today's
+  behavior whenever the verdict timing is unavailable (an older Roko, or
+  no verdict at all).
+- Verified the fix is necessary and sufficient by temporarily reverting
+  just the cap (keeping everything else) and re-running the new test: it
+  fails with exactly the reported message
+  (`no_proxy_traffic: attempt 2: the metering proxy saw no request`),
+  then passes again once restored.
+- Added `test_delayed_episode_write_does_not_misattribute_a_later_proxy_row`
+  (`driver/test_run_roko.py`): the deterministic repro above, plus a
+  second case (no verdict timing available) showing the flag still fires
+  and is now diagnosable rather than silent.
+- Diagnostics (Plan step 1): `RokoAttempt.proxy_diagnostic`, populated
+  only when `no_proxy_traffic` fires, carries the raw `ends`/`starts`/
+  proxy-row `ts` values (surfaced through `as_record()`), so a future
+  occurrence -- should the cap not cover it -- has the data the Problem
+  section said was missing, without changing the pinned problem message
+  `test_run_roko.py` already asserts verbatim.
+- Did not touch mechanism 2 (the `_subsecond` all-or-nothing precision
+  downgrade): the required test name and the team lead's wave assignment
+  both point at mechanism 1, and no data (real or constructed) motivated
+  touching the precision fallback too; flagging it here as still-open
+  Plan-step-3 territory if a future occurrence points at it instead.
+- Verify: named `[[verify]]` command -> 1 passed. Full
+  `benchmarks/viabilitybench/driver/test_run_roko.py` suite: 19 passed, 3
+  skipped (no real binary) without `VB_TEST_ROKO_BIN`, 22 passed with it
+  (a copy of the wave-15b batch binary, in the session scratchpad, never
+  inside the worktree). Shakedown suite: 8 passed. Every test file that
+  imports `run_roko` (`test_run_roko_sandbox.py`, `test_run_roko_plan.py`,
+  `test_run_roko_routed.py`, `test_secret.py`) plus `test_shakedown.py`:
+  45 passed together. Shakedown D1 and the three `real_roko` tests: 5
+  solo reruns, then 4 concurrent pytest processes together (added
+  contention, ~5x the solo wall-clock) -- all green, no flake reproduced
+  live either before or after the fix in the time available.

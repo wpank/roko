@@ -96,7 +96,10 @@ match, so the attempts fail as `no_proxy_traffic`.
   helper calls included, since Roko waits for them before it writes the episode; the last attempt owns the rest. The
   proxy stamps each request to the microsecond, as Roko stamps its episodes, so attempts that end within one second
   keep their own requests (bug-09fac4). With whole-second stamps on either side (an older proxy log), an attempt that
-  ended in the same second as the one before cannot be told apart from it. Task totals are exact either way.
+  ended in the same second as the one before cannot be told apart from it. Task totals are exact either way. An
+  episode's stamp is taken once Roko has written it, which under load can land after the next attempt's own first
+  request; an end is capped at the next attempt's own (independent) start when that would otherwise claim it
+  (bug-eadcc4).
 - Requests from before the first attempt started (S01's `timing.attempt_started_at`) are Roko's plan-start traffic:
   a routed arm's rung probes, one call per rung model (backlog 1121). Each need only name one of the arm's models
   (bug-0b7695). They are metered with the first attempt, each priced by the model that served it, so the task's
@@ -220,6 +223,7 @@ class RokoAttempt(harness.Attempt):
     vendor_usd: float | None = None  # R, a claude_cli attempt's own figure (3318); None for every other provider
     plan_start_calls: int = 0  # Roko's plan-start requests metered with this first attempt (bug-0b7695)
     plan_start_usage: list[tuple[str | None, dict | None]] = field(default_factory=list)  # their billed model, usage
+    proxy_diagnostic: dict | None = None  # raw ends/starts/proxy ts when no_proxy_traffic fires (bug-eadcc4)
 
     def as_record(self) -> dict:
         record = super().as_record()
@@ -236,6 +240,8 @@ class RokoAttempt(harness.Attempt):
             record["vendor_usd"] = self.vendor_usd
         if self.plan_start_calls:
             record["plan_start_calls"] = self.plan_start_calls
+        if self.proxy_diagnostic is not None:
+            record["proxy_diagnostic"] = self.proxy_diagnostic
         return record
 
 
@@ -746,6 +752,13 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
     whole seconds, so an attempt that ended in the same second as the one before it cannot be told apart from it: its
     requests count toward the earlier attempt, and its empty window is not flagged.
 
+    An attempt's end is its episode's `completed_at`, stamped once Roko has written it -- after any helper calls
+    (module docstring) -- so under load that write can land after the next attempt's own first request already
+    reached the proxy, swallowing it into the window before (bug-eadcc4). S01's verdict names each attempt's own
+    `timing.attempt_started_at` independently of when its predecessor's episode was written, so an end is capped at
+    the next attempt's start whenever that would otherwise claim a request made after the next attempt had already,
+    demonstrably, begun.
+
     Each attempt's requests are checked against its own `model_dispatched` (3312: a routed attempt's rung, by then
     already held to the arm's rungs), falling back to `model` when it is unknown.
 
@@ -760,6 +773,10 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
     stamps = [episode.get("completed_at") or episode.get("timestamp") for episode in evidence.episodes]
     clock = _instant if all(_subsecond(stamp) for stamp in [*stamps, *(row.get("ts") for row in rows)]) else _second
     ends = [clock(stamp) for stamp in stamps]
+    starts = [clock(attempt.started_at) if attempt.started_at else None for attempt in attempts]
+    for position in range(len(ends) - 1):  # bug-eadcc4: a delayed episode write cannot out-stamp the next attempt
+        if ends[position] is not None and starts[position + 1] is not None and ends[position] > starts[position + 1]:
+            ends[position] = starts[position + 1]
     start = _first_attempt_start(evidence)
     cutoff = clock(_iso(start)) if start is not None else None
 
@@ -809,6 +826,11 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
                                        f"{wanted!r}", attempt.number)
         if not window:
             if not rows or position == 0 or ends[position] is None or ends[position] != ends[position - 1]:
+                # bug-eadcc4: no occurrence has been caught with this captured yet; enough to tell, after the fact,
+                # whether a row was misattributed to the window before or truly missing.
+                attempt.proxy_diagnostic = {"ends": [_clock_repr(end) for end in ends],
+                                            "starts": [_clock_repr(moment) for moment in starts],
+                                            "proxy_ts": [row.get("ts") for row in rows]}
                 flag("no_proxy_traffic", f"attempt {attempt.number}: the metering proxy saw no request",
                      attempt.number)
             else:
@@ -1091,6 +1113,12 @@ def _from_unix_ms(value: object) -> dt.datetime | None:
 
 def _iso(moment: dt.datetime) -> str:
     return moment.astimezone(dt.UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _clock_repr(moment: dt.datetime | int | None) -> str | int | None:
+    """A `clock()` result (`_instant`'s datetime or `_second`'s whole-second int) back in a JSON-safe form, for
+    `proxy_diagnostic` (bug-eadcc4)."""
+    return _iso(moment) if isinstance(moment, dt.datetime) else moment
 
 
 def _left(ctx: harness.TaskContext, clock: float) -> float:

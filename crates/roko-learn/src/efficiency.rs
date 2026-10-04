@@ -132,6 +132,16 @@ pub struct AgentEfficiencyEvent {
     pub cost_usd: f64,
     /// What it would have cost without caching.
     pub cost_usd_without_cache: f64,
+    /// The turn's tokens priced at the API rates of `price_snapshot_id` (S01
+    /// §4.4), which a subscription-billed turn's `cost_usd` (about $0) is
+    /// not; the homeostasis cost fold reads it first (gap-e73a26). `None`
+    /// when nothing priced the turn, and on a row written before this field
+    /// (gap-546e8a).
+    #[serde(default)]
+    pub api_equiv_usd: Option<f64>,
+    /// The price snapshot behind `api_equiv_usd`.
+    #[serde(default)]
+    pub price_snapshot_id: Option<String>,
 
     // ── Prompt composition ──────────────────────────────────────────
     /// Per-section metadata.
@@ -209,8 +219,11 @@ impl Serialize for AgentEfficiencyEvent {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        // 34 struct fields + the schema discriminator.
-        let mut state = serializer.serialize_struct("AgentEfficiencyEvent", 35)?;
+        // The schema discriminator and 34 struct fields, then the two priced
+        // figures when known, as `skip_serializing_if` would leave them out.
+        let priced = usize::from(self.api_equiv_usd.is_some())
+            + usize::from(self.price_snapshot_id.is_some());
+        let mut state = serializer.serialize_struct("AgentEfficiencyEvent", 35 + priced)?;
         state.serialize_field("schema", AGENT_EFFICIENCY_EVENT_SCHEMA)?;
         state.serialize_field("agent_id", &self.agent_id)?;
         state.serialize_field("role", &self.role)?;
@@ -226,6 +239,12 @@ impl Serialize for AgentEfficiencyEvent {
         state.serialize_field("cache_write_tokens", &self.cache_write_tokens)?;
         state.serialize_field("cost_usd", &self.cost_usd)?;
         state.serialize_field("cost_usd_without_cache", &self.cost_usd_without_cache)?;
+        if let Some(api_equiv_usd) = &self.api_equiv_usd {
+            state.serialize_field("api_equiv_usd", api_equiv_usd)?;
+        }
+        if let Some(price_snapshot_id) = &self.price_snapshot_id {
+            state.serialize_field("price_snapshot_id", price_snapshot_id)?;
+        }
         state.serialize_field("prompt_sections", &self.prompt_sections)?;
         state.serialize_field("total_prompt_tokens", &self.total_prompt_tokens)?;
         state.serialize_field("system_prompt_tokens", &self.system_prompt_tokens)?;
@@ -408,6 +427,8 @@ impl Default for AgentEfficiencyEvent {
             cache_write_tokens: 0,
             cost_usd: 0.0,
             cost_usd_without_cache: 0.0,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
             prompt_sections: Vec::new(),
             total_prompt_tokens: 0,
             system_prompt_tokens: 0,
@@ -1097,6 +1118,8 @@ fn make_test_event(
         cache_write_tokens: 0,
         cost_usd: cost,
         cost_usd_without_cache: cost * 1.5,
+        api_equiv_usd: None,
+        price_snapshot_id: None,
         prompt_sections: Vec::new(),
         total_prompt_tokens: input_tokens,
         system_prompt_tokens: 200,

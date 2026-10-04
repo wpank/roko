@@ -23,7 +23,7 @@ use roko_gate::llm_judge_gate::{JudgeOracle, JudgePayload, LlmJudgeGate};
 use serde_json::json;
 
 use super::git;
-use super::worker::{AuditTask, CheckOutcome, PhaseBCheck, UnitAudit};
+use super::worker::{AuditTask, CheckCall, CheckOutcome, PhaseBCheck, UnitAudit};
 use super::worktree::changed_paths;
 
 /// The rubric B3's calibration rows name.
@@ -101,7 +101,8 @@ impl PhaseBCheck for B3 {
             .build();
         let costing = Arc::new(Costing {
             inner: Arc::clone(&reviewer.agent),
-            cost_usd: parking_lot::Mutex::new(0.0),
+            model: reviewer.model.clone(),
+            calls: parking_lot::Mutex::new(Vec::new()),
         });
         let scored = Arc::new(Scored {
             inner: AgentJudgeOracle::new(costing.clone()),
@@ -115,10 +116,12 @@ impl PhaseBCheck for B3 {
             .with_rubric(RUBRIC);
         let verdict = gate.verify(&signal, &Context::now()).await;
         let score = *scored.score.lock();
-        let cost_usd = *costing.cost_usd.lock();
+        let calls = costing.calls.lock().clone();
+        let cost_usd: f64 = calls.iter().map(CheckCall::cost_usd).sum();
         CheckOutcome {
             labels: score.map(labels_of).unwrap_or_default(),
             cost_usd,
+            calls,
             detail: json!({
                 "reviewer": reviewer.model,
                 "implementer_family": implementer,
@@ -197,17 +200,23 @@ fn test_diff(repo: &Path, base: &str, result: &str) -> String {
     git(repo, &args).unwrap_or_default()
 }
 
-/// An agent that adds up what its calls cost.
+/// An agent that keeps each of its calls to `model`, for what they cost.
 struct Costing {
     inner: Arc<dyn Agent>,
-    cost_usd: parking_lot::Mutex<f64>,
+    model: String,
+    calls: parking_lot::Mutex<Vec<CheckCall>>,
 }
 
 #[async_trait::async_trait]
 impl Agent for Costing {
     async fn run(&self, input: &Signal, ctx: &Context) -> AgentResult {
         let result = self.inner.run(input, ctx).await;
-        *self.cost_usd.lock() += f64::from(result.usage.cost_usd);
+        let call = CheckCall {
+            model: self.model.clone(),
+            usage: result.usage,
+            success: result.success,
+        };
+        self.calls.lock().push(call);
         result
     }
 

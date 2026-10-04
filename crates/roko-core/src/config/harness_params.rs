@@ -42,7 +42,8 @@ use crate::task::TaskTier;
 pub const RETRY_DELTA_NOTCHES: [i32; 4] = [-1, 0, 1, 2];
 /// B2 `turn_cap_mult`: multiplier of the tier's turn cap.
 pub const TURN_CAP_MULT_NOTCHES: [f64; 3] = [0.75, 1.0, 1.5];
-/// B3 `extra_rungs`: verify-depth floor requests, from none (V0) to V4.
+/// B3 `extra_rungs`: verify-depth floor requests, from none (V0) to V4; the
+/// S5 policy's `verify.max_floor` caps the floor M1 may request.
 pub const EXTRA_RUNGS_NOTCHES: [VerifyDepth; 5] = [
     VerifyDepth::V0,
     VerifyDepth::V1,
@@ -529,7 +530,8 @@ pub struct HarnessParams {
     pub retry_delta: i32,
     /// B2: multiplier of the tier's turn cap. θ₀: 1.0.
     pub turn_cap_mult: f64,
-    /// B3: the verify-depth floor M1 requests from S05's ladder. θ₀: V0.
+    /// B3: the verify-depth floor M1 requests from S05's ladder, at most
+    /// S5's verify-depth ceiling (add-only). θ₀: V0.
     pub extra_rungs: VerifyDepth,
     /// B4: error patterns the prompt shows. θ₀: 5, today's constant.
     pub error_patterns_k: u32,

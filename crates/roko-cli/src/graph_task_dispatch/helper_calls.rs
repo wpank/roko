@@ -17,6 +17,7 @@ use roko_learn::telemetry::{CostSource, HelperCallsUsage};
 use super::served_model::{is_cli_backend, same_model};
 use super::tui_forward::append_jsonl_line_async;
 use super::*;
+use crate::audit::worker::CheckCall;
 
 /// `role` of a helper call's cost and efficiency rows.
 const HELPER_ROLE: &str = "helper";
@@ -51,6 +52,10 @@ pub(super) struct SideCall {
     success: bool,
     /// Whether roko could price the call (backlog 2109).
     priced: bool,
+    /// The call's tokens at API rates ([`api_equiv`], gap-546e8a).
+    api_equiv_usd: Option<f64>,
+    /// The price snapshot behind `api_equiv_usd`.
+    price_snapshot_id: Option<String>,
 }
 
 impl SideCall {
@@ -83,6 +88,7 @@ impl SideCall {
         duration_ms: u64,
         snapshot: Option<&PriceSnapshot>,
     ) -> Self {
+        let (api_equiv_usd, price_snapshot_id) = api_equiv(result, snapshot, model_slug).unzip();
         Self {
             provider_id: provider_id.to_string(),
             model_slug: model_slug.to_string(),
@@ -109,6 +115,44 @@ impl SideCall {
                 profile,
                 model_slug,
             ),
+            api_equiv_usd,
+            price_snapshot_id,
+        }
+    }
+
+    /// The model call `call` of an inline audit check (gap-73c98e), to the
+    /// model `profile` names on `provider_id`, in a run that prices from
+    /// `snapshot`.
+    pub(super) fn of_check(
+        provider_id: &str,
+        profile: Option<&roko_core::config::schema::ModelProfile>,
+        call: &CheckCall,
+        snapshot: Option<&PriceSnapshot>,
+    ) -> Self {
+        // The check's tokens at the snapshot's row for its model (gap-546e8a).
+        let priced_at = snapshot.and_then(|snapshot| {
+            let tokens = crate::dispatch_v2::usage_token_counts(&call.usage);
+            let priced = snapshot.price(&call.model, &tokens)?;
+            Some((priced.api_equiv_usd, snapshot.id().to_string()))
+        });
+        let (api_equiv_usd, price_snapshot_id) = priced_at.unzip();
+        Self {
+            provider_id: provider_id.to_string(),
+            model_slug: call.model.clone(),
+            model_reported: None,
+            usage: call.usage,
+            cost_source: CostSource::Unknown,
+            turns: None,
+            duration_ms: call.usage.wall_ms,
+            success: call.success,
+            priced: crate::dispatch_v2::usage_is_priced(
+                &call.usage,
+                snapshot,
+                profile,
+                &call.model,
+            ),
+            api_equiv_usd,
+            price_snapshot_id,
         }
     }
 
@@ -127,6 +171,31 @@ impl SideCall {
             turns_unknown: self.turns.is_none(),
         }
     }
+}
+
+/// What the call of `result` to `model_slug` costs at API rates, with the id of the price
+/// snapshot that priced it (S01 §4.4, gap-546e8a), as an attempt's verdict prices its own: the
+/// agent's figure when it priced its tokens at the run's `snapshot` itself (a CLI agent,
+/// backlog 6105), else its usage at the snapshot's row for `model_slug`. `None` when neither
+/// prices the call, or the run has no snapshot.
+fn api_equiv(
+    result: &roko_agent::AgentResult,
+    snapshot: Option<&PriceSnapshot>,
+    model_slug: &str,
+) -> Option<(f64, String)> {
+    let snapshot = snapshot?;
+    let agent_priced = result
+        .usage_obs
+        .as_ref()
+        .filter(|observation| observation.price_snapshot_id.as_deref() == Some(snapshot.id()));
+    let usd = match agent_priced {
+        Some(observation) => observation.api_equiv_usd?,
+        None => {
+            let tokens = crate::dispatch_v2::usage_token_counts(&result.usage);
+            snapshot.price(model_slug, &tokens)?.api_equiv_usd
+        }
+    };
+    Some((usd, snapshot.id().to_string()))
 }
 
 /// The helper calls of one attempt: the helper agents still out, and the
@@ -376,6 +445,8 @@ impl GraphTaskDispatcher {
                 session_id: String::new(),
                 cost_source: call.cost_source,
                 priced: Some(call.priced),
+                api_equiv_usd: call.api_equiv_usd,
+                price_snapshot_id: call.price_snapshot_id.clone(),
             };
             let row = AttemptKeyed {
                 attempt_key: attempt_key.to_string(),
@@ -398,6 +469,8 @@ impl GraphTaskDispatcher {
                 cache_write_tokens: u64::from(call.usage.cache_create_tokens),
                 cost_usd,
                 cost_usd_without_cache: cost_usd,
+                api_equiv_usd: call.api_equiv_usd,
+                price_snapshot_id: call.price_snapshot_id.clone(),
                 total_prompt_tokens: input_tokens,
                 wall_time_ms: call.duration_ms,
                 duration_ms: call.duration_ms,

@@ -2347,7 +2347,7 @@ pub(crate) enum CallPricing {
 
 /// `usage` in a price snapshot's token classes. Cache writes count at the
 /// 5-minute TTL, the API default; reasoning is inside the output.
-fn usage_token_counts(usage: &roko_core::Usage) -> TokenCounts {
+pub(crate) fn usage_token_counts(usage: &roko_core::Usage) -> TokenCounts {
     TokenCounts {
         input: u64::from(usage.input_tokens),
         cache_read: u64::from(usage.cache_read_tokens),

@@ -894,6 +894,9 @@ impl AuthoringSpend {
             // An `AgentCapture` does not say where its usage came from.
             cost_source: roko_learn::telemetry::CostSource::Unknown,
             priced: Some(priced),
+            // Nor does it carry the agent's API-rate pricing.
+            api_equiv_usd: None,
+            price_snapshot_id: None,
         };
         self.append("costs.jsonl", &cost_record).await;
 
@@ -912,6 +915,8 @@ impl AuthoringSpend {
             cache_write_tokens,
             cost_usd,
             cost_usd_without_cache: cost_usd,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
             prompt_sections: Vec::new(),
             total_prompt_tokens: input_tokens,
             system_prompt_tokens: 0,
@@ -1255,6 +1260,8 @@ command = "cargo test -p x parse"
             session_id: String::new(),
             cost_source: CostSource::CliUsage,
             priced: None,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
         };
         let output = "verify[0:test] (`cargo test -p x parse`) failed: exit status 101\n\
                       ---- parse::rejects_an_empty_limit stdout ----\n\

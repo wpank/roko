@@ -1050,6 +1050,8 @@ fn build_efficiency_event(
         cache_write_tokens,
         cost_usd,
         cost_usd_without_cache: cost_usd + if primary { 0.06 } else { 0.04 },
+        api_equiv_usd: None,
+        price_snapshot_id: None,
         prompt_sections,
         total_prompt_tokens,
         system_prompt_tokens: if primary { 240 } else { 200 },

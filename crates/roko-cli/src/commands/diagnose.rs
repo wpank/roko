@@ -2519,6 +2519,8 @@ title = "Tidy the changelog"
             session_id: String::new(),
             cost_source: CostSource::CliUsage,
             priced: None,
+            api_equiv_usd: None,
+            price_snapshot_id: None,
         }
     }
 

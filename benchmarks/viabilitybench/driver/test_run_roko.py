@@ -12,6 +12,7 @@ Run from the repository root with the benchmark venv:
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import subprocess
@@ -775,6 +776,45 @@ def test_attempts_ending_in_the_same_second_get_their_own_usage():
     attempts, problems = settle(with_ends([{**row, "ts": row["ts"][:19] + "Z"} for row in rows]))
     assert problems == [] and [(attempt.calls_known, attempt.usage_unknown) for attempt in attempts] == [
         (True, False), (False, True), (False, True)]
+
+
+def test_delayed_episode_write_does_not_misattribute_a_later_proxy_row():
+    # bug-eadcc4: attempt 1's episode is stamped completed_at once Roko has written it, after any helper calls
+    # (module docstring); under load that write can land after attempt 2's own first request already reached the
+    # proxy. Construct exactly that shape deterministically, no sleeps: attempt 1's completed_at (05.000) is later
+    # than attempt 2's own proxy row (04.300), even though S01's verdict says attempt 2 independently started at
+    # 04.100 -- proof attempt 1 was really done well before its recorded end. ends[] stays "monotonic" (05 < 06), so
+    # this is not caught by comparing ends to each other; only the independent start exposes the delayed stamp.
+    def epoch_ms(iso: str) -> int:
+        return round(dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
+
+    usage = {"tokens_in": 500, "tokens_cache_read": 0, "tokens_cache_write_5m": 0, "tokens_cache_write_1h": 0,
+             "tokens_out": 50, "tokens_reasoning": 0}
+    base = {"task": "F1-l1-0001.s1", "model_requested": PIN, "model_reported": PIN, "usage": usage,
+            "usage_source": "reported"}
+    rows = [{**base, "ordinal": 1, "ts": "2026-10-04T10:00:03.900000Z"},  # attempt 1's own request
+            {**base, "ordinal": 2, "ts": "2026-10-04T10:00:04.300000Z"}]  # attempt 2's: before its delayed stamp
+    found = evidence([PIN, PIN], proxy_rows=rows, verdicts=[
+        {"attempt": 1, "timing": {"attempt_started_at": epoch_ms("2026-10-04T10:00:03.000000Z"),
+                                  "settled_at": epoch_ms("2026-10-04T10:00:05.000000Z")}},
+        {"attempt": 2, "timing": {"attempt_started_at": epoch_ms("2026-10-04T10:00:04.100000Z"),
+                                  "settled_at": epoch_ms("2026-10-04T10:00:06.000000Z")}}])
+    found.episodes[0]["completed_at"] = "2026-10-04T10:00:05.000000Z"  # the delayed write: after row 2's real ts
+    found.episodes[1]["completed_at"] = "2026-10-04T10:00:06.000000Z"
+    attempts, problems = settle(found)
+    assert problems == []  # not no_proxy_traffic: row 2 is no longer swallowed by attempt 1's (delayed) window
+    assert [attempt.calls for attempt in attempts] == [1, 1]
+    assert attempts[1].started_at == "2026-10-04T10:00:04.100Z"  # the independent signal that exposed the stamp
+    assert attempts[1].proxy_diagnostic is None  # nothing to diagnose: the fix, not the flag, resolved it
+
+    # Without the verdict's independent start (an older Roko, or this task's own), the delayed stamp still swallows
+    # row 2 -- the fix only applies when it has the data to know better, and the flag still fires and is diagnosable.
+    found.verdicts = []
+    attempts, problems = settle(found)
+    assert problems == ["no_proxy_traffic: attempt 2: the metering proxy saw no request"]
+    assert attempts[1].proxy_diagnostic == {
+        "ends": ["2026-10-04T10:00:05.000Z", "2026-10-04T10:00:06.000Z"], "starts": [None, None],
+        "proxy_ts": ["2026-10-04T10:00:03.900000Z", "2026-10-04T10:00:04.300000Z"]}
 
 
 def test_the_roko_arm_enforces_the_per_attempt_input_cap(places, tmp_path):

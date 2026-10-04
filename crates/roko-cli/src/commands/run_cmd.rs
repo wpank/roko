@@ -787,6 +787,7 @@ pub(crate) async fn run_plan_execution(
         frozen_learning: false,
         no_holdout,
         metrics: None,
+        outbound_floor: None,
     })
     .await
 }

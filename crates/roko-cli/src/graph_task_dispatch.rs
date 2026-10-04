@@ -114,7 +114,7 @@ use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
 use live_tool_calls::LiveToolCalls;
 use routing_context::{
-    CheapFactoryAgent, build_routing_context, effective_agent_contract, outbound_policy,
+    CheapFactoryAgent, at_least, build_routing_context, effective_agent_contract, outbound_policy,
     select_cheap_model_key, upstream_outputs,
 };
 use supervision::SupervisedAttempt;
@@ -306,6 +306,9 @@ pub struct GraphTaskDispatcher {
     /// The ground truth of the overlay's cuts, for each run's
     /// `disturbances.jsonl` (8135).
     cut_ground_truth: budget::CutGroundTruth,
+    /// The least strict policy every task of the run gets for tool calls
+    /// that act on the outside world ([`Self::with_outbound_floor`]).
+    outbound_floor: Option<roko_core::tool::OutboundPolicy>,
 }
 
 impl GraphTaskDispatcher {
@@ -364,6 +367,7 @@ impl GraphTaskDispatcher {
             operator_directives: OperatorDirectives::default(),
             ceiling_overlay: roko_core::disturbance::CeilingOverlay::default(),
             cut_ground_truth: budget::CutGroundTruth::default(),
+            outbound_floor: None,
         }
     }
 
@@ -476,6 +480,18 @@ impl GraphTaskDispatcher {
     #[must_use]
     pub fn with_live_agent_output(mut self, setting: LiveAgentOutput) -> Self {
         self.live_agent_output = Some(setting);
+        self
+    }
+
+    /// Hold every task's tool calls that act on the outside world at least
+    /// as strictly as `floor` (9131), whatever its plan's `[meta] outbound`
+    /// or its domain says. A chat host's run passes `stage` (decision 9107),
+    /// so a plan it submits directly stages them as the plan `roko run`
+    /// writes for it does (gap-1a4563). `None` leaves the plan and domain to
+    /// decide.
+    #[must_use]
+    pub fn with_outbound_floor(mut self, floor: Option<roko_core::tool::OutboundPolicy>) -> Self {
+        self.outbound_floor = floor;
         self
     }
 
@@ -734,10 +750,12 @@ impl GraphTaskDispatcher {
 
     /// The agent contract of `task`, a task of `spec`'s plan, for `role`,
     /// with the policy its plan and domain set for tool calls that act on
-    /// the outside world (9131).
+    /// the outside world (9131), held at least as strictly as the run's
+    /// floor ([`Self::with_outbound_floor`]).
     fn task_contract(&self, role: &str, spec: &TaskExecutionSpec, task: &TaskDef) -> AgentContract {
         let meta = self.read_plan_meta(spec);
         let outbound = outbound_policy(meta.as_ref(), task, &self.config);
+        let outbound = at_least(outbound, self.outbound_floor);
         effective_agent_contract(role, task, &self.config).with_outbound_policy(outbound)
     }
 
@@ -3460,5 +3478,71 @@ sleep 30
         assert_eq!(provider, "anthropic", "{spawned:?}");
         assert_ne!(provider, ProviderKind::ClaudeCli.label(), "{spawned:?}");
         assert_eq!(model, "claude-sonnet-4-6", "{spawned:?}");
+    }
+
+    /// gap-1a4563: a plan a chat host submits directly, not through `roko
+    /// run`, holds its outbound-effect calls for approval as the plan `roko
+    /// run` writes for the host does (decision 9107). The chat host's floor
+    /// raises a plan that names no `[meta] outbound`, or `allow`, to `stage`
+    /// and keeps `deny`; a run from the CLI or the HTTP API keeps the plan's
+    /// own policy.
+    #[tokio::test]
+    async fn direct_plan_submission_from_a_chat_host_sets_stage() {
+        use roko_core::tool::OutboundPolicy;
+        use roko_serve::runtime::RunOrigin;
+
+        let chat = RunOrigin::Mcp {
+            client: "hermes".to_string(),
+        };
+        let floor = crate::graph_execution::outbound_floor(&chat);
+        assert_eq!(floor, Some(OutboundPolicy::Stage));
+        for origin in [RunOrigin::Cli, RunOrigin::Http] {
+            assert_eq!(crate::graph_execution::outbound_floor(&origin), None);
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let with_floor = |dispatcher: GraphTaskDispatcher| dispatcher.with_outbound_floor(floor);
+        let (chat_run, task) = make_test_dispatcher_with(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+            with_floor,
+        )
+        .await;
+        let (cli_run, _) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let plan_dir = temp.path().join("plans").join("hand-written");
+        std::fs::create_dir_all(&plan_dir).expect("create the plan's directory");
+        let mut spec = make_spec(&task);
+        spec.plan_dir = plan_dir.display().to_string();
+        // The policy each run gives the plan's task, its `[meta]` naming
+        // `outbound` as `meta_line` says.
+        let policies = |meta_line: &str| {
+            let meta = format!("plan = \"hand-written\"\n{meta_line}");
+            let meta = toml::from_str(&meta).expect("a [meta] table");
+            let tasks = vec![task.clone()];
+            crate::task_parser::TasksFile { meta, tasks }
+                .write(&plan_dir.join("tasks.toml"))
+                .expect("write the plan");
+            [&chat_run, &cli_run].map(|dispatcher| {
+                let contract = dispatcher.task_contract("implementer", &spec, &task);
+                contract.outbound_policy()
+            })
+        };
+        let (allow, stage, deny) = (
+            OutboundPolicy::Allow,
+            OutboundPolicy::Stage,
+            OutboundPolicy::Deny,
+        );
+        assert_eq!(policies(""), [stage, allow]);
+        assert_eq!(policies("outbound = \"allow\""), [stage, allow]);
+        assert_eq!(policies("outbound = \"stage\""), [stage, stage]);
+        assert_eq!(policies("outbound = \"deny\""), [deny, deny]);
     }
 }

@@ -313,6 +313,9 @@ impl CliRuntime for RokoCliRuntime {
         tokio::task::spawn_blocking(move || {
             let origin = options.origin.label();
             let run_id = options.run_id.clone();
+            // A plan a chat host submits holds outbound-effect calls for
+            // approval whatever it says itself (decision 9107, gap-1a4563).
+            let outbound_floor = crate::graph_execution::outbound_floor(&options.origin);
             let result = run_plan_on_local_runtime(
                 workdir.clone(),
                 plan_target,
@@ -329,6 +332,7 @@ impl CliRuntime for RokoCliRuntime {
                 live_agent_output,
                 options.run_id,
                 options.max_usd,
+                outbound_floor,
             );
             // The run's manifest says where its request came from (9116).
             if let Some(run_id) = &run_id {
@@ -957,6 +961,7 @@ fn run_plan_on_local_runtime(
     live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
     run_id: Option<String>,
     budget_override: Option<f64>,
+    outbound_floor: Option<roko_core::tool::OutboundPolicy>,
 ) -> anyhow::Result<PlanExecutionResult> {
     // Acquire the runner lock before touching the workspace.  Server-side runs
     // and `roko plan run` both take this lock, so only one plan executor can be
@@ -1050,6 +1055,9 @@ fn run_plan_on_local_runtime(
                 frozen_learning: false,
                 no_holdout: false,
                 metrics,
+                // A chat host's run stages outbound effects whatever its
+                // plans say (decision 9107, gap-1a4563).
+                outbound_floor,
             },
             run_id,
         )

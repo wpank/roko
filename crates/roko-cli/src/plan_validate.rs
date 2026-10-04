@@ -102,6 +102,10 @@ struct TaskSnapshot {
     has_files: bool,
     has_context_read_files: bool,
     has_verify_steps: bool,
+    /// Acceptance that something checks (decision 3205): criteria in
+    /// `acceptance` that a verify step `covers`, or a pinned `[task.accept]`
+    /// test. A typed `acceptance_contract` is not enforced at run time.
+    has_enforced_acceptance: bool,
     acceptance_contract: Option<Value>,
     has_required_parity_ledger_rows: bool,
     deferral_missing_fields: Vec<&'static str>,
@@ -1029,19 +1033,24 @@ fn validate_tasks_file(
         if let Some(contract_value) = &task.acceptance_contract {
             // 3230 (decision 3205): the contract evaluator is retired. A
             // contract still parses and its shape is still checked, but
-            // nothing enforces it at run time.
-            diagnostics.push(Diagnostic {
-                severity: Severity::Warning,
-                rule_id: "PLAN_046".to_string(),
-                plan_id: Some(plan_id.clone()),
-                task_id: task.task_id.clone(),
-                message: format!(
-                    "task '{}' has an acceptance_contract, which is not enforced at run time; \
-                     state its criteria in `acceptance` with verify `covers`, or pin a test \
-                     with `[task.accept]`",
-                    task.label()
-                ),
-            });
+            // nothing enforces it at run time, so it warns when it is the
+            // task's only acceptance; beside checked acceptance it is only
+            // metadata, such as an architecture packet's parity rows
+            // (bug-ac2a51).
+            if !task.has_enforced_acceptance {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: "PLAN_046".to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: task.task_id.clone(),
+                    message: format!(
+                        "task '{}' has an acceptance_contract, which is not enforced at run \
+                         time; state its criteria in `acceptance` with verify `covers`, or pin \
+                         a test with `[task.accept]`",
+                        task.label()
+                    ),
+                });
+            }
             match contract_value.clone().try_into::<AcceptanceContract>() {
                 Ok(contract) => {
                     let decision = contract.validate_contract();
@@ -1309,6 +1318,7 @@ fn snapshot_task(ordinal: usize, task: &Value) -> TaskSnapshot {
                 .and_then(|accept| accept.get("files"))
                 .and_then(Value::as_array)
                 .is_some_and(|files| !files.is_empty()),
+        has_enforced_acceptance: table.is_some_and(has_enforced_acceptance),
         acceptance_contract: table
             .and_then(|table| table.get("acceptance_contract"))
             .cloned(),
@@ -1356,9 +1366,10 @@ fn validate_architecture_queue_task(
             "declares no executable verify steps",
         ),
         (
-            task.acceptance_contract.is_none(),
+            !task.has_enforced_acceptance,
             "PLAN_024",
-            "declares no typed acceptance_contract",
+            "declares no checked acceptance: criteria in `acceptance` that verify steps \
+             `covers`, or a pinned `[task.accept]` test",
         ),
         (
             !task.has_required_parity_ledger_rows,
@@ -1391,6 +1402,29 @@ fn validate_architecture_queue_task(
             ),
         });
     }
+}
+
+/// Whether a task's acceptance is checked (decision 3205): criteria in
+/// `acceptance` that a verify step `covers`, or a pinned `[task.accept]` test,
+/// which runs as a verify step (gap-d14a43).
+fn has_enforced_acceptance(table: &toml::map::Map<String, Value>) -> bool {
+    let non_empty = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty())
+    };
+    let covered = non_empty(table.get("acceptance"))
+        && table
+            .get("verify")
+            .and_then(Value::as_array)
+            .is_some_and(|steps| steps.iter().any(|step| non_empty(step.get("covers"))));
+    let pinned = non_empty(
+        table
+            .get("accept")
+            .and_then(Value::as_table)
+            .and_then(|accept| accept.get("files")),
+    );
+    covered || pinned
 }
 
 fn has_required_parity_ledger_rows(table: &toml::map::Map<String, Value>) -> bool {

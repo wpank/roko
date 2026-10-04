@@ -32,7 +32,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::telemetry::{AttemptKey, CostSource};
+use crate::telemetry::{AttemptKey, AttemptVerdictRecord, CostSource};
 
 /// The harnesses an arm can run on (S04 §4.1), a fixed vocabulary. S09's arm registry maps
 /// every experiment arm to one of them.
@@ -231,7 +231,8 @@ pub enum LabelSource {
 /// One attempt's outcome, as the self-model learns it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Label {
-    /// The gate verdict: `forced_accept` is a fail, `unverified` is missing.
+    /// The gate verdict as S01 §4.1's learning label gives it ([`Label::of_verdict`]): an
+    /// unverified attempt and a forced accept teach nothing.
     pub y_gate: Option<bool>,
     /// S05's verified success, on audited attempts only.
     pub y_vs: Option<bool>,
@@ -239,6 +240,23 @@ pub struct Label {
     pub weight: f64,
     /// Where the label came from.
     pub source: LabelSource,
+}
+
+impl Label {
+    /// The gate label of a settled `verdict`: its S01 §4.1 learning label, a pass or a fail at
+    /// weight 1, with no VS label yet. `None` when the verdict teaches nothing, as it teaches
+    /// no other learner: an unverified or already-satisfied attempt, a forced accept, and an
+    /// infra or harness outcome. The offline fit ([`ingest`]) and the live outcome sink both
+    /// label with it, so the two never train on different labels (bug-9099b7).
+    #[must_use]
+    pub fn of_verdict(verdict: &AttemptVerdictRecord) -> Option<Self> {
+        verdict.learning_success().map(|passed| Self {
+            y_gate: Some(passed),
+            y_vs: None,
+            weight: 1.0,
+            source: LabelSource::GatePassed,
+        })
+    }
 }
 
 /// One labelled attempt: the self-model's training and scoring unit (S04 §4.1).

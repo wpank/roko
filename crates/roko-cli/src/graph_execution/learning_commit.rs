@@ -10,6 +10,10 @@
 //! row, and a rollback, or in `observe` a would-be rollback, a notice on the
 //! run's StateHub. `off` saves the router unchecked, as before, and the run
 //! tags no knowledge batch. A frozen run saves and proposes nothing.
+//!
+//! At a run's start, [`recover_orphaned_knowledge`] proposes the knowledge
+//! batches earlier runs left unproposed, as a run that crashed before its end
+//! leaves its batch (gap-6ff99a), through the same guard.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -25,7 +29,8 @@ use roko_learn::router_commit::{self, ROUTER_STORE, RouterChecks, RouterGuard, S
 use roko_learn::telemetry::report::RunRecords;
 use roko_neuro::KnowledgeStore;
 use roko_neuro::knowledge_store::commit::{
-    KNOWLEDGE_STORE, KnowledgeChecks, load_knowledge_anchors, propose_batch,
+    KNOWLEDGE_STORE, KnowledgeBatch, KnowledgeChecks, load_knowledge_anchors, orphaned_batches,
+    propose_batch, recover_orphaned_batches,
 };
 
 use crate::state_hub::StateHub;
@@ -68,11 +73,7 @@ pub fn commit_run_learning(run: &RunLearning<'_>) -> RunCommits {
     if run.config.learning.frozen {
         return commits;
     }
-    let mode = match run.config.learning.guarded_commit {
-        GuardedCommitMode::Observe => Some(GuardMode::Observe),
-        GuardedCommitMode::Enforce => Some(GuardMode::Enforce),
-        GuardedCommitMode::Off => None,
-    };
+    let mode = guard_mode(run.config);
     if let Some((router, journal)) = run.router {
         commits.router = save_router(run, router, journal, mode);
     }
@@ -122,7 +123,7 @@ fn save_router(
     };
     match journal.save_guarded(router, &guard) {
         Ok(decision) => {
-            notice(run, "router", decision);
+            notice(run.notices, "router", decision);
             Some(decision)
         }
         Err(error) => {
@@ -150,7 +151,7 @@ fn propose_knowledge(
     match propose_batch(&store, batch, &learn_dir, mode, &checks, &proposer) {
         Ok(decision) => {
             if let Some(decision) = decision {
-                notice(run, "knowledge", decision);
+                notice(run.notices, "knowledge", decision);
             }
             decision
         }
@@ -158,6 +159,70 @@ fn propose_knowledge(
             tracing::warn!(%error, batch, "the run's knowledge batch was not proposed");
             None
         }
+    }
+}
+
+/// At a run's start, propose every knowledge batch the store holds besides
+/// `live`, the run's own: the orphans of runs that ended before they proposed
+/// theirs, as a run that crashed leaves its batch (gap-6ff99a). Each goes
+/// through the knowledge store's guard as a run-end proposal does, with the
+/// same checks, mode, `commits.jsonl` row and notice, so its entries are
+/// committed or rolled back instead of hidden from every other run for good.
+/// With `off` they are committed unchecked, as `off` saves learning; a frozen
+/// run touches nothing. Returns each orphan with its decision.
+///
+/// The caller holds the workspace's runner lock, so no other run owns a
+/// batch.
+pub fn recover_orphaned_knowledge(
+    workdir: &Path,
+    config: &RokoConfig,
+    live: Option<&str>,
+    notices: Option<&StateHub>,
+) -> Vec<(String, Option<CommitDecision>)> {
+    if config.learning.frozen {
+        return Vec::new();
+    }
+    let layout = RokoLayout::for_project(workdir);
+    let store = KnowledgeStore::for_layout(&layout);
+    let Some(mode) = guard_mode(config) else {
+        let orphans = orphaned_batches(&store, live).unwrap_or_default();
+        for batch in &orphans {
+            if let Err(error) = KnowledgeBatch::new(&store, batch).commit() {
+                let error = format!("{error:#}");
+                tracing::warn!(%error, %batch, "orphaned batch kept");
+            }
+        }
+        return orphans.into_iter().map(|batch| (batch, None)).collect();
+    };
+    let anchors = load_knowledge_anchors(layout.root()).unwrap_or_else(|problem| {
+        tracing::warn!(%problem, "no knowledge anchors: the file is unreadable");
+        Vec::new()
+    });
+    let learn_dir = layout.learn_dir();
+    match recover_orphaned_batches(&store, live, &learn_dir, mode, &anchors) {
+        Ok(recovered) => {
+            for (batch, decision) in &recovered {
+                tracing::info!(%batch, ?decision, "proposed an orphaned knowledge batch");
+                if let Some(decision) = *decision {
+                    notice(notices, "knowledge", decision);
+                }
+            }
+            recovered
+        }
+        Err(error) => {
+            tracing::warn!(%error, "orphaned knowledge batches were not proposed");
+            Vec::new()
+        }
+    }
+}
+
+/// What a failed guard check does under `[learning] guarded_commit`; `None`
+/// for `off`, which proposes nothing.
+fn guard_mode(config: &RokoConfig) -> Option<GuardMode> {
+    match config.learning.guarded_commit {
+        GuardedCommitMode::Observe => Some(GuardMode::Observe),
+        GuardedCommitMode::Enforce => Some(GuardMode::Enforce),
+        GuardedCommitMode::Off => None,
     }
 }
 
@@ -203,7 +268,7 @@ fn configured_models(config: &RokoConfig) -> BTreeSet<String> {
 
 /// Tell the run's StateHub about a rollback, or about the rollback observe
 /// mode did not make.
-fn notice(run: &RunLearning<'_>, store: &str, decision: CommitDecision) {
+fn notice(notices: Option<&StateHub>, store: &str, decision: CommitDecision) {
     let message = match decision {
         CommitDecision::RolledBack => format!(
             "{store}: a guard check failed, and the run's {store} learning was rolled back to \
@@ -216,7 +281,7 @@ fn notice(run: &RunLearning<'_>, store: &str, decision: CommitDecision) {
         CommitDecision::Committed | CommitDecision::Restored => return,
     };
     tracing::warn!(store, ?decision, "{message}");
-    if let Some(hub) = run.notices {
+    if let Some(hub) = notices {
         let now = chrono::Utc::now().timestamp_millis();
         hub.publish(DashboardEvent::EventLogEntry {
             timestamp_ms: u64::try_from(now).unwrap_or_default(),

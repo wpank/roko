@@ -88,3 +88,17 @@ change — it does not yet receive the config at all, per the current signature 
   `gap-bc4ca5`, filed the same day: `roko run`'s one-task report doesn't read the per-run log
   either, so a frozen run's report shows empty turns/tokens/cost; the two fixes touch adjacent
   code in the same file and should be sequenced or combined.
+
+## Progress
+
+- 2026-10-04 (w4-length): implemented on `work/bug-dd20bd`; cargo verification deferred to the batch gate.
+  - 7eecbbe65: `record_workflow_feedback` takes the run's frozen flag (`model_config.learning.frozen`) and returns at
+    once when it is set. This covers the feedback service's knowledge-outcome credits (learned state) as well as the
+    gate and completion rows and the `workflow_complete` episode. A live run is unchanged. Test
+    `frozen_roko_run_appends_no_episode_or_efficiency_row` runs the same one-task `roko run` live and frozen. It looks
+    only at the feedback rows (`gate_result`, `workflow_completed`): a frozen run's dispatch still writes its
+    model-call rows to `learn/efficiency.jsonl`, which decision 2218 keeps as telemetry.
+  - 69773e93b (the sibling the filer reported, run.rs `task_episodes_since`): when the workspace's log holds none of
+    the run's episodes, the report reads the run's own `runs/<run_id>/episodes.jsonl` (gap-127263's per-run log).
+    A frozen run now reports its turns, tokens and cost. Test `frozen_roko_run_reports_its_turns_and_cost`.
+

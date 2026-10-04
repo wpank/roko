@@ -15,7 +15,7 @@
 //! expected entry staying in its query's top `k`, and checks invariants: no
 //! entry from an unverified outcome, a bounded batch, no duplicate content.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 use roko_learn::guarded_commit::{
@@ -338,6 +338,62 @@ pub fn propose_batch(
     Ok(Some(decision))
 }
 
+/// The batches `store` holds besides `live`, sorted: at a run's start, the
+/// orphans of runs that ended before they proposed theirs, as a run that
+/// crashed leaves its batch (gap-6ff99a).
+///
+/// # Errors
+///
+/// The store's read error.
+pub fn orphaned_batches(
+    store: &KnowledgeStore,
+    live: Option<&str>,
+) -> Result<Vec<String>, GuardError> {
+    let entries = store
+        .read_all()
+        .map_err(|error| store_error(store, &error))?;
+    let batches: BTreeSet<String> = entries
+        .into_iter()
+        .filter_map(|entry| entry.commit_batch)
+        .filter(|batch| Some(batch.as_str()) != live)
+        .collect();
+    Ok(batches.into_iter().collect())
+}
+
+/// Propose every batch `store` holds besides `live` through the guard.
+///
+/// This works as [`propose_batch`] does for a run's own batch at its end
+/// (gap-6ff99a): a batch whose run ended before proposing it, as a crashed
+/// run's, is committed or rolled back under the same checks and mode, instead
+/// of staying hidden from every other run. Returns each orphan with its
+/// decision.
+///
+/// The caller holds the workspace's runner lock, so no other run is writing a
+/// batch.
+///
+/// # Errors
+///
+/// As [`propose_batch`], at the first orphan whose proposal fails; the ones
+/// before it stay proposed.
+pub fn recover_orphaned_batches(
+    store: &KnowledgeStore,
+    live: Option<&str>,
+    learn_dir: &Path,
+    mode: GuardMode,
+    anchors: &[KnowledgeAnchor],
+) -> Result<Vec<(String, Option<CommitDecision>)>, GuardError> {
+    let orphans = orphaned_batches(store, live)?;
+    let mut recovered = Vec::with_capacity(orphans.len());
+    for batch in orphans {
+        let checks = KnowledgeChecks::new(store, &batch, anchors.to_vec());
+        let reason = format!("knowledge:{batch} (orphaned: its run ended before proposing it)");
+        let proposer = Proposer::evolved("knowledge", KNOWLEDGE_STORE, reason);
+        let decision = propose_batch(store, &batch, learn_dir, mode, &checks, &proposer)?;
+        recovered.push((batch, decision));
+    }
+    Ok(recovered)
+}
+
 /// The empty version a knowledge store's guard starts from: it passes
 /// every check.
 struct Baseline;
@@ -495,5 +551,67 @@ mod tests {
         let anchors_check = &rows[1].checks[1];
         assert!(!anchors_check.passed, "{anchors_check:?}");
         assert!(anchors_check.reason.contains("kn-anchor"));
+    }
+
+    /// gap-6ff99a: at the next run's start, the batches of runs that crashed
+    /// before proposing them go through the guard. A sound one commits and
+    /// every run sees it, one that cites no attempt is rolled back, and the
+    /// running run's own batch waits for its end.
+    #[test]
+    fn orphaned_knowledge_batch_is_recovered_at_next_run_start() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let roko_dir = temp.path().join(".roko");
+        let learn_dir = roko_dir.join("learn");
+        let store = KnowledgeStore::for_roko_dir(&roko_dir);
+        let tagged = |entry: KnowledgeEntry, batch: &str| KnowledgeEntry {
+            commit_batch: Some(batch.to_string()),
+            ..entry
+        };
+        let sound = entry("kn-sound", "Pin the toolchain before a release.", &[], 0.8);
+        let claim = KnowledgeEntry {
+            source_episodes: Vec::new(),
+            ..entry("kn-claim", "Every test is flaky.", &[], 0.8)
+        };
+        let live = entry("kn-live", "The run in progress learned this.", &[], 0.8);
+        let seeded = [
+            tagged(sound, "run-crashed"),
+            tagged(claim, "run-claimed"),
+            tagged(live, "run-live"),
+        ];
+        store.rewrite_all(&seeded).expect("seed the store");
+        assert!(found(&store, "toolchain release").is_empty());
+
+        let recovered = recover_orphaned_batches(
+            &store,
+            Some("run-live"),
+            &learn_dir,
+            GuardMode::Enforce,
+            &[],
+        )
+        .expect("recovered");
+        let expected = [
+            ("run-claimed".to_string(), Some(RolledBack)),
+            ("run-crashed".to_string(), Some(Committed)),
+        ];
+        assert_eq!(recovered, expected);
+
+        assert_eq!(found(&store, "toolchain release"), ["kn-sound"]);
+        let left: Vec<(String, Option<String>)> = store
+            .read_all()
+            .expect("read")
+            .into_iter()
+            .map(|entry| (entry.id, entry.commit_batch))
+            .collect();
+        let live = ("kn-live".to_string(), Some("run-live".to_string()));
+        assert_eq!(left, [("kn-sound".to_string(), None), live]);
+
+        // The store's baseline, then one row per orphan.
+        let guarded = GuardedStore::open(&learn_dir, KNOWLEDGE_STORE, GuardMode::Enforce)
+            .expect("the knowledge store's guard");
+        let rows = guarded.rows().expect("its rows");
+        let decisions: Vec<CommitDecision> = rows.iter().map(|row| row.decision).collect();
+        assert_eq!(decisions, [Committed, RolledBack, Committed]);
+        let reason = rows[2].reason.as_deref().unwrap_or_default();
+        assert!(reason.contains("orphaned"), "{reason}");
     }
 }

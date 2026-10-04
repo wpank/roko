@@ -156,6 +156,22 @@ fn compute_regression_report(
 /// the snapshot merge leaves the models it does not track alone. The WAL is
 /// emptied only once the snapshots that hold its entries are saved.
 pub(crate) fn recover_wal(paths: &LearningPaths) {
+    replay_learning_wal(paths, true);
+}
+
+/// Empty the learning WAL of the router's observations without replaying
+/// them, once a person has rolled the router back to a kept version
+/// (gap-775aa6): replayed over the restored snapshot, a gone writer's
+/// observations would undo the rollback. The WAL's other entries are
+/// replayed as [`recover_wal`] replays them, and a live writer's segment is
+/// left to that writer, whose next save merges only what it learns after.
+pub(crate) fn discard_router_wal(paths: &LearningPaths) {
+    replay_learning_wal(paths, false);
+}
+
+/// [`recover_wal`], replaying the router's observations or, without
+/// `replay_router`, dropping them.
+fn replay_learning_wal(paths: &LearningPaths, replay_router: bool) {
     let mut entries = wal::replay_wal(&paths.wal_jsonl).unwrap_or_else(|e| {
         tracing::warn!(error = %e, "[wal] shared WAL unreadable -- leaving it");
         Vec::new()
@@ -171,7 +187,8 @@ pub(crate) fn recover_wal(paths: &LearningPaths) {
 
     if !entries.is_empty() {
         tracing::info!(entries = entries.len(), "[wal] replaying learning WAL");
-        let cascade_saved = save_recovered_observations(&paths.cascade_router_json, &entries);
+        let cascade_saved =
+            !replay_router || save_recovered_observations(&paths.cascade_router_json, &entries);
         let experiments_saved =
             save_recovered_experiment_outcomes(&paths.experiments_json, &entries);
         if !(cascade_saved && experiments_saved) {

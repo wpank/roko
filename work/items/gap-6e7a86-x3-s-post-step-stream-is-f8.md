@@ -92,3 +92,40 @@ half has no data anywhere to draw on.
   gaming-prone cells in the records." `replay_closure.py`'s module doc comment states the same
   gap almost verbatim, including the "several runs' positions interleaved" detail (kept here as
   context on the current implementation, not a separate fix this item asks for).
+
+## Progress
+
+- gap-6e7a86: implemented. Both this item's own anchor and the wave assignment point at
+  `streams/s3_disturbance.toml` for "where gaming-prone knob cells are configured"; that file and
+  `s3_disturbance_hooks.toml` configure S08 §4.6's five *disturbance* kinds (provider_fault,
+  model_swap, harder_mix, convention_flip, budget_cut), not S09's gaming-prone knob cells, which
+  turn out to be a property of a task's own `(family, ladder)` pair, not a stream hook — grepped
+  both files and found no family/ladder keying at all. `families/f1_pyconv/gen.py`'s
+  `PLANTED_GAMING` was the other candidate marker and is also wrong: it's a family-wide constant,
+  not per-instance, so it can't be the thing S09 calls "40%".
+- Derived the definition from S09 §4.4/§5.1's H5 design ("F1, F3, F4, F5 with gaming-prone knob
+  cells at 40%") cross-referenced with `common.knobs`'s S08 §4.4 difficulty bands: F1/F3/F4/F5 at
+  ladder level 4 or 5 (2 of each family's 5 levels = 40%). No code or spec text states this as an
+  explicit formula anywhere I found; it's written into `common/knobs.py`'s new
+  `is_gaming_prone_knob_cell()` and its docstring as a derivation, not asserted as an
+  already-official fact.
+- `driver/records.py::build()` now stamps every task with `gaming_prone_knob_cell` at record-build
+  time (False for a plan-slice row, whose ladder is null). `analysis/replay_h5.py` gained
+  `gaming_prone_units()`, reading that stamped field or deriving it from `family`/`ladder` for a
+  record from before the field existed. `analysis/replay_closure.py`'s `x3_from_matrix` now draws
+  the pre-step 40 from block A units that are *not* gaming-prone, then includes block A's
+  gaming-prone units together with block E's honeypots in the post-step population. Block E
+  non-empty is still required to evaluate at all — kept that guard unchanged on purpose, so
+  `test_closure_replays_emit_their_preregistered_estimands`'s F8-less `log1_tree` fixture keeps
+  its current "not evaluated... block E" result.
+- Updated `test_replay_closure.py::step_tree()` to generate its pre-step 60 at ladder 1-3 only
+  (never gaming-prone), so the existing `test_x3_evaluates_from_a_false_green_step_replay`
+  baseline (60 block-A units, step at 40) is unaffected; added a `gaming_prone=` parameter and a
+  new test, `test_x3_post_step_includes_gaming_prone_knob_cells`, covering the wider post-step
+  population and the derive-from-family/ladder fallback for a record predating the field. Added
+  `test_gaming_prone_knob_cell_is_f1_f3_f4_f5_at_ladder_4_or_5` to `families/common/test_common.py`.
+- Verified load-bearing: reverted `x3_from_matrix` to its old `before[:X3_STEP] + after` body, and
+  the new test's `post_step_units == 130` assertion failed (120, as before the fix); restored and
+  re-confirmed green. Suites run in the benchmark venv: `analysis/` full (111 passed),
+  `driver/test_run_cli.py` (26 passed), `families/common/test_common.py` (37 passed), plus the
+  named `[[verify]]` command directly.

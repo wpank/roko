@@ -139,7 +139,10 @@ fn bounded(text: &str, max: usize) -> String {
 pub struct VerifiedKnowledgeSink {
     lifecycle: RuntimeKnowledgeLifecycle,
     /// One ingestion at a time: each rewrites the knowledge store several
-    /// times, and parallel tasks can finish together.
+    /// times, and parallel tasks can finish together. Each rewrite is whole
+    /// on its own, under the file's write gate, which every store of the
+    /// file shares (bug-c4f0ed); this lock keeps the ingestion's steps
+    /// together, so the next one sees what this one admitted.
     serial: Arc<Mutex<()>>,
 }
 
@@ -534,5 +537,61 @@ mod tests {
         assert!(!sink.interested(&event));
         sink.on_event(&event).await.unwrap();
         assert!(!dir.path().join(".roko").exists());
+    }
+
+    /// bug-c4f0ed: background access counts, each through a store of its
+    /// own as `record_knowledge_access` builds one, and verified-attempt
+    /// reinforcement, through the lifecycle's store, rewrite one knowledge
+    /// file at once. Every store of the file takes its one write gate, so
+    /// neither loses an update: each count lands, and so does each
+    /// attempt's episode.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_access_count_and_reinforcement_writes_do_not_lose_an_update() {
+        const WRITES: usize = 16;
+        let dir = tempdir().expect("tempdir");
+        KnowledgeStore::for_workdir(dir.path())
+            .add(KnowledgeEntry {
+                id: "prior-hint".into(),
+                kind: KnowledgeKind::Insight,
+                content: "Rust hello world programs compile with a plain rustc call".into(),
+                confidence: 0.8,
+                confidence_weight: 0.8,
+                ..KnowledgeEntry::default()
+            })
+            .expect("seed the entry");
+        let sink = Arc::new(VerifiedKnowledgeSink::for_workdir(dir.path()));
+        let mut counts = Vec::new();
+        let mut ingests = Vec::new();
+        for run in 0..WRITES {
+            let workdir = dir.path().to_path_buf();
+            counts.push(tokio::task::spawn_blocking(move || {
+                KnowledgeStore::for_workdir(&workdir).count_access(&["prior-hint"])
+            }));
+            let mut verified = attempt(
+                &format!("run-{run}:hello-plan/T01/a0"),
+                vec!["prior-hint".into()],
+            );
+            verified.agent_output = "Created hello/main.rs.\nLesson: none".into();
+            let sink = Arc::clone(&sink);
+            ingests.push(tokio::spawn(async move {
+                let event = FeedbackEvent::TaskVerified(verified);
+                sink.on_event(&event).await
+            }));
+        }
+        for count in counts {
+            assert_eq!(count.await.expect("join").expect("count"), 1);
+        }
+        for ingest in ingests {
+            ingest.await.expect("join").expect("ingest");
+        }
+
+        let entries = KnowledgeStore::for_workdir(dir.path())
+            .read_all()
+            .expect("read");
+        let [hint] = entries.as_slice() else {
+            panic!("one entry: {entries:#?}");
+        };
+        assert_eq!(hint.access_count, WRITES as u64, "a count was lost");
+        assert_eq!(hint.source_episodes.len(), WRITES, "an episode was lost");
     }
 }

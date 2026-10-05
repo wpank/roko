@@ -879,6 +879,189 @@ fn dropped_acp_assignment_settles_as_abandoned() {
     assert_eq!(stats.trials, 0, "an abandoned receipt counts no trial");
 }
 
+/// A config whose one model, `offline`, no provider can take: its key
+/// variable is unset, and no model stands in for it (bug-897879).
+fn unusable_model_config(supports_vision: bool) -> RokoConfig {
+    use roko_core::config::schema::ProviderConfig;
+
+    let mut config = RokoConfig::default();
+    config.providers.clear();
+    config.models.clear();
+    config.routing.fallback_models.clear();
+    config.agent.fallback_model = None;
+    config.agent.default_model = "offline".to_string();
+    let provider = ProviderConfig {
+        kind: ProviderKind::OpenAiCompat,
+        base_url: Some("http://127.0.0.1:9/v1".to_string()),
+        api_key_env: Some("ROKO_TEST_UNSET_KEY_897879".to_string()),
+        ..ProviderConfig::default()
+    };
+    config.providers.insert("offline-api".to_string(), provider);
+    let model = ModelProfile {
+        provider: "offline-api".to_string(),
+        slug: "offline-model".to_string(),
+        supports_tools: true,
+        supports_vision,
+        ..ModelProfile::default()
+    };
+    config.models.insert("offline".to_string(), model);
+    config
+}
+
+/// The experiment store of `workdir`, with one running experiment that every
+/// ACP prompt draws from.
+fn receipt_experiment_store(workdir: &Path) -> std::path::PathBuf {
+    use roko_learn::prompt_experiment::{PromptExperiment, PromptVariant};
+
+    let path = workdir.join(".roko/learn/experiments.json");
+    std::fs::create_dir_all(path.parent().expect("experiment parent"))
+        .expect("create experiment parent");
+    let mut store = ExperimentStore::new();
+    store.register(PromptExperiment::new(
+        "receipt-exp",
+        "constraints",
+        vec![PromptVariant {
+            id: "v1".to_string(),
+            name: "V1".to_string(),
+            section_name: "constraints".to_string(),
+            content: "Keep the change small.".to_string(),
+            slug: None,
+            active: true,
+        }],
+    ));
+    store.save(&path).expect("save experiments");
+    path
+}
+
+/// The state of the receipt of `session`'s first ACP dispatch in the store at
+/// `path`, and the trials its experiment counted.
+fn first_receipt(
+    path: &Path,
+    session: &AcpSession,
+) -> (roko_learn::prompt_experiment::PromptAssignmentState, u64) {
+    use roko_learn::prompt_experiment::PromptAttemptKey;
+
+    let key = PromptAttemptKey::new(
+        &session.session_id,
+        "acp",
+        &session.config_state.agent_mode,
+        1,
+    );
+    let store = ExperimentStore::load_or_new(path);
+    let Some([receipt]) = store.assignments_for_attempt(&key) else {
+        panic!("no single receipt for {key:?}");
+    };
+    let trials = store.get("receipt-exp").expect("experiment").stats["v1"].trials;
+    (receipt.state, trials)
+}
+
+/// bug-897879: a prompt that fails before it reaches a model, here because no
+/// provider can take it, settles its experiment receipt as abandoned. The
+/// receipt is marked dispatched only at the launch, so this failure, which
+/// used to come after the mark, leaves it `Prepared`, and the prompt's
+/// outcome abandons it: no trial counts.
+#[tokio::test]
+async fn dispatch_failure_after_mark_settles_the_receipt_as_abandoned() {
+    use roko_learn::prompt_experiment::PromptAssignmentState;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = receipt_experiment_store(tmp.path());
+    let mut transport = StdioTransport::from_io(empty(), tokio::io::sink());
+    let mut session = test_session("offline", "none");
+    let params = SessionPromptParams {
+        session_id: session.session_id.clone(),
+        prompt: vec![ContentBlock::Text {
+            text: "Keep the wiring small".to_owned(),
+        }],
+        include_context: false,
+    };
+
+    let _ = handle_session_prompt(
+        &mut transport,
+        &mut session,
+        params,
+        tmp.path(),
+        &unusable_model_config(false),
+    )
+    .await;
+
+    assert_eq!(
+        first_receipt(&path, &session),
+        (PromptAssignmentState::Abandoned, 0)
+    );
+}
+
+/// bug-897879: a prompt whose image fails validation returns before its
+/// dispatch, and the early return settles its experiment receipt as
+/// abandoned instead of leaving it `Prepared`.
+#[tokio::test]
+async fn invalid_image_prompt_settles_the_receipt_as_abandoned() {
+    use roko_learn::prompt_experiment::PromptAssignmentState;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = receipt_experiment_store(tmp.path());
+    let mut transport = StdioTransport::from_io(empty(), tokio::io::sink());
+    let mut session = test_session("offline", "none");
+    let params = SessionPromptParams {
+        session_id: session.session_id.clone(),
+        prompt: vec![
+            ContentBlock::Text {
+                text: "Describe the screenshot".to_owned(),
+            },
+            // An empty payload is no image.
+            ContentBlock::Image {
+                data: String::new(),
+                mime_type: "image/png".to_owned(),
+            },
+        ],
+        include_context: false,
+    };
+
+    let error = handle_session_prompt(
+        &mut transport,
+        &mut session,
+        params,
+        tmp.path(),
+        &unusable_model_config(true),
+    )
+    .await
+    .expect_err("an empty image fails validation");
+
+    assert!(
+        matches!(&error, BridgeEventsError::UnsupportedPromptContent(message)
+            if message.contains("invalid image input")),
+        "{error:?}"
+    );
+    assert_eq!(
+        first_receipt(&path, &session),
+        (PromptAssignmentState::Abandoned, 0)
+    );
+}
+
+/// bug-897879: an open receipt dropped before its prompt's outcome is
+/// recorded settles as abandoned; one whose outcome was recorded is left as
+/// the recording settled it.
+#[test]
+fn open_experiment_receipt_abandons_unless_settled() {
+    use roko_learn::prompt_experiment::PromptAssignmentState;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = receipt_experiment_store(tmp.path());
+    let state = |assignment: &AcpExperimentAssignment| {
+        let key = assignment.attempt_key.as_ref().expect("a receipt");
+        let store = ExperimentStore::load_or_new(&path);
+        store.assignments_for_attempt(key).expect("receipts")[0].state
+    };
+
+    let dropped = assign_acp_experiment(&path, "code", "receipts").expect("assignment");
+    drop(OpenExperimentReceipt::new(&path, Some(&dropped)));
+    assert_eq!(state(&dropped), PromptAssignmentState::Abandoned);
+
+    let kept = assign_acp_experiment(&path, "code", "receipts").expect("assignment");
+    OpenExperimentReceipt::new(&path, Some(&kept)).settled();
+    assert_eq!(state(&kept), PromptAssignmentState::Prepared);
+}
+
 #[test]
 fn replace_experiment_section_replaces_named_canonical_section() {
     // P1-ACP-2: replace_experiment_section must replace the named section in

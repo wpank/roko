@@ -20,6 +20,8 @@
 //! logged propensities (`lindon2020anytimevalid`). The Bonferroni split α/K
 //! is the caller's.
 
+use serde::{Deserialize, Serialize};
+
 /// Grid steps of a betting CS over its range, as in S08's toolkit.
 pub const CS_GRID: usize = 1000;
 
@@ -34,7 +36,7 @@ pub const CS_HEDGE: f64 = 0.5;
 /// of WSR 2024, where σ̂²_{t−1}·t = 1/4 + Σ_{i<t} (y_i − μ̂_i)² and
 /// μ̂_i = (1/2 + Σ_{j≤i} y_j)/(i + 1). It reads past scaled values only,
 /// never the mean under test, so every candidate mean shares it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PlugIn {
     log_term: f64,
     t: u64,
@@ -104,8 +106,10 @@ fn scaled(x: f64, bound: f64) -> (f64, f64, f64) {
 /// candidate means on `[lo, hi]` (WSR 2024, Theorem 3). A candidate leaves
 /// for good once its hedged capital reaches 1/α; the interval is the hull of
 /// the candidates still inside, widened by one grid step on each side and
-/// clipped to the range, so it contains the exact running intersection.
-#[derive(Debug, Clone)]
+/// clipped to the range, so it contains the exact running intersection. It
+/// serializes, so the audit tick's census can carry it from one plan-run
+/// close to the next (gap-addf2a).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BettingCs {
     alpha: f64,
     lo: f64,
@@ -195,6 +199,17 @@ impl BettingCs {
     #[must_use]
     pub const fn steps(&self) -> u64 {
         self.steps
+    }
+
+    /// Whether its grid and candidate vectors agree, as [`Self::push`]
+    /// needs: false only for a state deserialized from a damaged file.
+    #[must_use]
+    pub fn is_consistent(&self) -> bool {
+        let points = self.grid.saturating_add(1);
+        self.grid >= 1
+            && self.up.len() == points
+            && self.down.len() == points
+            && self.inside.len() == points
     }
 }
 
@@ -311,7 +326,7 @@ impl DifferenceCs {
 /// propensities it is a test martingale, so it reaches 1/α_srm with
 /// probability at most α_srm however long it runs; a skewed split drives it
 /// up.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SrmEvalue {
     prior: f64,
     counts: Vec<u64>,

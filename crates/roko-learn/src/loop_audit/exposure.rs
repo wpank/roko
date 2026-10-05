@@ -25,6 +25,8 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
+
 use super::cs::BettingCs;
 use super::spec::ReasonCode;
 
@@ -164,7 +166,7 @@ impl ExposureEstimate {
 }
 
 /// Accumulates exposure over a loop's opportunities.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExposureEstimator {
     opportunities: u64,
     read_failures: (u64, u64, u64),
@@ -230,6 +232,12 @@ impl ExposureEstimator {
             read_failures: self.read_failures,
         }
     }
+
+    /// Whether its sequence's state is whole ([`BettingCs::is_consistent`]).
+    #[must_use]
+    pub fn is_consistent(&self) -> bool {
+        self.cs.is_consistent()
+    }
 }
 
 /// ι, its A/A floor and ι_net over the opportunities so far.
@@ -252,7 +260,7 @@ pub struct InfluenceEstimate {
 }
 
 /// Accumulates net influence over a loop's opportunities.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfluenceEstimator {
     opportunities: u64,
     influence: f64,
@@ -308,6 +316,12 @@ impl InfluenceEstimator {
                 .flatten(),
             iota_cite: (self.checked > 0).then(|| share(self.cited, self.checked)),
         }
+    }
+
+    /// Whether its sequence's state is whole ([`BettingCs::is_consistent`]).
+    #[must_use]
+    pub fn is_consistent(&self) -> bool {
+        self.cs.is_consistent()
     }
 }
 

@@ -102,3 +102,9 @@ All three confirmed as described; none fixed.
 
 - (3) may need its own follow-up item once a design for CLI-agent-side confinement exists; this item just
   records the gap as PK76 found it.
+
+## Decision
+
+- 2026-10-05, Will: keep it failing safely. Chat-started (and ops-domain) work needs an API provider, whose tool
+  loop can hold outward actions for approval; own-tool CLI agents refuse a stage/deny contract. Terminal use is
+  unaffected.

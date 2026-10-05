@@ -93,3 +93,19 @@ Confirmed on `work/bug-897879` (not yet merged): `acp_dispatch_succeeded` has no
   outcome-to-settlement table side by side. `bug-897879`'s own fix addresses only the
   pre-dispatch (before a provider is picked) half of this asymmetry; this is the remaining,
   post-launch half.
+
+## Progress
+
+- 2026-10-05 (w4-length): implemented on `work/bug-7e8dae`; cargo verification deferred to the batch gate.
+  - `acp_learning_success` (cost.rs) gives ACP Graph's learning label. It returns `Some(true)` for a turn that
+    succeeded, `Some(false)` for one that failed, and `None` when the dispatch's own error is one that
+    `classify_failure_text` names: exhaustion, billing, auth, rate limit, server error or empty response. A timeout
+    counts as a provider failure only before any answer arrived; after part of an answer it counts against the
+    turn, as in Graph.
+  - The receipt is now settled by `settle_acp_experiment` (experiments.rs): `None` abandons it with no trial
+    counted. `acp_dispatch_succeeded` still drives the efficiency event and the router observation.
+  - The classification reads only the dispatch's error, not `stream_error`, so a post-dispatch safety block
+    (a model's own fault) still counts as a failed trial.
+  - Tests: `acp_abandons_a_post_launch_provider_refusal` in `tests/provider_failover.rs` (a pinned prompt's only
+    provider refuses with its session limit after launch; the receipt ends Abandoned with no trial), and
+    `acp_learning_success_says_nothing_after_a_provider_failure`.

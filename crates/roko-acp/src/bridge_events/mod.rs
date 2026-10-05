@@ -29,16 +29,16 @@ pub(crate) use context::{
 };
 pub use cost::calculate_cost_for_model_slug;
 pub(crate) use cost::{
-    acp_contract_role_for_mode, acp_dispatch_succeeded, acp_efficiency_event, acp_routing_context,
-    append_acp_episode, derive_acp_tool_capabilities, emit_acp_efficiency_event,
-    truncate_assistant_history, truncate_to_title,
+    acp_contract_role_for_mode, acp_dispatch_succeeded, acp_efficiency_event, acp_learning_success,
+    acp_routing_context, append_acp_episode, derive_acp_tool_capabilities,
+    emit_acp_efficiency_event, truncate_assistant_history, truncate_to_title,
 };
 pub(crate) use dispatch::{run_anthropic_cognitive_task, run_openai_compat_cognitive_task};
 pub(crate) use experiments::{
     AcpCascadeRequest, OpenExperimentReceipt, applicable_acp_experiment, assign_acp_experiment,
     cascade_router_model_slugs, cascade_select_model, mark_acp_experiment_dispatched,
     record_acp_experiment_outcome, record_cascade_observation, render_experiment_context,
-    replace_experiment_section, resolve_acp_dispatch_model,
+    replace_experiment_section, resolve_acp_dispatch_model, settle_acp_experiment,
 };
 pub(crate) use helpers::{
     append_assistant_text, dispatch_failure_update, emit_dispatch_failure, map_event_to_update,
@@ -1071,11 +1071,17 @@ where
         }
         emit_acp_efficiency_event(&workdir_for_logging, efficiency_event);
 
-        // A launched prompt's receipt settles with its outcome; one that never
-        // reached a model is still `Prepared`, and settles as abandoned.
+        // A launched prompt's receipt settles with what its outcome says about
+        // the prompt: a provider failure says nothing, and abandons it, as in
+        // Graph dispatch (bug-7e8dae). One that never reached a model is still
+        // `Prepared`, and settles as abandoned either way.
+        let learning = acp_learning_success(
+            stream_result_ref,
+            task_error.as_deref(),
+            stream_error.as_deref(),
+        );
         if let Some(assignment) = experiment_assignment.as_ref()
-            && let Err(error) =
-                record_acp_experiment_outcome(&experiment_path, assignment, dispatch_succeeded)
+            && let Err(error) = settle_acp_experiment(&experiment_path, assignment, learning)
         {
             warn!(
                 experiment_id = %assignment.experiment_id,

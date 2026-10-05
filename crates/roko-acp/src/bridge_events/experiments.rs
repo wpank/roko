@@ -368,6 +368,25 @@ fn find_next_heading(text: &str) -> usize {
         .unwrap_or(text.len())
 }
 
+/// Settle `assignment`'s receipt with what its prompt's outcome says about
+/// the prompt ([`super::cost::acp_learning_success`]): a success or a failure
+/// is recorded ([`record_acp_experiment_outcome`]), and an outcome that says
+/// nothing, a provider failure, abandons the receipt without a trial, as
+/// Graph dispatch does (bug-7e8dae).
+pub(crate) fn settle_acp_experiment(
+    path: &Path,
+    assignment: &AcpExperimentAssignment,
+    learning: Option<bool>,
+) -> std::io::Result<()> {
+    match learning {
+        Some(success) => record_acp_experiment_outcome(path, assignment, success),
+        None => {
+            abandon_acp_experiment(path, assignment);
+            Ok(())
+        }
+    }
+}
+
 pub(crate) fn record_acp_experiment_outcome(
     path: &Path,
     assignment: &AcpExperimentAssignment,

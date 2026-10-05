@@ -1376,7 +1376,7 @@ pub struct ContentDecisionRecord {
     pub identity: AttemptIdentity,
     /// Where the prompt chose.
     pub decision_point: ContentDecisionPoint,
-    /// The ranking that produced the candidates, e.g. `keyword_overlap_top3`.
+    /// The ranking that produced the candidates, e.g. `topic_overlap_top3`.
     pub policy: String,
     /// Every retrieved item, in rank order.
     pub candidates: Vec<ContentCandidate>,

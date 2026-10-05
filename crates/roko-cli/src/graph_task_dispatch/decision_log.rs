@@ -191,22 +191,25 @@ struct LearnedState {
     thresholds: Option<String>,
 }
 
-/// The ranking that chooses a content decision point's candidates. The
-/// error-pattern summary names as many patterns as the attempt's prompt
-/// shows at most, `shown`: the `error_patterns_k` of the θ it runs (M1's
-/// B4), which a fixed number would misstate (gap-26c055).
+/// The ranking that chooses a content decision point's candidates, as the
+/// prompt builder runs it (gap-a40021). The error-pattern policy names as
+/// many patterns as the attempt's prompt shows at most, `shown`: the
+/// `error_patterns_k` of the θ it runs (M1's B4), which a fixed number would
+/// misstate (gap-26c055).
 fn content_policy(point: ContentDecisionPoint, shown: usize) -> String {
     match point {
-        // The three entries holding the most task keywords; episodes join
-        // them at this decision point.
-        ContentDecisionPoint::Knowledge => "keyword_overlap_top3".to_string(),
-        // The three playbooks holding the most task keywords, then the best
-        // record.
-        ContentDecisionPoint::Playbooks => "keyword_outcome_top3".to_string(),
+        // The three entries sharing the most of the task's topic terms, two
+        // at least, at a confidence of 0.3 or more; episodes join them at
+        // this decision point (backlogs 4211, 4213).
+        ContentDecisionPoint::Knowledge => "topic_overlap_top3".to_string(),
+        // The three playbooks sharing the most topic terms, two at least,
+        // then the best record (backlog 4212).
+        ContentDecisionPoint::Playbooks => "topic_overlap_outcome_top3".to_string(),
         // The sections that fit the prompt's token budget.
         ContentDecisionPoint::Sections => "token_budget_composer".to_string(),
-        // The store's leading patterns, in a bounded summary.
-        ContentDecisionPoint::ErrorPatterns => format!("error_pattern_summary_top{shown}"),
+        // The patterns seen on the task or failing one of its verify
+        // commands, in a bounded summary (backlogs 4209, 4210).
+        ContentDecisionPoint::ErrorPatterns => format!("task_or_command_keyed_top{shown}"),
         ContentDecisionPoint::Reflections | ContentDecisionPoint::DreamAdvice => {
             "unranked".to_string()
         }
@@ -840,7 +843,7 @@ mod tests {
         assert_eq!(row.chosen, ["kn-1"]);
         assert_eq!(row.chosen_propensity, Some(1.0));
         assert_eq!(row.source, Some(DecisionSource::Default));
-        assert_eq!(row.policy, "keyword_overlap_top3");
+        assert_eq!(row.policy, "topic_overlap_top3");
         let store = row.state.as_ref().expect("the knowledge store's state");
         assert_eq!((store.n_obs, store.version.as_str()), (2, "kn:n=2"));
         assert!(store.read && store.digest.starts_with("b3:"), "{store:?}");
@@ -961,6 +964,76 @@ mod tests {
         assert!(sections > 0);
         let content = run.exposures.len() - sections;
         assert_eq!(counts.retrieved as usize, content);
+    }
+
+    /// gap-a40021: the error-pattern decision lists one candidate per pattern
+    /// the prompt shows, named by its key, and chooses each one that reached
+    /// the prompt, where it used to list one candidate for the whole block.
+    #[tokio::test]
+    async fn error_pattern_content_decision_lists_one_candidate_per_key() {
+        use roko_learn::error_pattern_store::{GateFailureObservation, GateFailureSource};
+
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix_maximize, feedback).await;
+        task.verify = vec![verify_step("structural", "true")];
+        let spec = make_spec(&task);
+        // Two patterns that earlier attempts of the task left.
+        for (key, digest) in [
+            ("verify::E0425", "cannot find value `total` in this scope"),
+            ("verify::E0599", "no method named `len` found"),
+        ] {
+            dispatcher
+                .factory
+                .error_pattern_store()
+                .write()
+                .expect("error pattern store")
+                .observe_gate_failure(GateFailureObservation::new(
+                    key,
+                    spec.plan_id.clone(),
+                    Some(task.id.clone()),
+                    "cargo test -p crate-a",
+                    "verify",
+                    digest,
+                    GateFailureSource::GateClassification,
+                ));
+        }
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+        crate::background_writes::settled(&roko).await;
+
+        let run = RunRecords::load(&roko.join("runs").join(RUN)).expect("load the run");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        let row = run
+            .content_decisions
+            .iter()
+            .map(|line| &line.record)
+            .find(|row| row.decision_point == ContentDecisionPoint::ErrorPatterns)
+            .expect("the error-pattern decision");
+        let mut candidates: Vec<&str> = row
+            .candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect();
+        candidates.sort_unstable();
+        assert_eq!(candidates, ["verify::E0425", "verify::E0599"]);
+        let mut chosen: Vec<&str> = row.chosen.iter().map(String::as_str).collect();
+        chosen.sort_unstable();
+        assert_eq!(chosen, candidates, "both patterns reached the prompt");
+        assert!(
+            row.policy.starts_with("task_or_command_keyed_top"),
+            "{}",
+            row.policy
+        );
     }
 
     /// One dispatched attempt writes one route decision row to its run's
@@ -1146,6 +1219,28 @@ mod tests {
         assert!((0.45..=0.55).contains(&share), "learned share {share}");
     }
 
+    /// gap-a40021: the policies name the rankings the prompt builder runs:
+    /// knowledge and playbooks by the task's topic terms (backlogs
+    /// 4211-4213), error patterns by the task and its verify commands
+    /// (backlogs 4209, 4210).
+    #[test]
+    fn content_policies_name_the_topic_and_key_rankings() {
+        use ContentDecisionPoint::{ErrorPatterns, Knowledge, Playbooks, Sections};
+
+        let policies =
+            [Knowledge, Playbooks, Sections, ErrorPatterns].map(|point| content_policy(point, 5));
+
+        assert_eq!(
+            policies,
+            [
+                "topic_overlap_top3",
+                "topic_overlap_outcome_top3",
+                "token_budget_composer",
+                "task_or_command_keyed_top5",
+            ]
+        );
+    }
+
     /// gap-26c055: the error-pattern policy names as many patterns as the
     /// attempt's prompt may show: θ₀'s five, or the `error_patterns_k` of
     /// the θ it runs (M1's B4).
@@ -1153,16 +1248,16 @@ mod tests {
     fn error_pattern_policy_names_the_live_pattern_count() {
         let point = ContentDecisionPoint::ErrorPatterns;
         let theta0 = error_pattern_limit(None);
-        assert_eq!(content_policy(point, theta0), "error_pattern_summary_top5");
+        assert_eq!(content_policy(point, theta0), "task_or_command_keyed_top5");
         let config = RokoConfig::default();
         let mut theta = roko_core::config::harness_params::HarnessParams::baseline(&config);
         assert_eq!(error_pattern_limit(Some(&theta)), theta0);
         theta.error_patterns_k = 10;
         let shown = error_pattern_limit(Some(&theta));
-        assert_eq!(content_policy(point, shown), "error_pattern_summary_top10");
+        assert_eq!(content_policy(point, shown), "task_or_command_keyed_top10");
         assert_eq!(
             content_policy(ContentDecisionPoint::Knowledge, shown),
-            "keyword_overlap_top3"
+            "topic_overlap_top3"
         );
     }
 }

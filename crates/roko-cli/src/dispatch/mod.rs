@@ -147,13 +147,15 @@ pub struct DispatchContext {
     /// Each entry is `(task_id, files)`. Injected into the system prompt
     /// so the agent knows what its predecessors already produced.
     pub dependency_outputs: Vec<(String, Vec<String>)>,
-    /// Pre-rendered error patterns from the shared in-memory store.
+    /// Pre-rendered error patterns from the shared in-memory store, with
+    /// their keys and entries.
     ///
     /// Populated by `GraphTaskDispatcher` from
     /// `SharedAgentFactory::error_patterns_for_task`, the patterns keyed to
     /// the task (backlog 4210), so that agents dispatched later in the same
-    /// plan run benefit from error patterns discovered by earlier agents.
-    pub error_patterns_context: String,
+    /// plan run benefit from error patterns discovered by earlier agents. The
+    /// prompt's exposure record names each pattern by its key (gap-a40021).
+    pub error_patterns: factory::ErrorPatternSelection,
     /// Pre-computed workspace map (indented crate/src tree).
     ///
     /// When non-empty, `PromptContext::from_task` uses this value instead of
@@ -646,7 +648,7 @@ mod tests {
             gate_feedback: None,
             routing_context: None,
             dependency_outputs: Vec::new(),
-            error_patterns_context: String::new(),
+            error_patterns: Default::default(),
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),

@@ -42,6 +42,10 @@ pub struct ErrorPatternSelection {
     pub text: String,
     /// The keys of the selected patterns, in display order.
     pub keys: Vec<String>,
+    /// Each selected pattern's entry in `text`, in the order of `keys`: the
+    /// prompt's exposure record makes one item of each, so that the
+    /// error-pattern decision lists every pattern (gap-a40021).
+    pub entries: Vec<String>,
 }
 
 /// Shared, reusable components for agent dispatch.
@@ -450,6 +454,7 @@ impl SharedAgentFactory {
                 .iter()
                 .map(|pattern| pattern.key.clone())
                 .collect(),
+            entries: summary.format_entries(),
         }
     }
 

@@ -139,9 +139,12 @@ impl GraphTaskDispatcher {
             let identity = attempt.identity();
             let mut decision = content_decision(identity, point, &items, &state, draws, shown);
             let draw = (arm_set.as_deref(), times);
-            if let Some((proposals, audit)) =
+            // The prompt read the loop's fault flag for this attempt: the
+            // audit's read is the same decision (bug-9d23ed).
+            let audited = faults::decision(&identity.attempt_key, || {
                 content_audit(point, &items, identity, draw, &request_hash)
-            {
+            });
+            if let Some((proposals, audit)) = audited {
                 decision.proposals = Some(proposals);
                 decision.audit = audit;
             }

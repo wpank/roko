@@ -165,7 +165,7 @@ fn dispatch_context(workdir: &Path, key: &AttemptKey, arms: Arc<ArmSet>) -> Disp
         gate_feedback: None,
         routing_context: Some(RoutingContext::default()),
         dependency_outputs: Vec::new(),
-        error_patterns_context: String::new(),
+        error_patterns: Default::default(),
         cached_workspace_map: String::new(),
         cached_workspace_context: String::new(),
         concurrent_plans: Vec::new(),

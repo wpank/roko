@@ -98,3 +98,22 @@ the struct's own field type structurally cannot carry them today.
   `gap-546e8a`'s own closing evidence covers Graph dispatch and helper calls only ("Gate fix
   f71b5de93 (inline audit-check calls priced the same way)"); plan-authoring's `AgentCapture`
   path is untouched by that fix and structurally can't carry the fields without this follow-up.
+
+## Progress
+
+- 2026-10-05 (w4-length): implemented on `work/gap-d10a97` at e3a657d39; cargo verification deferred to the
+  batch gate.
+  - `AgentCapture` gains `api_equiv_usd` and `price_snapshot_id`, and `AuthoringSpend::record` writes both into
+    the cost row and the efficiency event in place of the hard-coded `None`s.
+  - They are priced the way gap-546e8a prices Graph helper calls: the agent's own figure when it priced its tokens
+    at the run's snapshot, else the tokens at the snapshot's row for the model. That helper moved from
+    `graph_task_dispatch/helper_calls.rs` to `dispatch_v2::api_equiv`, beside the other pricing helpers, and
+    helper calls now import it from there.
+  - Every producer fills the fields: `run_agent_capture_impl` (plan generation, `run --plan`, research tasks),
+    `plan prepare --full`'s document writer (`plan_brief.rs`) and `research::record_run_spend`.
+    `record_search_spend` stays `None`, since a Perplexity search request has no tokens to price.
+  - Test: `plan_authoring_cost_row_carries_api_equiv_usd`. The built-in price snapshot (2026-09-28) has no row for
+    claude-sonnet-4-6, the slug the fake planner served, so the test runs the fake planner on claude-sonnet-5,
+    which the snapshot prices. `fake_planner_workspace` now takes the slug.
+  - Left as before: the rows' `cost_source` stays `Unknown`, because `AgentCapture` still does not say where its
+    usage came from.

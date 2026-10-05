@@ -93,3 +93,58 @@ to show a refuted claim as refuted, only ever as "not yet enough signal."
   gaps directly by reading `tab_t3_headline.py`, `holm.py`'s `claim_state`/`verdict_records`
   signatures, and grepping every call site of `write_verdicts`/`verdict_records` across the
   whole `benchmarks/viabilitybench/` tree.
+
+## Progress
+
+- gap-04496d: implemented. New module `analysis/holm_decisions.py` (no existing file touched):
+  the first production caller of `holm.decide`/`write_verdicts` outside `holm.py`'s own tests.
+  `write(inputs, experiment_id, p, out_dir, ...)` calls `decide` once and projects the same
+  `HolmResult` two ways: `holm.write_verdicts` (gap-2da8ec's `verdicts.json`) and
+  `holm_reject_records`, one `holm_reject` `vb.metric_record/1` per primary -- the exact format
+  `tab_t3_headline.py:84` already reads. Chose "produce holm_reject from the same verdicts"
+  (the item's own alternative, over switching T3 to read `vb.verdict/1` directly): it needed no
+  change to `tab_t3_headline.py`, `figlib.py`'s loader, or any of the other scripts sharing its
+  `inputs.one(metric, ...)` convention -- lower blast radius than teaching `figlib` a second
+  schema-tagging convention (`vb.verdict/1` uses `schema_version`; figlib's own `ROW_SCHEMAS`
+  side-channel keys on a different field, `schema`) for a fact only one table reads.
+  `holm_reject_records` computes none of a record's provenance itself: `experiment_id`, `arms`,
+  `run_ids`, `seeds`, `commits`, `config_hashes`, `analysis_commit`, `computed_at`,
+  `preregistered`, `prereg_id`, `blinded`, `label_source`, `cost_basis`, `price_snapshot_id` and
+  `n` are all copied verbatim from a `template` record of the same cell (`envelope_level` by
+  default); only `metric`, `value`, `estimator` and one extra `record_filter` clause are its own.
+  Checked every record this builds against `schema/validate.py`'s real `metric-record` kind
+  (not just the dry-run marker): no errors.
+- `adverse` (the side fact `claim_state` needs to tell `NOT_SUPPORTED` from `INCONCLUSIVE`,
+  gap-2da8ec's own conservative default) now has a real production source for H1:
+  `find_adverse` reads `envelope_ratio_r`/`envelope_ratio_c` against `figlib.REFERENCE_ARM` --
+  the exact records `tab_t3_headline.py`'s own `_ratio` footer helper already reads -- and
+  `adverse_from_ratio` classifies their sign (R below 1, or C above 1) without computing a new
+  statistic, matching "copy it; compute nothing new." H2-H7 have no ratio wired to a hypothesis
+  anywhere in this codebase yet, so they still fall back to `verdict_records`'s own default;
+  noted as a real, acknowledged limit, not silently glossed over.
+- Confirmed the architectural claim in "Why it matters" is now false: built a verdict where H1's
+  node is not rejected (p = 0.9) but `adverse` is true, and got `claim_state: NOT_SUPPORTED`, not
+  `INCONCLUSIVE` -- a real experiment can now show a refuted H1 as refuted.
+- Tests, `analysis/test_tab_t3_headline.py` (new, 4 tests): the named
+  `test_tab_t3_headline_shows_a_real_holm_decision` (builds the `test_figures_p1.Fixture`'s
+  records minus its own hand-built `holm_reject` rows -- two independently-written records for
+  the same hypothesis is a `figlib` error -- writes a real verdict and its `holm_reject`
+  projection, and checks T3's footer shows "Holm rejects/does not reject the null", not the dead
+  "no holm_reject record" fallback); `test_adverse_from_ratio_...` (pure, both signs and the
+  no-ratio case); `test_write_passes_adverse_...` (the NOT_SUPPORTED-not-rejected proof above,
+  plus confirming every other primary keeps the conservative default); and
+  `test_holm_reject_records_copy_their_provenance_...` (every copied field equals the
+  template's, field by field).
+- Verified load-bearing twice: reverted `adverse_from_ratio` to always return `None`, confirmed
+  both adverse-related tests fail (one on the direct unit assertions, one on `find_adverse`
+  coming back empty); separately reverted `holm_reject_records` to tag every primary's clause
+  `hypothesis == "H1"`, confirmed the named test fails -- `figlib` itself raises on two
+  `holm_reject` records fitting one cut, an even louder failure than a wrong assertion. Restored
+  both and re-confirmed green.
+- Suites run in the benchmark venv (fresh per worktree, no `.venv` carries over): the named
+  `[[verify]]` command directly; full `analysis/` + `showcase/` together (143 passed, 1
+  pre-existing unrelated skip, same as before this wave's changes).
+- Not done here, left for later: a real per-hypothesis p-value assembly pipeline (`p` is still
+  the caller's own input to `holm_decisions.write`, same boundary gap-2da8ec left at the writer
+  itself) and `adverse` wiring for H2-H7, which need their own ratio or sign convention wired to
+  a hypothesis first (none exists yet for any of the six).

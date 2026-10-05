@@ -169,6 +169,11 @@ pub struct DecisionState {
     pub age_s: Option<u64>,
     /// Observations the state holds.
     pub n_obs: u64,
+    /// Whether the reader loaded an older version of the state than the one
+    /// the decision was made with: a stale read, which fails S03's ε_read
+    /// (gap-a13544).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
 }
 
 /// One candidate model score from the routing decision.
@@ -606,6 +611,7 @@ mod tests {
                 digest: "b3:77e0".to_string(),
                 age_s: Some(5_400),
                 n_obs: 412,
+                stale: false,
             })
         );
         let influences: Vec<(&str, bool)> = row

@@ -239,3 +239,46 @@ async fn an_explicitly_chosen_model_does_not_fail_over() {
     assert!(!sent.contains(ANSWER), "{sent}");
     assert_eq!(calls(dir, "backup-claude"), 0);
 }
+
+/// bug-7e8dae: a prompt whose only provider refuses it after launch, here
+/// with its session limit, leaves its experiment receipt abandoned, as Graph
+/// dispatch leaves a provider error's. An outage says nothing about the
+/// variant, so no trial counts against it.
+#[tokio::test]
+async fn acp_abandons_a_post_launch_provider_refusal() {
+    use roko_learn::prompt_experiment::{
+        ExperimentStore, PromptAssignmentState, PromptAttemptKey, PromptExperiment, PromptVariant,
+    };
+
+    let (workspace, config) = workspace();
+    let dir = workspace.path();
+    let experiments = dir.join(".roko/learn/experiments.json");
+    let mut store = ExperimentStore::new();
+    store.register(PromptExperiment::new(
+        "refusal-exp",
+        "constraints",
+        vec![PromptVariant {
+            id: "v1".to_string(),
+            name: "V1".to_string(),
+            section_name: "constraints".to_string(),
+            content: "Keep the change small.".to_string(),
+            slug: None,
+            active: true,
+        }],
+    ));
+    store.save(&experiments).expect("save experiments");
+    // The editor chose the model, so no other provider takes the prompt.
+    let mut session = session(&config, true);
+    let key = PromptAttemptKey::new(&session.session_id, "acp", "code", 1);
+
+    let sent = prompt(dir, &config, &mut session).await;
+
+    assert!(sent.contains("session limit"), "{sent}");
+    let store = ExperimentStore::load_or_new(&experiments);
+    let Some([receipt]) = store.assignments_for_attempt(&key) else {
+        panic!("no single receipt for {key:?}");
+    };
+    assert_eq!(receipt.state, PromptAssignmentState::Abandoned);
+    let stats = &store.get("refusal-exp").expect("experiment").stats["v1"];
+    assert_eq!(stats.trials, 0, "a provider outage counts no trial");
+}

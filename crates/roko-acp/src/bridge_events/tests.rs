@@ -1910,6 +1910,39 @@ async fn cost_budget_exhaustion_rejects_before_provider_dispatch() {
     assert!(!tmp.path().join(".roko/learn/efficiency.jsonl").exists());
 }
 
+/// bug-7e8dae: what a turn teaches its prompt's experiment, as Graph
+/// dispatch's learning label does: a success or a failure of the turn, and
+/// nothing when a provider failure ended it, unless a timeout cut off an
+/// answer already under way.
+#[test]
+fn acp_learning_success_says_nothing_after_a_provider_failure() {
+    let ended = |text: &str| StreamResult {
+        prompt_result: SessionPromptResult {
+            stop_reason: StopReason::EndTurn,
+        },
+        assistant_text: text.to_string(),
+        usage: None,
+    };
+    let (silent, partial) = (ended(""), ended("Half an answer"));
+    let refusal = "ACP pipeline error: model stream failed: You've hit your session limit";
+    let outage = "model stream failed: HTTP 503 Service Unavailable";
+    let timeout = "model stream failed: request timed out";
+    let budget = "ACP builtin tool loop budget exhausted";
+    let cases = [
+        (&silent, None, Some(true)),
+        (&silent, Some(refusal), None),
+        (&silent, Some(outage), None),
+        (&silent, Some(timeout), None),
+        (&partial, Some(timeout), Some(false)),
+        (&silent, Some(budget), Some(false)),
+    ];
+
+    for (stream_result, task_error, expected) in cases {
+        let learned = acp_learning_success(Some(stream_result), task_error, None);
+        assert_eq!(learned, expected, "{task_error:?}");
+    }
+}
+
 #[test]
 fn cost_budget_accumulates_exact_efficiency_event_cost() {
     let mut session = test_session("model-a", "none");

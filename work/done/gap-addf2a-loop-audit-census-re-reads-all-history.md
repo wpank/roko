@@ -2,15 +2,16 @@
 id = "gap-addf2a"
 kind = "gap"
 title = "Loop-audit census re-reads all history each close, and LoopAuditor's enforcement never reaches arm assignment"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/loop-audit", "roko-cli/graph-task-dispatch"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-8 follow-up reports 2026-10-03 (PK43 gap-c1d920)"
 discovered_from = "gap-c1d920"
 anchors = ["crates/roko-learn/src/loop_audit/census.rs::read_runs", "crates/roko-learn/src/loop_audit/mod.rs::LoopAuditor", "crates/roko-cli/src/graph_task_dispatch/attempt.rs::RunAttempts"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn arm_assignment_consults_the_loop_auditor' crates/roko-cli/ && cargo test -p roko-cli arm_assignment_consults_the_loop_auditor"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:36Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T09:03:06Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes; census canaries pass. The loop-audit tick keeps a CensusState (learn/loop-census-state.json) and reads only unread or changed runs; arm sets draw under LoopAuditor's ledger states (an enforced demotion draws at h=1). Fix ea2b14b3a: a frozen run skips the tick (no census save, no ledger rows), and loop-audit.jsonl left the frozen allowlist since audit states now drive arm draws."
 +++
 
 ## Problem

@@ -2,15 +2,16 @@
 id = "gap-5bd375"
 kind = "gap"
 title = "LinUCBRouter's cold-start table falls back to a literal, maybe-unconfigured model slug"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
 size = "S"
 subsystem = ["roko-learn/model-router"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-5 follow-up reports 2026-10-02 (PK78 gap-2339e2)"
 discovered_from = "gap-2339e2"
 anchors = ["crates/roko-learn/src/model_router.rs::default_static_table", "crates/roko-learn/src/cascade_router.rs::CascadeRouter", "crates/roko-cli/src/model_selection.rs::select_candidate"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn cold_start_table_refuses_an_unconfigured_slug' crates/roko-learn/ && cargo test -p roko-learn cold_start_table_refuses_an_unconfigured_slug"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:38Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-05T09:03:11Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes (cold_start_table_refuses_an_unconfigured_slug). LinUCB's cold-start table falls back to the tier's configured model, else the first configured."
 +++
 
 ## Problem

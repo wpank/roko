@@ -2,15 +2,16 @@
 id = "bug-e3bbee"
 kind = "bug"
 title = "A dropped ACP experiment assignment leaves its receipt Prepared forever, once per dispatch now"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
 size = "S"
 subsystem = ["roko-learn/prompt-experiment"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-18 follow-up reports 2026-10-04 (bug-a3f005, work/bug-a3f005)"
 discovered_from = "bug-a3f005 (open; own Progress note names this exact residual)"
 anchors = ["crates/roko-acp/src/bridge_events/experiments.rs::applicable_acp_experiment", "crates/roko-learn/src/prompt_experiment.rs::ExperimentStore"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn dropped_acp_assignment_settles_as_abandoned' crates/roko-acp/ && cargo test -p roko-acp dropped_acp_assignment_settles_as_abandoned"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:40Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-05T09:03:13Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes (dropped_acp_assignment_settles_as_abandoned). applicable_acp_experiment settles a dropped assignment's receipt as Abandoned; the other open-receipt exits are bug-897879."
 +++
 
 ## Problem

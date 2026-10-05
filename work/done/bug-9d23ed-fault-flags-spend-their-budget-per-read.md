@@ -2,15 +2,16 @@
 id = "bug-9d23ed"
 kind = "bug"
 title = "Fault flags spend their budget per read site, tests share one process-wide registry, and L-route can never credit P7"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/loop-audit"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-9 follow-up reports 2026-10-03 (PK44 gap-85d176)"
 discovered_from = "gap-85d176"
 anchors = ["crates/roko-learn/src/loop_audit/faults.rs::Registry", "crates/roko-learn/src/loop_audit/canary.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn fault_budget_counts_decisions_not_reads' crates/roko-learn/ && cargo test -p roko-learn fault_budget_counts_decisions_not_reads"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:38Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T09:03:10Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes (fault_budget_counts_decisions_not_reads, feature and plain); fault-injection builds and fault tests pass (1,349 roko-learn, 165 cli/serve). Fault budgets count logical decisions, faults::isolated gives tests their own registry, and L-route's canary credits on a copy of the router."
 +++
 
 ## Problem

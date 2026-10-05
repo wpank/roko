@@ -2,15 +2,16 @@
 id = "gap-5b8767"
 kind = "gap"
 title = "4131's census fixture can't demonstrate L-know reinforcement: its workspace has no knowledge store"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "S"
 subsystem = ["roko-learn/loop-audit"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-17b follow-up reports 2026-10-04 (gap-6c8965)"
 discovered_from = "gap-6c8965 (open, work/backlog-batch-17b; facet 4 of 4, split out so the item closes on the other three)"
 anchors = ["crates/roko-cli/tests/learning_wiring_census.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn l_know_census_credits_a_reinforced_knowledge_entry' crates/roko-cli/ && cargo test -p roko-cli --test learning_wiring_census l_know_census_credits_a_reinforced_knowledge_entry"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:37Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-05T09:03:09Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes (l_know_census_credits_a_reinforced_knowledge_entry). The 4131 fixture seeds a knowledge entry and keeps L-know learned, so a verified pass shows reinforcement and the census credits L-know."
 +++
 
 ## Problem

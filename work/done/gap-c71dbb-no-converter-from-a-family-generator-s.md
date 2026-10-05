@@ -2,15 +2,16 @@
 id = "gap-c71dbb"
 kind = "gap"
 title = "No converter from a family generator's output to the manipulation-check module's [[task]] shape"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-6 follow-up reports 2026-10-03 (PK24 gap-e120a1)"
 discovered_from = "gap-e120a1 (backlog task 3234)"
 anchors = ["benchmarks/viabilitybench/specops/manipulation_check.py"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["gap-46fd19", "gap-76fd1c"], 
 
 [[verify]]
 command = "grep -qw 'def test_full_48_instance_h3_report_runs_from_generators' benchmarks/viabilitybench/specops/tests/test_manipulation.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_manipulation.py -k test_full_48_instance_h3_report_runs_from_generators -q"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:47Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T09:03:20Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes. specops/from_generator.py converts F1's generator output to the manipulation check's [[task]] shape; the other families' coverage is gap-76fd1c."
 +++
 
 ## Problem

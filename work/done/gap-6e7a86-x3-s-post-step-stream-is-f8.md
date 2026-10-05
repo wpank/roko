@@ -2,15 +2,16 @@
 id = "gap-6e7a86"
 kind = "gap"
 title = "X3's post-step stream is F8 honeypots only; run records don't mark S09's gaming-prone knob cells"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-17 follow-up reports 2026-10-04 (gap-90fae4, gate 17a)"
 discovered_from = "gap-90fae4 (closed; own closing evidence names this as a queued caveat)"
 anchors = ["benchmarks/viabilitybench/analysis/replay_closure.py", "benchmarks/viabilitybench/streams/s3_disturbance.toml"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'def test_x3_post_step_includes_gaming_prone_knob_cells' benchmarks/viabilitybench/ && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/ -q -k test_x3_post_step_includes_gaming_prone_knob_cells"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:44Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T09:03:19Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes; bench suite 754 passed. Records mark S09's gaming-prone knob cells (F1/F3/F4/F5 at ladder 4-5, inferred; spec-3e1dc7 asks S09 to state it) and X3's post-step population uses them."
 +++
 
 ## Problem

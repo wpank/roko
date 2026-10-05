@@ -2,15 +2,16 @@
 id = "gap-595e28"
 kind = "gap"
 title = "L-M4's census can't tell a lost exclusion decision from no opportunity, and its DP3 feedback isn't on run rows"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/loop-audit", "roko-learn/telemetry"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-10 follow-up reports 2026-10-04 (PK65 gap-4cbd80)"
 discovered_from = "gap-4cbd80"
 anchors = ["crates/roko-learn/src/loop_audit/loops.toml", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::load_audit_trust", "crates/roko-learn/src/telemetry/records.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn l_m4_census_distinguishes_unlogged_from_no_opportunity' crates/roko-learn/ && cargo test -p roko-learn l_m4_census_distinguishes_unlogged_from_no_opportunity"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:36Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T09:03:07Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes. The router counts DP4 exclusions; verdicts carry trust_exclusions and verify_depth (depth, ladder level, M1 floor); L-M4 tells dormant:unlogged from no_opportunity."
 +++
 
 ## Problem

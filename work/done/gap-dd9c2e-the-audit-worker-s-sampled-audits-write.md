@@ -2,15 +2,16 @@
 id = "gap-dd9c2e"
 kind = "gap"
 title = "The audit worker's sampled audits write no cost row, so their spend never shows in learn/costs.jsonl"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-16 follow-up reports 2026-10-04 (gap-73c98e, gate 16b)"
 discovered_from = "gap-73c98e (closed; own closing evidence names this follow-up, 'queued for the filer')"
 anchors = ["crates/roko-cli/src/audit/worker.rs::AuditWorker", "crates/roko-cli/src/graph_task_dispatch/budget.rs::record_task_spend"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn completed_audit_writes_a_cost_row' crates/roko-cli/ && cargo test -p roko-cli completed_audit_writes_a_cost_row"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:41Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T09:03:17Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes (completed_audit_writes_a_cost_row). The audit worker writes a cost and efficiency row per model call (role audit, keyed by the audited attempt, priced), on the run's audit line; task and plan spend stay 0."
 +++
 
 ## Problem

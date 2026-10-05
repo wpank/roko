@@ -2,15 +2,16 @@
 id = "gap-d10a97"
 kind = "gap"
 title = "Plan-authoring's AgentCapture carries no UsageObservation, so its cost rows write api_equiv_usd: None"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "M"
 subsystem = ["roko-learn"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-16 follow-up reports 2026-10-04 (gap-546e8a, gate 16b)"
 discovered_from = "gap-546e8a (closed; fixed Graph dispatch and helper calls, not plan-authoring)"
 anchors = ["crates/roko-cli/src/agent_exec.rs::AgentCapture", "crates/roko-cli/src/plan_authoring.rs::AuthoringSpend"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn plan_authoring_cost_row_carries_api_equiv_usd' crates/roko-cli/ && cargo test -p roko-cli plan_authoring_cost_row_carries_api_equiv_usd"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:39Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T09:03:12Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes (plan_authoring_cost_row_carries_api_equiv_usd). AgentCapture carries api_equiv_usd and price_snapshot_id (dispatch_v2::api_equiv, shared with helper calls), written by AuthoringSpend::record."
 +++
 
 ## Problem

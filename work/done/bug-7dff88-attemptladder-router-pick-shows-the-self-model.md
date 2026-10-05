@@ -2,15 +2,16 @@
 id = "bug-7dff88"
 kind = "bug"
 title = "AttemptLadder.router_pick shows the self-model's pick under the router's name on L-M3 rows"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-17b follow-up reports 2026-10-04 (bug-78e5ce, work/backlog-batch-17b)"
 discovered_from = "bug-78e5ce (open; own Progress note names this exact fix, facet 1 of 3)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/ladder.rs::record_attempt_ladder", "crates/roko-cli/src/dispatch/model_routing.rs::SELF_MODEL_LOOP"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn router_pick_does_not_show_the_self_models_pick_on_l_m3_rows' crates/roko-cli/ && cargo test -p roko-cli router_pick_does_not_show_the_self_models_pick_on_l_m3_rows"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:34Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-05T09:03:04Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes (router_pick_does_not_show_the_self_models_pick_on_l_m3_rows). router_pick skips the learned proposal on L-M3 rows; SELF_MODEL_LOOP is pub(crate)."
 +++
 
 ## Problem

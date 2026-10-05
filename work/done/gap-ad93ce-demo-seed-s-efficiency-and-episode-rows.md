@@ -2,15 +2,16 @@
 id = "gap-ad93ce"
 kind = "gap"
 title = "demo_seed's efficiency and episode rows carry no attempt_key, so telemetry check reports false coverage gaps"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-learn"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-17 follow-up reports 2026-10-04 (gap-e411e5, gate 17a)"
 discovered_from = "gap-e411e5 (closed; fixed the attempt ledger, not the efficiency/episode/cost rows)"
 anchors = ["crates/roko-cli/src/demo_seed.rs::build_efficiency_events", "crates/roko-learn/src/telemetry/report.rs::LegacyRows"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn demo_workspace_telemetry_check_reports_no_coverage_gaps' crates/roko-cli/ && cargo test -p roko-cli demo_workspace_telemetry_check_reports_no_coverage_gaps"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:42Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-05T09:03:18Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): verify passes (demo_workspace_telemetry_check_reports_no_coverage_gaps). The demo seeder's efficiency, episode and cost rows carry the ledger's attempt keys."
 +++
 
 ## Problem

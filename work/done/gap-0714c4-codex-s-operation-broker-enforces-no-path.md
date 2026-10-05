@@ -2,15 +2,16 @@
 id = "gap-0714c4"
 kind = "gap"
 title = "Codex's operation broker enforces no path confinement on reads, so an agent can read the audit vault outside its sandboxed workspace"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-agent/exec", "roko-agent/provider"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "19f76451c"
 source = "wave-5 follow-up reports 2026-10-02 (PK58 gap-f0a7ee)"
 discovered_from = "gap-f0a7ee (backlog task 7119, step 4, deliberately deferred)"
 anchors = ["crates/roko-agent/src/provider/claude_cli.rs::codex_sandbox_args", "crates/roko-agent/src/exec.rs::CodexOperationPolicy"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["gap-baab0a", "gap-843aef"], 
 
 [[verify]]
 command = "grep -rq 'workspace-write does not confine reads' crates/roko-agent/src/ && grep -rq 'audit vault' crates/roko-agent/src/exec.rs crates/roko-agent/src/provider/claude_cli.rs"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T15:52:41Z"
+commit = "19f76451c"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-05T09:03:15Z"
+forced = false
+evidence = "Gate 19 (merged 19f76451c): its verify passes. The docs state that Codex's workspace-write sandbox does not confine reads; the broker's refuse_key_file_in_command check now has a test (codex_agent_is_stopped_at_a_command_that_reads_the_audit_vault). Deny-read support is q-c423b6 (Will)."
 +++
 
 ## Problem

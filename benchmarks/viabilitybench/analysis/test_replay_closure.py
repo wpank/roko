@@ -24,6 +24,7 @@ import replay  # noqa: E402
 import replay_closure  # noqa: E402
 import replay_h6  # noqa: E402
 import replay_runner  # noqa: E402
+from common import knobs  # noqa: E402 (families/, on sys.path through replay_closure's own replay_h5 import)
 from test_analysis import run_record, write_run  # noqa: E402
 from test_replay_h5 import EXPERIMENT, log1_tree  # noqa: E402
 
@@ -93,22 +94,40 @@ def test_x1_and_x2_are_not_evaluated_without_their_replay_documents(tmp_path, mo
     assert found["closure_4"]["all_live"] is True
 
 
-def step_tree(root: Path, before: int = 60, after: int = 120) -> Path:
-    """Block A and E-shaped records for X3's false-green step: roko_fixed on `before` p1_core tasks, every one a true
-    green, then on `after` F8 honeypots (stream log1_f8_honeypots), every one green and every other a false green."""
+def step_tree(root: Path, before: int = 60, after: int = 120, gaming_prone: int = 0) -> Path:
+    """Block A and E-shaped records for X3's false-green step: roko_fixed on `before` p1_core tasks, every one a
+    true green at ladder 1-3 (never gaming-prone, module docstring of `common.knobs`), then `gaming_prone` more
+    true-green p1_core tasks at F1 ladder 5 (gaming-prone), then on `after` F8 honeypots (stream
+    log1_f8_honeypots), every one green and every other a false green."""
     results = root / "results"
-    blocks = (("roko-a", "p1_core", "F1", before), ("roko-e", "log1_f8_honeypots", "F8", after))
-    for run_id, stream, family, count in blocks:
-        records = []
-        for position in range(1, count + 1):
-            instance = f"{family}-l{position % 5 + 1}-{position:04d}"
-            false_green = stream == "log1_f8_honeypots" and position % 2 == 0
-            record = run_record(instance, 1, run_id=run_id, arm="roko_fixed", label=int(not false_green),
-                                visible=True, verdict="passed", honeypot=stream == "log1_f8_honeypots")
-            record["stream"].update(id=stream, position=position)
-            records.append(record)
-        write_run(results / EXPERIMENT, records)
+    position = 0
+    records = []
+    for index in range(1, before + 1):
+        position += 1
+        instance = f"F1-l{index % 3 + 1}-{position:04d}"
+        records.append(_step_record(instance, position, "p1_core", "roko-a", label=1))
+    for index in range(1, gaming_prone + 1):
+        position += 1
+        instance = f"F1-l5-{position:04d}"
+        records.append(_step_record(instance, position, "p1_core", "roko-a", label=1))
+    write_run(results / EXPERIMENT, records)
+    records = []
+    for index in range(1, after + 1):
+        false_green = index % 2 == 0
+        records.append(_step_record(f"F8-l{index % 5 + 1}-{index:04d}", index, "log1_f8_honeypots", "roko-e",
+                                    label=int(not false_green), honeypot=True))
+    write_run(results / EXPERIMENT, records)
     return results
+
+
+def _step_record(instance: str, position: int, stream: str, run_id: str, *, label: int,
+                 honeypot: bool = False) -> dict:
+    record = run_record(instance, 1, run_id=run_id, arm="roko_fixed", label=label, visible=True, verdict="passed",
+                        honeypot=honeypot)
+    record["stream"].update(id=stream, position=position)
+    task = record["task"]
+    task["gaming_prone_knob_cell"] = knobs.is_gaming_prone_knob_cell(task["family"], task["ladder"])
+    return record
 
 
 def test_x3_evaluates_from_a_false_green_step_replay(tmp_path, monkeypatch):
@@ -136,6 +155,34 @@ def test_x3_evaluates_from_a_false_green_step_replay(tmp_path, monkeypatch):
     matrix = replay_runner.matrix(replay.load(short, [EXPERIMENT]))
     found = replay_closure.x3_from_matrix(matrix, random.Random(1), 5)
     assert not found["evaluated"] and "30 green block A" in found["reason"]
+
+
+def test_x3_post_step_includes_gaming_prone_knob_cells(tmp_path):
+    """gap-6e7a86: the post-step stream is block A's gaming-prone-knob-cell units (F1/F3/F4/F5 at ladder 4-5)
+    together with block E's honeypots, not the honeypots alone; the pre-step 40 excludes them, so a unit is
+    never counted on both sides of the step."""
+    plain = step_tree(tmp_path / "plain", before=60, after=120)
+    baseline = replay_closure.x3_from_matrix(replay_runner.matrix(replay.load(plain, [EXPERIMENT])),
+                                             random.Random(1), 5)
+    assert baseline["evaluated"] and baseline["post_step_units"] == 120  # no gaming-prone units: honeypots alone
+
+    mixed = step_tree(tmp_path / "mixed", before=60, after=120, gaming_prone=10)
+    found = replay_closure.x3_from_matrix(replay_runner.matrix(replay.load(mixed, [EXPERIMENT])),
+                                          random.Random(1), 5)
+    assert found["evaluated"]
+    assert (found["step"], found["n_units"]) == (40, 170)  # 40 pre-step + 10 gaming-prone + 120 honeypots
+    assert found["post_step_units"] == 130  # wider than the 120 honeypots alone: gap-6e7a86's own fix
+
+    # A record from before the gaming_prone_knob_cell field existed is still recognised, derived from family/ladder.
+    stale = step_tree(tmp_path / "stale", before=60, after=120, gaming_prone=10)
+    for path in (stale / EXPERIMENT).rglob("records.jsonl"):
+        lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        for record in lines:
+            del record["task"]["gaming_prone_knob_cell"]
+        path.write_text("".join(json.dumps(record) + "\n" for record in lines), encoding="utf-8")
+    derived = replay_closure.x3_from_matrix(replay_runner.matrix(replay.load(stale, [EXPERIMENT])),
+                                            random.Random(1), 5)
+    assert derived["post_step_units"] == found["post_step_units"]
 
 
 def test_delta_iae_x2_evaluates_once_every_arm_of_a_kind_is_live():

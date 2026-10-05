@@ -28,13 +28,16 @@ attempts carry a gate verdict, which only the Roko arms record; `--arm LABEL` (t
 
 **The draw order.** `estimate` folds each lottery into its cells. A sequential estimand needs the draws themselves:
 `draw_order` gives each lottery's draw for each unit, keyed the same way, and `stream_units` one stream's units in its
-own position order (X3's false-green step, `replay_closure.py`).
+own position order (X3's false-green step, `replay_closure.py`). `gaming_prone_units` gives one stream's units whose
+task is one of S09's gaming-prone knob cells (`common.knobs`, gap-6e7a86) instead of its stream position: X3's
+post-step population is these, from block A, together with block E's honeypots.
 
 API:
     SELECTIONS, PRIMARY, STREAMS, LOTTERIES
     estimate(matrix, rng, reps=LOTTERIES, risk=None, lam=None, arm=None) -> dict
     units(matrix, *, arm=None, streams=STREAMS, risk=None) -> list[audit.replay.Unit]
     stream_units(matrix, stream, *, arm=None) -> list[audit.replay.Unit]
+    gaming_prone_units(matrix, stream, *, arm=None) -> list[audit.replay.Unit]
     draw_order(units, rng, reps=LOTTERIES) -> dict
 """
 
@@ -46,12 +49,15 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-if str(Path(__file__).resolve().parents[1]) not in sys.path:  # the benchmark directory, for the audit package
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_VB_ROOT = Path(__file__).resolve().parents[1]
+for _extra in (_VB_ROOT, _VB_ROOT / "families"):  # the audit package, and families/ for common.knobs
+    if str(_extra) not in sys.path:
+        sys.path.insert(0, str(_extra))
 
 import replay_runner  # noqa: E402
 from audit import labels as audit_labels  # noqa: E402
 from audit import replay as lottery_replay  # noqa: E402
+from common import knobs  # noqa: E402 (gap-6e7a86: is_gaming_prone_knob_cell)
 
 SELECTIONS = ("uniform", "tilted", "ai")
 PRIMARY = (0.15, "tilted")  # S09 H5 (i), S05 SC1
@@ -72,6 +78,18 @@ def stream_units(found: replay_runner.OutcomeMatrix, stream: str, *,
     """The green census units of one stream, in its position order: one arm's, or every gated (Roko) record's."""
     chosen = sorted((record for row, record in zip(found.rows, found.records)
                      if row.stream == stream and (row.arm == arm if arm is not None else _gated(record))),
+                    key=lambda record: record["stream"].get("position") or 0)
+    return lottery_replay.units_from_labels(audit_labels.label_rows(chosen))
+
+
+def gaming_prone_units(found: replay_runner.OutcomeMatrix, stream: str, *,
+                       arm: str | None = None) -> list[lottery_replay.Unit]:
+    """One stream's green census units whose task is one of S09's gaming-prone knob cells (module docstring;
+    gap-6e7a86), in position order: `task.gaming_prone_knob_cell` when the record carries it, else derived from
+    `task.family`/`task.ladder` for a record from before that field existed."""
+    chosen = sorted((record for row, record in zip(found.rows, found.records)
+                     if row.stream == stream and (row.arm == arm if arm is not None else _gated(record))
+                     and _gaming_prone(record)),
                     key=lambda record: record["stream"].get("position") or 0)
     return lottery_replay.units_from_labels(audit_labels.label_rows(chosen))
 
@@ -125,6 +143,14 @@ replay_runner.register(replay_runner.Adapter("h5", "r-h5-1", estimate, params=("
 def _gated(record: Mapping) -> bool:
     """Whether the record's attempts carry a gate verdict: a Roko arm's, whatever its blinded label."""
     return any(attempt.get("gate_verdict") for attempt in record["execution"]["attempts"])
+
+
+def _gaming_prone(record: Mapping) -> bool:
+    """gap-6e7a86: the record's own `task.gaming_prone_knob_cell` marker, or `common.knobs`'s derivation from its
+    family and ladder when the record predates that field."""
+    task = record["task"]
+    marked = task.get("gaming_prone_knob_cell")
+    return marked if isinstance(marked, bool) else knobs.is_gaming_prone_knob_cell(task["family"], task["ladder"])
 
 
 def _risk(path: Path) -> dict[str, float]:

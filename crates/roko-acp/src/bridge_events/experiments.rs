@@ -170,8 +170,15 @@ pub(crate) fn experiment_model_key(
     matching.into_iter().next()
 }
 
+/// The assignment ACP serves for this prompt, and the model it overrides.
+///
+/// A model variant whose model is not configured, or that would override a
+/// model the session selected explicitly, is dropped, and its receipt in
+/// `experiment_path` settles as abandoned instead of staying `Prepared`
+/// (bug-e3bbee).
 pub(crate) fn applicable_acp_experiment(
     config: &RokoConfig,
+    experiment_path: &Path,
     current_model_key: &str,
     model_selection_explicit: bool,
     assignment: Option<AcpExperimentAssignment>,
@@ -190,6 +197,7 @@ pub(crate) fn applicable_acp_experiment(
             model_slug = ?assignment.model_slug,
             "skipping ACP experiment variant with unresolved model"
         );
+        abandon_acp_experiment(experiment_path, &assignment);
         return (None, None);
     };
     if model_selection_explicit && resolve_model(config, current_model_key).model_key != candidate {
@@ -200,11 +208,30 @@ pub(crate) fn applicable_acp_experiment(
             selected_model = current_model_key,
             "skipping ACP model experiment because the session model was explicitly selected"
         );
+        abandon_acp_experiment(experiment_path, &assignment);
         return (None, None);
     }
 
     let model_override = (!model_selection_explicit).then_some(candidate);
     (Some(assignment), model_override)
+}
+
+/// Settle the receipt of an assignment ACP drew but does not serve as
+/// abandoned: it counts no trial, and it does not stay `Prepared` in the
+/// store (bug-e3bbee). Non-fatal: logs and returns on failure.
+fn abandon_acp_experiment(experiment_path: &Path, assignment: &AcpExperimentAssignment) {
+    let Some(attempt_key) = assignment.attempt_key.as_ref() else {
+        return;
+    };
+    let settlement = AssignmentSettlement::Abandoned;
+    if let Err(err) = ExperimentStore::settle_attempt(experiment_path, attempt_key, settlement) {
+        debug!(
+            experiment_id = %assignment.experiment_id,
+            variant_id = %assignment.variant_id,
+            error = %err,
+            "ACP experiment receipt abandonment failed (non-fatal)"
+        );
+    }
 }
 
 pub(crate) fn render_experiment_context(assignment: &AcpExperimentAssignment) -> String {

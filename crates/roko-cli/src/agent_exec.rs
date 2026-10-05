@@ -63,6 +63,13 @@ pub struct AgentCapture {
     /// Tokens and cost of the run. The cost is back-filled from model pricing
     /// when the provider reported tokens but no dollar amount.
     pub usage: Usage,
+    /// The run's tokens at API rates, at the price snapshot
+    /// `price_snapshot_id` names (`dispatch_v2::api_equiv`, gap-d10a97): what
+    /// the call is worth even when a subscription paid for it. `None` when
+    /// the snapshot does not price the model.
+    pub api_equiv_usd: Option<f64>,
+    /// The price snapshot behind `api_equiv_usd`.
+    pub price_snapshot_id: Option<String>,
     /// API slug of the model that ran.
     pub model: String,
     /// Configured provider id of the model, or its provider kind's label when
@@ -316,10 +323,14 @@ async fn run_agent_capture_impl(
         resolved.profile.as_ref(),
         &resolved.slug,
     );
+    let (api_equiv_usd, price_snapshot_id) =
+        crate::dispatch_v2::api_equiv(&result, snapshot.as_deref(), &resolved.slug).unzip();
     Ok(AgentCapture {
         exit_code,
         output: rendered,
         usage,
+        api_equiv_usd,
+        price_snapshot_id,
         provider: provider_id_for_model(&routing_config, &model)
             .unwrap_or_else(|| resolved.provider_kind.label().to_string()),
         model: resolved.slug,
@@ -800,6 +811,11 @@ fail_msg = "hello/main.rs was not written"
     /// prompt with [`DEMO_PLAN`] in a fenced toml block and reports
     /// [`CALL_COST_USD`].
     fn fake_planner_workspace() -> TempDir {
+        fake_planner_serving("claude-sonnet-4-6")
+    }
+
+    /// [`fake_planner_workspace`], with its model and fake CLI on `slug`.
+    fn fake_planner_serving(slug: &str) -> TempDir {
         use std::os::unix::fs::PermissionsExt;
 
         let workspace = TempDir::new().expect("workspace");
@@ -813,7 +829,7 @@ fail_msg = "hello/main.rs was not written"
             "subtype": "success",
             "is_error": false,
             "result": text,
-            "model": "claude-sonnet-4-6",
+            "model": slug,
             "total_cost_usd": CALL_COST_USD,
             "usage": {"input_tokens": 1200, "output_tokens": 340},
         });
@@ -840,7 +856,7 @@ command = {script:?}
 
 [models.fake-model]
 provider = "fake-cli"
-slug = "claude-sonnet-4-6"
+slug = {slug:?}
 context_window = 200000
 
 # One planner call per generation: these tests count cost rows, and the
@@ -931,6 +947,66 @@ mode = "off"
         assert_eq!(rows[0]["cost_usd"], CALL_COST_USD);
         assert_eq!(rows[0]["input_tokens"], 1200);
         assert_eq!(rows[0]["plan_id"], "demo");
+    }
+
+    /// gap-d10a97: a plan-authoring call's cost row and efficiency event carry
+    /// the call's cost at API rates and the price snapshot that priced it, as
+    /// a Graph helper call's rows do.
+    #[tokio::test]
+    async fn plan_authoring_cost_row_carries_api_equiv_usd() {
+        use crate::plan_authoring::GENERATION_SPEND_TASK_ID;
+        use roko_core::pricing_snapshot::{PriceSnapshot, TokenCounts};
+
+        // A model the built-in price snapshot lists.
+        let workspace = fake_planner_serving("claude-sonnet-5");
+        let spend = AuthoringSpend::generation(workspace.path(), "demo", None);
+
+        let exit_code = run_agent_logged_with_spend(
+            AgentExecOpts {
+                prompt: "Plan the demo.",
+                workdir: workspace.path(),
+                model: Some("fake-model"),
+                effort: Some("high"),
+                system_prompt: None,
+                resume_session: None,
+                env_vars: &[],
+                role: Some("strategist"),
+                allowed_tools: None,
+            },
+            AgentExecEpisode {
+                task_kind: "plan-generate",
+                task_id: "plan:generate:demo",
+            },
+            &spend,
+        )
+        .await
+        .expect("run agent");
+
+        assert_eq!(exit_code, 0);
+        let snapshot = PriceSnapshot::builtin().expect("built-in price snapshot");
+        let tokens = TokenCounts {
+            input: 1200,
+            output: 340,
+            ..TokenCounts::default()
+        };
+        let expected = snapshot
+            .price("claude-sonnet-5", &tokens)
+            .expect("a price")
+            .api_equiv_usd;
+        let efficiency_log = workspace.path().join(".roko/learn/efficiency.jsonl");
+        let efficiency = std::fs::read_to_string(efficiency_log).expect("efficiency log");
+        let events = efficiency
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSONL row"))
+            .filter(|row| row["task_id"] == GENERATION_SPEND_TASK_ID)
+            .collect::<Vec<_>>();
+        let rows = agent_cost_rows(workspace.path());
+        assert_eq!((rows.len(), events.len()), (1, 1), "{rows:?} {events:?}");
+        for row in rows.iter().chain(&events) {
+            let api_equiv_usd = row["api_equiv_usd"].as_f64().expect("api_equiv_usd");
+            assert!((api_equiv_usd - expected).abs() < 1e-12, "{row}");
+            assert_eq!(row["price_snapshot_id"], snapshot.id(), "{row}");
+        }
     }
 
     /// bug-86ff56: a one-off call, as `roko research` makes them, records the

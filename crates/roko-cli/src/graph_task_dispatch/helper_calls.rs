@@ -18,6 +18,7 @@ use super::served_model::{is_cli_backend, same_model};
 use super::tui_forward::append_jsonl_line_async;
 use super::*;
 use crate::audit::worker::CheckCall;
+use crate::dispatch_v2::api_equiv;
 
 /// `role` of a helper call's cost and efficiency rows.
 const HELPER_ROLE: &str = "helper";
@@ -171,31 +172,6 @@ impl SideCall {
             turns_unknown: self.turns.is_none(),
         }
     }
-}
-
-/// What the call of `result` to `model_slug` costs at API rates, with the id of the price
-/// snapshot that priced it (S01 §4.4, gap-546e8a), as an attempt's verdict prices its own: the
-/// agent's figure when it priced its tokens at the run's `snapshot` itself (a CLI agent,
-/// backlog 6105), else its usage at the snapshot's row for `model_slug`. `None` when neither
-/// prices the call, or the run has no snapshot.
-fn api_equiv(
-    result: &roko_agent::AgentResult,
-    snapshot: Option<&PriceSnapshot>,
-    model_slug: &str,
-) -> Option<(f64, String)> {
-    let snapshot = snapshot?;
-    let agent_priced = result
-        .usage_obs
-        .as_ref()
-        .filter(|observation| observation.price_snapshot_id.as_deref() == Some(snapshot.id()));
-    let usd = match agent_priced {
-        Some(observation) => observation.api_equiv_usd?,
-        None => {
-            let tokens = crate::dispatch_v2::usage_token_counts(&result.usage);
-            snapshot.price(model_slug, &tokens)?.api_equiv_usd
-        }
-    };
-    Some((usd, snapshot.id().to_string()))
 }
 
 /// The helper calls of one attempt: the helper agents still out, and the

@@ -359,7 +359,8 @@ fn file_change_paths(item: &serde_json::Value) -> Vec<&str> {
 }
 
 /// Whether roko's own guards refuse `command`, a command Codex runs in `cwd`:
-/// a read of a key file such as `~/.roko/.env`
+/// a read of a key file such as `~/.roko/.env`, or of the audit vault by a
+/// path or variable that names it (`ROKO_AUDIT_HOME`, `~/.roko/audit`)
 /// ([`refuse_key_file_in_command`]), or a git command the default git policy
 /// denies, such as `git stash` ([`check_git_command`]), in the command or in
 /// the script of a shell it starts (Codex reports a command as
@@ -369,6 +370,11 @@ fn file_change_paths(item: &serde_json::Value) -> Vec<&str> {
 /// has already started when roko stops the run. Stopping it at once keeps a
 /// key file's contents from being sent on to the model, but a `git stash`
 /// may already have run.
+///
+/// This check is all that keeps a Codex agent out of the audit vault: Codex's
+/// sandbox mode workspace-write does not confine reads (`codex_sandbox_args`
+/// in `provider/claude_cli.rs`), so a command that reaches the vault without
+/// naming it, such as a script that builds the path, runs (gap-0714c4).
 fn guarded_command_violation(command: &str, cwd: &Path) -> Option<String> {
     let git_refusal = || {
         shell_scripts(command)
@@ -1942,6 +1948,31 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_inp
         let output = started("cat ~/.roko/.env");
         let allow_all = CodexOperationPolicy::allow_all();
         assert!(check_codex_output_against_policy(&output, &allow_all, None).is_err());
+    }
+
+    /// gap-0714c4: Codex's sandbox does not confine reads, so the broker is
+    /// what keeps a Codex agent out of the audit vault. It stops the run at a
+    /// command that names the vault, by its default path or by
+    /// `ROKO_AUDIT_HOME`, as roko's bash tool refuses one.
+    #[test]
+    fn codex_agent_is_stopped_at_a_command_that_reads_the_audit_vault() {
+        let started = |command: &str| {
+            let item = serde_json::json!({"type": "command_execution", "command": command});
+            format!(
+                "{}\n",
+                serde_json::json!({"type": "item.started", "item": item})
+            )
+        };
+        let allow_all = CodexOperationPolicy::allow_all();
+        for command in [
+            "cat ~/.roko/audit/suite.toml",
+            "bash -lc 'ls $ROKO_AUDIT_HOME'",
+            "/bin/zsh -lc 'grep -r canary $HOME/.roko/audit'",
+        ] {
+            let violation = check_codex_output_against_policy(&started(command), &allow_all, None)
+                .expect_err(command);
+            assert!(violation.contains("audit vault"), "{violation}");
+        }
     }
 
     /// Codex reports a command as the shell line it runs (`bash -lc '…'`):

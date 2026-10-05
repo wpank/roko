@@ -492,10 +492,14 @@ pub async fn record_run_spend(
         profile.as_ref(),
         model,
     );
+    let (api_equiv_usd, price_snapshot_id) =
+        crate::dispatch_v2::api_equiv(result, snapshot.as_deref(), model).unzip();
     let call = AgentCapture {
         exit_code: i32::from(!result.success),
         output: String::new(),
         usage,
+        api_equiv_usd,
+        price_snapshot_id,
         model: model.to_string(),
         provider: provider.to_string(),
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -524,6 +528,9 @@ pub async fn record_search_spend(
         exit_code: 0,
         output: String::new(),
         usage,
+        // A search request has no tokens to price.
+        api_equiv_usd: None,
+        price_snapshot_id: None,
         model: SEARCH_API_MODEL.to_string(),
         provider: "perplexity".to_string(),
         duration_ms,

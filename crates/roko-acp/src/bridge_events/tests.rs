@@ -416,8 +416,13 @@ async fn acp_conformance() {
             ..ModelProfile::default()
         },
     );
-    let (assignment, model_override) =
-        applicable_acp_experiment(&config, "default", false, Some(assignment));
+    let (assignment, model_override) = applicable_acp_experiment(
+        &config,
+        &experiment_path,
+        "default",
+        false,
+        Some(assignment),
+    );
     let assignment = assignment.expect("applicable assignment");
     assert_eq!(model_override.as_deref(), Some("vision-key"));
     assert!(render_experiment_context(&assignment).contains("Use the ACP variant."));
@@ -815,6 +820,63 @@ fn acp_settles_the_same_variant_it_served() {
     let stats = &store.get("draw-exp").expect("experiment").stats;
     let trials: u64 = stats.values().map(|counts| counts.trials).sum();
     assert_eq!(trials, 40, "each dispatch settles once");
+}
+
+/// bug-e3bbee: an assignment ACP draws but drops, a model variant that would
+/// override a model the session picked or whose model is not configured,
+/// settles its receipt as abandoned instead of leaving it `Prepared`, and
+/// counts no trial.
+#[test]
+fn dropped_acp_assignment_settles_as_abandoned() {
+    use roko_learn::prompt_experiment::{PromptAssignmentState, PromptExperiment, PromptVariant};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join(".roko/learn/experiments.json");
+    std::fs::create_dir_all(path.parent().expect("experiment parent"))
+        .expect("create experiment parent");
+    let mut store = ExperimentStore::new();
+    store.register(PromptExperiment::new(
+        "model-exp",
+        "constraints",
+        vec![PromptVariant {
+            id: "wired".to_string(),
+            name: "Wired".to_string(),
+            section_name: "constraints".to_string(),
+            content: "Use the wired model.".to_string(),
+            slug: Some("wired-model".to_string()),
+            active: true,
+        }],
+    ));
+    store.save(&path).expect("save experiments");
+    let mut config = RokoConfig::default();
+    config.models.insert(
+        "wired-key".to_string(),
+        ModelProfile {
+            slug: "wired-model".to_string(),
+            ..ModelProfile::default()
+        },
+    );
+
+    // The session picked its own model; then no model has the variant's slug.
+    let cases = [(&config, true), (&RokoConfig::default(), false)];
+    for (turn, (config, explicit)) in cases.into_iter().enumerate() {
+        let assignment = assign_acp_experiment(&path, "code", "drops").expect("assignment");
+        let attempt_key = assignment.attempt_key.clone().expect("a receipt");
+
+        let (served, model_override) =
+            applicable_acp_experiment(config, &path, "default", explicit, Some(assignment));
+
+        assert!(served.is_none(), "turn {turn}");
+        assert_eq!(model_override, None, "turn {turn}");
+        let store = ExperimentStore::load_or_new(&path);
+        let Some([receipt]) = store.assignments_for_attempt(&attempt_key) else {
+            panic!("turn {turn}: one receipt per dispatch");
+        };
+        assert_eq!(receipt.state, PromptAssignmentState::Abandoned);
+    }
+    let store = ExperimentStore::load_or_new(&path);
+    let stats = &store.get("model-exp").expect("experiment").stats["wired"];
+    assert_eq!(stats.trials, 0, "an abandoned receipt counts no trial");
 }
 
 #[test]

@@ -376,6 +376,7 @@ where
     };
     let (experiment_assignment, experiment_model_key) = applicable_acp_experiment(
         roko_config,
+        &experiment_path,
         &model_key,
         session.config_state.model_selection_explicit,
         experiment_assignment,

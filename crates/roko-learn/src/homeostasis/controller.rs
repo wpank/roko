@@ -1712,10 +1712,12 @@ fn mean_attempts(resolutions: &[TaskResolution]) -> f64 {
 /// the least shift its resolutions allow. Without an interval it has no
 /// reading.
 fn favourable(estimate: Estimate) -> Estimate {
-    let value = estimate.interval.map(|(low, high)| match estimate.ev.side() {
-        Side::Lower => high,
-        Side::Upper => low,
-    });
+    let value = estimate
+        .interval
+        .map(|(low, high)| match estimate.ev.side() {
+            Side::Lower => high,
+            Side::Upper => low,
+        });
     Estimate { value, ..estimate }
 }
 

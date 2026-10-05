@@ -2,6 +2,7 @@
 //! records their verdict settles.
 
 use roko_core::config::harness_params::HarnessParams;
+use roko_learn::telemetry::records::VerifyDepthRecord;
 use roko_learn::telemetry::{ScopeFinding, VerifyStepVerdict};
 
 use super::tui_forward::append_jsonl_line_async;
@@ -34,6 +35,9 @@ pub(super) struct VerificationReport {
     /// The paths the attempt changed outside its task's `files`, as the
     /// pre-verify screen found them, for its verdict (backlog 1125).
     pub(super) scope_findings: Vec<ScopeFinding>,
+    /// DP3's verify depth for the attempt, for its verdict (gap-595e28);
+    /// `None` when verification did not reach DP3.
+    pub(super) verify_depth: Option<VerifyDepthRecord>,
 }
 
 impl GraphTaskDispatcher {
@@ -97,6 +101,7 @@ impl GraphTaskDispatcher {
             result,
             steps,
             scope_findings,
+            verify_depth: self.depths.take_applied(attempt_key),
         }
     }
 

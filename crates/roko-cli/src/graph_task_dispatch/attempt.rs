@@ -23,14 +23,15 @@
 //! learner. That includes the T0 reflex rule that served an attempt
 //! (`reflex_credit`).
 
-use roko_core::config::experiments::ExperimentsConfig;
+use roko_core::config::learning::LearningAuditConfig;
 use roko_core::config::schema::ProviderBilling;
 use roko_core::pricing_snapshot::{PriceSnapshot, PricedUsage, TokenCounts};
-use roko_learn::loop_audit::Registry;
-use roko_learn::loop_audit::arm_set::{ArmDraws, ArmMode, ArmSet};
+use roko_learn::loop_audit::arm_set::{ArmMode, ArmSet};
+use roko_learn::loop_audit::{LoopAuditor, Registry};
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::records::{
-    AttemptCost, AttemptUsage, CacheWriteClass, PlaceboDecisionRecord, VerifyStepVerdict,
+    AttemptCost, AttemptUsage, CacheWriteClass, PlaceboDecisionRecord, VerifyDepthRecord,
+    VerifyStepVerdict,
 };
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord,
@@ -146,18 +147,18 @@ impl RunAttempts {
         }
     }
 
-    /// The arm set of `key`'s chain: drawn over `loops` in `mode` on the
-    /// chain's first attempt in the run and kept in its arm-set file, and
-    /// the same for every later one, in this process or one that resumes
-    /// the run.
-    fn arm_set(&self, key: &AttemptKey, loops: &Registry, mode: &ArmMode) -> Arc<ArmSet> {
+    /// The arm set of `key`'s chain: drawn in `mode` on the chain's first
+    /// attempt in the run, over the registry and the audited loop states of
+    /// `auditor` (gap-addf2a), and kept in the run's arm-set file; the same
+    /// for every later one, in this process or one that resumes the run.
+    fn arm_set(&self, key: &AttemptKey, auditor: &LoopAuditor, mode: &ArmMode) -> Arc<ArmSet> {
         let mut sets = self.arm_sets.lock();
         let chain = key.chain_key();
         if let Some(set) = sets.get(&chain) {
             return Arc::clone(set);
         }
-        let draws = ArmDraws::new(ARM_SEED, self.epoch.clone());
-        let set = Arc::new(ArmSet::assign(key, loops, mode, &draws));
+        let draws = auditor.arm_draws(ARM_SEED, self.epoch.clone());
+        let set = Arc::new(ArmSet::assign(key, auditor.registry(), mode, &draws));
         self.keep(&set);
         sets.insert(chain, Arc::clone(&set));
         set
@@ -259,9 +260,10 @@ pub(super) struct AttemptBook {
     invocations: parking_lot::Mutex<HashMap<String, u32>>,
     /// The audit lottery, made when the first attempt opens (`[audit]`).
     audit: std::sync::OnceLock<Option<Arc<AuditSelector>>>,
-    /// The loop registry and the `[experiments]` mode the arm sets are drawn
-    /// with, loaded when the first attempt opens; `None` without a registry.
-    arm_inputs: std::sync::OnceLock<Option<(Registry, ArmMode)>>,
+    /// The loop auditor (the registry and each loop's audited state) and the
+    /// `[experiments]` mode the arm sets are drawn with, loaded when the
+    /// first attempt opens; `None` without a registry.
+    arm_inputs: std::sync::OnceLock<Option<(LoopAuditor, ArmMode)>>,
 }
 
 impl Default for AttemptBook {
@@ -272,6 +274,29 @@ impl Default for AttemptBook {
             invocations: parking_lot::Mutex::new(HashMap::new()),
             audit: std::sync::OnceLock::new(),
             arm_inputs: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+/// The loop auditor the arm sets are drawn under (gap-addf2a): `workdir`'s
+/// loop registry and each loop's state in its loop-audit ledger, so a loop's
+/// audited state sets its holdout and an enforced demotion runs π⁰. With an
+/// unreadable registry override, the embedded registry and no state; `None`
+/// only when that fails too.
+pub(super) fn load_loop_auditor(
+    workdir: &Path,
+    config: &LearningAuditConfig,
+) -> Option<LoopAuditor> {
+    match LoopAuditor::load(workdir, config) {
+        Ok(auditor) => Some(auditor),
+        Err(error) => {
+            tracing::warn!(%error, "loop registry override unreadable; arms draw unaudited");
+            let registry = Registry::embedded()
+                .inspect_err(|error| {
+                    tracing::warn!(%error, "no loop registry; attempts draw no arms");
+                })
+                .ok()?;
+            Some(LoopAuditor::from_records(registry, config, &[]))
         }
     }
 }
@@ -336,26 +361,26 @@ impl AttemptBook {
         )
     }
 
-    /// The arm set of `attempt`'s chain in its run (S02.P1-14): drawn over
-    /// `workdir`'s loop registry in the mode `experiments` sets on the chain's
-    /// first attempt, and inherited by its retries. `None` when no registry
-    /// loads.
+    /// The arm set of `attempt`'s chain in its run (S02.P1-14): drawn under
+    /// `workdir`'s loop auditor ([`load_loop_auditor`], `[learning.audit]`)
+    /// in the mode `[experiments]` sets on the chain's first attempt, and
+    /// inherited by its retries. `None` when no registry loads.
     fn arm_set(
         &self,
         attempt: &AttemptContext,
         workdir: &Path,
-        experiments: &ExperimentsConfig,
+        config: &RokoConfig,
     ) -> Option<Arc<ArmSet>> {
-        let (loops, mode) = self
+        let (auditor, mode) = self
             .arm_inputs
             .get_or_init(|| {
                 Some((
-                    load_loop_registry(workdir)?,
-                    ArmMode::for_config(experiments),
+                    load_loop_auditor(workdir, &config.learning.audit)?,
+                    ArmMode::for_config(&config.experiments),
                 ))
             })
             .as_ref()?;
-        Some(attempt.run.arm_set(&attempt.key, loops, mode))
+        Some(attempt.run.arm_set(&attempt.key, auditor, mode))
     }
 
     /// The audit lottery, once the first attempt opened with `[audit]
@@ -436,6 +461,8 @@ impl AttemptBook {
             pricing: None,
             arm_set: None,
             harness: None,
+            trust_exclusions: None,
+            verify_depth: None,
             run,
         }
     }
@@ -476,6 +503,13 @@ pub(super) struct AttemptContext {
     /// M1's decision for the attempt (8123): its chain's arm on the
     /// `harness_policy` layer and the θ it runs; `None` without an M1 sink.
     harness: Option<Arc<crate::runtime_feedback::homeostasis::HarnessDecision>>,
+    /// DP4's count of the exclusions the attempt's routing made, for its
+    /// verdict (gap-595e28); `None` until it is routed, or without a cascade
+    /// router.
+    trust_exclusions: Option<u64>,
+    /// DP3's verify depth for the attempt, for its verdict (gap-595e28);
+    /// `None` until verification reaches DP3.
+    verify_depth: Option<VerifyDepthRecord>,
     run: Arc<RunAttempts>,
 }
 
@@ -509,6 +543,19 @@ impl AttemptContext {
     /// verdict lists (backlog 2104).
     pub(super) fn record_verify_steps(&mut self, steps: Vec<VerifyStepVerdict>) {
         self.verify_steps = steps;
+    }
+
+    /// Planning routed the attempt, and DP4 made `count` exclusions while it
+    /// did, by the cascade router's count, which the verdict keeps apart from
+    /// the route row (gap-595e28).
+    pub(super) fn record_trust_exclusions(&mut self, count: Option<u64>) {
+        self.trust_exclusions = count;
+    }
+
+    /// DP3 checked the attempt at `depth` (gap-595e28), which the verdict
+    /// records; `None` when verification did not reach DP3.
+    pub(super) fn record_verify_depth(&mut self, depth: Option<VerifyDepthRecord>) {
+        self.verify_depth = depth;
     }
 
     /// The pre-verify screen found `findings`: paths the attempt changed
@@ -719,6 +766,8 @@ impl AttemptContext {
             .map(sha256_hex);
         verdict.exposures = self.exposures;
         verdict.harness = self.harness.as_ref().map(|decision| decision.stamp());
+        verdict.trust_exclusions = self.trust_exclusions;
+        verdict.verify_depth = self.verify_depth;
         self.run.submit(verdict.clone());
         // DP1: a green attempt draws its audit ticket; the draw is only logged.
         // M1's audit boost of the θ it ran raises its rate (B7, 8127).
@@ -961,7 +1010,7 @@ impl GraphTaskDispatcher {
         // placebo's decision among them (S02 L12).
         attempt.arm_set = self
             .attempts
-            .arm_set(&attempt, &self.workdir, &self.config.experiments);
+            .arm_set(&attempt, &self.workdir, &self.config);
         attempt.record_placebo_decision();
         // M1 (S06 T13, 8123): the θ the attempt runs, and its decision row.
         if let Some(sink) = self.feedback.homeostasis.as_deref() {
@@ -2415,6 +2464,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_c
         let temp = tempdir().expect("tempdir");
         let runs = temp.path().join(".roko/runs");
         let loops = Registry::embedded().expect("the embedded registry");
+        let auditor = LoopAuditor::from_records(loops, &LearningAuditConfig::default(), &[]);
         let mode = ArmMode::Normal;
         let key = |task: &str, attempt: u32| AttemptKey::new("run-resumed", "plan", task, attempt);
 
@@ -2422,18 +2472,18 @@ printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_c
         // day.
         let mut first = RunAttempts::open(Some(runs.as_path()), "run-resumed", None);
         first.epoch = EARLIER.to_string();
-        let drawn = first.arm_set(&key("T1", 1), &loops, &mode);
+        let drawn = first.arm_set(&key("T1", 1), &auditor, &mode);
         drop(first);
 
         let resumed = RunAttempts::open(Some(runs.as_path()), "run-resumed", None);
         assert_eq!(resumed.epoch, EARLIER, "the run keeps its epoch");
-        let retry = resumed.arm_set(&key("T1", 2), &loops, &mode);
+        let retry = resumed.arm_set(&key("T1", 2), &auditor, &mode);
         assert_eq!(*retry, *drawn, "the retry keeps its chain's arms");
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        let draws = ArmDraws::new(ARM_SEED, today);
-        let redraw = ArmSet::assign(&key("T1", 2), &loops, &mode, &draws);
+        let draws = auditor.arm_draws(ARM_SEED, today);
+        let redraw = ArmSet::assign(&key("T1", 2), auditor.registry(), &mode, &draws);
         assert_ne!(*retry, redraw, "a redraw today would change them");
-        let fresh = resumed.arm_set(&key("T2", 1), &loops, &mode);
+        let fresh = resumed.arm_set(&key("T2", 1), &auditor, &mode);
         let at = format!("@{EARLIER}");
         let on_epoch = fresh.arms.values().all(|arm| arm.salt_id.ends_with(&at));
         assert!(on_epoch, "{fresh:?}");
@@ -2447,5 +2497,63 @@ printf '%s\n' '{{"type":"result","session_id":"sess-m","model":"{main}","total_c
             .collect();
         let expected = [drawn.chain_key.as_str(), fresh.chain_key.as_str()];
         assert_eq!(chains, expected);
+    }
+
+    /// A loop-audit ledger in which L-know is live and L-play demoted for
+    /// harm.
+    const AUDITED_LEDGER: &str = concat!(
+        r#"{"schema_version":"roko.loop_audit/1","kind":"loop.health","loop_id":"L-know","#,
+        r#""state":"live","h":0.05,"n_opp":400,"n_L":380,"n_D":20,"#,
+        r#""eps":{"est":1.0,"ucb":1.0,"read":1.0,"reach":1.0,"honest":1.0,"receipt":1.0},"#,
+        r#""iota":{"act":0.5,"aa":0.0,"net":0.5,"lcb":0.4},"beta":{"est":null},"#,
+        r#""srm_evalue":1.0,"placebo_ok":true,"evidence":"measured"}"#,
+        "\n",
+        r#"{"schema_version":"roko.loop_audit/1","kind":"loop.health","loop_id":"L-play","#,
+        r#""state":"demoted","reason":"harm","h":0.5,"n_opp":400,"n_L":200,"n_D":200,"#,
+        r#""eps":{"est":1.0,"ucb":1.0,"read":1.0,"reach":1.0,"honest":1.0,"receipt":1.0},"#,
+        r#""iota":{"act":0.5,"aa":0.0,"net":0.5,"lcb":0.4},"beta":{"est":null},"#,
+        r#""srm_evalue":1.0,"placebo_ok":true,"evidence":"measured"}"#,
+        "\n"
+    );
+
+    /// gap-addf2a: a chain's arms are drawn under the loop auditor. With the
+    /// ledger holding L-know live and L-play demoted, L-know's layer draws
+    /// at h_live and L-play's at h_suspect. Once `[learning.audit] enforce`
+    /// and L-play's own `enforce` let the demotion act, L-play's layer draws
+    /// at h = 1: every chain runs π⁰ for it.
+    #[test]
+    fn arm_assignment_consults_the_loop_auditor() {
+        let temp = tempdir().expect("tempdir");
+        let learn = temp.path().join(".roko/learn");
+        std::fs::create_dir_all(&learn).expect("the learn dir");
+        std::fs::write(learn.join("loop-audit.jsonl"), AUDITED_LEDGER).expect("the ledger");
+        let registry = "[[loop]]\nid = \"L-play\"\nenforce = true\n";
+        std::fs::write(learn.join("loop-registry.toml"), registry).expect("the override");
+        let mode = ArmMode::Normal;
+        let draw = |config: &LearningAuditConfig, task: &str| {
+            let auditor = load_loop_auditor(temp.path(), config).expect("an auditor");
+            let run = RunAttempts::open(None, "run-audited", None);
+            let key = AttemptKey::new("run-audited", "plan", task, 1);
+            run.arm_set(&key, &auditor, &mode)
+        };
+        let h = |arms: &Arc<ArmSet>, layer: &str| arms.get(layer).map(|arm| arm.h);
+
+        let observed = LearningAuditConfig::default();
+        let arms = draw(&observed, "T1");
+        assert_eq!(h(&arms, "knowledge"), Some(0.05), "live: h_live");
+        assert_eq!(h(&arms, "playbooks"), Some(0.5), "demoted: h_suspect");
+
+        let enforced = LearningAuditConfig {
+            enforce: true,
+            ..LearningAuditConfig::default()
+        };
+        let arms = draw(&enforced, "T1");
+        assert_eq!(h(&arms, "playbooks"), Some(1.0), "an enforced demotion");
+        assert_eq!(h(&arms, "knowledge"), Some(0.05));
+        let defaults = (0..20)
+            .map(|index| draw(&enforced, &format!("T{index}")))
+            .filter(|arms| arms.takes_default("playbooks"))
+            .count();
+        assert_eq!(defaults, 20, "every chain runs L-play's default policy");
     }
 }

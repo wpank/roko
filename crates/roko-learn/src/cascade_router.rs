@@ -3979,6 +3979,8 @@ struct AuditTrust {
     excluded: HashMap<String, u64>,
     /// The latest exclusions, oldest first.
     log: Vec<TrustExclusion>,
+    /// Every exclusion so far, which the log's limit does not cut.
+    decided: u64,
 }
 
 impl AuditTrust {
@@ -3994,6 +3996,7 @@ impl AuditTrust {
     }
 
     fn record(&mut self, exclusion: TrustExclusion) {
+        self.decided += 1;
         if self.log.len() >= TRUST_LOG_LIMIT {
             self.log.remove(0);
         }
@@ -4110,6 +4113,16 @@ impl CascadeRouter {
     #[must_use]
     pub fn trust_exclusions(&self) -> Vec<TrustExclusion> {
         self.audit_trust.lock().log.clone()
+    }
+
+    /// How many routing decisions DP4 has made since the router was built,
+    /// one per model left out of one route. Dispatch counts those of each
+    /// attempt's routing on its verdict, apart from its route row, so that
+    /// the census can tell an exclusion lost before logging from none
+    /// (gap-595e28).
+    #[must_use]
+    pub fn trust_exclusion_count(&self) -> u64 {
+        self.audit_trust.lock().decided
     }
 }
 

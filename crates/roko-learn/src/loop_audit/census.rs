@@ -14,8 +14,10 @@
 //! and ι_net (S03 §4.4). Once a loop's learned arm has N_ε opportunities,
 //! the measured verdict decides its reason; before that, its logs and its
 //! declared findings do. Rows written before A-DEC count as
-//! pre-instrumentation. The audit tick (backlog 5126) reads the same fold
-//! through [`measure_at`], its sequences at the auditor's α/K.
+//! pre-instrumentation. The audit tick (backlog 5126) folds the same rows,
+//! its sequences at the auditor's α/K, into a [`CensusState`] it keeps in
+//! the learn dir, so that a plan run's close reads only the rows no tick has
+//! folded (gap-addf2a); [`measure_at`] folds every run at once.
 //!
 //! The regulators are measured from their own receipts (S03 §4.8; backlog
 //! 5135): L-M1 from M1's `harness_policy` rows (`params_digest`: the θ the
@@ -23,13 +25,17 @@
 //! from the route rows its epochs write (`prediction_consumed`: the
 //! attempt's prediction row), and L-M4 from later route rows in which
 //! audit feedback left a candidate out (`audit_penalty_applied`: the
-//! candidate's `audit_trust` reason, S05 DP4).
+//! candidate's `audit_trust` reason, S05 DP4). L-M4's log rule checks those
+//! rows against DP4's own count on each verdict, which tells an exclusion
+//! lost before logging from none (gap-595e28).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
+use roko_core::audit_types::VerifyDepth;
 use roko_core::config::homeostasis::HomeostasisMode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::arm_set::ArmSet;
@@ -44,11 +50,22 @@ use super::state::AuditParams;
 use crate::prompt_experiment::ExperimentStore;
 use crate::routing_log::{DecisionState, RoutingDecisionLog};
 use crate::runtime_feedback::LearningPaths;
+use crate::telemetry::RunProvenanceManifest;
 use crate::telemetry::records::{
     AuditFields, ContentDecisionPoint, ContentDecisionRecord, DecisionSource, ExecutedModel,
-    ExposureItemKind, HarnessPolicyDecisionRecord, HarnessStamp,
+    ExposureItemKind, HarnessPolicyDecisionRecord, HarnessStamp, RunFile, Stamped,
 };
-use crate::telemetry::report::{RunRecords, undated};
+use crate::telemetry::report::{RunRecords, SrmFold, srm_fold, undated};
+
+/// Where the audit tick keeps its [`CensusState`], in the learn dir.
+pub const CENSUS_STATE_FILE: &str = "loop-census-state.json";
+
+/// Schema of [`CENSUS_STATE_FILE`].
+pub const CENSUS_STATE_SCHEMA: &str = "roko.loop_census_state/1";
+
+/// How long an attempt without a verdict holds back the rows after it, in a
+/// run that has not closed: one open longer than this died with its process.
+const LIVE_ATTEMPT_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Schema of [`render_json`]'s output.
 pub const CENSUS_SCHEMA: &str = "roko.loop_census/1";
@@ -443,87 +460,326 @@ pub fn measure_at(runs: &[RunRecords], params: &AuditParams) -> BTreeMap<String,
         .collect()
 }
 
+/// What the audit tick keeps of the census between plan-run closes
+/// (gap-addf2a): each loop's tally and each layer's SRM check over the rows
+/// folded so far, the α its sequences run at, and how far it has read each
+/// run. A tick reads the run that closed from where the last tick left it,
+/// and the runs no tick has read; a run that had not ended at its last read
+/// is read again once its files change, or once the attempt that held it
+/// back stops counting as running. A run that ended is read again only at
+/// its next close. So a close costs what its new rows cost, not what the
+/// history under `.roko/runs/` does. The counts are those one read of every
+/// run gives; the confidence sequences take the rows in the order the ticks
+/// folded them. A run directory removed later keeps its rows in the tallies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CensusState {
+    schema_version: String,
+    alpha: f64,
+    runs: BTreeMap<String, RunMark>,
+    tallies: BTreeMap<String, Tally>,
+    srm: BTreeMap<String, SrmFold>,
+}
+
+/// How far a [`CensusState`] has read one run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct RunMark {
+    /// The first `seq` not folded yet.
+    next: u64,
+    /// Whether the run had ended at the last read: it was the run that
+    /// closed, or its manifest says it closed.
+    ended: bool,
+    /// Its run files' total size at the last read.
+    bytes: u64,
+    /// When the attempt that held back the rows from `next` stops counting
+    /// as running (unix ms).
+    held_until: Option<i64>,
+}
+
+impl RunMark {
+    /// Whether a tick at `now_ms` reads the run in `dir` again, though it
+    /// is not the run that closed: it had not ended, and its files changed
+    /// or the attempt that held it back stopped counting as running.
+    fn due(&self, dir: &Path, now_ms: i64) -> bool {
+        let released = self.held_until.is_some_and(|until| until <= now_ms);
+        !self.ended && (released || run_bytes(dir) != self.bytes)
+    }
+}
+
+impl CensusState {
+    /// An empty census whose sequences run at level `alpha`.
+    #[must_use]
+    pub fn new(alpha: f64) -> Self {
+        Self {
+            schema_version: CENSUS_STATE_SCHEMA.to_string(),
+            alpha,
+            runs: BTreeMap::new(),
+            tallies: BTreeMap::new(),
+            srm: BTreeMap::new(),
+        }
+    }
+
+    /// The census kept at `path`; an empty one at `alpha` when the file is
+    /// missing, unreadable or damaged, or was folded under another schema
+    /// or α, which its sequences' states depend on. The next tick then reads
+    /// every run once.
+    #[must_use]
+    pub fn load(path: &Path, alpha: f64) -> Self {
+        let kept = std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok());
+        match kept {
+            Some(state) if state.fits(alpha) => state,
+            _ => Self::new(alpha),
+        }
+    }
+
+    /// Whether a census read back can go on at `alpha`: its schema and α
+    /// are the current ones, and its sequences' states are whole.
+    fn fits(&self, alpha: f64) -> bool {
+        self.schema_version == CENSUS_STATE_SCHEMA
+            && self.alpha.to_bits() == alpha.to_bits()
+            && self.tallies.values().all(Tally::is_consistent)
+    }
+
+    /// Write the census to `path`, atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when it cannot be serialized or written.
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
+        roko_fs::atomic_write_bytes(path, &bytes)
+    }
+
+    /// Fold the runs under `runs_dir` that a tick at `now` reads: `closing`,
+    /// the run that just closed, and each run that ended, to its end; each
+    /// other run that is due ([`CensusState`]), up to its first attempt
+    /// still running, one opened in the last day with no verdict yet. A run
+    /// that cannot be read is left for a later tick.
+    pub fn fold_pending(&mut self, runs_dir: &Path, closing: &str, now: DateTime<Utc>) {
+        let Ok(entries) = std::fs::read_dir(runs_dir) else {
+            return;
+        };
+        let now_ms = now.timestamp_millis();
+        let mut pending: Vec<(PathBuf, bool)> = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                let (dir, closes) = (entry.path(), name == closing);
+                let mark = self.runs.get(&name);
+                let due = closes || mark.is_none_or(|mark| mark.due(&dir, now_ms));
+                (due && dir.is_dir()).then_some((dir, closes))
+            })
+            .collect();
+        pending.sort();
+        for (dir, closes) in pending {
+            // Sized before the read: a row written in between is read at the
+            // next tick.
+            let bytes = run_bytes(&dir);
+            let ended = closes || run_ended(&dir);
+            let Ok(run) = RunRecords::load(&dir) else {
+                continue;
+            };
+            let held = if ended {
+                None
+            } else {
+                first_running(&run, now_ms)
+            };
+            self.fold(&run, held.map_or(u64::MAX, |(seq, _)| seq));
+            let mark = self.runs.entry(run.run_id).or_default();
+            mark.ended = ended;
+            mark.bytes = bytes;
+            mark.held_until = held.map(|(_, until)| until);
+        }
+    }
+
+    /// Fold `run`'s decision rows from where the census left it up to
+    /// `seq` `until` (exclusive): each loop's opportunities, and each
+    /// layer's units first seen there.
+    pub fn fold(&mut self, run: &RunRecords, until: u64) {
+        let end = run
+            .seqs
+            .iter()
+            .map(|(_, seq)| seq.saturating_add(1))
+            .max()
+            .unwrap_or(0);
+        let mark = self.runs.entry(run.run_id.clone()).or_default();
+        let from = mark.next;
+        mark.next = until.min(end).max(from);
+        fold_run(&mut self.tallies, run, from, until, self.alpha);
+        srm_fold(&mut self.srm, run, from, until);
+    }
+
+    /// Each loop's measurement over the rows folded, as [`measure_at`]
+    /// gives it, judged against `params`' N_ε and ε_min.
+    #[must_use]
+    pub fn measurements(&self, params: &AuditParams) -> BTreeMap<String, LoopMeasurement> {
+        self.tallies
+            .iter()
+            .map(|(loop_id, tally)| (loop_id.clone(), tally.measurement(params)))
+            .collect()
+    }
+
+    /// Whether some layer's units do not split as their logged propensities
+    /// say (S02 SC3; S03 §4.5).
+    #[must_use]
+    pub fn srm_alarm(&self) -> bool {
+        self.srm.values().any(SrmFold::mismatch)
+    }
+
+    /// `layer`'s SRM e-value; 1 for a layer with no units.
+    #[must_use]
+    pub fn srm_evalue(&self, layer: &str) -> f64 {
+        self.srm.get(layer).map_or(1.0, SrmFold::e_value)
+    }
+
+    /// The first `seq` of `run_id` not folded yet; `None` for a run never
+    /// read.
+    #[must_use]
+    pub fn next_seq(&self, run_id: &str) -> Option<u64> {
+        self.runs.get(run_id).map(|mark| mark.next)
+    }
+}
+
+/// `run`'s first attempt still running at `now_ms` (unix ms): no verdict
+/// yet, and opened less than [`LIVE_ATTEMPT_MS`] before. Its rows, all after
+/// its open line, may still wait for its verdict and prediction. Returns the
+/// open line's `seq` and when the attempt stops counting as running.
+fn first_running(run: &RunRecords, now_ms: i64) -> Option<(u64, i64)> {
+    let settled: HashSet<&str> = run
+        .verdicts
+        .iter()
+        .map(|line| line.record.identity.attempt_key.as_str())
+        .collect();
+    run.opens
+        .iter()
+        .filter_map(|line| {
+            let open = &line.record;
+            let until = open.attempt_started_at?.saturating_add(LIVE_ATTEMPT_MS);
+            let key = open.identity.attempt_key.as_str();
+            (until > now_ms && !settled.contains(key)).then_some((line.seq, until))
+        })
+        .min()
+}
+
+/// Whether the run in `dir` has ended: its manifest says it closed. A resume
+/// reopens it; a run without a readable manifest has not ended.
+fn run_ended(dir: &Path) -> bool {
+    RunProvenanceManifest::load(dir)
+        .is_ok_and(|loaded| loaded.is_some_and(|manifest| manifest.closed.is_some()))
+}
+
+/// The total size of the run files in `dir`, which every row adds to.
+fn run_bytes(dir: &Path) -> u64 {
+    RunFile::ALL
+        .into_iter()
+        .filter_map(|file| std::fs::metadata(file.path_in(dir)).ok())
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
 /// Each loop's tally over the decision rows of `runs`, its sequences at
 /// level `alpha`.
 fn tallies(runs: &[RunRecords], alpha: f64) -> BTreeMap<String, Tally> {
     let mut tallies: BTreeMap<String, Tally> = BTreeMap::new();
     for run in runs {
-        let executed: HashMap<&str, &ExecutedModel> = run
-            .verdicts
-            .iter()
-            .map(|line| {
-                (
-                    line.record.identity.attempt_key.as_str(),
-                    &line.record.executed,
-                )
-            })
-            .collect();
-        let predicted: HashSet<&str> = run
-            .predictions
-            .iter()
-            .map(|line| line.record.identity.attempt_key.as_str())
-            .collect();
-        for line in &run.decisions {
-            let row = &line.record;
-            let ran = row
-                .attempt_key
-                .as_deref()
-                .and_then(|key| executed.get(key).copied());
-            if let Some(opportunity) = audit_feedback_opportunity(row, ran) {
-                let feedback = tally_of(&mut tallies, AUDIT_FEEDBACK_LOOP, alpha);
-                if feedback.count(&row.audit) {
-                    feedback.push(&opportunity);
-                }
-            }
-            let loop_id = row.audit.loop_id.as_deref().unwrap_or(ROUTE_LOOP);
-            let loop_tally = tally_of(&mut tallies, loop_id, alpha);
-            if !loop_tally.count(&row.audit) {
-                continue;
-            }
-            let opportunity = if loop_id == SELF_MODEL_LOOP {
-                let key = row.attempt_key.as_deref();
-                let consumed = key.is_some_and(|key| predicted.contains(key));
-                self_model_opportunity(row, ran, consumed)
-            } else {
-                route_opportunity(row, ran)
-            };
-            if let Some(opportunity) = opportunity {
-                loop_tally.push(&opportunity);
-            }
-        }
-        for line in &run.content_decisions {
-            let row = &line.record;
-            let loop_id = row.audit.loop_id.as_deref();
-            let Some(loop_id) = loop_id.or_else(|| content_loop(row.decision_point)) else {
-                continue;
-            };
-            let loop_tally = tally_of(&mut tallies, loop_id, alpha);
-            if !loop_tally.count(&row.audit) {
-                continue;
-            }
-            if let Some(opportunity) = content_opportunity(row) {
-                loop_tally.push(&opportunity);
-            }
-        }
-        let stamps: HashMap<&str, &HarnessStamp> = run
-            .verdicts
-            .iter()
-            .filter_map(|line| {
-                let stamp = line.record.harness.as_ref()?;
-                Some((line.record.identity.attempt_key.as_str(), stamp))
-            })
-            .collect();
-        for line in &run.harness_decisions {
-            let row = &line.record;
-            let loop_tally = tally_of(&mut tallies, HARNESS_LOOP, alpha);
-            loop_tally.rows += 1;
-            let stamp = stamps.get(row.identity.attempt_key.as_str()).copied();
-            if let Some(opportunity) = harness_opportunity(row, stamp) {
-                loop_tally.push(&opportunity);
-            }
-        }
+        fold_run(&mut tallies, run, 0, u64::MAX, alpha);
     }
     tallies
+}
+
+/// Fold into `tallies`, at level `alpha`, the decision rows of `run` with a
+/// `seq` in `from..until`. A row is scored against the run's verdicts and
+/// predictions wherever they are, so a fold that stops at an attempt still
+/// running leaves that attempt's rows for a later one (gap-addf2a).
+fn fold_run(
+    tallies: &mut BTreeMap<String, Tally>,
+    run: &RunRecords,
+    from: u64,
+    until: u64,
+    alpha: f64,
+) {
+    let executed: HashMap<&str, &ExecutedModel> = run
+        .verdicts
+        .iter()
+        .map(|line| {
+            (
+                line.record.identity.attempt_key.as_str(),
+                &line.record.executed,
+            )
+        })
+        .collect();
+    let predicted: HashSet<&str> = run
+        .predictions
+        .iter()
+        .map(|line| line.record.identity.attempt_key.as_str())
+        .collect();
+    for line in window(&run.decisions, from, until) {
+        let row = &line.record;
+        let ran = row
+            .attempt_key
+            .as_deref()
+            .and_then(|key| executed.get(key).copied());
+        if let Some(opportunity) = audit_feedback_opportunity(row, ran) {
+            let feedback = tally_of(tallies, AUDIT_FEEDBACK_LOOP, alpha);
+            if feedback.count(&row.audit) {
+                feedback.push(&opportunity);
+            }
+        }
+        let loop_id = row.audit.loop_id.as_deref().unwrap_or(ROUTE_LOOP);
+        let loop_tally = tally_of(tallies, loop_id, alpha);
+        if !loop_tally.count(&row.audit) {
+            continue;
+        }
+        let opportunity = if loop_id == SELF_MODEL_LOOP {
+            let key = row.attempt_key.as_deref();
+            let consumed = key.is_some_and(|key| predicted.contains(key));
+            self_model_opportunity(row, ran, consumed)
+        } else {
+            route_opportunity(row, ran)
+        };
+        if let Some(opportunity) = opportunity {
+            loop_tally.push(&opportunity);
+        }
+    }
+    for line in window(&run.content_decisions, from, until) {
+        let row = &line.record;
+        let loop_id = row.audit.loop_id.as_deref();
+        let Some(loop_id) = loop_id.or_else(|| content_loop(row.decision_point)) else {
+            continue;
+        };
+        let loop_tally = tally_of(tallies, loop_id, alpha);
+        if !loop_tally.count(&row.audit) {
+            continue;
+        }
+        if let Some(opportunity) = content_opportunity(row) {
+            loop_tally.push(&opportunity);
+        }
+    }
+    let stamps: HashMap<&str, &HarnessStamp> = run
+        .verdicts
+        .iter()
+        .filter_map(|line| {
+            let stamp = line.record.harness.as_ref()?;
+            Some((line.record.identity.attempt_key.as_str(), stamp))
+        })
+        .collect();
+    for line in window(&run.harness_decisions, from, until) {
+        let row = &line.record;
+        let loop_tally = tally_of(tallies, HARNESS_LOOP, alpha);
+        loop_tally.rows += 1;
+        let stamp = stamps.get(row.identity.attempt_key.as_str()).copied();
+        if let Some(opportunity) = harness_opportunity(row, stamp) {
+            loop_tally.push(&opportunity);
+        }
+    }
+}
+
+/// The lines of `lines` with a `seq` in `from..until`.
+fn window<T>(lines: &[Stamped<T>], from: u64, until: u64) -> impl Iterator<Item = &Stamped<T>> {
+    lines
+        .iter()
+        .filter(move |line| (from..until).contains(&line.seq))
 }
 
 /// `loop_id`'s tally in `tallies`, started at level `alpha` when new.
@@ -794,7 +1050,7 @@ fn assigned_late(audit: &AuditFields) -> bool {
 }
 
 /// One loop's opportunities, as the census folds them.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Tally {
     exposure: ExposureEstimator,
     influence: InfluenceEstimator,
@@ -874,6 +1130,11 @@ impl Tally {
             ordering_violations: self.ordering_violations,
         }
     }
+
+    /// Whether both sequences' states are whole.
+    fn is_consistent(&self) -> bool {
+        self.exposure.is_consistent() && self.influence.is_consistent()
+    }
 }
 
 /// Whether two commit shas name the same commit: one is a prefix of the
@@ -913,6 +1174,16 @@ struct Logs {
     playbooks: usize,
     holdout_costs: Option<(f64, f64)>,
     prompt_experiments: Option<usize>,
+    /// Verdicts that carry DP4's own count of the exclusions their routing
+    /// made (gap-595e28).
+    trust_routed: usize,
+    /// Those exclusions, summed.
+    trust_counted: u64,
+    /// Route-row candidates that name audit trust as why they were left
+    /// out (`ineligible_reason audit_trust`).
+    trust_logged: usize,
+    /// Verdicts whose task type the strictness ladder held above V0 (DP3).
+    ladder_deepened: usize,
 }
 
 impl Logs {
@@ -946,6 +1217,24 @@ impl Logs {
         }
         if logs.exposures == 0 {
             logs.legacy_retrievals = read_jsonl(&paths.root.join(RETRIEVAL_OUTCOMES)).len();
+        }
+        for verdict in runs.iter().flat_map(|run| &run.verdicts) {
+            let verdict = &verdict.record;
+            if let Some(excluded) = verdict.trust_exclusions {
+                logs.trust_routed += 1;
+                logs.trust_counted += excluded;
+            }
+            let depth = verdict.verify_depth.as_ref();
+            let ladder = depth.and_then(|depth| depth.ladder);
+            let deepened = ladder.is_some_and(|level| level > VerifyDepth::V0);
+            logs.ladder_deepened += usize::from(deepened);
+        }
+        let audit_trust = Some(AUDIT_TRUST_REASON);
+        for decision in runs.iter().flat_map(|run| &run.decisions) {
+            let candidates = decision.record.candidates.iter();
+            logs.trust_logged += candidates
+                .filter(|candidate| candidate.ineligible_reason.as_deref() == audit_trust)
+                .count();
         }
         for episode in read_jsonl(&paths.episodes_jsonl) {
             logs.episodes += 1;
@@ -1085,6 +1374,28 @@ impl Logs {
                     qualifier: Some(Qualifier::Misspecified),
                 })
             }
+            "L-M4" => {
+                // DP4 counts its exclusions on each verdict, apart from the
+                // route rows (gap-595e28): some counted and none on a route
+                // row were lost before logging; none counted and none logged
+                // is no opportunity.
+                if self.trust_routed == 0 {
+                    return None;
+                }
+                facts.push(format!(
+                    "DP4 counted {} exclusions on {} verdicts, and route rows name {}; verdicts \
+                     with a strictness-ladder level above V0 (DP3): {}",
+                    self.trust_counted,
+                    self.trust_routed,
+                    self.trust_logged,
+                    self.ladder_deepened
+                ));
+                match (self.trust_counted, self.trust_logged) {
+                    (0, 0) => reason(ReasonCode::NoOpportunity),
+                    (_, 0) => reason(ReasonCode::Unlogged),
+                    _ => None,
+                }
+            }
             "L-prompt-exp" => {
                 let registered = self.prompt_experiments?;
                 facts.push(format!("{registered} prompt experiments are registered"));
@@ -1130,9 +1441,10 @@ mod tests {
     use super::*;
     use crate::telemetry::assign::{Arm, Assignment, AssignmentUnit};
     use crate::telemetry::records::{
-        AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord, ContentCandidate,
-        ContentProposals, DECISION_SCHEMA, DecisionAssignment, DecisionReceipt, EXPOSURE_SCHEMA,
-        ExposureRecord, RunFile, Stamped, VERDICT_SCHEMA,
+        ATTEMPT_OPEN_SCHEMA, AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome,
+        AttemptVerdictRecord, ContentCandidate, ContentProposals, DECISION_SCHEMA,
+        DecisionAssignment, DecisionReceipt, EXPOSURE_SCHEMA, ExposureRecord, RunClosed, RunFile,
+        Stamped, VERDICT_SCHEMA,
     };
 
     /// The 09-29 snapshot fixture (backlog 5105), laid out like `.roko`.
@@ -1664,5 +1976,207 @@ mod tests {
         std::fs::write(roko.join("episodes.jsonl"), episode).expect("an episode");
         let (reason, fact) = know();
         assert_eq!(reason, None, "{fact}");
+    }
+
+    /// Append `lines` to the file at `path`.
+    fn append(path: &Path, lines: &str) {
+        use std::io::Write;
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open a run file");
+        file.write_all(lines.as_bytes())
+            .expect("append to a run file");
+    }
+
+    /// Append to run `run_id` under `runs_dir` the chains `chains`, one
+    /// attempt each, numbered from `seq`: its open line, started at
+    /// `started` (unix ms), its L-know row, every fifth on the default arm,
+    /// and its verdict, except for chain `running`. Returns the next `seq`.
+    fn append_chains(
+        runs_dir: &Path,
+        run_id: &str,
+        chains: std::ops::Range<usize>,
+        running: Option<usize>,
+        started: i64,
+        mut seq: u64,
+    ) -> u64 {
+        let run_dir = runs_dir.join(run_id);
+        std::fs::create_dir_all(&run_dir).expect("the run dir");
+        let (mut attempts, mut decisions) = (String::new(), String::new());
+        for index in chains {
+            let key = AttemptKey::new(run_id, "plan", format!("t{index}"), 1);
+            let open = AttemptOpenRecord::new(AttemptIdentity::new(&key), started);
+            attempts.push_str(&line(ATTEMPT_OPEN_SCHEMA, seq, open));
+            let arm = if index % 5 == 0 {
+                Arm::Default
+            } else {
+                Arm::Learned
+            };
+            let know = ContentDecisionPoint::Knowledge;
+            let row = content_row(&key, know, "knowledge", "kn-1", arm, true);
+            decisions.push_str(&line(DECISION_SCHEMA, seq + 1, row));
+            seq += 2;
+            if running != Some(index) {
+                let identity = AttemptIdentity::new(&key);
+                let verdict = AttemptVerdictRecord::settle(identity, AttemptOutcome::Passed, true);
+                attempts.push_str(&line(VERDICT_SCHEMA, seq, verdict));
+                seq += 1;
+            }
+        }
+        append(&RunFile::Attempts.path_in(&run_dir), &attempts);
+        append(&RunFile::Decisions.path_in(&run_dir), &decisions);
+        seq
+    }
+
+    /// gap-addf2a: the census the audit tick keeps reads only the rows no
+    /// tick has folded. A run that ended is not opened again until it closes
+    /// once more. A run still going is read up to its attempt still running,
+    /// and again once its files change or at its own close; an attempt open
+    /// for days died with its process, and one in a run whose manifest says
+    /// it closed was abandoned, so neither holds rows back. The census comes
+    /// back from its file, and its counts end where one read of every run
+    /// ends.
+    #[test]
+    fn audit_census_reads_only_rows_no_tick_has_folded() {
+        use chrono::TimeZone;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let runs_dir = dir.path().join(RUNS_DIR);
+        let kept = dir.path().join(CENSUS_STATE_FILE);
+        let params = AuditParams::default();
+        let alpha = params.loop_alpha();
+        let now = Utc
+            .with_ymd_and_hms(2026, 10, 3, 10, 0, 0)
+            .single()
+            .expect("a valid time");
+        let started = now.timestamp_millis() - 60_000;
+        let know_opps = |census: &CensusState| {
+            let measured = census.measurements(&params);
+            measured.get("L-know").map(|know| know.measured.n_opp)
+        };
+
+        // gr-a closes with 20 chains, and the tick keeps its census.
+        let next_a = append_chains(&runs_dir, "gr-a", 0..20, None, started, 1);
+        let mut census = CensusState::load(&kept, alpha);
+        census.fold_pending(&runs_dir, "gr-a", now);
+        census.save(&kept).expect("keep the census");
+        assert_eq!(know_opps(&census), Some(20));
+
+        // gr-c's tick reads the census back. gr-a's later rows wait for its
+        // next close; gr-b is read up to its chain 4, still running, at seq
+        // 13; gr-d's chain 1, open for two days, and gr-e's chain 0, in a run
+        // whose manifest closed, hold nothing back.
+        let mut census = CensusState::load(&kept, alpha);
+        assert_eq!(census.next_seq("gr-a"), Some(next_a));
+        assert_eq!(know_opps(&census), Some(20));
+        append_chains(&runs_dir, "gr-a", 20..25, None, started, next_a);
+        append_chains(&runs_dir, "gr-b", 0..10, Some(4), started, 1);
+        append_chains(&runs_dir, "gr-c", 0..5, None, started, 1);
+        let two_days = 2 * LIVE_ATTEMPT_MS;
+        let end_d = append_chains(&runs_dir, "gr-d", 0..3, Some(1), started - two_days, 1);
+        append_chains(&runs_dir, "gr-e", 0..2, Some(0), started, 1);
+        let mut manifest = RunProvenanceManifest::new("gr-e", "plan_run");
+        manifest.closed = Some(RunClosed::default());
+        manifest
+            .store(&runs_dir.join("gr-e"))
+            .expect("close gr-e's manifest");
+        census.fold_pending(&runs_dir, "gr-c", now);
+        assert_eq!(know_opps(&census), Some(20 + 4 + 5 + 3 + 2));
+        assert_eq!(census.next_seq("gr-b"), Some(13));
+        assert_eq!(census.next_seq("gr-d"), Some(end_d));
+
+        // gr-b's close reads the rest of it, and gr-d, which has not ended,
+        // is read again once it grows; gr-a's next close reads its new rows.
+        // No row counts twice.
+        append_chains(&runs_dir, "gr-d", 3..5, None, started, end_d);
+        census.fold_pending(&runs_dir, "gr-b", now);
+        assert_eq!(know_opps(&census), Some(34 + 6 + 2));
+        census.fold_pending(&runs_dir, "gr-a", now);
+        assert_eq!(know_opps(&census), Some(47));
+        census.fold_pending(&runs_dir, "gr-a", now);
+        assert_eq!(know_opps(&census), Some(47));
+
+        let counts = |measured: &BTreeMap<String, LoopMeasurement>| -> Vec<_> {
+            measured
+                .iter()
+                .map(|(loop_id, measurement)| {
+                    let counted = &measurement.measured;
+                    let opps = (counted.n_opp, counted.n_learned, counted.n_default);
+                    (loop_id.clone(), opps, measurement.rows, counted.eps.est)
+                })
+                .collect()
+        };
+        let whole = measure_at(&read_runs(&runs_dir), &params);
+        assert_eq!(counts(&census.measurements(&params)), counts(&whole));
+    }
+
+    /// gap-595e28: L-M4's census tells a lost exclusion from none. DP4
+    /// counts the exclusions each attempt's routing made on its verdict,
+    /// apart from the route row. Verdicts that count none, with no route row
+    /// naming audit trust, are no opportunity; verdicts that count some with
+    /// no such route row lost them before logging (`dormant:unlogged`); once
+    /// route rows name them, the log rule has nothing to add. The facts count
+    /// the verdicts whose verify depth the strictness ladder raised (DP3).
+    #[test]
+    fn l_m4_census_distinguishes_unlogged_from_no_opportunity() {
+        use crate::routing_log::CandidateEntry;
+        use crate::telemetry::records::VerifyDepthRecord;
+
+        // L-M4's census row over one run of four routed attempts: each
+        // verdict counts `excluded` DP4 exclusions, the route rows name them
+        // when `logged`, and the strictness ladder held the first attempt's
+        // task type at V2.
+        let l_m4 = |excluded: u64, logged: bool| {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let run_dir = dir.path().join(".roko").join(RUNS_DIR).join("gr-dp4");
+            std::fs::create_dir_all(&run_dir).expect("the run dir");
+            let (mut decisions, mut verdicts) = (String::new(), String::new());
+            for index in 0..4_u64 {
+                let key = AttemptKey::new("gr-dp4", "plan", format!("t{index}"), 1);
+                let mut row = route_row(&key, true);
+                if logged {
+                    let reason = Some(AUDIT_TRUST_REASON.to_string());
+                    row.candidates = vec![CandidateEntry::new("model-x", "", 0.0, reason)];
+                }
+                decisions.push_str(&line(DECISION_SCHEMA, 2 * index + 1, row));
+                let (identity, passed) = (AttemptIdentity::new(&key), AttemptOutcome::Passed);
+                let mut verdict = AttemptVerdictRecord::settle(identity, passed, true);
+                verdict.trust_exclusions = Some(excluded);
+                verdict.verify_depth = (index == 0).then(|| VerifyDepthRecord {
+                    task_type: "code".to_string(),
+                    depth: VerifyDepth::V2,
+                    ladder: Some(VerifyDepth::V2),
+                    floor: VerifyDepth::V0,
+                });
+                verdicts.push_str(&line(VERDICT_SCHEMA, 2 * index + 2, verdict));
+            }
+            std::fs::write(RunFile::Decisions.path_in(&run_dir), decisions).expect("decisions");
+            std::fs::write(RunFile::Attempts.path_in(&run_dir), verdicts).expect("verdicts");
+            let registry = Registry::embedded().expect("the embedded registry");
+            let report = run(dir.path(), &registry, None);
+            report.row("L-M4").cloned().expect("L-M4's row")
+        };
+
+        let none = l_m4(0, false);
+        let no_opportunity = Some(ReasonCode::NoOpportunity);
+        assert_eq!(none.reason, no_opportunity, "{:?}", none.facts);
+        assert_eq!(none.evidence, Some(Evidence::Log));
+
+        let lost = l_m4(2, false);
+        assert_eq!(lost.reason, Some(ReasonCode::Unlogged), "{:?}", lost.facts);
+        assert_eq!(lost.evidence, Some(Evidence::Log));
+        let counted = "DP4 counted 8 exclusions on 4 verdicts, and route rows name 0; verdicts \
+                       with a strictness-ladder level above V0 (DP3): 1";
+        assert!(
+            lost.facts.iter().any(|fact| fact == counted),
+            "{:?}",
+            lost.facts
+        );
+
+        let logged = l_m4(2, true);
+        assert_eq!(logged.reason, None, "{:?}", logged.facts);
     }
 }

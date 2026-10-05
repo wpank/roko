@@ -397,6 +397,7 @@ outcome = "the true false-green rate on hidden tests, plus U"
 notes = [
     "S05's feedback shows in later route rows: DP4's audit trust leaves a candidate out with ineligible_reason audit_trust (7131); the census measures ε from those rows, the reason its receipt (5135).",
     "M4's feedback is auditable (S03 §9.6). The M4 sensor, the audits themselves, is exempt (`m4_sensor` in [learning.audit] exempt): never demoted, checked by planted known-bad passes, and outcome_sensor_degraded freezes β-based transitions when its catch rate falls.",
+    "Each verdict carries the cascade router's own count of the exclusions DP4 made while routing it (`trust_exclusions`), apart from the route row; the census's log rule calls L-M4 dormant:unlogged when verdicts count exclusions no route row names, and no_opportunity when they count none. Each verdict also records the verify depth DP3 checked it at and the strictness ladder's level for its task type (`verify_depth`) (gap-595e28).",
 ]
 
 # ── The placebo (S03 §4.3) ────────────────────────────────────────────────

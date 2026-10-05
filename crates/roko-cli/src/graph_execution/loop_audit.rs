@@ -1,8 +1,9 @@
 //! The loop auditor's tick at each plan run's close (S03 §5; backlog 5126).
 //!
 //! When a checkpoint run closes and its attempt log is flushed,
-//! [`audit_tick`] has [`LoopAuditor::observe_run`] fold every run's decision
-//! rows into each measured loop's health, apply the state machine with the
+//! [`audit_tick`] has [`LoopAuditor::observe_run`] fold the decision rows no
+//! tick has folded into the census it keeps in `.roko/learn` (gap-addf2a),
+//! evaluate each measured loop's health, apply the state machine with the
 //! dwell the ledger carries across runs, and append the `loop.health` and
 //! `loop.transition` rows to `.roko/learn/loop-audit.jsonl`. Each row then
 //! goes to the run's StateHub as `DashboardEvent::LoopHealth` or
@@ -10,9 +11,9 @@
 //!
 //! The tick only observes: it changes no executed policy, whatever
 //! `[learning.audit] enforce` says (attempt open reads the ledger's states
-//! for that). It calls no provider and writes nothing but its own ledger,
-//! also when learning is frozen (gap-644040). An error is logged and never
-//! fails the run.
+//! for that). It calls no provider and writes nothing but its census and its
+//! ledger, also when learning is frozen (gap-644040). An error is logged and
+//! never fails the run.
 
 use std::path::Path;
 
@@ -116,6 +117,7 @@ fn loop_event(record: &LoopAuditRecord, qualifiers: &[Qualifier]) -> Option<Dash
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
+    use roko_learn::loop_audit::census::CENSUS_STATE_FILE;
     use roko_learn::loop_audit::ledger::Ledger;
     use roko_learn::routing_log::DecisionState;
     use roko_learn::telemetry::records::{
@@ -337,6 +339,9 @@ mod tests {
         assert_eq!(moved.rule, "n_L ≥ N_ε and UCB(ε) < ε_min");
         // Each row reached the run's StateHub, in ledger order.
         assert_eq!(loop_events(&hub), first);
+        // The tick keeps its census, so the next one reads only new rows.
+        let kept = dir.path().join(".roko/learn").join(CENSUS_STATE_FILE);
+        assert!(kept.is_file(), "{}", kept.display());
 
         // An hour later the state comes back from the ledger: L-play is not
         // flagged again, and its dwell holds it.

@@ -15,7 +15,7 @@
 //! (`[experiments] force_arms`) pin layers to an arm, and estimates leave
 //! those chains out.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use roko_core::config::experiments::ExperimentsConfig;
 use serde::{Deserialize, Serialize};
@@ -109,6 +109,9 @@ pub struct ArmDraws {
     pub g: f64,
     /// Each loop's audit state; a loop not named is on probation.
     pub states: BTreeMap<LoopId, AuditState>,
+    /// The loops whose enforced demotion runs π⁰ in every chain (S03 §4.6):
+    /// their layers draw at h = 1, so only the all-off arm is left to chance.
+    pub enforced: BTreeSet<LoopId>,
     /// The holdout schedule, and a campaign's fixed rate.
     pub layers: LoopLayer,
 }
@@ -123,6 +126,7 @@ impl ArmDraws {
             epoch: epoch.into(),
             g: GLOBAL_OFF_RATE,
             states: BTreeMap::new(),
+            enforced: BTreeSet::new(),
             layers: LoopLayer::default(),
         }
     }
@@ -165,7 +169,11 @@ impl ArmSet {
         arms.insert(global.layer.clone(), assign(&global, key));
         for spec in ARM_SET_LOOPS.iter().filter_map(|id| loops.get(id)) {
             let state = draws.states.get(&spec.id).copied().unwrap_or_default();
-            let layer = layers.layer_spec(spec, state, &draws.epoch, draws.run_seed, g);
+            let mut layer = layers.layer_spec(spec, state, &draws.epoch, draws.run_seed, g);
+            // An enforced demotion runs π⁰ (gap-addf2a), except in maximize mode.
+            if !maximize && draws.enforced.contains(&spec.id) {
+                layer.h = 1.0;
+            }
             arms.insert(layer.layer.clone(), assign(&layer, key));
         }
         if let ArmMode::Forced(forced) = mode {

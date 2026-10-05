@@ -1574,6 +1574,7 @@ impl AgentDispatcherV2 {
             &result,
             latency_ms,
             health_recorded,
+            self.config.learning.frozen,
         )
         .await;
         let events = dispatch_events_from_result(&request, &created.target, &result);
@@ -1690,6 +1691,7 @@ impl AgentDispatcherV2 {
             &result,
             latency_ms,
             health_recorded,
+            self.config.learning.frozen,
         )
         .await;
 
@@ -1790,8 +1792,15 @@ impl AgentDispatcherV2 {
         self.record_provider_outcome(&target.provider_id, &result);
 
         let health_recorded = self.health_registry.is_some();
-        record_agent_dispatch_feedback(&request, &target, &result, latency_ms, health_recorded)
-            .await;
+        record_agent_dispatch_feedback(
+            &request,
+            &target,
+            &result,
+            latency_ms,
+            health_recorded,
+            self.config.learning.frozen,
+        )
+        .await;
         let events = dispatch_events_from_result(&request, &target, &result);
         let tool_calls = match audit_mark {
             Some(mark) => mark.tool_calls().await,
@@ -2066,6 +2075,9 @@ impl ProviderHealthOutcome {
 /// unless `health_recorded` says the dispatcher's own registry holds it, the
 /// provider's health. Either way a call leaves one provider-health record,
 /// and an immune denial or an attempt timeout leaves none (backlog 1114).
+/// The row names the knowledge the prompt included; under `learning_frozen`
+/// that is all, and no knowledge feedback is recorded (decision 2218,
+/// bug-eaa318).
 ///
 /// The bridge never teaches the cascade router (bug-07bc75). Its callers are
 /// Graph dispatch's attempts and helper calls: the router learns each
@@ -2077,6 +2089,7 @@ async fn record_agent_dispatch_feedback(
     result: &AgentResult,
     latency_ms: u64,
     health_recorded: bool,
+    learning_frozen: bool,
 ) {
     // The workspace's learning state, at the root a Graph dispatch names as
     // its `immune_root`, never under the attempt's own worktree: a row there
@@ -2087,6 +2100,9 @@ async fn record_agent_dispatch_feedback(
     let mut recorder = ModelCallFeedbackRecorder::without_cascade_router(learn_dir);
     if health_recorded || !outcome.is_provider_outcome() {
         recorder = recorder.without_provider_health();
+    }
+    if learning_frozen {
+        recorder = recorder.without_knowledge_feedback();
     }
     let error_class = match outcome {
         ProviderHealthOutcome::Failure(error_kind) => Some(error_kind.to_string()),

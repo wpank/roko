@@ -922,51 +922,60 @@ mod tests {
 
     /// bug-eaa318: the provider bridge's `model_call` row of an attempt whose
     /// prompt included a knowledge entry names the entry, so the loop census
-    /// finds knowledge ids on the efficiency log.
+    /// finds knowledge ids on the efficiency log. A frozen run's row names it
+    /// too, but the run records no knowledge feedback (decision 2218).
     #[tokio::test]
     async fn dispatch_with_knowledge_produces_an_efficiency_row_with_knowledge_ids() {
         use roko_learn::loop_audit::{Registry, census};
 
-        let temp = tempdir().expect("tempdir");
-        let roko = temp.path().join(".roko");
-        // The task is "Streaming graph task": the entry shares its words.
-        seed_knowledge(
-            temp.path(),
-            &[(
-                "kn-stream",
-                "Streaming graph task output flushes each chunk",
-            )],
-        );
-        let feedback = GraphFeedbackContext {
-            runs_dir: Some(roko.join("runs")),
-            ..GraphFeedbackContext::default()
-        };
-        let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix_maximize, feedback).await;
-        task.verify = vec![verify_step("structural", "true")];
-        let ctx = CellContext::new().with_run_id(RUN.to_string());
-        dispatcher
-            .dispatch(&make_spec(&task), Vec::new(), &ctx)
-            .await
-            .expect("the verified attempt passes");
-        drop(dispatcher);
+        for frozen in [false, true] {
+            let temp = tempdir().expect("tempdir");
+            let roko = temp.path().join(".roko");
+            // The task is "Streaming graph task": the entry shares its words.
+            seed_knowledge(
+                temp.path(),
+                &[(
+                    "kn-stream",
+                    "Streaming graph task output flushes each chunk",
+                )],
+            );
+            let feedback = GraphFeedbackContext {
+                runs_dir: Some(roko.join("runs")),
+                ..GraphFeedbackContext::default()
+            };
+            let configure = |config: &mut RokoConfig| {
+                no_auto_fix_maximize(config);
+                config.learning.frozen = frozen;
+            };
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, VERIFY_PROVIDER, configure, feedback).await;
+            task.verify = vec![verify_step("structural", "true")];
+            let ctx = CellContext::new().with_run_id(RUN.to_string());
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &ctx)
+                .await
+                .expect("the verified attempt passes");
+            drop(dispatcher);
 
-        let log = roko.join("learn/efficiency.jsonl");
-        let calls = jsonl_rows_where(&log, 1, |row| row["kind"] == "model_call").await;
-        assert_eq!(
-            calls[0]["knowledge_ids"],
-            serde_json::json!(["kn-stream"]),
-            "{}",
-            calls[0]
-        );
-        let registry = Registry::embedded().expect("the embedded loop registry");
-        let report = census::run(temp.path(), &registry, None);
-        let facts = &report.row("L-know").expect("L-know's census row").facts;
-        let efficiency = facts
-            .iter()
-            .find(|fact| fact.contains("efficiency rows carry"))
-            .expect("L-know's log fact");
-        assert!(!efficiency.contains(" and 0/"), "{efficiency}");
+            let log = roko.join("learn/efficiency.jsonl");
+            let calls = jsonl_rows_where(&log, 1, |row| row["kind"] == "model_call").await;
+            assert_eq!(
+                calls[0]["knowledge_ids"],
+                serde_json::json!(["kn-stream"]),
+                "frozen {frozen}: {}",
+                calls[0]
+            );
+            let knowledge_feedback = roko.join("learn/knowledge-feedback.jsonl");
+            assert_eq!(knowledge_feedback.exists(), !frozen, "frozen {frozen}");
+            let registry = Registry::embedded().expect("the embedded loop registry");
+            let report = census::run(temp.path(), &registry, None);
+            let facts = &report.row("L-know").expect("L-know's census row").facts;
+            let efficiency = facts
+                .iter()
+                .find(|fact| fact.contains("efficiency rows carry"))
+                .expect("L-know's log fact");
+            assert!(!efficiency.contains(" and 0/"), "{efficiency}");
+        }
     }
 
     /// G29: a dispatch whose prompt retrieved a matching knowledge entry logs

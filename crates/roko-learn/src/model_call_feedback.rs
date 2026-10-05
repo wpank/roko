@@ -90,6 +90,9 @@ pub struct ModelCallFeedbackRecorder {
     /// Whether each call's outcome is written to `provider-health.json`; off
     /// when the caller records provider health itself (backlog 1114).
     write_provider_health: bool,
+    /// Whether a call's knowledge ids feed knowledge feedback; off for a run
+    /// that holds learned state fixed (bug-eaa318).
+    knowledge_feedback: bool,
 }
 
 impl ModelCallFeedbackRecorder {
@@ -118,6 +121,7 @@ impl ModelCallFeedbackRecorder {
             save_cascade_router: true,
             record_costs: false,
             write_provider_health: true,
+            knowledge_feedback: true,
         }
     }
 
@@ -134,6 +138,7 @@ impl ModelCallFeedbackRecorder {
             save_cascade_router: true,
             record_costs: false,
             write_provider_health: true,
+            knowledge_feedback: true,
         }
     }
 
@@ -147,6 +152,7 @@ impl ModelCallFeedbackRecorder {
             save_cascade_router: false,
             record_costs: false,
             write_provider_health: true,
+            knowledge_feedback: true,
         }
     }
 
@@ -165,6 +171,15 @@ impl ModelCallFeedbackRecorder {
     #[must_use]
     pub const fn without_provider_health(mut self) -> Self {
         self.write_provider_health = false;
+        self
+    }
+
+    /// Keep each call's knowledge ids on its efficiency row, but record no
+    /// knowledge feedback for them ([`FeedbackService::without_knowledge_feedback`]):
+    /// for a run that holds learned state fixed (decision 2218, bug-eaa318).
+    #[must_use]
+    pub const fn without_knowledge_feedback(mut self) -> Self {
+        self.knowledge_feedback = false;
         self
     }
 
@@ -187,6 +202,9 @@ impl ModelCallFeedbackRecorder {
         let mut feedback_service = FeedbackService::new(self.learn_dir.clone());
         if self.record_costs {
             feedback_service = feedback_service.with_cost_records();
+        }
+        if !self.knowledge_feedback {
+            feedback_service = feedback_service.without_knowledge_feedback();
         }
         if let Some(router) = &self.cascade_router {
             feedback_service = feedback_service

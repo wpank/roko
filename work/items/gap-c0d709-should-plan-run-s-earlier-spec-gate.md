@@ -74,3 +74,19 @@ test; if B, the distinction is documented next to both functions' doc comments.
 - 2026-10-05 (wave-20 follow-up, gap-2b0575, work/gap-2b0575 not yet merged): confirmed
   directly by reading both functions in full. Filed as `kind = "gap"` with the decision
   embedded in the body, per the instruction.
+
+## Progress
+
+- 2026-10-05 (wave 21, option A as the lead assigned): implemented at 89893d6e4 on `work/gap-c0d709`; cargo
+  verification deferred to the batch gate. `spec_gate_before_run` applies the refine requests through
+  `spec_gate::workspace_refine_requests` and `apply_refine_requests`, the path `gate_plans` uses, before the
+  holdout, so under `enforce` an open request from a routing self-model refuses the run before it starts and
+  under `advise` it advises.
+- Why the naive mirror was not enough: the early check scores without the red-on-base check, while a request
+  carries the plan-load gate's score, which counts SQ06 (weight 15) where that check ran. A spec refined to a
+  higher static score could still score below that, and the early check would refuse it while the plan-load
+  gate let it run. Requests now compare with the spec in static mode on both checks: `refine_requests`
+  rescores the run's `spec.quality` record the self-model read without SQ06 (`RefineRequest::static_score`),
+  and `refine_verdict` compares it with the current record's static score, falling back to the recorded
+  scores when a record has no rule scores. Tests: `spec_gate_before_run_reads_refine_requests` (roko-cli bin)
+  and `refine_verdict_compares_specs_in_static_mode` (roko-gate).

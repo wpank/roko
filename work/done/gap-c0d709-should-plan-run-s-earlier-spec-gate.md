@@ -2,7 +2,7 @@
 id = "gap-c0d709"
 kind = "gap"
 title = "Should plan run's earlier spec_gate_before_run also read the self-model's refine requests?"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli"]
 created = 2026-10-05
 updated = 2026-10-05
 last_verified = 2026-10-05
+last_verified_rev = "8e04833bb"
 source = "wave-20 follow-up reports 2026-10-05 (gap-2b0575, work/gap-2b0575)"
 discovered_from = "gap-2b0575 (open; own Progress note records this as a deliberate, open choice)"
 anchors = ["crates/roko-cli/src/commands/plan.rs::spec_gate_before_run", "crates/roko-cli/src/spec_gate.rs::gate_plans"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn spec_gate_before_run_reads_refine_requests' crates/roko-cli/ && cargo test -p roko-cli spec_gate_before_run_reads_refine_requests"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T18:58:23Z"
+commit = "8e04833bb"
+executor = "claude-agent"
+via = "work-batch"
+size = "S"
+claimed_at = "2026-10-05T17:36:22Z"
+forced = false
+evidence = "Gate 21 (merged 8e04833bb): verify spec_gate_before_run_reads_refine_requests passes, plus refine_verdict_compares_specs_in_static_mode. plan run's early spec check applies the self-model's refine requests through the plan-load gate's path; both compare static scores (without SQ06), so the two checks agree."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-d81257"
 kind = "bug"
 title = "KnowledgeAdmissionStore, HeuristicStore and roko knowledge restore bypass the new shared knowledge write gate"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/commands"]
 created = 2026-10-05
 updated = 2026-10-05
 last_verified = 2026-10-05
+last_verified_rev = "8e04833bb"
 source = "wave-20 follow-up reports 2026-10-05 (bug-c4f0ed, work/bug-c4f0ed)"
 discovered_from = "bug-c4f0ed (open; its fix covers KnowledgeStore only, not these three)"
 anchors = ["crates/roko-neuro/src/admission.rs::KnowledgeAdmissionStore", "crates/roko-cli/src/commands/knowledge.rs::publish_staged_neuro_files"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn restore_waits_for_a_concurrent_knowledge_store_writer' crates/roko-cli/ && cargo test -p roko-cli restore_waits_for_a_concurrent_knowledge_store_writer"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T18:58:21Z"
+commit = "8e04833bb"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T17:36:20Z"
+forced = false
+evidence = "Gate 21 (merged 8e04833bb): verify restore_waits_for_a_concurrent_knowledge_store_writer passes, plus the admission and heuristic store concurrency tests. KnowledgeAdmissionStore and HeuristicStore share per-path write gates and the cross-process lock; roko knowledge restore holds the knowledge store's lock from its check to the publish of restored files."
 +++
 
 ## Problem

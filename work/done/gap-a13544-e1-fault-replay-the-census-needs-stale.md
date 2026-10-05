@@ -2,15 +2,16 @@
 id = "gap-a13544"
 kind = "gap"
 title = "E1 fault replay: the census needs stale, degenerate and cut signatures first, task 5130"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/loop-audit"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "8e04833bb"
 source = "tmp/backlog/2026-10-02-complete-and-wire 5130 (blocked in wave 9, PK44)"
 discovered_from = "gap-85d176"
 anchors = ["crates/roko-learn/src/loop_audit"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = ["gap-85d176"], supersedes = [
 
 [[verify]]
 command = "test -f crates/roko-cli/tests/loop_audit_faults.rs && grep -qw 'fn structural_faults_detected_and_localized' crates/roko-cli/tests/loop_audit_faults.rs && cargo test -p roko-cli --features fault-injection --test loop_audit_faults structural_faults_detected_and_localized"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T18:58:20Z"
+commit = "8e04833bb"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T15:53:44Z"
+forced = false
+evidence = "Gate 21 (merged 8e04833bb): verify structural_faults_detected_and_localized passes under fault-injection. The census gains STALE (decision rows' stale flag), DEGENERATE (all-flat scored content rows over N_eps) and CUT (readers record what they read) signatures; E1 replays 5 epochs x 100 dry-run contexts per case and detects and localises every fault with no collateral: L-know Cut and Stale at P2 (n_L 30), Unlogged, Degenerate and LabelOnly at P6, L-route Mask at P4; the healthy baseline flags nothing. Gate fixes 133fa6c32 (error_patterns rename) and 093df5573 (crate docs before the cfg)."
 +++
 
 ## Problem

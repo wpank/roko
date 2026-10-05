@@ -2,7 +2,7 @@
 id = "bug-7e8dae"
 kind = "bug"
 title = "ACP counts a post-launch provider refusal as a failed prompt-experiment trial instead of abandoning it"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-05
 updated = 2026-10-05
 last_verified = 2026-10-05
+last_verified_rev = "8e04833bb"
 source = "wave-20 follow-up reports 2026-10-05 (bug-897879, work/bug-897879)"
 discovered_from = "bug-897879 (open; its fix covers the pre-dispatch half of this asymmetry, not post-launch)"
 anchors = ["crates/roko-acp/src/bridge_events/cost.rs::acp_dispatch_succeeded", "crates/roko-cli/src/graph_task_dispatch/prompt_experiment.rs::settlement"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn acp_abandons_a_post_launch_provider_refusal' crates/roko-acp/ && cargo test -p roko-acp acp_abandons_a_post_launch_provider_refusal"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T18:58:22Z"
+commit = "8e04833bb"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T17:36:18Z"
+forced = false
+evidence = "Gate 21 (merged 8e04833bb): verify acp_abandons_a_post_launch_provider_refusal passes (ACP provider_failover suite). acp_learning_success gives ACP Graph's learning label, so a provider failure after launch abandons the prompt-experiment trial instead of charging the variant."
 +++
 
 ## Problem

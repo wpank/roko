@@ -18,7 +18,11 @@
 //! true`. Each record lists the rules left out under `excluded`. A caller that ran the verify
 //! steps on the unchanged base (speclint's `--dynamic`) passes each task's [`RedOnBase`] to
 //! [`lint_files_with`] or [`score_task`].
+//!
+//! The self-model's requests to refine a task's spec (6133) are read here too: [`refine_verdict`]
+//! says what the spec gate makes of them (gap-2b0575).
 
+mod refine;
 mod shell;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -30,6 +34,10 @@ use regex::Regex;
 use serde::Serialize;
 use toml::{Table, Value};
 
+pub use refine::{
+    REFINE_REQUESTED, RefineRequest, RefineVerdict, read_refine_requests, refine_requests,
+    refine_verdict,
+};
 pub use shell::{
     Scope, StepAnalysis, VerifyClass, analyze_step, is_test_path, named_paths, normpath,
     runs_program, vacuous_reason,

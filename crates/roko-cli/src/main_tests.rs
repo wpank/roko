@@ -1392,6 +1392,7 @@ fn no_holdout_flag_draws_no_holdout_attempts() {
             score: 90.0,
             band: "A",
             findings: Vec::new(),
+            advice: Vec::new(),
             holdout: false,
             propensity: None,
         };

@@ -2488,6 +2488,32 @@ pub(crate) fn usage_is_priced(
     usage.has_known_cost() || model_has_price(snapshot, profile, model_slug)
 }
 
+/// What the call of `result` to `model_slug` costs at API rates, with the id of the price
+/// snapshot that priced it (S01 §4.4, gap-546e8a), as an attempt's verdict prices its own: the
+/// agent's figure when it priced its tokens at the run's `snapshot` itself (a CLI agent,
+/// backlog 6105), else its usage at the snapshot's row for `model_slug`. `None` when neither
+/// prices the call, or the run has no snapshot. Graph helper calls and plan authoring's calls
+/// (gap-d10a97) price their cost rows with it.
+pub(crate) fn api_equiv(
+    result: &AgentResult,
+    snapshot: Option<&PriceSnapshot>,
+    model_slug: &str,
+) -> Option<(f64, String)> {
+    let snapshot = snapshot?;
+    let agent_priced = result
+        .usage_obs
+        .as_ref()
+        .filter(|observation| observation.price_snapshot_id.as_deref() == Some(snapshot.id()));
+    let usd = match agent_priced {
+        Some(observation) => observation.api_equiv_usd?,
+        None => {
+            let tokens = usage_token_counts(&result.usage);
+            snapshot.price(model_slug, &tokens)?.api_equiv_usd
+        }
+    };
+    Some((usd, snapshot.id().to_string()))
+}
+
 /// What `usage` would have cost with no prompt caching, priced like
 /// [`fill_usage_cost_from_pricing`]: the price snapshot's input and output
 /// rates, else the profile's, else the model's built-in pricing. `None` when

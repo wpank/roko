@@ -2649,8 +2649,9 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path, no_holdout: bool) -> Op
 /// run` is about to start, with the `[spec_quality]` settings of the
 /// workspace's `roko.toml` (the defaults when it has none or does not
 /// parse). Maximize mode (`no_holdout`, or `[experiments] maximize`) holds no
-/// task out, as in the plan-load gate (gap-29fe0a). Logs each finding with
-/// its task, rule and detail, and returns `Some(1)` when a task is blocked,
+/// task out, as in the plan-load gate (gap-29fe0a). The self-model's refine
+/// requests apply as they do there (gap-c0d709). Logs each finding with its
+/// task, rule and detail, and returns `Some(1)` when a task is blocked,
 /// before any agent starts.
 fn spec_gate_before_run(plans_dir: &Path, workdir: &Path, no_holdout: bool) -> Option<i32> {
     let mut config = std::fs::read_to_string(workdir.join("roko.toml"))
@@ -2671,6 +2672,13 @@ fn spec_gate_before_run(plans_dir: &Path, workdir: &Path, no_holdout: bool) -> O
     // run passes before its first dispatch (3231), so it is not repeated.
     let red_on_base = std::collections::BTreeMap::new();
     let mut report = roko_cli::spec_gate::check_plans(&files, workdir, &config, &red_on_base);
+    // The self-model's refine requests from earlier runs, as the plan-load
+    // gate applies them: under enforce, an open request from a self-model
+    // that routed refuses the run here; under advise it is advice.
+    if config.is_on() {
+        let requests = roko_cli::spec_gate::workspace_refine_requests(workdir);
+        roko_cli::spec_gate::apply_refine_requests(&mut report, &requests);
+    }
     // The same holdout draw as the plan-load gate (3232), so a held-out task
     // is not refused here on its score.
     let epoch = roko_cli::spec_gate::holdout_epoch();
@@ -3461,6 +3469,94 @@ verify = [{{ phase = "compile", command = "{command}" }}]
         // Scores advise: a vague but checkable task still runs.
         write_plan("cargo test -p x --lib retry");
         assert_eq!(validate_before_run(&plans, workspace.path(), false), None);
+    }
+
+    /// gap-c0d709: `plan run`'s early spec check applies the self-model's
+    /// refine requests as the plan-load gate does. A request from a
+    /// self-model that routed, made on a plan-load record whose red-on-base
+    /// check ran, refuses the run under enforce before it starts, and only
+    /// advises under advise. A spec refined with a non-goal runs under
+    /// enforce, though it still scores below the record the request saw.
+    #[test]
+    fn spec_gate_before_run_reads_refine_requests() {
+        use roko_cli::spec_gate::{SPEC_RECORDS_FILE, check_plans, record_plan};
+        use roko_core::config::{SpecQualityConfig, SpecQualityMode};
+        use roko_gate::spec_quality::RedOnBase;
+
+        let workspace = tempdir().expect("tempdir");
+        let plans = workspace.path().join("plans");
+        let tasks = plans.join("refine/tasks.toml");
+        std::fs::create_dir_all(plans.join("refine")).expect("plan dir");
+        let write_plan = |extra: &str| {
+            let text = format!(
+                r#"
+[meta]
+plan = "refine"
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+description = "Add the retry limit to `parse_config`."
+role = "implementer"
+files = ["src/config.rs"]
+depends_on = []
+verify = [{{ phase = "test", command = "cargo test -p demo --lib retry" }}]
+{extra}
+"#
+            );
+            std::fs::write(&tasks, text).expect("write the plan");
+        };
+        // No score blocks and no holdout draw: only a request can refuse.
+        let set_mode = |mode: &str| {
+            let config = format!(
+                "[spec_quality]\nmode = \"{mode}\"\nblock_threshold = 0.0\nholdout_frac = 0.0\n"
+            );
+            std::fs::write(workspace.path().join("roko.toml"), config).expect("write roko.toml");
+        };
+        write_plan("");
+        set_mode("enforce");
+        assert_eq!(spec_gate_before_run(&plans, workspace.path(), false), None);
+
+        // An earlier run's ledger: the plan-load gate's record, its
+        // red-on-base check run, then the self-model's request.
+        let key = ("plans/refine/tasks.toml".to_string(), "T1".to_string());
+        let checked = std::collections::BTreeMap::from([(key, RedOnBase::Fail)]);
+        let settings = SpecQualityConfig {
+            mode: SpecQualityMode::Enforce,
+            ..SpecQualityConfig::default()
+        };
+        let at_load = check_plans(&[tasks.clone()], workspace.path(), &settings, &checked);
+        let run = workspace.path().join(".roko/runs/run-1");
+        record_plan(&at_load, &tasks, workspace.path(), &run, "run-1");
+        let request = serde_json::json!({
+            "ev": "spec.refine_requested",
+            "run_id": "run-1",
+            "plan_id": "refine",
+            "task_id": "T1",
+            "mode": "active",
+            "acting": true,
+            "spec_score": at_load.decisions[0].score / 100.0,
+            "recorded_at_ms": 1,
+        });
+        let ledger = run.join(SPEC_RECORDS_FILE);
+        let records = std::fs::read_to_string(&ledger).expect("the run's spec records");
+        std::fs::write(&ledger, format!("{records}{request}\n")).expect("add the request");
+
+        assert_eq!(
+            spec_gate_before_run(&plans, workspace.path(), false),
+            Some(1)
+        );
+        set_mode("advise");
+        assert_eq!(spec_gate_before_run(&plans, workspace.path(), false), None);
+
+        // A non-goal refines the spec, which still scores below the record
+        // the request was made on.
+        write_plan(r#"non_goals = ["Leave the config file format as it is."]"#);
+        let none = std::collections::BTreeMap::new();
+        let early = check_plans(&[tasks.clone()], workspace.path(), &settings, &none);
+        assert!(early.decisions[0].score < at_load.decisions[0].score);
+        set_mode("enforce");
+        assert_eq!(spec_gate_before_run(&plans, workspace.path(), false), None);
     }
 
     /// gap-d60281: `plan run` stops on a flag the Graph engine does not

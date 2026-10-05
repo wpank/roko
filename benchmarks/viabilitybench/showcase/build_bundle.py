@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Build a showcase replay bundle, `showcase-bundle/1` (S10 §5.5, task 9314), from one experiment's results.
 
-    build_bundle.py --experiment PILOT [--results DIR] [--metrics FILE] [--mechanism DIR] [--timeline FILE]
-                    [--econ FILE] [--bundle-id ID] [--title TEXT] [--featured] [--created-at ISO-8601] [--out DIR]
+    build_bundle.py --experiment PILOT [--results DIR] [--metrics FILE] [--verdicts FILE] [--mechanism DIR]
+                    [--timeline FILE] [--econ FILE] [--bundle-id ID] [--title TEXT] [--featured]
+                    [--created-at ISO-8601] [--out DIR]
 
 **Input.** Every run of the experiment, `<results>/<experiment>/<run_id>/records.jsonl` (`vb.run_record/1`, S08 §5.4),
 where results is `--results`, else `$VB_RESULTS`, else `~/.roko-bench/viability`; the analysis output, `--metrics`
@@ -11,7 +12,9 @@ as `<results>/<experiment>/mechanism/`, S01's mechanism records (`<kind>.jsonl`)
 `showcase-event/1` rows. Every run record and MetricRecord must pass `schema/validate.py`, and every MetricRecord's run
 ids must name runs of the experiment. M3's economics report comes along when `--econ` names one or the experiment has
 one at `.roko/econ/<experiment>/econ-report.json` (S04 §5): a `vb.econ_report/1` document of this experiment alone,
-priced from the records' snapshot.
+priced from the records' snapshot. S09's Holm decisions come along the same way, `--verdicts` or
+`<results>/<experiment>/verdicts.json` (`analysis/holm.py`'s `write_verdicts`, gap-2da8ec): `vb.verdict/1` records,
+one per hypothesis it decided, each naming only runs of the experiment.
 
 **Output.** `--out` (default `.roko/showcase/bundles/<bundle_id>`), which must not exist yet:
 
@@ -20,6 +23,8 @@ priced from the records' snapshot.
     data/records.jsonl     the run records, redacted: no transcript (`provenance.transcript_ref` null, any other
                            transcript field dropped), and every prompt and hidden-test name as `sha256:<hex>`
     data/metrics.jsonl     the MetricRecords: the only source of the numbers a view shows
+    data/verdicts.jsonl    S09's `vb.verdict/1` decisions, when there are any: the only source of a tile's
+                           claim_state and the overview's negatives, once one exists for its hypothesis
     data/mechanism/*.jsonl the mechanism records of the bundle's runs, when there are any
     timeline/events.jsonl  the replay timeline, when one is given
     econ/<id>/econ-report.json
@@ -28,15 +33,18 @@ priced from the records' snapshot.
     views/<view>.json      the R1 views the data makes: `overview`, the claims board, and `p1-head-to-head` when an
                            arm of the head-to-head ran (`m4-audits` waits for S05's audit records)
 
-No statistic is computed here: a view copies MetricRecord values, each with a `metric_ref` that names its record, and
-`verify_bundle.py` re-derives every view from `data/metrics.jsonl` and `data/records.jsonl` byte for byte. Each view
-follows its JSON Schema in `demo/demo-app/src/showcase/schemas/` and lists the records it shows in `metrics`
-(`ViewMetric` in `contracts.ts`), so the page's render guard can check the n and interval of every number before it
-draws one; a record with n below 1 has no run behind it and no view shows it. Claim states are S09's test records'
-verdicts, and no results directory records one yet, so every claim is NOT_YET_MEASURED and names where it will be
-measured. A view's provenance envelope (`showcase-provenance/1`) comes from the manifest and the run records, so every
-record needs `execution.started_at` and `finished_at`, and a known `costs.billed_usd`; its source's `sha256_verified`
-is stored false, for the reader that checks the bundle's checksums to set.
+No statistic is computed here: a view copies MetricRecord and verdict record values, each with a `metric_ref` (or,
+for a claim state, nothing to re-derive at all) that names its record, and `verify_bundle.py` re-derives every view
+from `data/metrics.jsonl`, `data/verdicts.jsonl` and `data/records.jsonl` byte for byte. Each view follows its JSON
+Schema in `demo/demo-app/src/showcase/schemas/` and lists the records it shows in `metrics` (`ViewMetric` in
+`contracts.ts`), so the page's render guard can check the n and interval of every number before it draws one; a
+record with n below 1 has no run behind it and no view shows it. A tile's claim state is S09's test record's own
+verdict (gap-2da8ec): `NOT_YET_MEASURED`, still, for a hypothesis the results directory has no verdict record for
+at all, and otherwise exactly that record's `claim_state`, copied, never recomputed; a `NOT_SUPPORTED` one also
+becomes one of the overview's negatives. A view's provenance envelope (`showcase-provenance/1`) comes from the
+manifest and the run records, so every record needs `execution.started_at` and `finished_at`, and a known
+`costs.billed_usd`; its source's `sha256_verified` is stored false, for the reader that checks the bundle's
+checksums to set.
 
 Exit status: 0 when the bundle is written, 1 when the input is refused, 2 on a usage error.
 """
@@ -50,6 +58,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -68,8 +77,13 @@ REDACTION = {"transcripts": "excluded", "prompts": "sha256", "hidden_tests": "sh
 HASHED = re.compile(r"^sha256:[0-9a-f]{64}$")
 ECON_REPORT = "econ-report.json"  # M3's economics report (S04 §5), `analysis/econ.py`'s output
 ECON_SCHEMA = "vb.econ_report/1"
+VERDICTS_FILE = "verdicts.json"  # S09 Holm decisions (analysis/holm.py's write_verdicts), beside metrics.json
+VERDICT_SCHEMA = "vb.verdict/1"
+VERDICT_CLAIM_STATES = ("SUPPORTED", "NOT_SUPPORTED", "INCONCLUSIVE")
 
-# A claim's state is the verdict of S09's test record (contracts.ts `ClaimState`); no results directory holds one yet.
+# A claim's state is the verdict of S09's test record (contracts.ts `ClaimState`): copied from a matching
+# `vb.verdict/1` record's own `claim_state` (gap-2da8ec) when the results directory has one for the hypothesis,
+# else this default -- no experiment ran that decision yet.
 CLAIM_STATE = "NOT_YET_MEASURED"
 # A view shows numbers of several estimators: its provenance points at each metric's own, listed with the numbers.
 PER_METRIC = "per metric (listed below)"
@@ -208,6 +222,19 @@ def econ_report_problem(report: Any, experiment: str, price_snapshot_id: Any) ->
     return None
 
 
+def verdict_problem(record: Any, experiment: str) -> str | None:
+    """Why `record` is not a `vb.verdict/1` decision of `experiment`, or None (gap-2da8ec)."""
+    if not isinstance(record, dict) or record.get("schema_version") != VERDICT_SCHEMA:
+        return f"it is not a {VERDICT_SCHEMA} record"
+    if record.get("experiment_id") != experiment:
+        return f"it decides {experiment!r}'s hypothesis for {record.get('experiment_id')!r}"
+    if record.get("hypothesis") not in {f"H{n}" for n in range(1, 8)}:
+        return f"hypothesis {record.get('hypothesis')!r} is not one of H1-H7"
+    if record.get("claim_state") not in VERDICT_CLAIM_STATES:
+        return f"claim_state {record.get('claim_state')!r} is not one of {', '.join(VERDICT_CLAIM_STATES)}"
+    return None
+
+
 def is_prompt_key(key: str) -> bool:
     lowered = key.lower()
     return lowered in ("prompt", "prompts") or lowered.endswith(("_prompt", "_prompts"))
@@ -278,10 +305,14 @@ def provenance_envelope(manifest: dict, metrics: list[dict], metrics_bytes: byte
     }
 
 
-def project_views(manifest: dict, metrics: list[dict], metrics_bytes: bytes, records: list[dict]) -> dict[str, bytes]:
+def project_views(manifest: dict, metrics: list[dict], metrics_bytes: bytes, records: list[dict],
+                  verdicts: Sequence[dict] = ()) -> dict[str, bytes]:
     """The R1 views the data makes, as the bytes of `views/<view>.json`: MetricRecord values copied, never computed,
-    in the shapes of the page's contracts, each view with its `metrics` index of the records it shows."""
+    in the shapes of the page's contracts, each view with its `metrics` index of the records it shows. `verdicts`
+    (S09 `vb.verdict/1` decisions, `analysis/holm.py`; gap-2da8ec) gives a tile its measured `claim_state`
+    instead of the `NOT_YET_MEASURED` default, by its own `hypothesis`, copied verbatim, never recomputed."""
     provenance = provenance_envelope(manifest, metrics, metrics_bytes, records)
+    by_hypothesis = {record["hypothesis"]: record for record in verdicts}
     # The guard refuses a number with no sample size, so a record with n below 1 (its value null) is shown nowhere.
     refs = [
         (metric_ref(record), record)
@@ -346,6 +377,7 @@ def project_views(manifest: dict, metrics: list[dict], metrics_bytes: bytes, rec
             estimate = headline(arm, tile["metric"], tile.get("label_source"))
             if estimate is not None:
                 rows.append({"label": ARM_LABELS.get(arm, arm), "estimate": estimate})
+        verdict = by_hypothesis.get(tile["hypothesis"])
         tiles.append(
             {
                 "id": tile["id"],
@@ -353,22 +385,29 @@ def project_views(manifest: dict, metrics: list[dict], metrics_bytes: bytes, rec
                 "mechanism": tile["mechanism"],
                 "title": tile["title"],
                 "hypothesis": tile["hypothesis"],
-                "claim_state": CLAIM_STATE,
+                "claim_state": verdict["claim_state"] if verdict else CLAIM_STATE,
                 "rows": rows,
                 "planned_in": list(tile["planned_in"]),
                 "view": tile["view"] if rows and tile["view"] in made else None,
             }
         )
 
-    # Results against the thesis come from S09's test records, which no results directory holds yet: no negatives.
-    views = {"overview": {"schema": "showcase-view/overview/1", "tiles": tiles, "negatives": []}}
+    # Results against the thesis are S09's NOT_SUPPORTED verdicts (gap-2da8ec): a tile whose own measured claim
+    # state says so, never a state this projection derives on its own.
+    negatives = [
+        {"id": f"neg-{tile['id']}", "kind": "other", "text": f"{tile['title']}: not supported by the measured "
+         "data.", "rows": tile["rows"], "view": tile["view"]}
+        for tile in tiles if tile["claim_state"] == "NOT_SUPPORTED"
+    ]
+    views = {"overview": {"schema": "showcase-view/overview/1", "tiles": tiles, "negatives": negatives}}
     if arms:
         prereg_ids = {record.get("prereg_id") for record in metrics}
+        h1_verdict = by_hypothesis.get("H1")
         views["p1-head-to-head"] = {
             "schema": "showcase-view/p1-head-to-head/1",
             "claim": {
                 "hypothesis": "H1",
-                "state": CLAIM_STATE,
+                "state": h1_verdict["claim_state"] if h1_verdict else CLAIM_STATE,
                 "prereg_id": next(iter(prereg_ids)) if len(prereg_ids) == 1 else None,
                 "planned_in": list(OVERVIEW_TILES[0]["planned_in"]),
                 "text": H1_TEXT,
@@ -509,6 +548,24 @@ def build(args: argparse.Namespace) -> Path:
         unknown = sorted(set(metric["run_ids"]) - set(run_ids))
         if unknown:
             raise BuildError(f"MetricRecord {number} ({metric['metric']}) names runs the experiment lacks: {unknown}")
+    verdicts_path = Path(args.verdicts) if args.verdicts else experiment_dir / VERDICTS_FILE
+    verdicts: list[dict] = []
+    if args.verdicts or verdicts_path.is_file():
+        try:
+            verdicts_doc = json.loads(verdicts_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise BuildError(f"cannot read the verdicts file {verdicts_path}: {error}") from error
+        verdicts = verdicts_doc.get("records") if isinstance(verdicts_doc, dict) else None
+        if not isinstance(verdicts, list) or not verdicts:
+            raise BuildError(f"{verdicts_path} holds no verdict records")
+        for number, record in enumerate(verdicts, start=1):
+            problem = verdict_problem(record, args.experiment)
+            if problem:
+                raise BuildError(f"verdict record {number} in {verdicts_path} is invalid: {problem}")
+            unknown = sorted(set(record["run_ids"]) - set(run_ids))
+            if unknown:
+                raise BuildError(f"verdict record {number} ({record['hypothesis']}) names runs the experiment "
+                                 f"lacks: {unknown}")
     price_snapshot_id = only({record["price_snapshot_id"] for record in records}, "price snapshot")
     if metrics_doc.get("price_snapshot_id", price_snapshot_id) != price_snapshot_id:
         raise BuildError("the metrics file and the records use different price snapshots")
@@ -552,6 +609,10 @@ def build(args: argparse.Namespace) -> Path:
         files[path] = read_econ_report(econ, args.experiment, price_snapshot_id)
         schemas[path] = ECON_SCHEMA
         rows[path] = 1
+    if verdicts:
+        files["data/verdicts.jsonl"] = jsonl_bytes(verdicts)
+        schemas["data/verdicts.jsonl"] = VERDICT_SCHEMA
+        rows["data/verdicts.jsonl"] = len(verdicts)
 
     created_at = args.created_at or dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     manifest = {
@@ -579,7 +640,7 @@ def build(args: argparse.Namespace) -> Path:
         "reproduce": [f"vb run --experiment {args.experiment}", f"vb report --experiment {args.experiment}"],
     }
     # The views come from the files as the bundle holds them, as verify_bundle.py re-derives them.
-    views = project_views(manifest, metrics, files["data/metrics.jsonl"], redacted)
+    views = project_views(manifest, metrics, files["data/metrics.jsonl"], redacted, verdicts)
     manifest["views"] = list(views)
 
     out.mkdir(parents=True)
@@ -599,6 +660,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--experiment", required=True, help="the experiment id, e.g. PILOT")
     parser.add_argument("--results", help="the results root (default: $VB_RESULTS, then ~/.roko-bench/viability)")
     parser.add_argument("--metrics", help="the vb.metrics/1 file (default: <results>/<experiment>/metrics.json)")
+    parser.add_argument("--verdicts", help="the vb.verdicts/1 file (default: <results>/<experiment>/verdicts.json, "
+                        "when there is one)")
     parser.add_argument("--mechanism", help="a directory of S01 mechanism records, <kind>.jsonl")
     parser.add_argument("--timeline", help="a JSONL file of showcase-event/1 rows")
     parser.add_argument(

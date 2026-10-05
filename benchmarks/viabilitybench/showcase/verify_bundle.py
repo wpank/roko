@@ -11,9 +11,10 @@ A bundle passes only when every rule holds:
 - `simulated`: every `simulated` field in every file is `false`, and the manifest has one;
 - `records`: every run record passes `schema/validate.py` and names a run of the bundle;
 - `metrics`: every MetricRecord passes `schema/validate.py`;
-- `run_ids`: every MetricRecord lists run ids, each a run of the bundle;
-- `views`: the manifest names exactly the views `data/metrics.jsonl` and `data/records.jsonl` make, and each is there,
-  re-derived from them byte for byte;
+- `run_ids`: every MetricRecord and verdict record lists run ids, each a run of the bundle;
+- `verdicts`: every `data/verdicts.jsonl` row is a `vb.verdict/1` record (gap-2da8ec);
+- `views`: the manifest names exactly the views `data/metrics.jsonl`, `data/verdicts.jsonl` and `data/records.jsonl`
+  make, and each is there, re-derived from them byte for byte;
 - `transcripts`: no transcript file and no transcript field with a value;
 - `hidden`: every prompt and hidden-test value, the names of failed truth-suite checks included, is `sha256:<hex>`;
 - `timeline`: when `timeline/events.jsonl` is there, its rows are `showcase-event/1` replay events of the bundle's
@@ -46,6 +47,7 @@ from build_bundle import (
     project_views,
     sha256_hex,
     validate,
+    verdict_problem,
 )
 
 SUM_LINE = re.compile(r"^([0-9a-f]{64})  (.+)$")
@@ -179,9 +181,21 @@ def check(bundle: Path) -> list[tuple[str, str]]:
         elif not set(ids) <= run_ids:
             problems.append(("run_ids", f"MetricRecord {number} names runs the bundle does not list"))
 
+    verdicts = read_rows(bundle, "data/verdicts.jsonl", problems, "verdicts") \
+        if (bundle / "data/verdicts.jsonl").is_file() else []
+    experiments = manifest.get("experiment_ids") or []
+    experiment = experiments[0] if len(experiments) == 1 else None
+    for number, record in enumerate(verdicts, start=1):
+        problem = verdict_problem(record, experiment)
+        if problem:
+            problems.append(("verdicts", f"verdict record {number}: {problem}"))
+        ids = record.get("run_ids") if isinstance(record, dict) else None
+        if ids and not set(ids) <= run_ids:
+            problems.append(("run_ids", f"verdict record {number} names runs the bundle does not list"))
+
     metrics_file = bundle / "data/metrics.jsonl"
     if metrics_file.is_file():
-        expected = project_views(manifest, metrics, metrics_file.read_bytes(), records)
+        expected = project_views(manifest, metrics, metrics_file.read_bytes(), records, verdicts)
         named = list(manifest.get("views") or [])
         for name in expected:
             if name not in named:

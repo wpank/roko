@@ -77,6 +77,24 @@ def write_econ_report(path: Path, **changes) -> bytes:
     return data
 
 
+def write_verdict(hypothesis: str, claim_state: str, **changes) -> dict:
+    """A `vb.verdict/1` record of the fixture experiment (`analysis/holm.py`'s `verdict_records` shape)."""
+    rejected = claim_state in ("SUPPORTED", "NOT_SUPPORTED")
+    return {
+        "schema_version": "vb.verdict/1", "experiment_id": "FIXTURE-P1", "hypothesis": hypothesis, "alpha": 0.05,
+        "p_adjusted": 0.01 if rejected else 0.9, "rejected": rejected, "claim_state": claim_state,
+        "test": "graphical_holm", "metrics": [], "run_ids": [],
+        **changes,
+    }
+
+
+def write_verdicts_doc(path: Path, records: list[dict]) -> None:
+    document = {"schema_version": "vb.verdicts/1", "experiment_id": "FIXTURE-P1",
+               "created_at": "2026-10-05T00:00:00Z", "records": records}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+
 def rows(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -290,6 +308,45 @@ def test_the_m4_tile_shows_only_an_audit_estimate(tmp_path: Path) -> None:
     estimate = {"value": 0.25, "ci": [0.05, 0.6], "metric_ref": build_bundle.metric_ref(audited)}
     assert tile["rows"] == [{"label": "cheap·roko", "estimate": estimate}]
     assert tile["view"] is None  # no m4-audits view until S05's audit records are projected
+
+
+def test_build_reads_an_s09_verdict_record_into_claim_state(tmp_path: Path) -> None:
+    """gap-2da8ec: a results directory's verdicts.json (analysis/holm.py's write_verdicts) feeds a tile's measured
+    claim_state, the p1-head-to-head claim's state, and a NOT_SUPPORTED verdict's negative, copying the verdict's
+    own value and computing none of it; a hypothesis with no verdict record keeps the NOT_YET_MEASURED default."""
+    results, _, _ = copied_results(tmp_path)
+    write_verdicts_doc(results / "FIXTURE-P1" / "verdicts.json", [
+        write_verdict("H1", "SUPPORTED"),
+        write_verdict("H2", "NOT_SUPPORTED"),
+    ])
+    out = tmp_path / "b-verdicts"
+    assert build_from(results, out) == 0
+    assert verify_bundle.check(out) == []
+    assert verify_bundle.main([str(out)]) == 0
+
+    verdict_rows = rows(out / "data" / "verdicts.jsonl")
+    assert {row["hypothesis"]: row["claim_state"] for row in verdict_rows} == {"H1": "SUPPORTED", "H2": "NOT_SUPPORTED"}
+
+    overview = view(out, "overview")
+    tiles = {tile["id"]: tile["claim_state"] for tile in overview["tiles"]}
+    assert tiles["p1-usd-per-verified"] == "SUPPORTED"  # H1: a verdict record says so
+    assert tiles["p1-consistency"] == "NOT_SUPPORTED"  # H2: likewise
+    assert tiles["p1-routing"] == "NOT_YET_MEASURED"  # H4: no verdict record for it, so the default holds
+    assert [negative["id"] for negative in overview["negatives"]] == ["neg-p1-consistency"]
+    assert overview["negatives"][0]["rows"] == next(
+        tile for tile in overview["tiles"] if tile["id"] == "p1-consistency")["rows"]
+
+    assert view(out, "p1-head-to-head")["claim"]["state"] == "SUPPORTED"  # H1 again, via its own claim
+
+
+def test_a_verdict_record_of_another_experiment_is_refused(tmp_path: Path) -> None:
+    """The builder holds a verdict record to the experiment it bundles, like an econ report."""
+    results, _, _ = copied_results(tmp_path)
+    write_verdicts_doc(results / "FIXTURE-P1" / "verdicts.json", [write_verdict("H1", "SUPPORTED",
+                                                                                experiment_id="PILOT")])
+    out = tmp_path / "b-foreign-verdict"
+    assert build_from(results, out) == 1
+    assert not out.exists()
 
 
 def test_the_arm_labels_are_the_arm_files() -> None:

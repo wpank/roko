@@ -1385,10 +1385,7 @@ impl Logs {
                 facts.push(format!(
                     "DP4 counted {} exclusions on {} verdicts, and route rows name {}; verdicts \
                      with a strictness-ladder level above V0 (DP3): {}",
-                    self.trust_counted,
-                    self.trust_routed,
-                    self.trust_logged,
-                    self.ladder_deepened
+                    self.trust_counted, self.trust_routed, self.trust_logged, self.ladder_deepened
                 ));
                 match (self.trust_counted, self.trust_logged) {
                     (0, 0) => reason(ReasonCode::NoOpportunity),

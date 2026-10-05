@@ -1010,9 +1010,7 @@ impl GraphTaskDispatcher {
         attempt.pricing = self.pricing_snapshot();
         // S02.P1-14: the chain's arms, drawn on its first attempt, and the
         // placebo's decision among them (S02 L12).
-        attempt.arm_set = self
-            .attempts
-            .arm_set(&attempt, &self.workdir, &self.config);
+        attempt.arm_set = self.attempts.arm_set(&attempt, &self.workdir, &self.config);
         attempt.record_placebo_decision();
         // M1 (S06 T13, 8123): the θ the attempt runs, and its decision row.
         if let Some(sink) = self.feedback.homeostasis.as_deref() {

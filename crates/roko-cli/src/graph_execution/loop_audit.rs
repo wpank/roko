@@ -12,14 +12,16 @@
 //! The tick only observes: it changes no executed policy, whatever
 //! `[learning.audit] enforce` says (attempt open reads the ledger's states
 //! for that). It calls no provider and writes nothing but its census and its
-//! ledger, also when learning is frozen (gap-644040). An error is logged and
-//! never fails the run.
+//! ledger. A frozen run (decision 2218) has no tick: attempt open draws each
+//! chain's arms from the ledger's states (gap-addf2a), so the census and the
+//! ledger are learned state, and the next live run's tick folds the frozen
+//! run's rows. An error is logged and never fails the run.
 
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use roko_core::DashboardEvent;
-use roko_core::config::learning::LearningAuditConfig;
+use roko_core::config::learning::{LearningAuditConfig, LearningConfig};
 use roko_learn::loop_audit::ledger::{LoopAuditRecord, LoopAuditRow};
 use roko_learn::loop_audit::{LoopAuditor, Qualifier};
 
@@ -31,14 +33,19 @@ use crate::runner::graph_tui_bridge::GraphTuiBridge;
 static TICKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Run the audit tick for checkpoint run `run_id` of the workspace
-/// `workdir`, which just closed, and publish its rows through `bridge`.
+/// `workdir`, which just closed, with `learning`'s `[learning.audit]`, and
+/// publish its rows through `bridge`; nothing when `learning` is frozen.
 pub fn audit_tick(
     workdir: &Path,
-    config: &LearningAuditConfig,
+    learning: &LearningConfig,
     run_id: &str,
     bridge: &GraphTuiBridge,
 ) {
-    tick(workdir, config, run_id, Utc::now(), bridge);
+    if learning.frozen {
+        tracing::debug!(run_id, "learning is frozen: no loop-audit tick");
+        return;
+    }
+    tick(workdir, &learning.audit, run_id, Utc::now(), bridge);
 }
 
 /// [`audit_tick`] at `now`. Returns how many rows it appended.
@@ -359,5 +366,37 @@ mod tests {
         let third = [KNOW_ON_PROBATION, PLAY_ON_PROBATION, PLAY_READMITTED];
         assert_eq!(summaries(&rows[5..]), third);
         assert_eq!(loop_events(&hub).len(), 8);
+    }
+
+    /// Decision 2218 since gap-addf2a: a frozen run has no audit tick, so it
+    /// writes neither the census nor the ledger, whose states attempt open
+    /// draws arms from, and publishes nothing. The next live run's tick folds
+    /// the frozen run's rows with its own.
+    #[test]
+    fn frozen_run_has_no_audit_tick() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let learn = dir.path().join(".roko/learn");
+        let hub = crate::state_hub::shared_state_hub();
+        let bridge = GraphTuiBridge::new(TuiBridge::new(hub.sender()));
+        write_run(dir.path(), "gr-frozen", 40);
+        let frozen = LearningConfig {
+            frozen: true,
+            ..LearningConfig::default()
+        };
+        audit_tick(dir.path(), &frozen, "gr-frozen", &bridge);
+        assert!(!learn.join(CENSUS_STATE_FILE).exists(), "no census");
+        assert!(!learn.join("loop-audit.jsonl").exists(), "no ledger");
+        assert!(loop_events(&hub).is_empty());
+
+        write_run(dir.path(), "gr-live", 10);
+        audit_tick(dir.path(), &LearningConfig::default(), "gr-live", &bridge);
+        let ledger = Ledger::in_learn_dir(&learn);
+        let rows = ledger.read().expect("read the ledger");
+        let first = [KNOW_ON_PROBATION, PLAY_FLAGGED, PLAY_FLAGGED_MOVE];
+        assert_eq!(summaries(&rows), first);
+        let LoopAuditRow::Health(play) = &rows[1].row else {
+            panic!("L-play's health row: {:?}", rows[1]);
+        };
+        assert_eq!((play.n_opp, play.n_learned, play.n_default), (50, 40, 10));
     }
 }

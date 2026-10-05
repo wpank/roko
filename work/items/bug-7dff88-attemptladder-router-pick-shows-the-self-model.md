@@ -81,3 +81,10 @@ unchanged from `bug-78e5ce`'s original report.
   note; filed separately in case that item closes on its single named `[[verify]]` command
   (which covers facet 2 only) before this facet lands. A matching note has been added to
   `bug-78e5ce`.
+
+## Progress
+
+- bug-7dff88: implemented at 55f736563 on `work/bug-7dff88`; cargo verification deferred to the batch gate.
+  `ladder.rs::router_pick` returns the route row's learned proposal except on rows whose `audit.loop_id` is
+  `SELF_MODEL_LOOP` (now `pub(crate)` in `dispatch/model_routing.rs`). L-M3 rows carry the self-model's pick
+  there; the prediction row and the route row keep it. Test: `router_pick_does_not_show_the_self_models_pick_on_l_m3_rows`.

@@ -1236,8 +1236,9 @@ fn route_assignment(inputs: &RoutingInputs, assigned_at: i64) -> Option<Decision
 // ─── M3: the self-model's start rung (6130) ────────────────────────────
 
 /// The loop whose epochs let the self-model choose on the route layer (S03
-/// §4.3): it shares the layer with L-route, rotating by epoch.
-const SELF_MODEL_LOOP: &str = "L-M3";
+/// §4.3): it shares the layer with L-route, rotating by epoch. Its rows'
+/// learned proposal is the self-model's pick (bug-7dff88).
+pub(crate) const SELF_MODEL_LOOP: &str = "L-M3";
 
 /// L-M3's opportunity reason: an active self-model proposed the start rung.
 const SELF_MODEL_OPPORTUNITY: &str = "self_model_start";

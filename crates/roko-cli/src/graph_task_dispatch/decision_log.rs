@@ -93,6 +93,9 @@ impl GraphTaskDispatcher {
         if included.is_empty() || self.learning_frozen() {
             return;
         }
+        // A store of its own, which shares the file's write gate with every
+        // other store of the file (bug-c4f0ed): the count and the knowledge
+        // lifecycle's rewrites never lose each other's update.
         let store = roko_neuro::KnowledgeStore::for_workdir(&self.workdir);
         let path = store.path().to_path_buf();
         crate::background_writes::spawn(&path, async move {

@@ -43,7 +43,7 @@ impl KnowledgeStore {
         );
         entry.source = Some("dream-consolidation".to_string());
         let entry = normalize_entry_for_ingest(entry);
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         if entries.iter().any(|existing| existing.id == entry.id) {
             return Ok(false);
@@ -66,7 +66,7 @@ impl KnowledgeStore {
             "cross-domain derivatives require a target domain tag"
         );
         let entry = normalize_entry_for_ingest(entry);
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         if entries.iter().any(|existing| existing.id == entry.id) {
             return Ok(false);
@@ -102,7 +102,7 @@ impl KnowledgeStore {
             agent_output,
         );
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
 
         if let Some(index) = find_similar_anti_pattern_index(&entries, &candidate) {
@@ -163,7 +163,7 @@ impl KnowledgeStore {
             fs::create_dir_all(parent).context("create knowledge directory")?;
         }
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut existing = self.read_all().unwrap_or_default();
         let entries = coalesce_incoming_security_labels(prepare_entries_for_ingest(entries));
         let security_upgraded = join_replayed_security_labels(&mut existing, &entries);
@@ -338,7 +338,7 @@ impl KnowledgeStore {
     where
         F: FnMut(&mut KnowledgeEntry) -> bool,
     {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let mut changed = 0usize;
         for entry in &mut entries {
@@ -361,7 +361,7 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the store cannot be read or rewritten.
     pub fn update_confidence(&mut self, knowledge_id: &str, delta: f64) -> Result<bool> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let mut found = false;
 
@@ -416,7 +416,7 @@ impl KnowledgeStore {
             return Ok(0);
         }
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let mut updated_ids = HashSet::new();
 
@@ -458,7 +458,7 @@ impl KnowledgeStore {
     pub fn check_falsifier(&self, entry_id: &str, violated: bool) -> Result<FalsifierOutcome> {
         const IMMUNITY_OBSERVATIONS: u32 = 3;
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let entry = entries
             .iter_mut()

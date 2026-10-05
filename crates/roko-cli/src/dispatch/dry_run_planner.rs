@@ -123,10 +123,6 @@ mod tests {
     /// The canary's nonce.
     const NONCE: &str = "c-dry1";
 
-    /// The tests that read L-know through the dispatcher take turns: fault
-    /// flags are process-wide.
-    static KNOWLEDGE_READS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// A dispatcher with the production prompt sources and no router.
     fn dispatcher() -> Dispatcher {
         Dispatcher::new(
@@ -158,9 +154,6 @@ mod tests {
     /// P5 is skipped.
     #[test]
     fn dry_run_canary_reaches_p4_without_learned_writes() {
-        let _turn = KNOWLEDGE_READS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().expect("temp dir");
         let learn = dir.path().join(".roko/learn");
         std::fs::create_dir_all(&learn).expect("the learn dir");
@@ -210,15 +203,13 @@ mod tests {
     }
     /// S03 §4.9 (backlog 5129): a CUT flag on L-know empties the knowledge
     /// reader, so a dry-run plan of the canary task carries no knowledge, and
-    /// clearing the flag restores it.
+    /// clearing the flag restores it. The flag lives on this test's own
+    /// registry, so no other test's plans meet it (bug-9d23ed).
     #[cfg(feature = "fault-injection")]
     #[test]
     fn injected_cut_empties_knowledge_section() {
         use roko_learn::loop_audit::faults::{FaultActor, FaultKind, FaultSpec};
 
-        let _turn = KNOWLEDGE_READS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().expect("temp dir");
         let dispatcher = dispatcher();
         let mut writer = KnowledgeCanary::new(dir.path());
@@ -229,30 +220,30 @@ mod tests {
         let plan = || faults::dry_run(|| dispatcher.plan(&task, &ctx)).expect("a dry-run plan");
         assert_eq!(plan().prompt.diagnostics.knowledge_ids, [artifact.clone()]);
 
-        faults::enable(FaultActor::Env, dir.path().join("faults.jsonl"));
-        let cut = FaultSpec {
-            loop_id: "L-know".to_string(),
-            kind: FaultKind::Cut,
-            ttl_secs: 60,
-            max_decisions: 10,
-            spend_cap_usd: None,
-        };
-        faults::set(cut).expect("set a CUT flag");
-        // A live plan does not see a dry-run kind (decision 5101 §9.10).
-        let live = dispatcher.plan(&task, &ctx).expect("a live plan");
+        let file = dir.path().join("faults.jsonl");
+        let (live, cut, restored) = faults::isolated(FaultActor::Env, file, || {
+            let cut = FaultSpec {
+                loop_id: "L-know".to_string(),
+                kind: FaultKind::Cut,
+                ttl_secs: 60,
+                max_decisions: 10,
+                spend_cap_usd: None,
+            };
+            faults::set(cut).expect("set a CUT flag");
+            // A live plan does not see a dry-run kind (decision 5101 §9.10).
+            let live = dispatcher.plan(&task, &ctx).expect("a live plan");
+            let cut = plan();
+            assert!(faults::clear("L-know"), "the flag was set");
+            (live, cut, plan())
+        });
         assert_eq!(live.prompt.diagnostics.knowledge_ids, [artifact.clone()]);
-        let cut = plan();
         assert!(cut.prompt.diagnostics.knowledge_ids.is_empty());
         assert!(!cut.prompt.system_prompt.contains(&artifact));
-
-        assert!(faults::clear("L-know"), "the flag was set");
-        let restored = plan();
         assert_eq!(
             restored.prompt.diagnostics.knowledge_ids,
             [artifact.clone()]
         );
         assert!(restored.prompt.system_prompt.contains(&artifact));
-        faults::disable();
         writer.cleanup(NONCE);
     }
 }

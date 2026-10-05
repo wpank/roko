@@ -70,6 +70,17 @@ use crate::dispatch_v2::ProviderRuntime;
 use crate::dispatch_v2::{AgentDispatcherV2, CliProviderConfig, ProviderDispatchResolver};
 use crate::task_parser::TaskDef;
 
+/// Run `plan` as the fault-flag decision of `ctx`'s attempt (bug-9d23ed):
+/// the route and the prompt read each loop's flag as that one decision,
+/// which the attempt's decision records read again. A plan without an
+/// attempt key reads as it always has, each read a decision of its own.
+fn attempt_decision<T>(ctx: &DispatchContext, plan: impl FnOnce() -> T) -> T {
+    match &ctx.attempt_key {
+        Some(key) => roko_learn::loop_audit::faults::decision(&key.attempt_key(), plan),
+        None => plan(),
+    }
+}
+
 /// Durable prompt-experiment identity and root-workspace store location for
 /// one dispatch attempt.
 ///
@@ -347,17 +358,19 @@ impl Dispatcher {
         task: &TaskDef,
         ctx: &DispatchContext,
     ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
-        let inputs = RoutingInputs::from_task(task, ctx);
-        let (choice, mut decision) = self.router.decide(&inputs)?;
-        decision.task_id.clone_from(&task.id);
-        let prompt_ctx = PromptContext::from_task(task, ctx);
-        let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
-        Ok(RunnerDispatchPlan {
-            model: choice.model.clone(),
-            forced: choice.forced(),
-            source: choice.source,
-            prompt: assembled,
-            route_decision: Some(decision),
+        attempt_decision(ctx, || {
+            let inputs = RoutingInputs::from_task(task, ctx);
+            let (choice, mut decision) = self.router.decide(&inputs)?;
+            decision.task_id.clone_from(&task.id);
+            let prompt_ctx = PromptContext::from_task(task, ctx);
+            let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
+            Ok(RunnerDispatchPlan {
+                model: choice.model.clone(),
+                forced: choice.forced(),
+                source: choice.source,
+                prompt: assembled,
+                route_decision: Some(decision),
+            })
         })
     }
 
@@ -370,17 +383,19 @@ impl Dispatcher {
         ctx: &DispatchContext,
         task_id: &str,
     ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
-        let inputs = RoutingInputs::from_task(task, ctx);
-        let (choice, mut decision) = self.router.decide_logged(&inputs, task_id)?;
-        decision.task_id = task_id.to_string();
-        let prompt_ctx = PromptContext::from_task(task, ctx);
-        let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
-        Ok(RunnerDispatchPlan {
-            model: choice.model.clone(),
-            forced: choice.forced(),
-            source: choice.source,
-            prompt: assembled,
-            route_decision: Some(decision),
+        attempt_decision(ctx, || {
+            let inputs = RoutingInputs::from_task(task, ctx);
+            let (choice, mut decision) = self.router.decide_logged(&inputs, task_id)?;
+            decision.task_id = task_id.to_string();
+            let prompt_ctx = PromptContext::from_task(task, ctx);
+            let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
+            Ok(RunnerDispatchPlan {
+                model: choice.model.clone(),
+                forced: choice.forced(),
+                source: choice.source,
+                prompt: assembled,
+                route_decision: Some(decision),
+            })
         })
     }
 

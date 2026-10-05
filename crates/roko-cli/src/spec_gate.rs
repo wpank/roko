@@ -16,6 +16,14 @@
 //! where a score below `block_threshold` blocks its task as well. There is no
 //! per-run override, so every refusal follows from `roko.toml`.
 //!
+//! The self-model's refine requests (6133) reach the plan-load gate too
+//! (gap-2b0575). When M3 forecasts that a weak spec keeps every cheap rung
+//! short of the target, the attempt runs and the run's spec ledger gets a
+//! `spec.refine_requested` line, which the gate of every later run reads
+//! ([`apply_refine_requests`]). Under `enforce`, an open request from a
+//! self-model that routed blocks its task until the spec scores higher than
+//! the request saw; any other open request is advice.
+//!
 //! `plan run` calls the gate from `validate_before_run`, without the
 //! red-on-base check. Every Graph run, from `plan run`, serve, ACP or
 //! `roko run`, passes the plan-load gate ([`gate_plans`], 3231) before its
@@ -28,8 +36,10 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use roko_core::config::{SpecQualityConfig, SpecQualityMode};
+use roko_fs::RokoLayout;
 use roko_gate::spec_quality::{
-    HARD_FAILS, RedOnBase, SpecQualityRecord, SpecQualityReport, lint_files_with,
+    HARD_FAILS, RedOnBase, RefineRequest, SpecQualityRecord, SpecQualityReport, lint_files_with,
+    read_refine_requests, refine_verdict,
 };
 use roko_learn::telemetry::records::AttemptKey;
 use roko_learn::telemetry::{Arm, AssignmentUnit, LayerSpec, assign};
@@ -45,6 +55,14 @@ pub const SPEC_RECORDS_FILE: &str = "spec.jsonl";
 /// The assignment layer of the gate's holdout (3232).
 pub const HOLDOUT_LAYER: &str = "spec.gate";
 
+/// The rule of a finding that rests on the self-model's open refine request
+/// (gap-2b0575).
+pub const REFINE_RULE: &str = "refine_requested";
+
+/// The findings the holdout drops (3232): a score's block and a refine
+/// request's. A hard fail is never held out.
+const HELD_OUT_RULES: [&str; 2] = ["score", REFINE_RULE];
+
 /// What the gate decided for one task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -58,10 +76,11 @@ pub enum SpecGateAction {
     Block,
 }
 
-/// Why the gate blocks a task.
+/// Why the gate blocks a task, or what it advises.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SpecGateFinding {
-    /// The hard fail (`HF2`, `HF3`), or `score` under `enforce`.
+    /// The hard fail (`HF2`, `HF3`), `score` under `enforce`, or
+    /// [`REFINE_RULE`] for the self-model's open refine request.
     pub rule: &'static str,
     /// What triggered it, such as ``step 1: ends in `|| echo PASS` ``.
     pub detail: String,
@@ -82,6 +101,9 @@ pub struct SpecGateDecision {
     pub band: &'static str,
     /// Why the task is blocked; empty unless `action` is `Block`.
     pub findings: Vec<SpecGateFinding>,
+    /// What the gate reports on the task without blocking it: an open
+    /// refine request from the self-model that does not block (gap-2b0575).
+    pub advice: Vec<SpecGateFinding>,
     /// Whether the holdout skipped the task's score-based decisions (3232).
     pub holdout: bool,
     /// The holdout draw's propensity, for a task drawn into it.
@@ -147,8 +169,10 @@ pub fn check_plans(
 }
 
 /// The plan-load gate (3231): [`check_plans`] over `files`, with the
-/// red-on-base results `[spec_quality]` asks for. An interrupt during the
-/// red-on-base check comes back as the error.
+/// red-on-base results `[spec_quality]` asks for and the self-model's refine
+/// requests in the workspace's runs ([`apply_refine_requests`]), then the
+/// holdout. An interrupt during the red-on-base check comes back as the
+/// error.
 pub fn gate_plans(
     files: &[PathBuf],
     workdir: &Path,
@@ -156,8 +180,49 @@ pub fn gate_plans(
 ) -> Result<SpecGateReport, crate::spec_red_on_base::Interrupted> {
     let red_on_base = crate::spec_red_on_base::gate_results(files, workdir, config)?;
     let mut report = check_plans(files, workdir, config, &red_on_base);
+    if config.is_on() {
+        let runs = RokoLayout::for_project(workdir).runs_dir();
+        apply_refine_requests(&mut report, &read_refine_requests(&runs));
+    }
     apply_holdout(&mut report, config.holdout_frac, &holdout_epoch());
     Ok(report)
+}
+
+/// The self-model's open refine requests (6133) over `report`
+/// (gap-2b0575): each task gets [`refine_verdict`]'s verdict on `requests`.
+/// A verdict that blocks adds a [`REFINE_RULE`] finding: S07 §4.3 sends a
+/// weak spec to REFINE, and with no refiner in roko the task waits for its
+/// spec to be refined. Any other verdict is advice, and a task the gate
+/// would allow is advised.
+pub fn apply_refine_requests(report: &mut SpecGateReport, requests: &[RefineRequest]) {
+    let mode = report.mode;
+    let Some(quality) = &report.quality else {
+        return;
+    };
+    for (record, decision) in quality.tasks.iter().zip(&mut report.decisions) {
+        let Some(verdict) = refine_verdict(mode, record, requests) else {
+            continue;
+        };
+        let finding = SpecGateFinding {
+            rule: REFINE_RULE,
+            detail: verdict.detail,
+        };
+        if verdict.blocks {
+            decision.findings.push(finding);
+            decision.action = SpecGateAction::Block;
+            continue;
+        }
+        tracing::warn!(
+            plan = %decision.plan_path,
+            task = %decision.task_id,
+            detail = %finding.detail,
+            "spec gate: the self-model asked for the task's spec to be refined"
+        );
+        decision.advice.push(finding);
+        if decision.action == SpecGateAction::Allow {
+            decision.action = SpecGateAction::Advise;
+        }
+    }
 }
 
 /// The holdout's epoch: the UTC day, as S01 §4.6 sets for production.
@@ -172,8 +237,9 @@ pub fn holdout_epoch() -> String {
 /// share. A plan-load gate runs before the run has an id, so the unit is
 /// the task within the UTC day `epoch`, keyed by its plan path and id, and
 /// the run seed is 0; the propensity is recorded. A held-out task loses its
-/// score-based block and its advice; a hard fail is never held out, so its
-/// findings still block. A `holdout_frac` of 0 holds out nothing.
+/// score-based block, a refine request's block (gap-2b0575) and its advice;
+/// a hard fail is never held out, so its findings still block. A
+/// `holdout_frac` of 0 holds out nothing.
 pub fn apply_holdout(report: &mut SpecGateReport, holdout_frac: f64, epoch: &str) {
     let spec = LayerSpec {
         run_seed: 0,
@@ -196,7 +262,10 @@ pub fn apply_holdout(report: &mut SpecGateReport, holdout_frac: f64, epoch: &str
         }
         decision.holdout = true;
         decision.propensity = Some(assignment.propensity);
-        decision.findings.retain(|finding| finding.rule != "score");
+        decision
+            .findings
+            .retain(|finding| !HELD_OUT_RULES.contains(&finding.rule));
+        decision.advice.clear();
         if decision.findings.is_empty() {
             decision.action = SpecGateAction::Allow;
         }
@@ -293,6 +362,10 @@ pub struct SpecGateRecord<'a> {
     /// The findings that block the task, `rule: detail`, joined; empty
     /// unless it is blocked.
     pub reason: String,
+    /// The gate's advice on the task, `rule: detail`, joined: an open refine
+    /// request from the self-model that does not block (gap-2b0575); empty
+    /// without one.
+    pub advice: String,
     /// Whether score-based decisions skipped the task (the holdout, 3232).
     pub holdout: bool,
     /// The holdout draw's propensity, for a task drawn into it.
@@ -345,11 +418,19 @@ pub fn record_plan(
             run_id,
             recorded_at_ms,
         };
-        let reason: Vec<String> = decision
-            .findings
-            .iter()
-            .map(|finding| format!("{}: {}", finding.rule, finding.detail))
-            .collect();
+        let advice = joined(&decision.advice);
+        let mut event = format!(
+            "{} {}: {} (score {:.1}, band {})",
+            plan_path,
+            decision.task_id,
+            action_word(decision.action),
+            decision.score,
+            decision.band
+        );
+        if !advice.is_empty() {
+            event.push_str("; ");
+            event.push_str(&advice);
+        }
         let gate_line = SpecGateRecord {
             ev: "spec.gate",
             run_id,
@@ -359,21 +440,15 @@ pub fn record_plan(
             mode: report.mode,
             score: decision.score,
             band: decision.band,
-            reason: reason.join("; "),
+            reason: joined(&decision.findings),
+            advice,
             holdout: decision.holdout,
             propensity: decision.propensity,
             recorded_at_ms,
         };
         lines.extend(serde_json::to_string(&quality_line).ok());
         lines.extend(serde_json::to_string(&gate_line).ok());
-        events.push(format!(
-            "{} {}: {} (score {:.1}, band {})",
-            plan_path,
-            decision.task_id,
-            action_word(decision.action),
-            decision.score,
-            decision.band
-        ));
+        events.push(event);
     }
     if lines.is_empty() {
         return events;
@@ -390,6 +465,15 @@ pub fn record_plan(
         tracing::warn!(%error, run = %run_id, "spec gate: cannot write the run's spec records");
     }
     events
+}
+
+/// Findings as `rule: detail`, joined with `; `.
+fn joined(findings: &[SpecGateFinding]) -> String {
+    findings
+        .iter()
+        .map(|finding| format!("{}: {}", finding.rule, finding.detail))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn action_word(action: SpecGateAction) -> &'static str {
@@ -444,6 +528,7 @@ pub fn decide(record: &SpecQualityRecord, config: &SpecQualityConfig) -> SpecGat
         score: record.score,
         band: record.band,
         findings,
+        advice: Vec::new(),
         holdout: false,
         propensity: None,
     }
@@ -586,6 +671,79 @@ verify = [{{ phase = "test", command = "{verify}" }}]
             report.blocks() && !report.decisions[0].holdout,
             "{report:?}"
         );
+    }
+
+    /// gap-2b0575: the plan-load gate reads the self-model's refine request
+    /// from an earlier run's ledger. Under enforce, a request from a
+    /// self-model that routed blocks its task, which the task's score alone
+    /// does not; under advise it is advice, which the next run's `spec.gate`
+    /// record and event line carry; and a held-out task loses both.
+    #[test]
+    fn spec_gate_acts_on_the_self_models_refine_requests() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let plan = write_plan(temp.path(), "cargo test -p demo --lib retry");
+        // No red-on-base check and no holdout draw: each decision is the gate's own.
+        let gate = |mode: SpecQualityMode| {
+            let settings = SpecQualityConfig {
+                red_on_base: false,
+                holdout_frac: 0.0,
+                ..config(mode)
+            };
+            gate_plans(&[plan.clone()], temp.path(), &settings).expect("gate")
+        };
+        let before = gate(SpecQualityMode::Enforce);
+        assert!(!before.blocks(), "{before:?}");
+        let score = before.decisions[0].score;
+        let run = temp.path().join(".roko/runs/run-1");
+        std::fs::create_dir_all(&run).expect("the run's directory");
+        let request = serde_json::json!({
+            "ev": "spec.refine_requested",
+            "run_id": "run-1",
+            "plan_id": "demo",
+            "task_id": "T1",
+            "mode": "active",
+            "acting": true,
+            "spec_score": score / 100.0,
+            "recorded_at_ms": 1,
+        });
+        std::fs::write(run.join(SPEC_RECORDS_FILE), format!("{request}\n"))
+            .expect("write the ledger");
+
+        let enforced = gate(SpecQualityMode::Enforce);
+        let blocked: Vec<&SpecGateDecision> = enforced.blocked().collect();
+        assert_eq!(blocked.len(), 1, "{enforced:?}");
+        assert_eq!(blocked[0].findings.len(), 1, "{enforced:?}");
+        assert_eq!(blocked[0].findings[0].rule, REFINE_RULE);
+        assert!(blocked_lines(&enforced)[0].contains(REFINE_RULE));
+
+        let advised = gate(SpecQualityMode::Advise);
+        assert!(!advised.blocks(), "{advised:?}");
+        let decision = &advised.decisions[0];
+        assert_eq!(decision.action, SpecGateAction::Advise);
+        assert_eq!(decision.advice[0].rule, REFINE_RULE);
+        let run = temp.path().join(".roko/runs/run-2");
+        let events = record_plan(&advised, &plan, temp.path(), &run, "run-2");
+        assert!(events[0].contains(REFINE_RULE), "{events:?}");
+        let ledger = std::fs::read_to_string(run.join(SPEC_RECORDS_FILE)).expect("the ledger");
+        let gate_line = ledger
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|record| record["ev"] == "spec.gate")
+            .expect("the spec.gate record");
+        let advice = gate_line["advice"].as_str().unwrap_or_default();
+        assert!(advice.starts_with(REFINE_RULE), "{gate_line}");
+
+        for mode in [SpecQualityMode::Enforce, SpecQualityMode::Advise] {
+            let mut report = gate(mode);
+            apply_holdout(&mut report, 1.0, "2026-10-05");
+            let decision = &report.decisions[0];
+            assert!(decision.holdout, "{decision:?}");
+            assert!(
+                decision.findings.is_empty() && decision.advice.is_empty(),
+                "{decision:?}"
+            );
+            assert_eq!(decision.action, SpecGateAction::Allow, "{mode:?}");
+        }
     }
 
     /// 3211: HF3 blocks only when the red-on-base check ran and every step

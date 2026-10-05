@@ -35,7 +35,7 @@ pub(crate) use cost::{
 };
 pub(crate) use dispatch::{run_anthropic_cognitive_task, run_openai_compat_cognitive_task};
 pub(crate) use experiments::{
-    AcpCascadeRequest, applicable_acp_experiment, assign_acp_experiment,
+    AcpCascadeRequest, OpenExperimentReceipt, applicable_acp_experiment, assign_acp_experiment,
     cascade_router_model_slugs, cascade_select_model, mark_acp_experiment_dispatched,
     record_acp_experiment_outcome, record_cascade_observation, render_experiment_context,
     replace_experiment_section, resolve_acp_dispatch_model,
@@ -381,6 +381,10 @@ where
         session.config_state.model_selection_explicit,
         experiment_assignment,
     );
+    // Until the prompt's outcome is recorded, any return abandons the
+    // assignment's receipt (bug-897879).
+    let experiment_receipt =
+        OpenExperimentReceipt::new(&experiment_path, experiment_assignment.as_ref());
     let routing_model_key = experiment_model_key
         .clone()
         .unwrap_or_else(|| model_key.clone());
@@ -451,6 +455,7 @@ where
                 "failed to persist rejected ACP experiment outcome"
             );
         }
+        experiment_receipt.settled();
         return Err(BridgeEventsError::UnsupportedPromptContent(
             message.to_string(),
         ));
@@ -541,6 +546,9 @@ where
     } else {
         String::new()
     };
+    // The hash of the final prompt, which the assignment's receipt records
+    // when the prompt is launched (bug-897879).
+    let mut experiment_prompt_hash = None;
     let messages = if should_resolve_context {
         // Build combined system prompt with resolved context.
         let mut full_system = system_prompt.clone();
@@ -548,10 +556,8 @@ where
         full_system = append_context(&full_system, &knowledge_context);
         if let Some(assignment) = experiment_assignment.as_ref() {
             full_system = replace_experiment_section(&full_system, assignment);
-            // Mark the experiment as dispatched with the final prompt hash,
-            // completing the Prepared -> Dispatched lifecycle transition.
-            let prompt_hash = roko_core::ContentHash::of(full_system.as_bytes()).to_hex();
-            mark_acp_experiment_dispatched(&experiment_path, assignment, &prompt_hash);
+            experiment_prompt_hash =
+                Some(roko_core::ContentHash::of(full_system.as_bytes()).to_hex());
         }
         let mut msgs = session.build_messages_array(&full_system, &prompt_text);
         // If the prompt contains Image blocks, replace the last user message's
@@ -605,18 +611,22 @@ where
         || prompt_text.clone(),
         |assignment| append_context(&prompt_text, &render_experiment_context(assignment)),
     );
-    // P1-ACP-2: For the pipeline/workflow path, complete the Prepared ->
-    // Dispatched lifecycle transition using the combined prompt text hash.
-    // The single-agent path does this inside the `should_resolve_context`
-    // branch above (where it also has the full system prompt available for
-    // section replacement). The pipeline path only has the user prompt, so
-    // the hash covers what it actually sends to the engine.
-    if pipeline_template.is_some()
-        && let Some(assignment) = experiment_assignment.as_ref()
-    {
-        let prompt_hash = roko_core::ContentHash::of(prompt_text_for_dispatch.as_bytes()).to_hex();
-        mark_acp_experiment_dispatched(&experiment_path, assignment, &prompt_hash);
+    // P1-ACP-2: For the pipeline/workflow path, the receipt records the hash
+    // of the combined prompt text. The single-agent path takes it inside the
+    // `should_resolve_context` branch above (where it also has the full
+    // system prompt available for section replacement). The pipeline path
+    // only has the user prompt, so the hash covers what it actually sends to
+    // the engine.
+    if pipeline_template.is_some() && experiment_assignment.is_some() {
+        experiment_prompt_hash =
+            Some(roko_core::ContentHash::of(prompt_text_for_dispatch.as_bytes()).to_hex());
     }
+    // The Prepared -> Dispatched transition waits for the launch itself, past
+    // the safety check and the provider failover, so that a prompt that never
+    // reaches a model is abandoned, not counted as a failed trial
+    // (bug-897879).
+    let experiment_launch = experiment_assignment.clone().zip(experiment_prompt_hash);
+    let receipt_path = experiment_path.clone();
     // The actual dispatched config key must drive provider construction,
     // episode/cost attribution, and the router observation arm.
     let model_key_for_logging = model_key_for_dispatch.clone();
@@ -690,6 +700,12 @@ where
     let failover_model_for_task = Arc::clone(&failover_model);
 
     let cognitive_task = tokio::spawn(async move {
+        // The prompt is launched: the assignment's receipt is dispatched.
+        let mark_launched = || {
+            if let Some((assignment, prompt_hash)) = &experiment_launch {
+                mark_acp_experiment_dispatched(&receipt_path, assignment, prompt_hash);
+            }
+        };
         if let Some(violation) = pre_dispatch_violation {
             let message = violation.message;
             let _ = event_sender
@@ -724,6 +740,7 @@ where
         // controller it once fell back to was never driven).
         if let Some(template) = pipeline_template {
             let pipeline_run = shared_run.clone();
+            mark_launched();
             let result = crate::runner::run_workflow_pipeline(
                 &session_id,
                 &prompt_text_for_dispatch,
@@ -790,6 +807,7 @@ where
                 return Err(anyhow::anyhow!("no usable provider for the prompt: {why}").into());
             }
         };
+        mark_launched();
         loop {
             let config = candidate.config.as_deref().unwrap_or(&roko_config);
             let resolved = resolve_model(config, &candidate.model_key);
@@ -1053,6 +1071,8 @@ where
         }
         emit_acp_efficiency_event(&workdir_for_logging, efficiency_event);
 
+        // A launched prompt's receipt settles with its outcome; one that never
+        // reached a model is still `Prepared`, and settles as abandoned.
         if let Some(assignment) = experiment_assignment.as_ref()
             && let Err(error) =
                 record_acp_experiment_outcome(&experiment_path, assignment, dispatch_succeeded)
@@ -1064,6 +1084,7 @@ where
                 "failed to persist ACP experiment outcome"
             );
         }
+        experiment_receipt.settled();
 
         if !is_pipeline_dispatch {
             let model_slugs =

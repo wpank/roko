@@ -243,6 +243,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             max_turns: Some(max_turns),
             live_output: None,
             attempt_key: Some(attempt_key.clone()),
+            knowledge_ids: super::decision_log::included_knowledge_ids(&dispatch_plan),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         let request = self.fast_bounded(request);

@@ -1331,6 +1331,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             max_turns: Some(max_turns),
             live_output: None,
             attempt_key: Some(attempt.key.attempt_key()),
+            knowledge_ids: decision_log::included_knowledge_ids(&dispatch_plan),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         self.fast_bound(&mut request);

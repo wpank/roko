@@ -2097,7 +2097,7 @@ async fn record_agent_dispatch_feedback(
             run_id: None,
             request_id: Some(format!("dispatch-v2-{}", request.agent_id)),
             prompt_section_ids: Vec::new(),
-            knowledge_ids: Vec::new(),
+            knowledge_ids: request.knowledge_ids.clone(),
             model: target.model_slug.clone(),
             provider: target.provider_id.clone(),
             role: "dispatch_v2".to_string(),
@@ -2187,6 +2187,11 @@ pub struct AgentDispatchRequest {
     /// bridge's `model_call` row carries it (bug-92f655).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_key: Option<String>,
+    /// The knowledge entries the prompt included, which the bridge's
+    /// `model_call` row names, so the loop census sees knowledge reach the
+    /// efficiency log (bug-eaa318). Empty for a prompt that carries none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub knowledge_ids: Vec<String>,
 }
 
 impl AgentDispatchRequest {
@@ -3109,6 +3114,7 @@ mod tests {
                 max_turns: None,
                 live_output: None,
                 attempt_key: None,
+                knowledge_ids: Vec::new(),
             };
             let error = request.validate().expect_err("invalid identity must fail");
             assert_eq!(error, DispatchV2Error::InvalidAgentId);
@@ -3746,6 +3752,7 @@ mod tests {
             max_turns: None,
             live_output: None,
             attempt_key: None,
+            knowledge_ids: Vec::new(),
         };
         // All provider kinds are now in the contract support whitelist,
         // so OpenClaw with a contract should pass validation.
@@ -3817,6 +3824,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             max_turns: None,
             live_output: None,
             attempt_key: None,
+            knowledge_ids: Vec::new(),
         };
         let health_path = tmp.path().join(".roko/learn/provider-health.json");
         let registry = Arc::new(ProviderHealthRegistry::new());
@@ -3959,6 +3967,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost
             max_turns: None,
             live_output: None,
             attempt_key: None,
+            knowledge_ids: Vec::new(),
         }
     }
 

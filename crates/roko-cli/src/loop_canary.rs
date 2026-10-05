@@ -42,7 +42,7 @@ use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeStore, ReinforcementSig
 
 use crate::dispatch::Dispatcher;
 use crate::dispatch::dry_run_planner::DispatchPlanner;
-use crate::dispatch::prompt_builder::{PromptAssembler, cached_reader_ids};
+use crate::dispatch::prompt_builder::{PromptAssembler, cached_reader_ids, loaded_knowledge};
 use crate::dispatch::prompt_cache::PromptCache;
 use crate::dispatch::warm_pool::WarmPool;
 use crate::task_parser::TaskDef;
@@ -188,10 +188,12 @@ impl CanaryWriter for KnowledgeCanary {
         }
     }
 
-    /// The number of entries the run snapshot loaded.
+    /// The number of entries of the run snapshot the knowledge reader
+    /// loads: all of them, unless a fault flag cuts the reader or pins it to
+    /// an older part of the store (gap-a13544).
     fn loaded_version(&mut self) -> Option<u64> {
         let snapshot = PromptCache::load(&self.workdir);
-        let loaded = snapshot.digest().knowledge.count;
+        let loaded = loaded_knowledge(&snapshot.neuro_entries);
         self.snapshot = Some(snapshot);
         (loaded > 0).then(|| version(loaded))
     }

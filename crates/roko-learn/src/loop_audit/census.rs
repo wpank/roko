@@ -52,16 +52,17 @@ use crate::routing_log::{DecisionState, RoutingDecisionLog};
 use crate::runtime_feedback::LearningPaths;
 use crate::telemetry::RunProvenanceManifest;
 use crate::telemetry::records::{
-    AuditFields, ContentDecisionPoint, ContentDecisionRecord, DecisionSource, ExecutedModel,
-    ExposureItemKind, HarnessPolicyDecisionRecord, HarnessStamp, RunFile, Stamped,
+    AuditFields, ContentCandidate, ContentDecisionPoint, ContentDecisionRecord, DecisionSource,
+    ExecutedModel, ExposureItemKind, HarnessPolicyDecisionRecord, HarnessStamp, RunFile, Stamped,
 };
 use crate::telemetry::report::{RunRecords, SrmFold, srm_fold, undated};
 
 /// Where the audit tick keeps its [`CensusState`], in the learn dir.
 pub const CENSUS_STATE_FILE: &str = "loop-census-state.json";
 
-/// Schema of [`CENSUS_STATE_FILE`].
-pub const CENSUS_STATE_SCHEMA: &str = "roko.loop_census_state/1";
+/// Schema of [`CENSUS_STATE_FILE`]. Version 2 counts the rows that measure
+/// a reader's degeneracy (gap-a13544).
+pub const CENSUS_STATE_SCHEMA: &str = "roko.loop_census_state/2";
 
 /// How long an attempt without a verdict holds back the rows after it, in a
 /// run that has not closed: one open longer than this died with its process.
@@ -193,6 +194,12 @@ pub struct LoopMeasurement {
     pub rows: u64,
     /// Those rows whose arm was assigned at or after the decision.
     pub ordering_violations: u64,
+    /// Those content rows whose reader scored two or more candidates: the
+    /// rows that measure its degeneracy (gap-a13544).
+    pub scored_rows: u64,
+    /// Of those, the rows whose candidates the reader scored alike: its
+    /// state's decision-relevant variance was 0 (S03 §4.6).
+    pub flat_rows: u64,
 }
 
 /// The census of every registered loop, in registry order.
@@ -752,6 +759,10 @@ fn fold_run(
         if !loop_tally.count(&row.audit) {
             continue;
         }
+        if let Some(flat) = flat_scores(&row.candidates) {
+            loop_tally.scored_rows += 1;
+            loop_tally.flat_rows += u64::from(flat);
+        }
         if let Some(opportunity) = content_opportunity(row) {
             loop_tally.push(&opportunity);
         }
@@ -1028,13 +1039,32 @@ fn arm_of(audit: &AuditFields, arm_set: Option<&ArmSet>) -> (bool, f64) {
     })
 }
 
-/// What a decision's reader loaded: its state, an empty one, or none.
+/// What a decision's reader loaded: its state, an older version of it
+/// (gap-a13544), an empty one, or none.
 fn read_status(state: Option<&DecisionState>) -> ReadStatus {
     match state {
+        Some(state) if state.stale => ReadStatus::Stale,
         Some(state) if state.read => ReadStatus::Loaded,
         Some(_) => ReadStatus::Empty,
         None => ReadStatus::Missing,
     }
+}
+
+/// Whether a content reader scored `candidates` alike, its state's
+/// decision-relevant variance 0 at the decision (S03 §4.6's degeneracy;
+/// gap-a13544); `None` with fewer than two scored candidates, which tell
+/// nothing.
+fn flat_scores(candidates: &[ContentCandidate]) -> Option<bool> {
+    let scores: Vec<f64> = candidates
+        .iter()
+        .filter_map(|candidate| candidate.score)
+        .collect();
+    if scores.len() < 2 {
+        return None;
+    }
+    let high = scores.iter().copied().fold(f64::MIN, f64::max);
+    let low = scores.iter().copied().fold(f64::MAX, f64::min);
+    Some(high - low <= f64::EPSILON)
 }
 
 /// Whether S03's fields say the row's arm was assigned at or after its
@@ -1059,6 +1089,10 @@ struct Tally {
     pre_instrumentation: u64,
     rows: u64,
     ordering_violations: u64,
+    #[serde(default)]
+    scored_rows: u64,
+    #[serde(default)]
+    flat_rows: u64,
 }
 
 impl Tally {
@@ -1071,6 +1105,8 @@ impl Tally {
             pre_instrumentation: 0,
             rows: 0,
             ordering_violations: 0,
+            scored_rows: 0,
+            flat_rows: 0,
         }
     }
 
@@ -1128,6 +1164,8 @@ impl Tally {
             influence: self.influence.estimate(),
             rows: self.rows,
             ordering_violations: self.ordering_violations,
+            scored_rows: self.scored_rows,
+            flat_rows: self.flat_rows,
         }
     }
 
@@ -1599,6 +1637,7 @@ mod tests {
             digest: "b3:state".to_string(),
             age_s: None,
             n_obs: 1,
+            stale: false,
         }
     }
 

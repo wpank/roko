@@ -52,7 +52,7 @@ use roko_learn::loop_audit::arm_set::{ArmSet, MAXIMIZE_CONDITION};
 use roko_learn::loop_audit::faults::{self, FaultKind};
 use roko_learn::section_effect::{SectionBandit, SectionDecision, assignment_seed};
 use roko_learn::telemetry::records::b3_digest;
-use roko_learn::telemetry::{Assignment, ExcludedReason, ExposureItemKind};
+use roko_learn::telemetry::{Assignment, ContentDecisionPoint, ExcludedReason, ExposureItemKind};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
@@ -986,6 +986,28 @@ pub struct PromptDiagnostics {
     /// `sections` arm runs the default policy.
     #[serde(default)]
     pub section_decisions: Vec<SectionDecision>,
+    /// What each content reader loaded for the prompt, when it had an
+    /// opportunity (gap-a13544): the decision records mark a reader that
+    /// loaded none of its state as cut and one that loaded an older part of
+    /// it as stale.
+    #[serde(default)]
+    pub reads: Vec<ReaderRead>,
+}
+
+/// What a content reader loaded for one prompt (S03 §4.4's ε_read;
+/// gap-a13544).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReaderRead {
+    /// The decision point the reader serves: knowledge or playbooks.
+    pub point: ContentDecisionPoint,
+    /// The items of the snapshot it was given.
+    pub available: usize,
+    /// The items it loaded: all of them, none when its read was cut, or an
+    /// older part when it was pinned to an old state version.
+    pub loaded: usize,
+    /// Whether an item of the snapshot clears the reader's floor for the
+    /// task: the loop's opportunity, whatever the reader then loaded.
+    pub opportunity: bool,
 }
 
 /// One item a prompt retrieved, and whether it reached the prompt (S01
@@ -1171,6 +1193,8 @@ struct PromptSection {
     playbook_ids: Vec<String>,
     /// Each entry the source rendered into `body`, in its ranking.
     items: Vec<PromptItem>,
+    /// What the source's reader loaded, for a content reader.
+    read: Option<ReaderRead>,
 }
 
 impl PromptSection {
@@ -1182,7 +1206,21 @@ impl PromptSection {
             knowledge_ids: Vec::new(),
             playbook_ids: Vec::new(),
             items: Vec::new(),
+            read: None,
         }
+    }
+
+    /// An empty section of reader `read`, which had an opportunity and
+    /// loaded nothing to show: a cut or stale read the decision records
+    /// keep (gap-a13544).
+    fn unread(name: &str, read: ReaderRead) -> Option<Self> {
+        read.opportunity
+            .then(|| Self::new(name, String::new(), 7).with_read(read))
+    }
+
+    fn with_read(mut self, read: ReaderRead) -> Self {
+        self.read = Some(read);
+        self
     }
 
     fn with_knowledge_ids(mut self, ids: Vec<String>) -> Self {
@@ -1875,6 +1913,12 @@ impl PromptAssembler {
         for source in &self.sources {
             source_sections.extend(source.collect(task, ctx));
         }
+        // What each content reader loaded, whether or not its section stays
+        // in (gap-a13544).
+        let reads: Vec<ReaderRead> = source_sections
+            .iter()
+            .filter_map(|section| section.read)
+            .collect();
         // S02 L7: a loop the attempt's arm set withholds still retrieves, so
         // its items are known, but its section stays out of the prompt and
         // its ids out of what learners credit.
@@ -2158,6 +2202,7 @@ impl PromptAssembler {
             experiment_assignments: experiment_assignment_diagnostics,
             items,
             section_decisions,
+            reads,
         };
 
         // ── User prompt (unchanged) ────────────────────────────────────────
@@ -2416,42 +2461,18 @@ fn collect_neuro_knowledge_cached(
     }
     // A fault flag on L-know (S03 §4.9; fault-injection builds only) cuts
     // the reader, pins it to the older half of the store (an old state
-    // version), or ranks every task's entries the same.
+    // version), or ranks every task's entries the same. The opportunity is
+    // the snapshot's, so a cut or stale read still records what it missed
+    // (gap-a13544).
     let fault = faults::active(KNOWLEDGE_LOOP);
-    let entries = match fault {
-        Some(FaultKind::Cut) => return None,
-        Some(FaultKind::Stale) => &entries[..entries.len() / 2],
-        _ => entries,
+    let read = ReaderRead {
+        point: ContentDecisionPoint::Knowledge,
+        available: entries.len(),
+        loaded: knowledge_loaded(entries.len(), fault),
+        opportunity: !scored_knowledge(entries, &terms, false).is_empty(),
     };
     let degenerate = fault == Some(FaultKind::Degenerate);
-
-    // Count the topic terms an entry holds as whole words: a substring test
-    // also finds them inside longer words ("log" in "catalog"). An entry
-    // needs `MIN_TOPIC_OVERLAP` of them and `MIN_KNOWLEDGE_CONFIDENCE`, and
-    // a runtime success note holds no lesson (backlog 4211).
-    let mut scored: Vec<(usize, &roko_neuro::KnowledgeEntry)> = entries
-        .iter()
-        .filter_map(|entry| {
-            if is_group_scoped_knowledge(entry)
-                || is_runtime_success_note(entry)
-                || entry.confidence < MIN_KNOWLEDGE_CONFIDENCE
-            {
-                return None;
-            }
-            let words = query_words(&format!(
-                "{} {} {}",
-                entry.content,
-                entry.tags.join(" "),
-                entry.source.as_deref().unwrap_or("")
-            ));
-            let score = if degenerate {
-                MIN_TOPIC_OVERLAP
-            } else {
-                terms.intersection(&words).count()
-            };
-            (score >= MIN_TOPIC_OVERLAP).then_some((score, entry))
-        })
-        .collect();
+    let mut scored = scored_knowledge(&entries[..read.loaded], &terms, degenerate);
     scored.sort_by(|a, b| {
         b.0.cmp(&a.0)
             .then_with(|| b.1.confidence.total_cmp(&a.1.confidence))
@@ -2460,7 +2481,7 @@ fn collect_neuro_knowledge_cached(
     scored.truncate(3);
 
     if scored.is_empty() {
-        return None;
+        return PromptSection::unread("knowledge", read);
     }
 
     let ids = scored
@@ -2485,7 +2506,61 @@ fn collect_neuro_knowledge_cached(
         body.push_str(&line);
     }
     let section = PromptSection::new("knowledge", body, 7).with_knowledge_ids(ids);
-    Some(section.with_items(items))
+    Some(section.with_items(items).with_read(read))
+}
+
+/// The entries of `entries` the knowledge reader may show for a task whose
+/// topic terms are `terms`, each with the terms it holds as whole words: a
+/// substring test also finds them inside longer words ("log" in "catalog").
+/// An entry needs `MIN_TOPIC_OVERLAP` of them and
+/// `MIN_KNOWLEDGE_CONFIDENCE`, and a runtime success note holds no lesson
+/// (backlog 4211). A `degenerate` reader scores every entry alike.
+fn scored_knowledge<'a>(
+    entries: &'a [roko_neuro::KnowledgeEntry],
+    terms: &HashSet<String>,
+    degenerate: bool,
+) -> Vec<(usize, &'a roko_neuro::KnowledgeEntry)> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            if is_group_scoped_knowledge(entry)
+                || is_runtime_success_note(entry)
+                || entry.confidence < MIN_KNOWLEDGE_CONFIDENCE
+            {
+                return None;
+            }
+            let words = query_words(&format!(
+                "{} {} {}",
+                entry.content,
+                entry.tags.join(" "),
+                entry.source.as_deref().unwrap_or("")
+            ));
+            let score = if degenerate {
+                MIN_TOPIC_OVERLAP
+            } else {
+                terms.intersection(&words).count()
+            };
+            (score >= MIN_TOPIC_OVERLAP).then_some((score, entry))
+        })
+        .collect()
+}
+
+/// How many of `available` entries the knowledge reader loads under `fault`:
+/// none when it is cut, the older half when it is pinned to an old state
+/// version (S03 §4.9), else all of them.
+const fn knowledge_loaded(available: usize, fault: Option<FaultKind>) -> usize {
+    match fault {
+        Some(FaultKind::Cut) => 0,
+        Some(FaultKind::Stale) => available / 2,
+        _ => available,
+    }
+}
+
+/// The state version the knowledge reader loads from `entries`, the
+/// canary's P2 (S03 §4.7): how many of them it loads under L-know's fault
+/// flag (gap-a13544).
+pub(crate) fn loaded_knowledge(entries: &[roko_neuro::KnowledgeEntry]) -> usize {
+    knowledge_loaded(entries.len(), faults::active(KNOWLEDGE_LOOP))
 }
 
 fn collect_episode_knowledge_cached(
@@ -2560,9 +2635,7 @@ fn collect_playbooks_cached(
     // A fault flag on L-play (S03 §4.9; fault-injection builds only) cuts
     // the reader, or puts a misleading playbook in place of its choice.
     let fault = faults::active(PLAYBOOK_LOOP);
-    if fault == Some(FaultKind::Cut) {
-        return None;
-    }
+    let cut = fault == Some(FaultKind::Cut);
     let harmful = (fault == Some(FaultKind::Harmful)).then(harmful_playbook);
     // A playbook needs `MIN_TOPIC_OVERLAP` of the task's topic terms as whole
     // words. Its successes over its failures only break ties, and no floor
@@ -2577,6 +2650,17 @@ fn collect_playbooks_cached(
             (overlap >= MIN_TOPIC_OVERLAP).then_some((overlap, playbook))
         })
         .collect();
+    // The opportunity is the snapshot's, so a cut read still records what it
+    // missed (gap-a13544).
+    let read = ReaderRead {
+        point: ContentDecisionPoint::Playbooks,
+        available: playbooks.len(),
+        loaded: if cut { 0 } else { playbooks.len() },
+        opportunity: !scored.is_empty(),
+    };
+    if cut {
+        return PromptSection::unread("playbooks", read);
+    }
     if let Some(harmful) = &harmful {
         scored = vec![(MIN_TOPIC_OVERLAP, harmful)];
     }
@@ -2625,7 +2709,7 @@ fn collect_playbooks_cached(
         body.push_str(&text);
     }
     let section = PromptSection::new("playbooks", body, 7).with_playbook_ids(ids);
-    Some(section.with_items(items))
+    Some(section.with_items(items).with_read(read))
 }
 
 /// The loop whose fault flags the knowledge reader consults (S03 §4.9).

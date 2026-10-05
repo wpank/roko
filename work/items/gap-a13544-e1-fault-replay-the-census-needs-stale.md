@@ -61,3 +61,8 @@ PK44's fault hooks, dry-run canaries, routes and CLI are merged; E1 isn't writte
 
 - Full spec: `tmp/backlog/2026-10-02-complete-and-wire/5130-*.md`.
 - Left PK44's package item at gate 9b (2026-10-03).
+
+## Progress
+
+- 5130: implemented at 452a55484 (stale, degenerate and cut signatures in the census; E1 in
+  `crates/roko-cli/tests/loop_audit_faults.rs`); cargo verification deferred to the batch gate.

@@ -2567,6 +2567,7 @@ mod tests {
             digest: b3_digest(b"knowledge"),
             age_s: None,
             n_obs: 2,
+            stale: false,
         };
         let candidate = |id: &str, rank: u32, p: f64| ContentCandidate {
             id: id.to_string(),

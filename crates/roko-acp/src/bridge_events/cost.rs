@@ -11,6 +11,7 @@ use std::{
 };
 
 use roko_agent::ModelCallService;
+use roko_agent::provider::error_classify::classify_failure_text;
 use roko_core::ContentHash;
 use roko_core::DaimonPolicy;
 use roko_core::agent::{AgentRole, ResolvedModel, resolve_model};
@@ -613,6 +614,37 @@ pub(crate) fn acp_dispatch_succeeded(
         && stream_result
             .map(|sr| matches!(sr.prompt_result.stop_reason, StopReason::EndTurn))
             .unwrap_or(false)
+}
+
+/// What a turn's outcome says about its prompt, for the prompt's experiment
+/// receipt, as Graph dispatch's learning label does (bug-7e8dae):
+/// `Some(true)` for a turn that succeeded, `Some(false)` for one that failed,
+/// and `None` for one that a provider failure ended, which says nothing about
+/// the prompt.
+///
+/// A provider failure is a dispatch error that the shared classifier names:
+/// a usage or billing refusal, a rejected login, a rate limit, a server
+/// error or an empty response, or a timeout before the model answered
+/// anything (a timeout after part of an answer counts against the turn, as in
+/// Graph dispatch).
+pub(crate) fn acp_learning_success(
+    stream_result: Option<&StreamResult>,
+    task_error: Option<&str>,
+    stream_error: Option<&str>,
+) -> Option<bool> {
+    if acp_dispatch_succeeded(stream_result, task_error, stream_error) {
+        return Some(true);
+    }
+    let answered = stream_result.is_some_and(|sr| !sr.assistant_text.trim().is_empty());
+    let provider_failed =
+        task_error.is_some_and(
+            |error| match classify_failure_text(&error.to_ascii_lowercase()) {
+                "unknown" => false,
+                "timeout" => !answered,
+                _ => true,
+            },
+        );
+    (!provider_failed).then_some(false)
 }
 
 pub(crate) fn truncate_to_title(text: &str, max_len: usize) -> String {

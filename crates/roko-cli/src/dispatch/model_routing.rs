@@ -973,6 +973,7 @@ impl ModelRouter {
             digest: digest.digest,
             age_s: digest.age_s,
             n_obs: digest.n_obs,
+            stale: false,
         })
     }
 

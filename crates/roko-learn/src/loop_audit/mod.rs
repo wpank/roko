@@ -690,19 +690,23 @@ fn unix_seconds(ts: &str) -> Option<i64> {
 
 /// What the state machine knows of a loop from its `measurement` at `now`
 /// (unix seconds): the structural pre-checks its rows show (an arm assigned
-/// at or after its decision; N_ε rows and not one opportunity), ε and ι_net.
-/// Rows from before S03's fields add the `pre_instrumentation` qualifier.
+/// at or after its decision; N_ε rows whose reader scored its candidates
+/// alike, and none it did not, gap-a13544; N_ε rows and not one
+/// opportunity), ε and ι_net. Rows from before S03's fields add the
+/// `pre_instrumentation` qualifier.
 fn loop_evidence(measurement: &LoopMeasurement, params: &AuditParams, now: i64) -> LoopEvidence {
     let n_opp = measurement.measured.n_opp;
     let mut qualifiers = Vec::new();
     if measurement.measured.pre_instrumentation > 0 {
         qualifiers.push(Qualifier::PreInstrumentation);
     }
+    let flat = measurement.flat_rows;
     LoopEvidence {
         now,
         opportunities: n_opp,
         structural: Structural {
             ordering_violated: measurement.ordering_violations > 0,
+            degenerate: flat >= params.n_eps && flat == measurement.scored_rows,
             no_opportunity: n_opp == 0 && measurement.rows >= params.n_eps,
             ..Structural::default()
         },

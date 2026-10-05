@@ -203,6 +203,7 @@ mod tests {
                 digest: "b3:state".to_string(),
                 age_s: None,
                 n_obs: 1,
+                stale: false,
             }),
             thresholds_digest: None,
             arm_set: None,

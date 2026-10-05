@@ -25,7 +25,10 @@
 //! the request saw; any other open request is advice.
 //!
 //! `plan run` calls the gate from `validate_before_run`, without the
-//! red-on-base check. Every Graph run, from `plan run`, serve, ACP or
+//! red-on-base check but with the refine requests, so that under `enforce`
+//! an open request refuses the run before it starts (gap-c0d709). The two
+//! compare a request with the spec in static mode, which both can score
+//! ([`refine_verdict`]). Every Graph run, from `plan run`, serve, ACP or
 //! `roko run`, passes the plan-load gate ([`gate_plans`], 3231) before its
 //! first dispatch: it adds the red-on-base results, refuses blocked plans,
 //! and each plan's run records a `spec.quality` and a `spec.gate` line per
@@ -181,11 +184,18 @@ pub fn gate_plans(
     let red_on_base = crate::spec_red_on_base::gate_results(files, workdir, config)?;
     let mut report = check_plans(files, workdir, config, &red_on_base);
     if config.is_on() {
-        let runs = RokoLayout::for_project(workdir).runs_dir();
-        apply_refine_requests(&mut report, &read_refine_requests(&runs));
+        apply_refine_requests(&mut report, &workspace_refine_requests(workdir));
     }
     apply_holdout(&mut report, config.holdout_frac, &holdout_epoch());
     Ok(report)
+}
+
+/// The self-model's refine requests in every run of the workspace at
+/// `workdir` (`.roko/runs/*/spec.jsonl`), oldest first: what [`gate_plans`]
+/// and `plan run`'s early check hand to [`apply_refine_requests`].
+#[must_use]
+pub fn workspace_refine_requests(workdir: &Path) -> Vec<RefineRequest> {
+    read_refine_requests(&RokoLayout::for_project(workdir).runs_dir())
 }
 
 /// The self-model's open refine requests (6133) over `report`

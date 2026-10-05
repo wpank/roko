@@ -8,7 +8,9 @@
 //! included or not, and the attempt's verdict counts them. Each content
 //! decision point the prompt retrieved items at (knowledge, playbooks,
 //! sections, error patterns) adds one content decision row, with digests of
-//! the learned state it chose from (P0-10). A T0 reflex attempt and a
+//! the learned state it chose from (P0-10); so does a knowledge or playbook
+//! reader that had an opportunity and loaded nothing to show, whose row
+//! marks the read cut or stale (gap-a13544). A T0 reflex attempt and a
 //! harness failure before planning write none.
 //!
 //! The knowledge and playbook rows also carry S03's fields (A-DEC, backlog
@@ -40,7 +42,7 @@ use super::prompt_experiment::dispatch_prompt_hash;
 use super::verification::error_pattern_limit;
 use super::*;
 use crate::dispatch::RunnerDispatchPlan;
-use crate::dispatch::prompt_builder::PromptItemDiagnostic;
+use crate::dispatch::prompt_builder::{PromptItemDiagnostic, ReaderRead};
 
 /// Most exposure rows one attempt writes (S01 §5.9
 /// `max_exposures_per_attempt`; a constant until a `[telemetry]` key
@@ -109,44 +111,23 @@ impl GraphTaskDispatcher {
         });
     }
 
-    /// One content decision per decision point at which `plan`'s prompt
-    /// retrieved an item (S01 §4.5): the retrieved items are the candidates,
-    /// the included ones the choice, made by a fixed ranking. Each row
-    /// carries the digests of the learned state the candidates came from,
-    /// and the error-pattern row's policy names how many patterns the θ the
-    /// attempt runs shows (gap-26c055).
+    /// One content decision per decision point of `plan`'s prompt
+    /// ([`decision_points`]; S01 §4.5): the retrieved items are the
+    /// candidates, the included ones the choice, made by a fixed ranking.
+    /// Each row carries the digests of the learned state the candidates came
+    /// from, and the error-pattern row's policy names how many patterns the
+    /// θ the attempt runs shows (gap-26c055).
     fn record_content_decisions(&self, attempt: &AttemptContext, plan: &RunnerDispatchPlan) {
-        let mut points: BTreeMap<ContentDecisionPoint, Vec<&PromptItemDiagnostic>> =
-            BTreeMap::new();
-        for item in &plan.prompt.diagnostics.items {
-            points
-                .entry(item.kind.decision_point())
-                .or_default()
-                .push(item);
-        }
-        if points.is_empty() {
+        if decision_points(plan).is_empty() {
             return;
         }
         let state = self.learned_state();
-        let draws = &plan.prompt.diagnostics.section_decisions;
-        let prompt = &plan.prompt;
-        let request_hash = dispatch_prompt_hash(&prompt.system_prompt, &prompt.user_prompt);
         let times = decision_times(attempt.timing());
         let arm_set = attempt.arm_set();
         let shown = error_pattern_limit(attempt.harness_params());
-        for (point, items) in points {
-            let identity = attempt.identity();
-            let mut decision = content_decision(identity, point, &items, &state, draws, shown);
-            let draw = (arm_set.as_deref(), times);
-            // The prompt read the loop's fault flag for this attempt: the
-            // audit's read is the same decision (bug-9d23ed).
-            let audited = faults::decision(&identity.attempt_key, || {
-                content_audit(point, &items, identity, draw, &request_hash)
-            });
-            if let Some((proposals, audit)) = audited {
-                decision.proposals = Some(proposals);
-                decision.audit = audit;
-            }
+        let identity = attempt.identity();
+        let decisions = content_decisions(plan, identity, &state, arm_set.as_deref(), times, shown);
+        for decision in decisions {
             attempt.record_content_decision(decision);
         }
     }
@@ -230,16 +211,111 @@ fn content_policy(point: ContentDecisionPoint, shown: usize) -> String {
 /// its draws, then the token budget.
 const SECTION_BANDIT_POLICY: &str = "section_bandit_token_budget";
 
+/// The items `plan`'s prompt retrieved, by content decision point, with a
+/// point whose reader had an opportunity but loaded nothing to show, a cut
+/// or stale read, holding none (gap-a13544).
+fn decision_points(
+    plan: &RunnerDispatchPlan,
+) -> BTreeMap<ContentDecisionPoint, Vec<&PromptItemDiagnostic>> {
+    let mut points: BTreeMap<ContentDecisionPoint, Vec<&PromptItemDiagnostic>> = BTreeMap::new();
+    for item in &plan.prompt.diagnostics.items {
+        points
+            .entry(item.kind.decision_point())
+            .or_default()
+            .push(item);
+    }
+    for read in &plan.prompt.diagnostics.reads {
+        if read.opportunity {
+            points.entry(read.point).or_default();
+        }
+    }
+    points
+}
+
+/// The content decision rows of `plan`, one per point of
+/// [`decision_points`], made from `state` for the attempt `identity`, whose
+/// chain drew `arm_set`, at `times` (assigned, decided); `shown` is the most
+/// error patterns its prompt shows. Each row's S03 fields read the loops'
+/// fault flags as the attempt's decision, as its prompt did (bug-9d23ed).
+fn content_decisions(
+    plan: &RunnerDispatchPlan,
+    identity: &AttemptIdentity,
+    state: &LearnedState,
+    arm_set: Option<&ArmSet>,
+    times: (i64, i64),
+    shown: usize,
+) -> Vec<ContentDecisionRecord> {
+    let diagnostics = &plan.prompt.diagnostics;
+    let draws = &diagnostics.section_decisions;
+    let prompt = &plan.prompt;
+    let request_hash = dispatch_prompt_hash(&prompt.system_prompt, &prompt.user_prompt);
+    let mut decisions = Vec::new();
+    for (point, items) in decision_points(plan) {
+        let read = diagnostics.reads.iter().find(|read| read.point == point);
+        let mut decision = content_decision(identity, point, &items, read, state, draws, shown);
+        let draw = (arm_set, times);
+        let audited = faults::decision(&identity.attempt_key, || {
+            content_audit(point, &items, read, identity, draw, &request_hash)
+        });
+        if let Some((proposals, audit)) = audited {
+            decision.proposals = Some(proposals);
+            decision.audit = audit;
+        }
+        decisions.push(decision);
+    }
+    decisions
+}
+
+/// The content decision rows dispatch writes for `plan`, the plan of the
+/// attempt `identity` in the workspace `workdir`, whose chain drew
+/// `arm_set`, at `times` (assigned, decided): the rows of a planned
+/// attempt, made from the learned state of the workspace's stores, each
+/// with the chain's arms. Pure but for reading the stores, for E1 (5130;
+/// gap-a13544).
+pub fn planned_content_decisions(
+    workdir: &Path,
+    plan: &RunnerDispatchPlan,
+    identity: &AttemptIdentity,
+    arm_set: Option<&ArmSet>,
+    times: (i64, i64),
+) -> Vec<ContentDecisionRecord> {
+    let roko = workdir.join(".roko");
+    let state = LearnedState {
+        knowledge: store_state(&roko.join("neuro"), ".jsonl", "kn", Some(KNOWLEDGE_FILE)),
+        playbooks: store_state(&roko.join("learn").join("playbooks"), ".json", "pb", None),
+        thresholds: None,
+    };
+    let shown = error_pattern_limit(None);
+    let mut decisions = content_decisions(plan, identity, &state, arm_set, times, shown);
+    for decision in &mut decisions {
+        decision.arm_set = arm_set.cloned();
+    }
+    decisions
+}
+
+/// `state`, the store's learned state at the decision, as its reader `read`
+/// loaded it (gap-a13544): not read when the reader loaded none of it, a
+/// cut, and stale when it loaded an older part of it.
+fn reader_state(mut state: DecisionState, read: Option<&ReaderRead>) -> DecisionState {
+    if let Some(read) = read {
+        state.read &= read.loaded > 0;
+        state.stale = read.loaded > 0 && read.loaded < read.available;
+    }
+    state
+}
+
 /// The content decision at `point`, whose candidates are `items`, made from
-/// `state`. An item the role's prompt has no place for was never eligible.
-/// At the sections point, `draws` are the section bandit's: the row gives
-/// each drawn section its odds of staying in, the propensity of the
-/// bandit's draws, and the draws themselves, which `--srm` checks
-/// (bug-2410e1). `shown` is the most error patterns the prompt shows.
+/// `state` as its reader `read` loaded it. An item the role's prompt has no
+/// place for was never eligible. At the sections point, `draws` are the
+/// section bandit's: the row gives each drawn section its odds of staying
+/// in, the propensity of the bandit's draws, and the draws themselves,
+/// which `--srm` checks (bug-2410e1). `shown` is the most error patterns
+/// the prompt shows.
 fn content_decision(
     identity: &AttemptIdentity,
     point: ContentDecisionPoint,
     items: &[&PromptItemDiagnostic],
+    read: Option<&ReaderRead>,
     state: &LearnedState,
     draws: &[SectionDecision],
     shown: usize,
@@ -264,7 +340,7 @@ fn content_decision(
         .filter(|item| item.included)
         .map(|item| item.id.clone())
         .collect();
-    let read = match point {
+    let learned = match point {
         ContentDecisionPoint::Knowledge => Some(state.knowledge.clone()),
         ContentDecisionPoint::Playbooks => Some(state.playbooks.clone()),
         _ => None,
@@ -289,7 +365,7 @@ fn content_decision(
         chosen,
         chosen_propensity: Some(chosen_propensity),
         source: Some(source),
-        state: read,
+        state: learned.map(|learned| reader_state(learned, read)),
         thresholds_digest: state.thresholds.clone(),
         arm_set: None,
         section_draws: draws.to_vec(),
@@ -316,10 +392,13 @@ fn decision_times(timing: &AttemptTiming) -> (i64, i64) {
 /// draw is the chain's arm set's on the point's layer, with `(assigned_at,
 /// decided_at)`. The receipt names the included items' rendered digests,
 /// which prompt assembly found in the system prompt dispatch launches as is,
-/// bound to the hash of the assembled request. Pure, for E1 (5130).
+/// bound to the hash of the assembled request. The point is the loop's
+/// opportunity when it offered an item or its reader `read` had one, though
+/// it loaded nothing to show (gap-a13544). Pure, for E1 (5130).
 pub(super) fn content_audit(
     point: ContentDecisionPoint,
     items: &[&PromptItemDiagnostic],
+    read: Option<&ReaderRead>,
     identity: &AttemptIdentity,
     draw: (Option<&ArmSet>, (i64, i64)),
     request_hash: &str,
@@ -341,9 +420,10 @@ pub(super) fn content_audit(
         .filter(|item| item.included || item.excluded_reason == withheld)
         .map(|item| item.id.clone())
         .collect();
-    let offered = items
+    let retrieved = items
         .iter()
         .any(|item| item.excluded_reason != Some(ExcludedReason::RoleFilter));
+    let offered = retrieved || read.is_some_and(|read| read.opportunity);
     let reason = if offered {
         "items_retrieved"
     } else {
@@ -454,6 +534,7 @@ fn snapshot_state(
         digest: part.digest.clone(),
         age_s: None,
         n_obs,
+        stale: false,
     }
 }
 
@@ -494,6 +575,7 @@ fn store_state(dir: &Path, extension: &str, label: &str, counted: Option<&str>) 
             .and_then(|modified| modified.elapsed().ok())
             .map(|age| age.as_secs()),
         n_obs,
+        stale: false,
     }
 }
 

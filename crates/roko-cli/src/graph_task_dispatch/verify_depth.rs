@@ -52,7 +52,7 @@ use serde_json::Value;
 
 use super::audit_select::{audit_task, task_type};
 use super::diff_snapshot::AttemptDiff;
-use super::helper_calls::SideCall;
+use super::helper_calls::{AUDIT_ROLE, SideCall};
 use super::red_flags::finding_list;
 use super::verification::{verify_cancelled, verify_step_locked};
 use super::*;
@@ -64,9 +64,6 @@ use crate::audit::worktree::AuditWorktree;
 
 /// Lines of a failed check's output its failure quotes, from the end.
 const OUTPUT_TAIL_LINES: usize = 30;
-
-/// `role` of an inline audit check's cost and efficiency rows.
-const AUDIT_ROLE: &str = "audit";
 
 /// Why a check did not run: the depth's time ran out.
 const OUT_OF_TIME: &str = "the verify depth's [audit] per_audit_cpu_secs ran out";
@@ -560,7 +557,6 @@ impl GraphTaskDispatcher {
         check: &str,
         calls: &[CheckCall],
     ) {
-        let models = &self.config.models;
         let snapshot = self.pricing_snapshot();
         for (index, call) in calls.iter().enumerate() {
             let cost_usd = call.cost_usd();
@@ -573,9 +569,7 @@ impl GraphTaskDispatcher {
                     "audit check spend not recorded on the plan's cost ledger"
                 );
             }
-            let profile = models.values().find(|profile| profile.slug == call.model);
-            let provider = profile.map_or("unknown", |profile| profile.provider.as_str());
-            let side = SideCall::of_check(provider, profile, call, snapshot.as_deref());
+            let side = SideCall::of_check(&self.config.models, call, snapshot.as_deref());
             let attempt_id = format!("{attempt_key}/audit-{check}-{}", index + 1);
             self.write_side_call_rows(spec, &task.id, attempt_key, &attempt_id, AUDIT_ROLE, &side)
                 .await;

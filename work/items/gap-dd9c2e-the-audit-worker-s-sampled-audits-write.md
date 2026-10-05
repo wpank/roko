@@ -83,3 +83,7 @@ that spend anywhere `learn/costs.jsonl`'s readers would see it.
 - 2026-10-04 (wave-16 follow-up, gap-73c98e, gate 16b): confirmed at main HEAD `70fc09313`.
   `gap-73c98e`'s own closing evidence names this exact follow-up: "the worker's sampled audits
   stay on the audit line (queued for the filer)."
+
+## Progress
+
+- gap-dd9c2e: implemented at 5cae4abb0. A worker takes a `CallLog` (`audit/worker.rs`). After each phase-B check it hands over the check's model calls, and the dispatcher's log (`GraphTaskDispatcher::audit_call_log`, `graph_task_dispatch/helper_calls.rs`) writes a cost row and an efficiency row for each one, as gap-73c98e does for inline checks: role `audit`, keyed by the audited attempt, with the model's provider from `[models]`, and `api_equiv_usd` and `price_snapshot_id` from the run's price snapshot. Plan 2's choice: the rows carry the audited task's plan, task and tier (`AuditTask` gains `tier`), and the efficiency row's `attempt_id` is `<attempt_key>/<sel_id>-<check>-<n>`, so it is not mistaken for an inline check's `audit-<check>-<n>`. Nothing charges a task's budget or the plan's: the worker still spends on the run's audit line. To share the row writing, `write_side_call_rows`'s body moved to `SideCallRows::write`, `SideCall::of_check` now looks the model up in `[models]` itself, and `AUDIT_ROLE` moved next to `HELPER_ROLE`. The verify's grep passes; cargo verification is deferred to the batch gate (`completed_audit_writes_a_cost_row`).

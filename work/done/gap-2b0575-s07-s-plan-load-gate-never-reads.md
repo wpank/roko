@@ -2,15 +2,16 @@
 id = "gap-2b0575"
 kind = "gap"
 title = "S07's plan-load gate never reads spec.refine_requested, so the self-model's refine signal has no consumer"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-gate/spec-quality", "roko-cli/graph-task-dispatch"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "55267cfd0"
 source = "wave-10 follow-up reports 2026-10-04 (PK66 gap-414e56)"
 discovered_from = "gap-414e56"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/self_model.rs", "crates/roko-gate/src/spec_quality.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn s07_enforce_mode_acts_on_spec_refine_requested' crates/roko-gate/ && cargo test -p roko-gate s07_enforce_mode_acts_on_spec_refine_requested"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T17:35:08Z"
+commit = "55267cfd0"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T15:20:24Z"
+forced = false
+evidence = "Gate 20a (merged 55267cfd0): verify s07_enforce_mode_acts_on_spec_refine_requested passes, plus spec_gate_acts_on_the_self_models_refine_requests. The plan-load spec gate reads the self-model's spec.refine_requested records: under enforce a request from an acting (active, calibrated, untripped) self-model blocks the task until its spec scores higher; otherwise it advises. Gate fix 80475b534 (doc paragraph). plan run's early check is gap-c0d709."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "bug-897879"
 kind = "bug"
 title = "Several early returns in bridge_events/mod.rs leave ACP prompt-experiment receipts open forever"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/prompt-experiment"]
 created = 2026-10-05
 updated = 2026-10-05
 last_verified = 2026-10-05
+last_verified_rev = "55267cfd0"
 source = "wave-19 follow-up reports 2026-10-05 (bug-e3bbee, work/gap-d10a97)"
 discovered_from = "bug-e3bbee (done on work/gap-d10a97; own Progress note names this follow-up)"
 anchors = ["crates/roko-acp/src/bridge_events/mod.rs", "crates/roko-acp/src/bridge_events/experiments.rs::mark_acp_experiment_dispatched"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn dispatch_failure_after_mark_settles_the_receipt_as_abandoned' crates/roko-acp/ && cargo test -p roko-acp dispatch_failure_after_mark_settles_the_receipt_as_abandoned"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T17:35:09Z"
+commit = "55267cfd0"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T15:32:43Z"
+forced = false
+evidence = "Gate 20a (merged 55267cfd0): verify dispatch_failure_after_mark_settles_the_receipt_as_abandoned passes, plus invalid_image_prompt_settles_the_receipt_as_abandoned and open_experiment_receipt_abandons_unless_settled. ACP marks Dispatched at the actual launch, and an OpenExperimentReceipt guard abandons a receipt on any other exit; post-launch provider refusals are bug-7e8dae."
 +++
 
 ## Problem

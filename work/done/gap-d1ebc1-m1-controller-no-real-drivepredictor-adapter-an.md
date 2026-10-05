@@ -2,15 +2,16 @@
 id = "gap-d1ebc1"
 kind = "gap"
 title = "M1 controller: no real DrivePredictor adapter, an inner/outer dead zone that idles forever, and a D_pre window that can straddle a disturbance's onset"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/homeostasis"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "55267cfd0"
 source = "wave-7 follow-up reports 2026-10-03 (PK62 gap-f7bab8)"
 discovered_from = "gap-f7bab8"
 anchors = ["crates/roko-learn/src/homeostasis/priors.rs::DrivePredictor", "crates/roko-learn/src/homeostasis/controller.rs::Controller"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn ev_between_inner_and_outer_bands_eventually_acts' crates/roko-learn/ && cargo test -p roko-learn ev_between_inner_and_outer_bands_eventually_acts"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T17:35:11Z"
+commit = "55267cfd0"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T15:20:20Z"
+forced = false
+evidence = "Gate 20a (merged 55267cfd0): verify ev_between_inner_and_outer_bands_eventually_acts passes, plus onset_inside_the_window_keeps_a_good_first_move; homeostat_disturbances, ground truth and the on-mode canary pass. An EV outside its inner band for relax_window resolutions latches as a slow breach (IDLE opens an episode; SEARCH moves on it), and D_pre also reads each breached EV since it left its inner band. The DrivePredictor adapter already existed (SelfModelPredictor)."
 +++
 
 ## Problem

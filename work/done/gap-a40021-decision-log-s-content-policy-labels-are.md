@@ -2,15 +2,16 @@
 id = "gap-a40021"
 kind = "gap"
 title = "decision_log's content_policy labels are stale, error patterns collapse to one block item, and task_query_text reaches only load_group_context"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
 size = "M"
 subsystem = ["roko-cli/decision-log", "roko-cli/prompt-builder"]
 created = 2026-10-03
-updated = 2026-10-03
-last_verified = 2026-10-03
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "55267cfd0"
 source = "wave-5 follow-up reports 2026-10-02 (PK33 gap-aea13a)"
 discovered_from = "gap-aea13a"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/decision_log.rs::content_policy", "crates/roko-cli/src/dispatch/factory.rs::ErrorPatternSelection", "crates/roko-cli/src/dispatch/prompt_builder.rs::load_group_context"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn error_pattern_content_decision_lists_one_candidate_per_key' crates/roko-cli/ && cargo test -p roko-cli error_pattern_content_decision_lists_one_candidate_per_key"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T17:35:08Z"
+commit = "55267cfd0"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T15:20:21Z"
+forced = false
+evidence = "Gate 20a (merged 55267cfd0): verify error_pattern_content_decision_lists_one_candidate_per_key passes. content_policy labels name the live rankings, error patterns are one candidate per key (DispatchContext.error_patterns carries the selection), and group knowledge ranks by topic terms (task_query_text removed)."
 +++
 
 ## Problem

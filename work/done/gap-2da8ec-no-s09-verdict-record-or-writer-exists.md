@@ -2,15 +2,16 @@
 id = "gap-2da8ec"
 kind = "gap"
 title = "No S09 verdict record or writer exists; holm.decide has no caller, so every showcase claim is NOT_YET_MEASURED"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-04
-updated = 2026-10-04
-last_verified = 2026-10-04
+updated = 2026-10-05
+last_verified = 2026-10-05
+last_verified_rev = "55267cfd0"
 source = "wave-14 follow-up reports 2026-10-04 (gap-dbe8e7, gate 14b)"
 discovered_from = "gap-dbe8e7 (in flight, work/gap-dbe8e7; view contracts fixed, verdict data deliberately left for later)"
 anchors = ["benchmarks/viabilitybench/analysis/holm.py::decide", "benchmarks/viabilitybench/showcase/build_bundle.py"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_build_reads_an_s09_verdict_record_into_claim_state' benchmarks/viabilitybench/showcase/test_bundle.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/showcase/test_bundle.py -q -k test_build_reads_an_s09_verdict_record_into_claim_state"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T17:35:05Z"
+commit = "55267cfd0"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T15:20:22Z"
+forced = false
+evidence = "Gate 20a (merged 55267cfd0): verify test_build_reads_an_s09_verdict_record_into_claim_state passes; bench suite 759 passed. holm.py writes vb.verdict/1 (verdicts.json) per hypothesis and build_bundle.py reads it into tile claim states and negatives (verify_bundle re-derives it). A directional p can't tell 'wrong way' from 'no signal', so claim_state defaults to INCONCLUSIVE unless the caller passes adverse=True (gap-04496d wires the direction and the dead holm_reject reader)."
 +++
 
 ## Problem

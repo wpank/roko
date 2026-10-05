@@ -2,7 +2,7 @@
 id = "bug-c4f0ed"
 kind = "bug"
 title = "Background knowledge access counts and lifecycle reinforcement take separate per-instance write gates"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph-task-dispatch"]
 created = 2026-10-05
 updated = 2026-10-05
 last_verified = 2026-10-05
+last_verified_rev = "55267cfd0"
 source = "wave-19 follow-up reports 2026-10-05 (gap-5b8767, work/gap-addf2a)"
 discovered_from = "gap-5b8767 (done on work/gap-addf2a; reported while seeding the 4131 fixture's knowledge store)"
 anchors = ["crates/roko-neuro/src/knowledge_store/mod.rs::KnowledgeStore", "crates/roko-cli/src/runtime_feedback/verified_knowledge.rs::VerifiedKnowledgeSink"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn concurrent_access_count_and_reinforcement_writes_do_not_lose_an_update' crates/ && cargo test -p roko-cli concurrent_access_count_and_reinforcement_writes_do_not_lose_an_update"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T17:35:07Z"
+commit = "55267cfd0"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T15:32:45Z"
+forced = false
+evidence = "Gate 20a (merged 55267cfd0): verify concurrent_access_count_and_reinforcement_writes_do_not_lose_an_update passes, plus stores_of_one_file_share_one_write_gate and a_write_waits_for_the_lock_another_process_holds. Every KnowledgeStore of one file shares a process-wide write gate keyed by canonical path, and writes also take knowledge.jsonl.lock across processes; the admission/heuristic stores and knowledge restore are bug-d81257."
 +++
 
 ## Problem

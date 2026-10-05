@@ -2,7 +2,7 @@
 id = "bug-eaa318"
 kind = "bug"
 title = "Efficiency rows never carry knowledge_ids; every ModelCallFeedback construction hardcodes it empty"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli"]
 created = 2026-10-05
 updated = 2026-10-05
 last_verified = 2026-10-05
+last_verified_rev = "55267cfd0"
 source = "wave-19 follow-up reports 2026-10-05 (gap-5b8767, work/gap-addf2a)"
 discovered_from = "gap-5b8767 (done on work/gap-addf2a; hand-check against a real binary showed 0/10)"
 anchors = ["crates/roko-learn/src/model_call_feedback.rs::ModelCallFeedback", "crates/roko-learn/src/loop_audit/census.rs"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn dispatch_with_knowledge_produces_an_efficiency_row_with_knowledge_ids' crates/roko-cli/ && cargo test -p roko-cli dispatch_with_knowledge_produces_an_efficiency_row_with_knowledge_ids"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T17:35:10Z"
+commit = "55267cfd0"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T15:32:44Z"
+forced = false
+evidence = "Gate 20a (merged 55267cfd0): verify dispatch_with_knowledge_produces_an_efficiency_row_with_knowledge_ids passes. AgentDispatchRequest.knowledge_ids carries the prompt's included entries to the model_call row (Graph batch and streaming). Fix dde75ec1f: a frozen run keeps the ids on the row but records no knowledge provenance or outcome (FeedbackService::without_knowledge_feedback), so frozen_learning_run_writes_no_learned_state passes."
 +++
 
 ## Problem

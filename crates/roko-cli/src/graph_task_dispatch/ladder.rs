@@ -28,12 +28,14 @@ use std::collections::BTreeMap;
 
 use roko_core::dashboard_snapshot::{DiagnosisSeverity, DiagnosisSummary};
 use roko_core::task::TaskTier;
+use roko_learn::routing_log::RoutingDecisionLog;
 use roko_learn::self_model::cascade::StepAction;
 use roko_learn::telemetry::{AttemptLadder, AttemptVerdictRecord, Blame, LadderReason};
 
 use super::attempt::AttemptContext;
 use super::retry_feedback::LadderStanding;
 use super::*;
+use crate::dispatch::model_routing::SELF_MODEL_LOOP;
 use crate::dispatch::{RoutingLadder, RunnerDispatchPlan};
 use crate::runtime_feedback::homeostasis::HarnessDecision;
 
@@ -224,10 +226,7 @@ impl GraphTaskDispatcher {
                     reason,
                     exhausted: false,
                     // The cascade router's shadow pick beside the rung (G56).
-                    router_pick: plan
-                        .route_decision
-                        .as_ref()
-                        .and_then(|decision| decision.proposals.learned.clone()),
+                    router_pick: router_pick(plan.route_decision.as_ref()),
                 };
                 tracing::info!(
                     plan_id = %spec.plan_id,
@@ -404,6 +403,18 @@ impl GraphTaskDispatcher {
             });
         }
     }
+}
+
+/// The cascade router's shadow pick beside the rung (G56), from the attempt's route row
+/// `decision`: its learned proposal, except on a row L-M3 decided, whose learned proposal is
+/// the self-model's pick (S03's a^L), not the router's (bug-7dff88). The prediction row and the
+/// route row keep the self-model's pick.
+fn router_pick(decision: Option<&RoutingDecisionLog>) -> Option<String> {
+    let decision = decision?;
+    if decision.audit.loop_id.as_deref() == Some(SELF_MODEL_LOOP) {
+        return None;
+    }
+    decision.proposals.learned.clone()
 }
 
 #[cfg(test)]
@@ -688,6 +699,33 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
                 .expect_err("every attempt fails verification");
         }
         assert_eq!(called_models(&temp), [CHEAP, CHEAP, TOP]);
+    }
+
+    /// bug-7dff88: a route row L-M3 decided carries the self-model's pick as
+    /// its learned proposal, so the ladder record's `router_pick`, the
+    /// cascade router's shadow pick, leaves it out; L-route's row and a row
+    /// with no loop keep theirs.
+    #[test]
+    fn router_pick_does_not_show_the_self_models_pick_on_l_m3_rows() {
+        let row = |loop_id: Option<&str>| {
+            let mut row = serde_json::json!({
+                "task_id": "T1",
+                "selected_model": "glm-4.7",
+                "candidates": [],
+                "proposals": { "default": "gpt-oss-120b", "learned": "glm-4.7" },
+            });
+            if let Some(loop_id) = loop_id {
+                row["loop_id"] = serde_json::Value::from(loop_id);
+            }
+            serde_json::from_value::<RoutingDecisionLog>(row).expect("a route row")
+        };
+        let self_model = row(Some(SELF_MODEL_LOOP));
+        assert_eq!(self_model.proposals.learned.as_deref(), Some("glm-4.7"));
+        assert_eq!(router_pick(Some(&self_model)), None);
+        for routed in [row(Some("L-route")), row(None)] {
+            assert_eq!(router_pick(Some(&routed)).as_deref(), Some("glm-4.7"));
+        }
+        assert_eq!(router_pick(None), None);
     }
 
     /// While the ladder routes, an attempt's verdict names the cascade

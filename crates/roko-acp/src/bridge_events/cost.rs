@@ -636,13 +636,14 @@ pub(crate) fn acp_learning_success(
         return Some(true);
     }
     let answered = stream_result.is_some_and(|sr| !sr.assistant_text.trim().is_empty());
-    let provider_failed = task_error.is_some_and(|error| {
-        match classify_failure_text(&error.to_ascii_lowercase()) {
-            "unknown" => false,
-            "timeout" => !answered,
-            _ => true,
-        }
-    });
+    let provider_failed =
+        task_error.is_some_and(
+            |error| match classify_failure_text(&error.to_ascii_lowercase()) {
+                "unknown" => false,
+                "timeout" => !answered,
+                _ => true,
+            },
+        );
     (!provider_failed).then_some(false)
 }
 

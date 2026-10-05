@@ -1,5 +1,3 @@
-#![cfg(feature = "fault-injection")]
-
 //! E1, the structural fault replay (S03 §4.9 and §7; backlog 5130;
 //! gap-a13544).
 //!
@@ -27,6 +25,8 @@
 //! - A4: the placebo never moves, and no injection breaks the auditor.
 //!
 //! The healthy replay flags no loop, and a fault flags no loop but its own.
+
+#![cfg(feature = "fault-injection")]
 
 use std::collections::HashSet;
 use std::path::Path;

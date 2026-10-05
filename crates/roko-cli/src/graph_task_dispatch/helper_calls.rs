@@ -9,6 +9,11 @@
 //! ([`GraphTaskDispatcher::settle_helper_calls`]): its spend on the task and
 //! plan budgets, a cost row and an efficiency row keyed by the attempt, and
 //! their totals on the attempt's verdict and episode.
+//!
+//! An audit worker's model calls write the same two rows, keyed by the
+//! attempt they audit ([`GraphTaskDispatcher::audit_call_log`],
+//! gap-dd9c2e), and charge no budget: their spend is on the run's audit
+//! line.
 
 use roko_core::pricing_snapshot::PriceSnapshot;
 use roko_learn::efficiency::ExecutedRow;
@@ -17,11 +22,15 @@ use roko_learn::telemetry::{CostSource, HelperCallsUsage};
 use super::served_model::{is_cli_backend, same_model};
 use super::tui_forward::append_jsonl_line_async;
 use super::*;
-use crate::audit::worker::CheckCall;
+use crate::audit::worker::{AuditUnit, CallLog, CheckCall};
 use crate::dispatch_v2::api_equiv;
 
 /// `role` of a helper call's cost and efficiency rows.
 const HELPER_ROLE: &str = "helper";
+
+/// `role` of an audit check's cost and efficiency rows: an inline check's
+/// (gap-73c98e) and an audit worker's (gap-dd9c2e).
+pub(super) const AUDIT_ROLE: &str = "audit";
 
 /// How much longer than one helper call's own timeout an attempt waits for
 /// its helper calls to finish.
@@ -121,15 +130,16 @@ impl SideCall {
         }
     }
 
-    /// The model call `call` of an inline audit check (gap-73c98e), to the
-    /// model `profile` names on `provider_id`, in a run that prices from
-    /// `snapshot`.
+    /// The model call `call` of an audit check (gap-73c98e), to the model of
+    /// `models` whose slug it names, on that model's provider, in a run that
+    /// prices from `snapshot`.
     pub(super) fn of_check(
-        provider_id: &str,
-        profile: Option<&roko_core::config::schema::ModelProfile>,
+        models: &indexmap::IndexMap<String, roko_core::config::schema::ModelProfile>,
         call: &CheckCall,
         snapshot: Option<&PriceSnapshot>,
     ) -> Self {
+        let profile = models.values().find(|profile| profile.slug == call.model);
+        let provider_id = profile.map_or("unknown", |profile| profile.provider.as_str());
         // The check's tokens at the snapshot's row for its model (gap-546e8a).
         let priced_at = snapshot.and_then(|snapshot| {
             let tokens = crate::dispatch_v2::usage_token_counts(&call.usage);
@@ -396,6 +406,65 @@ impl GraphTaskDispatcher {
         role: &str,
         call: &SideCall,
     ) {
+        let rows = SideCallRows {
+            costs_path: self.feedback.costs_path.as_deref(),
+            efficiency_path: self.feedback.efficiency_path.as_deref(),
+            plan_id: &spec.plan_id,
+            tier: &spec.tier,
+            task_id,
+            attempt_key,
+            attempt_id,
+            role,
+        };
+        rows.write(call).await;
+    }
+
+    /// The audit workers' [`CallLog`] ([`AuditCallRows`], gap-dd9c2e): the
+    /// run's cost and efficiency logs, `[models]` and its price snapshot.
+    pub(super) fn audit_call_log(&self) -> Arc<dyn CallLog> {
+        Arc::new(AuditCallRows {
+            costs_path: self.feedback.costs_path.clone(),
+            efficiency_path: self.feedback.efficiency_path.clone(),
+            models: self.config.models.clone(),
+            snapshot: self.pricing_snapshot(),
+        })
+    }
+}
+
+/// Where one side call's cost row and efficiency row go, and the attempt
+/// they name.
+struct SideCallRows<'a> {
+    /// `learn/costs.jsonl`, when the run writes it.
+    costs_path: Option<&'a Path>,
+    /// `learn/efficiency.jsonl`, when the run writes it.
+    efficiency_path: Option<&'a Path>,
+    plan_id: &'a str,
+    /// The task's tier, the cost row's complexity band.
+    tier: &'a str,
+    task_id: &'a str,
+    /// The attempt both rows are keyed by.
+    attempt_key: &'a str,
+    /// Names the efficiency row uniquely and joins it to the attempt's
+    /// dispatch row.
+    attempt_id: &'a str,
+    /// Both rows' `role`.
+    role: &'a str,
+}
+
+impl SideCallRows<'_> {
+    /// Append `call`'s cost row and efficiency row, best-effort: a row that
+    /// is not written is logged.
+    async fn write(&self, call: &SideCall) {
+        let Self {
+            costs_path,
+            efficiency_path,
+            plan_id,
+            tier,
+            task_id,
+            attempt_key,
+            attempt_id,
+            role,
+        } = *self;
         let timestamp = chrono::Utc::now().to_rfc3339();
         let (input_tokens, output_tokens) = (
             u64::from(call.usage.input_tokens),
@@ -403,15 +472,15 @@ impl GraphTaskDispatcher {
         );
         let cost_usd = f64::from(call.usage.cost_usd);
         let mut lines = Vec::new();
-        if let Some(path) = &self.feedback.costs_path {
+        if let Some(path) = costs_path {
             let record = CostRecord {
                 timestamp: timestamp.clone(),
                 model: call.model_slug.clone(),
                 provider: call.provider_id.clone(),
                 role: role.to_string(),
-                plan_id: spec.plan_id.clone(),
+                plan_id: plan_id.to_string(),
                 task_id: task_id.to_string(),
-                complexity_band: spec.tier.clone(),
+                complexity_band: tier.to_string(),
                 input_tokens,
                 output_tokens,
                 cached_tokens: u64::from(call.usage.cache_read_tokens),
@@ -430,13 +499,13 @@ impl GraphTaskDispatcher {
             };
             lines.push((path, serde_json::to_string(&row)));
         }
-        if let Some(path) = &self.feedback.efficiency_path {
+        if let Some(path) = efficiency_path {
             let event = roko_learn::efficiency::AgentEfficiencyEvent {
-                agent_id: format!("{}/{task_id}", spec.plan_id),
+                agent_id: format!("{plan_id}/{task_id}"),
                 role: role.to_string(),
                 backend: call.provider_id.clone(),
                 model: call.model_slug.clone(),
-                plan_id: spec.plan_id.clone(),
+                plan_id: plan_id.to_string(),
                 task_id: task_id.to_string(),
                 attempt_id: attempt_id.to_string(),
                 input_tokens,
@@ -466,14 +535,14 @@ impl GraphTaskDispatcher {
         }
         for (path, line) in lines {
             let written = match line {
-                Ok(line) => append_jsonl_line_async(path.clone(), line)
+                Ok(line) => append_jsonl_line_async(path.to_path_buf(), line)
                     .await
                     .map_err(|error| error.to_string()),
                 Err(error) => Err(error.to_string()),
             };
             if let Err(error) = written {
                 tracing::warn!(
-                    plan_id = %spec.plan_id,
+                    plan_id,
                     task_id,
                     role,
                     path = %path.display(),
@@ -481,6 +550,46 @@ impl GraphTaskDispatcher {
                     "side call row not written (best-effort)"
                 );
             }
+        }
+    }
+}
+
+/// The audit workers' [`CallLog`] (gap-dd9c2e): each model call of a
+/// sampled audit writes a cost row and an efficiency row, role `audit`,
+/// keyed by the audited attempt, as an inline check's do
+/// ([`GraphTaskDispatcher::settle_check_calls`]). Neither counts toward a
+/// task's budget or the plan's: the worker spends on the run's audit line,
+/// `[audit] budget_frac` of the run's model spend.
+struct AuditCallRows {
+    /// `learn/costs.jsonl`, when the run writes it.
+    costs_path: Option<PathBuf>,
+    /// `learn/efficiency.jsonl`, when the run writes it.
+    efficiency_path: Option<PathBuf>,
+    /// `[models]`, whose profiles name each call's provider and price it.
+    models: indexmap::IndexMap<String, roko_core::config::schema::ModelProfile>,
+    /// The run's price snapshot, which prices each call at API rates.
+    snapshot: Option<Arc<PriceSnapshot>>,
+}
+
+#[async_trait::async_trait]
+impl CallLog for AuditCallRows {
+    async fn record(&self, unit: &AuditUnit, check: &str, calls: &[CheckCall]) {
+        // The audit's selection names its calls' efficiency rows.
+        let prefix = format!("{}/{}-{check}", unit.attempt_key, unit.sel_id);
+        for (index, call) in calls.iter().enumerate() {
+            let side = SideCall::of_check(&self.models, call, self.snapshot.as_deref());
+            let attempt_id = format!("{prefix}-{}", index + 1);
+            let rows = SideCallRows {
+                costs_path: self.costs_path.as_deref(),
+                efficiency_path: self.efficiency_path.as_deref(),
+                plan_id: &unit.plan_id,
+                tier: &unit.task.tier,
+                task_id: &unit.task_id,
+                attempt_key: &unit.attempt_key,
+                attempt_id: &attempt_id,
+                role: AUDIT_ROLE,
+            };
+            rows.write(&side).await;
         }
     }
 }

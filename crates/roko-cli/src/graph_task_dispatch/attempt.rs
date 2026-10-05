@@ -990,6 +990,8 @@ impl GraphTaskDispatcher {
             let learner = self.feedback.self_model.clone();
             let learner = learner.map(|model| model as Arc<dyn crate::audit::labels::VsLearner>);
             let selector = selector.with_phase_b(self.audit_phase_b());
+            // Its workers' model calls write cost and efficiency rows (gap-dd9c2e).
+            let selector = selector.with_call_log(self.audit_call_log());
             // M1's audit boosts and couplings raise its rate (8127).
             let selector = selector.with_m1(self.feedback.homeostasis.clone());
             Some(Arc::new(selector.with_learner(learner)))

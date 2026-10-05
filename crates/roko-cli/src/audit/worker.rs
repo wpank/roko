@@ -18,7 +18,9 @@
 //! - Caps: `[audit] per_audit_usd` and `per_audit_cpu_secs` per audit, and
 //!   audit spend within `budget_frac` of the run's model spend. When that
 //!   budget binds, `audit.budget_exhausted` is logged once and the units
-//!   stay queued.
+//!   stay queued. Each phase-B model call writes a cost row and an
+//!   efficiency row keyed by the audited attempt ([`CallLog`], gap-dd9c2e);
+//!   its spend stays on that audit line, off every task's budget.
 //! - [`AuditWorker::drain`], at run close, gives the worker at most
 //!   `drain_secs` to finish what is queued; it then sweeps
 //!   `.roko/episodes.jsonl`, the knowledge store and the playbooks for
@@ -103,6 +105,8 @@ pub struct AuditTask {
     pub verify: Vec<(String, String)>,
     /// `code`, `docs`, `plan`, `research`, …: its domain, else its role.
     pub kind: String,
+    /// Its tier, the complexity band of its audit's cost rows.
+    pub tier: String,
 }
 
 /// One selected unit, as the worker audits it.
@@ -196,7 +200,8 @@ pub struct CheckOutcome {
     /// What its model calls cost, in USD.
     pub cost_usd: f64,
     /// Each model call it made, whose costs `cost_usd` adds up: the spend an
-    /// inline check accounts like a dispatch (gap-73c98e).
+    /// inline check accounts like a dispatch (gap-73c98e), and a worker's
+    /// audit writes to its [`CallLog`] (gap-dd9c2e).
     pub calls: Vec<CheckCall>,
     /// Its detail, for the result's `checks`.
     pub detail: Value,
@@ -229,6 +234,16 @@ pub struct UnitAudit<'a> {
 pub trait PhaseBCheck: Send + Sync {
     /// Check the unit.
     async fn check(&self, audit: &UnitAudit<'_>) -> CheckOutcome;
+}
+
+/// Where a worker accounts its audits' model calls (gap-dd9c2e).
+#[async_trait::async_trait]
+pub trait CallLog: Send + Sync {
+    /// Account `calls`, the model calls that check `check` (`b1`, `b2` or
+    /// `b3`) of `unit`'s audit made: a cost row and an efficiency row each,
+    /// keyed by the audited attempt. Their spend is on the run's audit line,
+    /// `budget_frac` of its model spend, and on no task's budget.
+    async fn record(&self, unit: &AuditUnit, check: &str, calls: &[CheckCall]);
 }
 
 /// The phase-B checks a worker runs; a missing one leaves its label null.
@@ -264,6 +279,9 @@ pub struct WorkerContext {
     pub gaming: GamingWatch,
     /// The run's self-model, which audited VS labels teach (DP5).
     pub learner: Option<Arc<dyn VsLearner>>,
+    /// Where the audits' model calls are accounted; without one they write
+    /// no rows.
+    pub call_log: Option<Arc<dyn CallLog>>,
 }
 
 /// F1 (S05 §4.5, 7128): the gate-gaming detector over a workspace's
@@ -639,7 +657,7 @@ impl Worker {
 
     /// Phase B's checks, B1, B2 and B3, within what is left of the audit's
     /// caps: their labels and their cost. Each one's detail goes to
-    /// `checks`.
+    /// `checks`, and its model calls to the call log.
     async fn phase_b(
         &self,
         mut view: UnitAudit<'_>,
@@ -661,6 +679,9 @@ impl Worker {
             view.time_left = cap.saturating_sub(started.elapsed());
             let outcome = check.check(&view).await;
             cost_usd += outcome.cost_usd;
+            if let Some(log) = &self.context.call_log {
+                log.record(view.unit, name, &outcome.calls).await;
+            }
             labels[slot] = outcome.labels;
             checks.insert(name.into(), outcome.detail);
         }

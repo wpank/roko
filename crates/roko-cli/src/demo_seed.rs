@@ -13,6 +13,7 @@ use roko_fs::{RokoLayout, atomic_write_bytes, atomic_write_json};
 use roko_learn::cfactor::{
     AgentCFactorContribution, CFactor, CFactorComponents, CollectivePathology,
 };
+use roko_learn::costs_db::CostRecord;
 use roko_learn::efficiency::{AgentEfficiencyEvent, PromptSectionMeta, ToolCallMeta};
 use roko_learn::episode_logger::{Episode, EpisodeGateVerdict, Usage};
 use roko_learn::runtime_feedback::{
@@ -20,8 +21,8 @@ use roko_learn::runtime_feedback::{
     project_episode_paths,
 };
 use roko_learn::telemetry::{
-    AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord,
-    CostSource, RunFile, Stamped, TelemetryRecord,
+    AttemptIdentity, AttemptKey, AttemptKeyed, AttemptOpenRecord, AttemptOutcome,
+    AttemptVerdictRecord, CostSource, RunFile, Stamped, TelemetryRecord,
 };
 use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeTier};
 use serde::Serialize;
@@ -186,7 +187,7 @@ pub fn seed_demo_workspace(
     let task_specs = demo_task_specs();
     let now = Utc::now();
 
-    let planned_episodes = build_episodes(&task_specs, &model_pool, now);
+    let mut planned_episodes = build_episodes(&task_specs, &model_pool, now);
     let episode_ids = existing_episode_ids(workdir);
     let episode_reference_ids = if episode_ids.is_empty() {
         planned_episodes
@@ -196,9 +197,15 @@ pub fn seed_demo_workspace(
     } else {
         episode_ids
     };
+    // A retry has an episode of its own, which the seeded knowledge does not
+    // cite.
+    let retries = build_retry_episodes(&task_specs, &planned_episodes);
+    planned_episodes.extend(retries);
+    planned_episodes.sort_by_key(|episode| episode.timestamp);
 
     let efficiency_events = build_efficiency_events(&task_specs, &model_pool, now);
     let attempt_lines = build_attempt_ledger(&task_specs, &model_pool, now);
+    let cost_rows = build_cost_rows(&task_specs, &attempt_lines);
     let cfactors = build_cfactor_snapshots(&task_specs, now);
     let knowledge_seeds =
         build_knowledge_seeds(&task_specs, &episode_reference_ids, &model_pool, now);
@@ -236,6 +243,14 @@ pub fn seed_demo_workspace(
             "attempt ledger",
             &mut report,
             |line| seeded_jsonl_line(line),
+        )?;
+        // The demo run's spend, beside its ledger.
+        write_jsonl_if_absent(
+            &learn_paths.costs_jsonl,
+            &cost_rows,
+            "cost rows",
+            &mut report,
+            |row| seeded_jsonl_line(row),
         )?;
     }
     write_jsonl_if_absent(
@@ -623,6 +638,11 @@ fn build_episodes(
             "category".to_string(),
             Value::String(spec.category.to_string()),
         );
+        // The attempt it records, as a run's episodes name theirs (S01).
+        episode.extra.insert(
+            "attempt_key".to_string(),
+            Value::String(demo_attempt_key(spec, 1).attempt_key()),
+        );
         episodes.push(episode);
     }
 
@@ -630,11 +650,44 @@ fn build_episodes(
     episodes
 }
 
+/// The episodes of the demo's retries: a task that failed was retried once
+/// and failed again ([`build_attempt_ledger`]), and each attempt has an
+/// episode. A retry's is its first attempt's, ten minutes on.
+fn build_retry_episodes(specs: &[DemoTaskSpec], first_attempts: &[Episode]) -> Vec<Episode> {
+    let mut retries = Vec::new();
+    for spec in specs {
+        let Some(first) = first_attempts
+            .iter()
+            .find(|episode| episode.task_id == spec.task_id)
+        else {
+            continue;
+        };
+        for attempt in 2..=demo_attempts(spec) {
+            let later = Duration::minutes(i64::from(attempt - 1) * 10);
+            let mut episode = first.clone();
+            episode.id = format!("{}-{attempt}", first.id);
+            episode.episode_id = episode.id.clone();
+            episode.timestamp += later;
+            episode.started_at += later;
+            episode.completed_at += later;
+            episode.extra.insert(
+                "attempt_key".to_string(),
+                Value::String(demo_attempt_key(spec, attempt).attempt_key()),
+            );
+            retries.push(episode);
+        }
+    }
+    retries
+}
+
+/// Two efficiency rows per task, each keyed by its attempt: the primary
+/// turn is the task's first attempt, and the follow-up its last, another
+/// turn of an attempt that passed or the retry of one that failed.
 fn build_efficiency_events(
     specs: &[DemoTaskSpec],
     model_pool: &[String],
     now: DateTime<Utc>,
-) -> Vec<AgentEfficiencyEvent> {
+) -> Vec<AttemptKeyed<AgentEfficiencyEvent>> {
     let mut events = Vec::with_capacity(specs.len() * 2);
     for (index, spec) in specs.iter().enumerate() {
         let primary_model = model_for_slot(model_pool, spec.model_slot);
@@ -642,24 +695,21 @@ fn build_efficiency_events(
         let primary_time = seeded_datetime(now, spec.age_hours, spec.age_minutes);
         let secondary_time =
             seeded_datetime(now, spec.age_hours.saturating_sub(1), spec.age_minutes + 17);
+        let primary = build_efficiency_event(spec, index, &primary_model, primary_time, true);
+        let followup =
+            build_efficiency_event(spec, index + 100, &secondary_model, secondary_time, false);
 
-        events.push(build_efficiency_event(
-            spec,
-            index,
-            &primary_model,
-            primary_time,
-            true,
-        ));
-        events.push(build_efficiency_event(
-            spec,
-            index + 100,
-            &secondary_model,
-            secondary_time,
-            false,
-        ));
+        events.push(AttemptKeyed {
+            attempt_key: demo_attempt_key(spec, 1).attempt_key(),
+            row: primary,
+        });
+        events.push(AttemptKeyed {
+            attempt_key: demo_attempt_key(spec, demo_attempts(spec)).attempt_key(),
+            row: followup,
+        });
     }
 
-    events.sort_by(|left, right| left.timestamp.cmp(&right.timestamp));
+    events.sort_by(|left, right| left.row.timestamp.cmp(&right.row.timestamp));
     events
 }
 
@@ -677,7 +727,7 @@ fn build_attempt_ledger(
         let completed_at =
             seeded_datetime(now, spec.age_hours.saturating_sub(1), spec.age_minutes + 58);
         let wall_ms = wall_time_for_task(spec);
-        let attempts: u32 = if spec.success { 1 } else { 2 };
+        let attempts = demo_attempts(spec);
         let outcome = if spec.success {
             AttemptOutcome::Passed
         } else {
@@ -689,7 +739,7 @@ fn build_attempt_ledger(
             let settled_at = completed_at - Duration::minutes(later_attempts * 10);
             let started_at = settled_at - Duration::milliseconds(wall_ms as i64);
             let started_ms = started_at.timestamp_millis();
-            let key = AttemptKey::new(DEMO_RUN_ID, spec.plan_id, spec.task_id, attempt);
+            let key = demo_attempt_key(spec, attempt);
             let identity = AttemptIdentity::new(&key);
 
             let mut open = AttemptOpenRecord::new(identity.clone(), started_ms);
@@ -716,6 +766,63 @@ fn build_attempt_ledger(
         }
     }
     lines
+}
+
+/// How many attempts the demo run made at `spec`'s task: one when it
+/// passed, and two when it failed, was retried and failed again.
+fn demo_attempts(spec: &DemoTaskSpec) -> u32 {
+    if spec.success { 1 } else { 2 }
+}
+
+/// The key of attempt `attempt` at `spec`'s task in the demo run, which its
+/// ledger lines and its efficiency, cost and episode rows carry (gap-ad93ce).
+fn demo_attempt_key(spec: &DemoTaskSpec, attempt: u32) -> AttemptKey {
+    AttemptKey::new(DEMO_RUN_ID, spec.plan_id, spec.task_id, attempt)
+}
+
+/// The demo run's `learn/costs.jsonl`: a row for each attempt that settled
+/// in `ledger`, keyed by it and costed as its verdict is.
+fn build_cost_rows(
+    specs: &[DemoTaskSpec],
+    ledger: &[SeededAttemptLine],
+) -> Vec<AttemptKeyed<CostRecord>> {
+    let mut rows = Vec::new();
+    for line in ledger {
+        let SeededAttemptLine::Verdict(settled) = line else {
+            continue;
+        };
+        let verdict = &settled.record;
+        let identity = &verdict.identity;
+        let Some(spec) = specs.iter().find(|spec| spec.task_id == identity.task_id) else {
+            continue;
+        };
+        let (executed, usage, cost) = (&verdict.executed, &verdict.usage, &verdict.cost);
+        let row = CostRecord {
+            timestamp: settled.ts.clone(),
+            model: executed.model_dispatched.clone().unwrap_or_default(),
+            provider: executed.provider.clone().unwrap_or_default(),
+            role: spec.role.label().to_string(),
+            plan_id: identity.plan_id.clone(),
+            task_id: identity.task_id.clone(),
+            complexity_band: spec.complexity_band.to_string(),
+            input_tokens: usage.tokens_in.unwrap_or_default(),
+            output_tokens: usage.tokens_out.unwrap_or_default(),
+            cached_tokens: usage.tokens_cache_read.unwrap_or_default(),
+            cost_usd: cost.api_equiv_usd.unwrap_or_default(),
+            duration_ms: wall_time_for_task(spec),
+            success: verdict.outcome == AttemptOutcome::Passed,
+            session_id: String::new(),
+            cost_source: cost.source,
+            priced: Some(true),
+            api_equiv_usd: cost.api_equiv_usd,
+            price_snapshot_id: cost.price_snapshot_id.clone(),
+        };
+        rows.push(AttemptKeyed {
+            attempt_key: identity.attempt_key.clone(),
+            row,
+        });
+    }
+    rows
 }
 
 /// `record` as the line a run's telemetry writer appends at `at`.
@@ -1117,17 +1224,16 @@ fn build_efficiency_event(
         iteration: if primary { 1 } else { 2 },
         turn_number: 0,
         is_final_turn: true,
-        gate_passed: Some(if primary { spec.success } else { true }),
-        outcome: if primary {
-            if spec.success {
-                "pass".to_string()
-            } else {
-                "blocked".to_string()
-            }
+        // A failed task's follow-up is its retry, which failed as well.
+        gate_passed: Some(spec.success),
+        outcome: if !spec.success {
+            "blocked".to_string()
+        } else if primary {
+            "pass".to_string()
         } else {
             "recovered".to_string()
         },
-        gate_errors: if primary && !spec.success {
+        gate_errors: if !spec.success {
             vec![format!("seed-{}-{}", spec.task_id, spec.gate)]
         } else {
             Vec::new()
@@ -1674,7 +1780,7 @@ fn episode_reasoning_summary(spec: &DemoTaskSpec) -> String {
 #[cfg(test)]
 mod tests {
     use roko_core::metric::compute_headlines;
-    use roko_learn::telemetry::report::RunRecords;
+    use roko_learn::telemetry::report::{LegacyRows, RunRecords, check};
 
     use super::*;
 
@@ -1718,5 +1824,31 @@ mod tests {
         let again = seed_demo_workspace(workdir.path(), None).expect("reseed");
         let kept = "attempt ledger (existing runs preserved)".to_string();
         assert!(again.skipped_groups.contains(&kept), "{again:?}");
+    }
+
+    /// gap-ad93ce: each of the demo run's seven attempts has an efficiency
+    /// row, a cost row and an episode keyed by it, and no row names an
+    /// attempt the run lacks, so `roko learn telemetry check` passes.
+    #[test]
+    fn demo_workspace_telemetry_check_reports_no_coverage_gaps() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let report = seed_demo_workspace(workdir.path(), None).expect("seed");
+        let seeded = &report.seeded_groups;
+        for group in ["episodes: 7 records", "cost rows: 7 records"] {
+            assert!(seeded.contains(&group.to_string()), "{report:?}");
+        }
+
+        let layout = RokoLayout::for_project(workdir.path());
+        let run = RunRecords::load(&layout.run_dir(DEMO_RUN_ID)).expect("the demo run");
+        let legacy = LegacyRows::load(&layout, DEMO_RUN_ID).expect("the legacy logs");
+        let checked = check(&run, &legacy);
+        assert_eq!(checked.coverage.len(), 3, "{checked:?}");
+        for coverage in &checked.coverage {
+            assert_eq!(coverage.verdicts, 7, "{coverage:?}");
+            assert_eq!(coverage.joined, 7, "{coverage:?}");
+            assert!(coverage.missing.is_empty(), "{coverage:?}");
+            assert!(coverage.orphans.is_empty(), "{coverage:?}");
+        }
+        assert!(checked.failures().is_empty(), "{:?}", checked.failures());
     }
 }

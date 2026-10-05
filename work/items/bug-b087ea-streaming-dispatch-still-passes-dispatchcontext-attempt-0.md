@@ -86,3 +86,12 @@ hardcoded in the streaming path's `DispatchContext` literal.
   filed separately since that item's single named `[[verify]]` command covers only its original
   facet 2 (the forecast call itself), not this newly-surfaced consequence of it. A matching note
   has been added to `bug-78e5ce`.
+
+## Progress
+
+- bug-b087ea: implemented at e4e039248 on `work/bug-7dff88`; cargo verification deferred to the batch gate.
+  `dispatch_streaming` sets `DispatchContext.attempt` to `attempt_number` (the attempts before this one, from
+  `next_retry_attempt`, as on the batch path). Ladder routing does not read it; it moves the self-model's
+  features and the prompt's retry gate (streaming sends no gate feedback). Test:
+  `streaming_retry_self_model_features_show_prior_failure`: two streamed attempts are forecast as (1, no prior
+  failure) and (2, prior failure).

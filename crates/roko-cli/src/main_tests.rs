@@ -3177,6 +3177,47 @@ fn restore_neuro_store_requires_force_for_existing_target_and_removes_stale_opti
     );
 }
 
+/// bug-d81257: a restore takes the live knowledge store's write gate and
+/// its lock among processes, so it waits for a writer that holds them and
+/// swaps no file while that writer rewrites the store.
+#[test]
+fn restore_waits_for_a_concurrent_knowledge_store_writer() {
+    let workdir = tempdir().unwrap();
+    let backup_dir = tempdir().unwrap();
+    let neuro_dir = workdir.path().join(".roko").join("neuro");
+    std::fs::create_dir_all(&neuro_dir).unwrap();
+    let live = neuro_dir.join(NEURO_KNOWLEDGE_FILE);
+    std::fs::write(
+        &live,
+        b"{\"id\":\"old\",\"content\":\"old data\",\"confidence\":0.5}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        backup_dir.path().join(NEURO_KNOWLEDGE_FILE),
+        b"{\"id\":\"new\",\"content\":\"new data\",\"confidence\":0.9}\n",
+    )
+    .unwrap();
+
+    // A writer of the live store is mid-rewrite.
+    let store = KnowledgeStore::for_workdir(workdir.path());
+    let writing = store.lock_writes();
+    let restore = {
+        let workdir = workdir.path().to_path_buf();
+        let backup = backup_dir.path().to_path_buf();
+        std::thread::spawn(move || {
+            restore_neuro_store(&workdir, &backup, true, 1, 0.8, None, None, true)
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let during = std::fs::read_to_string(&live).unwrap();
+    assert!(during.contains("\"old\""), "the restore waits: {during}");
+
+    drop(writing);
+    let report = restore.join().expect("the restore").expect("restore");
+    let restored = std::fs::read_to_string(&report.live.knowledge).unwrap();
+    assert!(restored.contains("\"new\""), "{restored}");
+}
+
 #[test]
 fn backup_preflight_and_alias_checks_preserve_existing_state() {
     let workdir = tempdir().unwrap();

@@ -51,15 +51,16 @@ pub use types::{
 /// skip until the batches commit.
 static PROCESS_BATCHES: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
-/// The write gate of each knowledge file this process's stores use, by
-/// [`gate_key`] (bug-c4f0ed). Every store of a file takes the same gate, so
-/// their read-modify-write cycles never interleave. A gate is dropped once
-/// no store holds it.
+/// The write gate of each file this process's stores write, by
+/// [`gate_key`]: the knowledge store's (bug-c4f0ed), and the admission and
+/// heuristic logs' (bug-d81257). Every store of a file takes the same gate,
+/// so their read-modify-write cycles never interleave. A gate is dropped
+/// once no store holds it.
 static WRITE_GATES: Mutex<BTreeMap<PathBuf, Weak<Mutex<()>>>> = Mutex::new(BTreeMap::new());
 
 /// The write gate that every store of this process shares for the file at
 /// `path`.
-fn write_gate_for(path: &Path) -> Arc<Mutex<()>> {
+pub(crate) fn write_gate_for(path: &Path) -> Arc<Mutex<()>> {
     let key = gate_key(path);
     let mut gates = WRITE_GATES.lock();
     if let Some(gate) = gates.get(&key).and_then(Weak::upgrade) {
@@ -87,11 +88,42 @@ fn gate_key(path: &Path) -> PathBuf {
 /// A store's hold on its file for one read-modify-write cycle
 /// ([`KnowledgeStore::lock_writes`]). Dropping it releases the file's lock
 /// among processes, then this process's write gate.
-pub(crate) struct WriteGuard<'a> {
+#[must_use = "the file is unlocked as soon as the guard drops"]
+pub struct WriteGuard<'a> {
     /// The file's `.lock` sibling, locked exclusively; `None` when the lock
     /// could not be taken, and the gate alone holds.
     _file: Option<File>,
     _gate: parking_lot::MutexGuard<'a, ()>,
+}
+
+impl<'a> WriteGuard<'a> {
+    /// Take `gate`, the write gate of the file at `path` that this
+    /// process's stores share, and then an exclusive lock on the file's
+    /// `.lock` sibling, which another process writing the file takes too.
+    /// The lock among processes is best-effort: when it cannot be taken, the
+    /// write goes on under the gate alone, with a warning.
+    pub(crate) fn hold(gate: &'a Mutex<()>, path: &Path) -> Self {
+        let gate = gate.lock();
+        let locked = path
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| roko_fs::log_rotation::lock_jsonl(path));
+        let file = match locked {
+            Ok(file) => Some(file),
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "write without the file's lock among processes"
+                );
+                None
+            }
+        };
+        Self {
+            _file: file,
+            _gate: gate,
+        }
+    }
 }
 
 /// Persistent knowledge store backed by an append-only JSONL file.
@@ -277,31 +309,13 @@ impl KnowledgeStore {
     /// the write gate that this process's stores share for the file, and
     /// then an exclusive lock on its `.lock` sibling, which another process
     /// writing the file takes too (`roko serve` beside a run, or `roko
-    /// knowledge gc`). The lock among processes is best-effort: when it
-    /// cannot be taken, the write goes on under the gate alone, with a
-    /// warning.
-    pub(crate) fn lock_writes(&self) -> WriteGuard<'_> {
-        let gate = self.write_gate.lock();
-        let locked = self
-            .path
-            .parent()
-            .map_or(Ok(()), fs::create_dir_all)
-            .and_then(|()| roko_fs::log_rotation::lock_jsonl(&self.path));
-        let file = match locked {
-            Ok(file) => Some(file),
-            Err(error) => {
-                tracing::warn!(
-                    path = %self.path.display(),
-                    %error,
-                    "knowledge store write without its lock among processes"
-                );
-                None
-            }
-        };
-        WriteGuard {
-            _file: file,
-            _gate: gate,
-        }
+    /// knowledge gc`). Every write method takes it; `roko knowledge restore`
+    /// holds it while it swaps the file (bug-d81257).
+    ///
+    /// The gate is not re-entrant: a caller holding the guard must not call
+    /// a write method of any store of the file, or it waits for itself.
+    pub fn lock_writes(&self) -> WriteGuard<'_> {
+        WriteGuard::hold(&self.write_gate, &self.path)
     }
 
     /// Read all knowledge entries from the store.

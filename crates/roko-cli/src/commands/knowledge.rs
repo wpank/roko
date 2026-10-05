@@ -1518,6 +1518,13 @@ pub(crate) fn restore_neuro_store(
     };
     validate_confirmation_artifact(manifest.as_ref(), confirmation_bytes.as_deref())?;
 
+    // From its check of the live files until it has swapped them, the
+    // restore holds the live store's write gate and its lock among
+    // processes, which every writer of the store takes: it waits for a
+    // write in flight, and no write lands on a file it is replacing
+    // (bug-d81257).
+    let live_store = KnowledgeStore::new(live.knowledge.clone());
+    let _writes = live_store.lock_writes();
     for path in [&live.knowledge, &live.confirmations] {
         if path.exists() {
             ensure!(

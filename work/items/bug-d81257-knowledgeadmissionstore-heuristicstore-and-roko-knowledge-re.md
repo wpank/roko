@@ -92,3 +92,7 @@ unshared `Arc::new(Mutex::new(()))`; `publish_staged_neuro_files` has zero lock 
 - 2026-10-05 (wave-20 follow-up, bug-c4f0ed, work/bug-c4f0ed not yet merged): confirmed
   directly by reading both sibling stores' constructors and `publish_staged_neuro_files` in
   full.
+
+## Progress
+
+- bug-d81257: implemented at b3b328004. The per-path gate map from bug-c4f0ed now serves KnowledgeAdmissionStore (keyed by its candidates log) and HeuristicStore (keyed by heuristics.jsonl). Each takes its file's shared gate and then the `.lock` sibling's lock among processes through `WriteGuard::hold`, and guards its sibling logs under that one gate. This also serializes HeuristicStore's fixed `heuristics.jsonl.tmp` rewrite. The lock order stays admission or heuristic first, then knowledge. `KnowledgeStore::lock_writes` is now public, and `restore_neuro_store` holds it from its check of the live files until the restored ones are published. Restore touches only knowledge.jsonl and its confirmations, so it takes only that store's lock. The verify's grep passes; cargo verification is deferred to the batch gate (`restore_waits_for_a_concurrent_knowledge_store_writer`, `admission_stores_of_one_workspace_keep_each_decision_with_its_candidate`, `heuristic_stores_of_one_file_do_not_lose_an_upsert`).

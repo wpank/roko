@@ -15,7 +15,7 @@ source = "wave-6 follow-up reports 2026-10-03 (PK24 gap-e120a1)"
 discovered_from = "gap-e120a1 (backlog task 3234)"
 anchors = ["benchmarks/viabilitybench/specops/manipulation_check.py"]
 lane = "bench"
-links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+links = { depends_on = [], blocks = [], related = ["gap-46fd19", "gap-76fd1c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -qw 'def test_full_48_instance_h3_report_runs_from_generators' benchmarks/viabilitybench/specops/tests/test_manipulation.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/specops/tests/test_manipulation.py -k test_full_48_instance_h3_report_runs_from_generators -q"
@@ -64,3 +64,8 @@ named as the tasks the full report depends on.
 
 - Depends on F2/F3/F5 family generators landing if they haven't (check `benchmarks/viabilitybench/families/` for
   their current state before starting).
+- 2026-10-05 (wave-19 follow-up): on `work/gap-6e7a86` (not yet merged), this item's converter
+  is implemented for F1 only; F2/F3/F5/F7 render no `spec.precise.md` by design (`gap-46fd19`,
+  now linked above) and F4's template has different section headers. The remaining coverage
+  (F4's converter, and a product decision for the README-only families) is filed separately as
+  `gap-76fd1c` (now linked above too) rather than left only as that branch's own Progress note.

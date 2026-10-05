@@ -18,10 +18,14 @@
 //!   next queued tasks rises by more than 0.2, the detectors' thresholds H
 //!   are halved for 10 resolutions ([`Controller::set_detector_tuning`]).
 //!
-//! The self-model forecasts per routing arm (S04.T04, `self_model`); an
-//! adapter that aggregates them over the queued tasks' features into a
-//! [`DrivePredictor`] needs the dispatch-side task mix and the rung-to-model
-//! map, which the plan-run sink has (8122).
+//! The self-model forecasts per routing arm (S04.T04, `self_model`). In
+//! production the [`DrivePredictor`] is roko-cli's `SelfModelPredictor`
+//! (`runtime_feedback::homeostasis`), which the plan-run sink (8122), with
+//! the dispatch-side task mix and the rung-to-model map, builds whenever
+//! `[homeostasis] m3_prior` is on, the default. It averages the forecasts
+//! of the recently settled tasks, each on the rung θ starts its tier on;
+//! before any task settles, or with the ladder off, it predicts nothing and
+//! the catalog-sign prior stands.
 //!
 //! [`Controller::set_detector_tuning`]: super::controller::Controller::set_detector_tuning
 

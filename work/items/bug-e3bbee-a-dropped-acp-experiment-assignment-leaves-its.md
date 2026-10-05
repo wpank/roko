@@ -93,3 +93,15 @@ None)` on a drop with no settlement call anywhere in the function or its one cal
   it was: a dispatch that `applicable_acp_experiment` drops... leaves its receipt Prepared.
   That now happens once per such dispatch, not once per session." Filed separately since that
   item's own `[[verify]]` command covers only the serve/settle-match fix, not this.
+
+## Progress
+
+- 2026-10-05 (w4-length): implemented on `work/gap-d10a97` at cf65e7802; cargo verification deferred to the
+  batch gate. `applicable_acp_experiment` now takes the experiment store's path. Both of its drops, a model
+  variant whose model is not configured and one that would override a model the session selected explicitly,
+  settle the receipt as `Abandoned` (the new `abandon_acp_experiment`; no trial counts). Test:
+  `dropped_acp_assignment_settles_as_abandoned` covers both drop reasons.
+- Not in this item's scope, for the filer: other early returns between preparation and settlement in
+  `bridge_events/mod.rs` leave receipts open too. The no-usable-provider return (~l.789) and the pre-dispatch
+  safety violation (~l.706) come after `mark_acp_experiment_dispatched`, so their receipt stays `Dispatched`. The
+  image-validation errors (~l.465, l.574) leave it `Prepared`.

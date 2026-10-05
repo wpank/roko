@@ -93,9 +93,10 @@ pub fn read_refine_requests(runs_dir: &Path) -> Vec<RefineRequest> {
     requests
 }
 
-/// The gate's verdict in `mode` on the open refine requests for the task `record` scores
-/// (gap-2b0575): `None` when the gate is off, or when no request names the task with a score
-/// its spec has not risen above since. Under `enforce`, an open request from a self-model that
+/// The gate's verdict in `mode` on the open refine requests for the task `record` scores.
+///
+/// `None` when the gate is off, or when no request names the task with a score its spec has
+/// not risen above since (gap-2b0575). Under `enforce`, an open request from a self-model that
 /// routed blocks the task; any other open request is advice. A request answers to the task's
 /// plan id and to its `tasks.toml`'s directory, the plan id Graph attempts carry, as the
 /// self-model's spec features do (3240).

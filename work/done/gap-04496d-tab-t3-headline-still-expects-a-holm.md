@@ -2,7 +2,7 @@
 id = "gap-04496d"
 kind = "gap"
 title = "tab_t3_headline still expects a holm_reject MetricRecord, and claim_state's adverse flag has no caller"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench"]
 created = 2026-10-05
 updated = 2026-10-05
 last_verified = 2026-10-05
+last_verified_rev = "fdebdbe03"
 source = "wave-20 follow-up reports 2026-10-05 (gap-2da8ec, work/gap-2da8ec)"
 discovered_from = "gap-2da8ec (open; its fix produces vb.verdict/1, a different format from what tab_t3_headline reads)"
 anchors = ["benchmarks/viabilitybench/analysis/tab_t3_headline.py", "benchmarks/viabilitybench/analysis/holm.py::decide"]
@@ -19,6 +20,17 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_tab_t3_headline_shows_a_real_holm_decision' benchmarks/viabilitybench/analysis/test_tab_t3_headline.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_tab_t3_headline.py -k test_tab_t3_headline_shows_a_real_holm_decision -q"
+
+[closed]
+at = 2026-10-05
+at_ts = "2026-10-05T19:22:53Z"
+commit = "fdebdbe03"
+executor = "claude-agent"
+via = "work-batch"
+size = "M"
+claimed_at = "2026-10-05T17:36:21Z"
+forced = false
+evidence = "Gate 22 (merged fdebdbe03): verify test_tab_t3_headline_shows_a_real_holm_decision passes; bench suite 763 passed. analysis/holm_decisions.py is the first production caller of holm.decide: one decision projected as verdicts.json and as the holm_reject MetricRecords tab_t3_headline reads (provenance copied from the cell's envelope record). H1's adverse flag comes from envelope_ratio_r/_c's sign against the reference arm, so NOT_SUPPORTED is reachable; H2-H7 keep the conservative default until a metric is tied to them."
 +++
 
 ## Problem

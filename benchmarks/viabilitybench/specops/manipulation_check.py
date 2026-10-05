@@ -12,9 +12,11 @@ or workspaces, which would make the gap meaningless to compare.
 
 Building the 48 live H3 instances from the S08 family generators (3234's Plan item 1: F1-F5 and F7's own
 ``gen.py``/``render_spec``) needs a converter from each family's own manifest and markdown spec into this
-module's TSS v1 ``[[task]]`` shape; that conversion is not part of this change (S08.T8 and S08.T9 landed the
-families themselves, not a tasks.toml projection of them). ``check_many`` takes whatever precise specs its
-caller already has in that shape -- the fixtures here, or such a converter's output once one exists.
+module's TSS v1 ``[[task]]`` shape (S08.T8 and S08.T9 landed the families themselves, not a tasks.toml
+projection of them). ``specops.from_generator`` (gap-c71dbb) is that converter for the one family whose
+``generate()`` output it currently reads this way, F1; its own module docstring says which of H3's other five
+families it does not cover yet, and why. ``check_many`` takes whatever precise specs its caller already has in
+that shape -- the fixtures here, or such a converter's output.
 
 API:
     MIN_GAP = 30

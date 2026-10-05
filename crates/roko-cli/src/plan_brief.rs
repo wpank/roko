@@ -289,10 +289,19 @@ impl DocumentWriter {
             .await
             .with_context(|| format!("dispatch the model that writes {file}"))?;
         let reply = dispatch.result.output.body.as_text().unwrap_or("");
+        let snapshot = crate::dispatch_v2::pricing_snapshot(&self.config.pricing, &self.workdir);
+        let (api_equiv_usd, price_snapshot_id) = crate::dispatch_v2::api_equiv(
+            &dispatch.result,
+            snapshot.as_deref(),
+            &dispatch.target.model_slug,
+        )
+        .unzip();
         let capture = AgentCapture {
             exit_code: i32::from(!dispatch.result.success),
             output: reply.to_string(),
             usage: dispatch.result.usage,
+            api_equiv_usd,
+            price_snapshot_id,
             model: dispatch.target.model_slug.clone(),
             provider: dispatch.target.provider_id.clone(),
             duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),

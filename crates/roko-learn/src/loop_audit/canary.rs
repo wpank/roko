@@ -386,7 +386,8 @@ mod tests {
             (faults::active(&self.loop_id) != Some(FaultKind::Cut)).then(|| self.load())
         }
 
-        /// A dry-run canary over this loop, appended to `ledger`.
+        /// A dry-run canary over this loop, appended to `ledger`. Its reads
+        /// run inside a fault dry run, as the production canary's do.
         fn canary(&self, nonce: &str, ledger: &Ledger) -> CanaryRow {
             let task = CanaryTask {
                 loop_id: self.loop_id.clone(),
@@ -396,14 +397,16 @@ mod tests {
             };
             let mut writer = self.clone();
             let mut planner = ToyPlanner { toy: self.clone() };
-            run_canary(
-                &mut writer,
-                &mut planner,
-                &self.run_dir,
-                &task,
-                true,
-                ledger,
-            )
+            faults::dry_run(|| {
+                run_canary(
+                    &mut writer,
+                    &mut planner,
+                    &self.run_dir,
+                    &task,
+                    true,
+                    ledger,
+                )
+            })
             .expect("append the canary row")
         }
     }
@@ -497,6 +500,7 @@ mod tests {
 
     /// S03 §4.7 and C3: a CUT flag on the toy loop's reader makes P2 the
     /// first failing probe; once the flag is cleared, every probe passes.
+    /// The flag lives on this test's own registry (bug-9d23ed).
     #[cfg(feature = "fault-injection")]
     #[test]
     fn canary_localizes_injected_cut() {
@@ -504,26 +508,24 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let toy = ToyLoop::new(dir.path(), LOOP);
         let ledger = Ledger::at(dir.path().join("learn/loop-audit.jsonl"));
-        faults::enable(
-            faults::FaultActor::Env,
-            toy.run_dir.join(super::super::ledger::FAULTS_FILE),
-        );
-        faults::set(faults::FaultSpec {
-            loop_id: LOOP.to_string(),
-            kind: FaultKind::Cut,
-            ttl_secs: 600,
-            max_decisions: 100,
-            spend_cap_usd: None,
-        })
-        .expect("set the CUT flag");
+        let faults_file = toy.run_dir.join(super::super::ledger::FAULTS_FILE);
+        let (cut, healthy) = faults::isolated(faults::FaultActor::Env, faults_file, || {
+            faults::set(faults::FaultSpec {
+                loop_id: LOOP.to_string(),
+                kind: FaultKind::Cut,
+                ttl_secs: 600,
+                max_decisions: 100,
+                spend_cap_usd: None,
+            })
+            .expect("set the CUT flag");
+            let cut = toy.canary("c-cut", &ledger);
+            assert!(faults::clear(LOOP));
+            (cut, toy.canary("c-clear", &ledger))
+        });
 
-        let cut = toy.canary("c-cut", &ledger);
         assert_eq!(cut.first_failure.as_deref(), Some("P2"), "{cut:?}");
         assert_eq!(probes_run(&cut), ["P1", "P2"]);
         assert!(toy.load().entries.is_empty(), "the artifact is cleaned up");
-
-        assert!(faults::clear(LOOP));
-        let healthy = toy.canary("c-clear", &ledger);
         assert_eq!(healthy.first_failure, None, "{healthy:?}");
         assert_eq!(probes_run(&healthy), ["P1", "P2", "P3", "P4", "P6", "P7"]);
 
@@ -537,6 +539,5 @@ mod tests {
             assert!(canary.dry_run);
             assert_eq!(canary.cost_usd, 0.0);
         }
-        faults::disable();
     }
 }

@@ -23,7 +23,9 @@
 //!   router dispatch routes with (`CascadeRouter::set_canary_route`), which
 //!   sends the canary's category to the router's cheapest model. Only a route
 //!   inside the canary's `canary_scope` reads it, so no real task can, and
-//!   it is never persisted (gap-135821).
+//!   it is never persisted (gap-135821). Its `credit` settles a synthetic
+//!   pass on a copy of the router, so P7 can credit the loop without moving
+//!   its learned state (bug-9d23ed).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -34,6 +36,7 @@ use roko_learn::cascade_router::{CascadeRouter, canary_scope};
 use roko_learn::loop_audit::canary::{CanaryTarget, CanaryTask, CanaryWriter, run_canary};
 use roko_learn::loop_audit::faults;
 use roko_learn::loop_audit::ledger::{CanaryRow, Ledger};
+use roko_learn::model_call_feedback::observe_model_call_on_router;
 use roko_learn::playbook::{Playbook, PlaybookStore};
 use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeStore, ReinforcementSignal};
 
@@ -53,6 +56,10 @@ const CANARY_CONFIDENCE: f64 = 0.9;
 /// The novelty of the gated reinforcement `credit` settles: the knowledge
 /// lifecycle's default.
 const CREDIT_NOVELTY: f64 = 0.5;
+
+/// The role of the canary task, whose synthetic model call L-route's
+/// `credit` settles.
+const CANARY_ROLE: &str = "implementer";
 
 /// The id of `nonce`'s canary artifact: `CANARY-<nonce>`.
 #[must_use]
@@ -384,9 +391,14 @@ impl DryCanaryRunner {
         let run_dir = layout.runs_dir().join(format!("canary-{}", task.nonce));
         let ledger = Ledger::in_learn_dir(&layout.learn_dir());
         // Every probe reads inside a fault dry run, so a flag of any kind
-        // reaches the reader it breaks (decision 5101 §9.10).
-        faults::dry_run(|| run_canary(&mut *writer, &mut planner, &run_dir, &task, true, &ledger))
-            .map_err(|error| format!("the canary's row was not written: {error}"))
+        // reaches the reader it breaks (decision 5101 §9.10), and the trace
+        // is one decision of the flag's budget (bug-9d23ed).
+        faults::dry_run(|| {
+            faults::decision(&task.nonce, || {
+                run_canary(&mut *writer, &mut planner, &run_dir, &task, true, &ledger)
+            })
+        })
+        .map_err(|error| format!("the canary's row was not written: {error}"))
     }
 }
 
@@ -443,9 +455,25 @@ impl CanaryWriter for RouteCanary {
         pick.is_some_and(|pick| pick.primary.slug == self.canary_model())
     }
 
-    /// A canary preference has no counters to settle.
+    /// Settle a synthetic pass on the canary model as a model call settles
+    /// into the router, on a copy of the router the canary routed with, so no
+    /// learned state moves; whether the copy's trial count for the model
+    /// moved. The preference has no counter of its own: the router's
+    /// per-model counters are what its outcomes move (bug-9d23ed).
     fn credit(&mut self, _nonce: &str) -> bool {
-        false
+        let model = self.canary_model();
+        let snapshot = self.router.snapshot_json();
+        let slugs = self.router.model_slugs().to_vec();
+        let Ok(copy) = CascadeRouter::from_snapshot_json(&snapshot, slugs) else {
+            return false;
+        };
+        let trials = |router: &CascadeRouter| {
+            let stats = router.confidence_snapshot();
+            stats.get(&model).map_or(0, |&(trials, _)| trials)
+        };
+        let before = trials(&copy);
+        observe_model_call_on_router(&copy, &model, CANARY_ROLE, true, 0);
+        trials(&copy) > before
     }
 
     /// Remove the preference, and only it.
@@ -657,5 +685,29 @@ mod tests {
             "cleanup removed the preference"
         );
         assert!(canary_scope(&category, || router.canary_route()).is_none());
+    }
+
+    /// bug-9d23ed: L-route's P7 settles a synthetic pass on the canary model
+    /// through the router's own settle path, on a copy of the router, so it
+    /// credits the loop while the router dispatch routes with learns
+    /// nothing.
+    #[test]
+    fn route_canary_credits_without_moving_the_router() {
+        let models = vec![
+            "claude-opus-4-1".to_string(),
+            "claude-haiku-4-5".to_string(),
+        ];
+        let router = Arc::new(CascadeRouter::new(models));
+        let mut writer = RouteCanary::new(Arc::clone(&router));
+        let before = router.confidence_snapshot();
+        assert_eq!(writer.write(NONCE), Ok(1));
+        assert!(writer.credit(NONCE), "P7 credits the canary");
+        assert_eq!(
+            router.confidence_snapshot(),
+            before,
+            "the router learned nothing"
+        );
+        writer.cleanup(NONCE);
+        assert_eq!(router.canary_route_count(), 0);
     }
 }

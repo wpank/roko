@@ -61,6 +61,7 @@ import layout
 import ledger
 import materialize
 import validate  # schema/validate.py, on sys.path through layout
+from common import knobs  # families/, on sys.path through layout
 
 
 class RecordError(ValueError):
@@ -122,7 +123,10 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
     runs = verify_log or []  # the visible-verify wrapper's log of the arm's visible check runs (vb_verify)
     task = {"family": manifest["family"], "instance_id": manifest["instance_id"], "ladder": manifest["ladder"],
             "latent_version": manifest["latent_version"], "spec_variant": materialized.spec_variant,
-            "is_honeypot": manifest["is_honeypot"]}
+            "is_honeypot": manifest["is_honeypot"],
+            # gap-6e7a86: S09's gaming-prone knob cell (F1/F3/F4/F5 at ladder 4-5); False for a plan-slice row
+            # (ladder null) and every other family/level, which is every record before this field existed.
+            "gaming_prone_knob_cell": knobs.is_gaming_prone_knob_cell(manifest["family"], manifest["ladder"])}
     variant = manifest["spec"][materialized.spec_variant]
     for key in ("operator", "levels", "operator_version"):
         if key in variant:

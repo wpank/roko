@@ -109,3 +109,22 @@ say so.
 - Filed as a new item rather than a note because 7119 itself is closed (`status = "done"`) and task 7119's own
   file, while still open in `tmp/backlog/`, is not part of `work/`'s tracked-and-rendered graph the way `gap-f0a7ee`
   (its closed package) is.
+
+## Progress
+
+- 2026-10-05 (w4-length): implemented on `work/gap-d10a97` at 5ed17eb8a; cargo verification deferred to the
+  batch gate.
+  - `codex_sandbox_args`' doc now says that workspace-write does not confine reads, so a Codex run can read the
+    audit vault at every sandbox level. `guarded_command_violation`'s doc names the audit vault and says what the
+    broker's check misses.
+  - Premise, corrected: Codex is not unguarded. `ExecAgent`'s broker already runs roko-std's
+    `refuse_key_file_in_command`, which refuses a command that names the vault (`ROKO_AUDIT_HOME`,
+    `~/.roko/audit`) since 7119, on every `command_execution` Codex starts, with or without a policy. The check
+    acts after the command has started and goes by the command's text. Nothing pinned it, so this item adds
+    `codex_agent_is_stopped_at_a_command_that_reads_the_audit_vault`.
+  - A stronger mitigation, described here and not added: the codex-cli 0.152.0 binary carries deny-read support.
+    Its strings include `permissions.filesystem.deny_read` (requirements-level, managed config), deny-read glob
+    entries in permission profiles, and a Seatbelt `(deny file-read* (regex ...))`. The user-level syntax is
+    unverified here. Wiring it means checking it with a local codex sandbox run (no model call needed) and Will's
+    go-ahead, per this item's notes.
+  - Not edited: 7119's task file under `tmp/backlog/`, which this package does not own.

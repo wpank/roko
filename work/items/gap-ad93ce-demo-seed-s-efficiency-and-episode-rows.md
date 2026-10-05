@@ -98,3 +98,7 @@ don't exist.
   Costs.jsonl has no seeded rows at all (not rows with a mismatched key) — a more precise
   restatement of the source report's framing, with the same practical effect on
   `roko learn telemetry check`'s output.
+
+## Progress
+
+- gap-ad93ce: implemented at 0cbe9eb4f. The demo's rows carry the attempt keys the ledger uses (`demo_attempt_key`, `AttemptKey::new`). Efficiency rows go through `AttemptKeyed`: a task's primary turn is keyed to its first attempt, and its follow-up to its last one. For a task that passed, that is another turn of the same attempt. For a task that failed, it is the retry, which now records a failed gate as the ledger does, where before it claimed a recovery. Episodes name their attempt in `extra.attempt_key`. Each retry gets an episode of its own (7 episodes, not 5), and the seeded knowledge still cites only first attempts. Plan step 4's choice: the seeder writes one `learn/costs.jsonl` row per settled attempt, costed as the attempt's verdict is, and only beside the ledger, so a workspace with real runs gets no demo spend. The verify's grep passes; cargo verification is deferred to the batch gate (`demo_workspace_telemetry_check_reports_no_coverage_gaps`, which also asserts that the whole check passes).

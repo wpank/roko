@@ -181,7 +181,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 ctx.budget_remaining,
                 budget_reservation.routing_budget_usd(),
             ),
-            attempt: 0,
+            // The attempts before this one, as on the batch path, so routing
+            // and the self-model know a retry (bug-b087ea).
+            attempt: attempt_number,
             ladder_step,
             prompt_experiment: prompt_experiment.clone(),
             gate_feedback: None,
@@ -487,6 +489,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     attempt.verify_ended();
                     attempt.record_verify_steps(report.steps);
                     attempt.record_scope_findings(report.scope_findings);
+                    attempt.record_verify_depth(report.verify_depth);
                     Some(report.result)
                 } else {
                     None
@@ -1402,5 +1405,100 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
         assert_eq!(candidates.len(), 2, "{row}");
         let key = row["attempt_key"].as_str().expect("an attempt key");
         assert!(runtime.take_forecast(key).is_some(), "{key}");
+    }
+
+    /// bug-b087ea: a streamed retry is forecast as one, as on the batch path:
+    /// its dispatch context counts the attempt before it, so the self-model's
+    /// features for the second attempt say it follows a failure.
+    #[tokio::test]
+    async fn streaming_retry_self_model_features_show_prior_failure() {
+        use roko_core::config::routing::LadderRung;
+        use roko_core::config::self_model::{SelfModelConfig, SelfModelMode};
+        use roko_core::pricing_snapshot::PriceSnapshot;
+        use roko_learn::self_model::model::SelfModel;
+
+        use crate::graph_task_dispatch::self_model::SelfModelRuntime;
+        use crate::graph_task_dispatch::tests::{jsonl_rows_where, model};
+
+        const RUN: &str = "streaming-self-model-retry-run";
+
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let settings = SelfModelConfig {
+            mode: SelfModelMode::Shadow,
+            ..SelfModelConfig::default()
+        };
+        let snapshot = PriceSnapshot::builtin().expect("the built-in snapshot");
+        let state = roko.join("learn/self-model/state-v1.json");
+        let fresh = SelfModel::new(&snapshot);
+        let runtime = Arc::new(SelfModelRuntime::new(settings, state, fresh));
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            self_model: Some(Arc::clone(&runtime)),
+            ..GraphFeedbackContext::default()
+        };
+        // Two ladder rungs that can run, as in the forecast test above.
+        let ladder = |config: &mut RokoConfig| {
+            no_auto_fix(config);
+            for (key, slug) in [
+                ("cheap-model", "claude-haiku-4-5"),
+                ("stream-model", "claude-sonnet-4-6"),
+            ] {
+                config
+                    .models
+                    .insert(key.to_string(), model("stream-cli", slug, None));
+            }
+            let rung = |name: &str, model: &str| LadderRung {
+                name: name.to_string(),
+                model: model.to_string(),
+            };
+            config.routing.ladder.rungs =
+                vec![rung("cheap", "cheap-model"), rung("strong", "stream-model")];
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, ladder, feedback).await;
+        task.model_hint = None;
+        // A verify step that always fails, so the second attempt is a retry.
+        task.verify = vec![verify_step("structural", "false")];
+        let mut spec = make_spec(&task);
+        spec.max_retries = 3;
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "test-fingerprint".to_string(),
+        };
+        let ctx = CellContext::new()
+            .with_run_id(RUN.to_string())
+            .with_cell_id("T-STREAM".to_string());
+        for _ in 0..2 {
+            let (event_tx, _event_rx) =
+                tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+            let _ = dispatcher
+                .dispatch_streaming(
+                    &spec,
+                    Vec::new(),
+                    &ctx,
+                    &lease,
+                    event_tx,
+                    &NoopAttemptRecorder,
+                )
+                .await;
+        }
+        drop(dispatcher);
+
+        let path = roko.join("runs").join(RUN).join("predictions.jsonl");
+        let predictions =
+            jsonl_rows_where(&path, 2, |row| row["schema_version"] == "roko.prediction/1").await;
+        let mut features: Vec<(u64, u32, bool)> = predictions
+            .iter()
+            .map(|row| {
+                let key = row["attempt_key"].as_str().expect("an attempt key");
+                let forecast = runtime.take_forecast(key).expect("the attempt's forecast");
+                let ordinal = row["attempt"].as_u64().expect("an attempt ordinal");
+                let features = forecast.features;
+                (ordinal, features.attempt, features.has_prior_failure)
+            })
+            .collect();
+        features.sort_unstable();
+        assert_eq!(features, [(1, 1, false), (2, 2, true)]);
     }
 }

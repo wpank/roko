@@ -72,7 +72,7 @@ use crate::audit::b2::B2;
 use crate::audit::b3::{B3, Reviewer};
 use crate::audit::labels::{VsLearner, known_vs};
 use crate::audit::worker::{
-    AuditTask, AuditUnit, AuditWorker, GamingWatch, PhaseB, WorkerContext, queue_unit,
+    AuditTask, AuditUnit, AuditWorker, CallLog, GamingWatch, PhaseB, WorkerContext, queue_unit,
 };
 use crate::runtime_feedback::HomeostasisSink;
 use crate::task_parser::TaskDef;
@@ -113,6 +113,8 @@ pub(super) struct AuditSelector {
     gates: GatesConfig,
     /// The phase-B checks each run's worker runs.
     phase_b: PhaseB,
+    /// Where each run's worker accounts its audits' model calls (gap-dd9c2e).
+    call_log: Option<Arc<dyn CallLog>>,
     /// The workspace's gate-gaming detector (F1), fed every settled attempt.
     gaming: GamingWatch,
     /// The self-model audited VS labels teach (DP5, 7134), whose `risk_fg`
@@ -184,6 +186,7 @@ impl AuditSelector {
             config: config.clone(),
             gates: gates.clone(),
             phase_b: PhaseB::default(),
+            call_log: None,
             learner: None,
             risk_window: parking_lot::Mutex::new(VecDeque::new()),
             m1: None,
@@ -195,6 +198,14 @@ impl AuditSelector {
     #[must_use]
     pub(super) fn with_phase_b(mut self, phase_b: PhaseB) -> Self {
         self.phase_b = phase_b;
+        self
+    }
+
+    /// The lottery, whose runs' workers account their audits' model calls
+    /// in `log` (gap-dd9c2e).
+    #[must_use]
+    pub(super) fn with_call_log(mut self, log: Arc<dyn CallLog>) -> Self {
+        self.call_log = Some(log);
         self
     }
 
@@ -278,6 +289,7 @@ impl AuditSelector {
             phase_b: self.phase_b.clone(),
             gaming: self.gaming.clone(),
             learner: self.learner.clone(),
+            call_log: self.call_log.clone(),
         };
         match AuditWorker::start(context) {
             Ok(worker) => Some(worker),
@@ -614,6 +626,7 @@ pub(super) fn audit_task(task: &TaskDef) -> AuditTask {
             .map(|step| (step.phase.clone(), step.command.clone()))
             .collect(),
         kind: task_type(task).to_string(),
+        tier: task.tier.clone(),
     }
 }
 
@@ -724,11 +737,14 @@ mod tests {
 
     use super::*;
     use crate::audit::labels::{AuditReport, vs_label};
-    use crate::audit::worker::{pending_units, queue_dir};
+    use crate::audit::worker::{
+        CheckCall, CheckOutcome, PhaseBCheck, UnitAudit, pending_units, queue_dir,
+    };
+    use crate::audit::worktree::tests::{repo_with, tree_of, write};
     use crate::graph_task_dispatch::diff_snapshot::tests::commit_repo;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, recording_feedback,
-        verify_step,
+        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, model, no_auto_fix,
+        recording_feedback, verify_step,
     };
     use crate::graph_task_dispatch::{
         CellContext, GraphTaskDispatcher, StreamingTaskDispatcher, TaskDispatcher, TaskLease,
@@ -1400,6 +1416,7 @@ mod tests {
             phase_b: PhaseB::default(),
             gaming: GamingWatch::new(selector.vault()),
             learner: None,
+            call_log: None,
         };
         let units = pending_units(context).expect("the ledger");
         let rebuilt: Vec<_> = units
@@ -1407,5 +1424,154 @@ mod tests {
             .map(|unit| unit.prediction_id.as_deref())
             .collect();
         assert_eq!(rebuilt, [Some(prediction_id.as_str())]);
+    }
+
+    /// What [`PricedCheck`]'s one call to glm-4.7 used: 1,000 tokens in and
+    /// 500 out, billed $0.25.
+    fn priced_check_usage() -> roko_core::Usage {
+        roko_core::Usage {
+            input_tokens: 1_000,
+            output_tokens: 500,
+            cost_usd: 0.25,
+            ..roko_core::Usage::default()
+        }
+    }
+
+    /// A phase-B check that calls glm-4.7 once and finds the unit sound.
+    struct PricedCheck;
+
+    #[async_trait::async_trait]
+    impl PhaseBCheck for PricedCheck {
+        async fn check(&self, _audit: &UnitAudit<'_>) -> CheckOutcome {
+            let call = CheckCall {
+                model: "glm-4.7".to_string(),
+                usage: priced_check_usage(),
+                success: true,
+            };
+            CheckOutcome {
+                labels: AuditLabels {
+                    y: Some(false),
+                    ..AuditLabels::default()
+                },
+                cost_usd: call.cost_usd(),
+                calls: vec![call],
+                detail: json!({ "y": false }),
+            }
+        }
+    }
+
+    /// gap-dd9c2e: a sampled audit whose phase B calls a model writes a
+    /// cost row and an efficiency row for the call, role `audit`, keyed by
+    /// the audited attempt and priced at the run's snapshot. The spend is on
+    /// the run's audit line: no task's budget or plan's counts it.
+    #[tokio::test]
+    async fn completed_audit_writes_a_cost_row() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        let base = repo_with(&repo, &[("src/lib.rs", "pub fn n() -> u8 {\n    1\n}\n")]);
+        write(&repo, "src/lib.rs", "pub fn n() -> u8 {\n    2\n}\n");
+        let result = tree_of(&repo);
+        let vault_home = tempfile::tempdir().expect("vault home");
+        let home = vault_home.path().join("audit");
+        let (dispatcher, _task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                config.audit.home = Some(home.clone());
+                // Every audit runs phase B.
+                config.audit.phase_b_rate = 1.0;
+                let reviewer = model("stream-cli", "glm-4.7", None);
+                config.models.insert("reviewer".to_string(), reviewer);
+            },
+            recording_feedback(temp.path()),
+        )
+        .await;
+        let config = dispatcher.config.audit.clone();
+        let vault = config.vault(&repo).expect("the vault");
+        let context = WorkerContext {
+            workdir: repo.clone(),
+            vault: vault.clone(),
+            config,
+            gates: GatesConfig::default(),
+            secret: workspace_secret(&vault).expect("the audit secret"),
+            run_id: RUN.to_string(),
+            run_spend: Arc::new(parking_lot::Mutex::new(1.0)),
+            phase_b: PhaseB {
+                b1: Some(Arc::new(PricedCheck)),
+                ..PhaseB::default()
+            },
+            gaming: GamingWatch::new(&vault),
+            learner: None,
+            call_log: Some(dispatcher.audit_call_log()),
+        };
+        let attempt_key = AttemptKey::new(RUN, "plan", "T1", 1).attempt_key();
+        let unit = AuditUnit {
+            sel_id: "sel-000000000001".to_string(),
+            attempt_key: attempt_key.clone(),
+            run_id: RUN.to_string(),
+            plan_id: "plan".to_string(),
+            task_id: "T1".to_string(),
+            pi: 1.0,
+            base_tree: Some(base),
+            result_tree: Some(result),
+            model: "claude-sonnet-4-6".to_string(),
+            prediction_id: None,
+            task: AuditTask {
+                files: vec!["src/lib.rs".to_string()],
+                verify: vec![("check".to_string(), "true".to_string())],
+                kind: "code".to_string(),
+                tier: "focused".to_string(),
+                ..AuditTask::default()
+            },
+        };
+        let worker = AuditWorker::start(context).expect("the worker starts");
+        assert!(worker.submit(unit), "the worker takes the unit");
+        assert!(worker.drain(Duration::from_secs(120)), "the worker drains");
+
+        // The audit completed, and phase B's call is its cost.
+        let all = records(&vault.ledger_dir()).expect("the ledger");
+        let cost = all.iter().find_map(|record| match &record.event {
+            AuditEvent::Result { cost_usd, .. } => *cost_usd,
+            _ => None,
+        });
+        assert_eq!(cost, Some(0.25));
+
+        let is_audit = |row: &serde_json::Value| row["role"] == "audit";
+        let costs =
+            jsonl_rows_where(&temp.path().join(".roko/learn/costs.jsonl"), 1, is_audit).await;
+        assert_eq!(costs.len(), 1, "{costs:?}");
+        let row = &costs[0];
+        assert_eq!(row["attempt_key"], attempt_key.as_str());
+        assert_eq!(row["plan_id"], "plan");
+        assert_eq!(row["task_id"], "T1");
+        assert_eq!(row["complexity_band"], "focused");
+        assert_eq!(row["model"], "glm-4.7");
+        assert_eq!(row["provider"], "stream-cli");
+        assert_eq!(row["cost_usd"], 0.25);
+        // Its tokens at the run's price snapshot, as an inline check's.
+        let snapshot = dispatcher.pricing_snapshot().expect("a price snapshot");
+        let tokens = crate::dispatch_v2::usage_token_counts(&priced_check_usage());
+        let priced = snapshot.price("glm-4.7", &tokens).expect("a glm-4.7 row");
+        let api_equiv = row["api_equiv_usd"].as_f64().expect("an API price");
+        assert!((api_equiv - priced.api_equiv_usd).abs() < 1e-12, "{row}");
+        assert_eq!(row["price_snapshot_id"], snapshot.id());
+
+        let efficiency = jsonl_rows_where(
+            &temp.path().join(".roko/learn/efficiency.jsonl"),
+            1,
+            is_audit,
+        )
+        .await;
+        let ids: Vec<&str> = efficiency
+            .iter()
+            .filter_map(|row| row["attempt_id"].as_str())
+            .collect();
+        assert_eq!(ids, [format!("{attempt_key}/sel-000000000001-b1-1")]);
+        assert_eq!(efficiency[0]["attempt_key"], attempt_key.as_str());
+
+        // On the run's audit line, not the task's budget or the plan's.
+        assert_eq!(dispatcher.task_spend.task_total("plan/T1"), 0);
+        let spent = dispatcher.plan_budget_snapshot("plan").spent_usd;
+        assert!(spent.abs() < f64::EPSILON, "{spent}");
     }
 }

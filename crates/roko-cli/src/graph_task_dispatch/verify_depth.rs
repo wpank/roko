@@ -37,7 +37,8 @@
 //! raises one attempt's depth above that, never its window's, and after the
 //! deepest depth's checks it may reject a pass that still looks like a false
 //! green, so that a stronger model retries the task. Decision 7103 (b): the
-//! depth acts on real runs.
+//! depth acts on real runs. The attempt's verdict records the depth it was
+//! checked at, with the ladder's level and M1's floor (gap-595e28).
 
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
@@ -48,11 +49,12 @@ use roko_core::config::harness_params::{HarnessParams, VerifyDepth as FloorReque
 use roko_gate::attempt_diff::{AttemptChange, audit_only_findings};
 use roko_gate::audit::feedback::{Ladder, Rung, ladder_path};
 use roko_learn::telemetry::VerifyStepVerdict;
+use roko_learn::telemetry::records::VerifyDepthRecord;
 use serde_json::Value;
 
 use super::audit_select::{audit_task, task_type};
 use super::diff_snapshot::AttemptDiff;
-use super::helper_calls::SideCall;
+use super::helper_calls::{AUDIT_ROLE, SideCall};
 use super::red_flags::finding_list;
 use super::verification::{verify_cancelled, verify_step_locked};
 use super::*;
@@ -64,9 +66,6 @@ use crate::audit::worktree::AuditWorktree;
 
 /// Lines of a failed check's output its failure quotes, from the end.
 const OUTPUT_TAIL_LINES: usize = 30;
-
-/// `role` of an inline audit check's cost and efficiency rows.
-const AUDIT_ROLE: &str = "audit";
 
 /// Why a check did not run: the depth's time ran out.
 const OUT_OF_TIME: &str = "the verify depth's [audit] per_audit_cpu_secs ran out";
@@ -104,10 +103,13 @@ const B3_GAMED: &str = "a review by a model of another family found that the cha
                         its task asks only by weakening a test or special-casing inputs:";
 
 /// The depth each task type ran at in its current ladder window, in this
-/// process: what DP3 applies never decreases within one.
+/// process: what DP3 applies never decreases within one. It also holds the
+/// depth each attempt in verification was checked at, until its
+/// verification report takes it for the verdict (gap-595e28).
 #[derive(Debug, Default)]
 pub(super) struct Depths {
     held: parking_lot::Mutex<HashMap<String, Held>>,
+    applied: parking_lot::Mutex<HashMap<String, VerifyDepthRecord>>,
 }
 
 /// A task type's depth in one ladder window.
@@ -144,6 +146,18 @@ impl Depths {
         }
         held.insert(task_type.to_string(), Held { window, depth });
         depth
+    }
+
+    /// Keep `depth`, the depth attempt `attempt_key` is checked at, for its
+    /// verdict.
+    pub(super) fn apply(&self, attempt_key: &str, depth: VerifyDepthRecord) {
+        self.applied.lock().insert(attempt_key.to_string(), depth);
+    }
+
+    /// The depth attempt `attempt_key` was checked at, taken for its
+    /// verdict; `None` when its verification did not reach DP3.
+    pub(super) fn take_applied(&self, attempt_key: &str) -> Option<VerifyDepthRecord> {
+        self.applied.lock().remove(attempt_key)
     }
 }
 
@@ -272,9 +286,12 @@ impl GraphTaskDispatcher {
         step_verdicts: &mut Vec<VerifyStepVerdict>,
     ) -> Result<Deepened> {
         let mut deepened = Deepened::default();
-        let depth = self.verify_depth(spec, task, theta);
+        let mut applied = self.verify_depth(spec, task, theta);
         // 6132: the self-model's request d* after the pass, never lower.
-        let depth = self.self_model_depth(spec, task, attempt_key, executor, depth);
+        let depth = self.self_model_depth(spec, task, attempt_key, executor, applied.depth);
+        applied.depth = depth;
+        // The verdict records the depth (gap-595e28).
+        self.depths.apply(attempt_key, applied);
         if depth == VerifyDepth::V0 {
             deepened.failure = self.self_model_after_pass(spec, task, attempt_key, executor, depth);
             return Ok(deepened);
@@ -356,19 +373,26 @@ impl GraphTaskDispatcher {
 
     /// The verify depth of the attempt at `task` that runs `theta`: its task
     /// type's ladder level, held for the ladder's window ([`Depths`]), or
-    /// M1's floor when that is higher.
+    /// M1's floor when that is higher, with the ladder's level and the floor
+    /// it came from.
     fn verify_depth(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
         theta: Option<&HarnessParams>,
-    ) -> VerifyDepth {
+    ) -> VerifyDepthRecord {
         let floor = floor_of(theta);
+        let kind = task_type(task);
+        let mut applied = VerifyDepthRecord {
+            task_type: kind.to_string(),
+            depth: floor,
+            ladder: None,
+            floor,
+        };
         // No ladder without audits, and so no window to hold a depth in.
         let Some(audit) = self.attempts.audit() else {
-            return floor;
+            return applied;
         };
-        let kind = task_type(task);
         let rung = match Ladder::load(&ladder_path(audit.vault())) {
             Ok(mut ladder) => Some(ladder.task_types.remove(kind).unwrap_or_default()),
             Err(error) => {
@@ -381,7 +405,9 @@ impl GraphTaskDispatcher {
                 None
             }
         };
-        self.depths.next(kind, rung.as_ref(), floor)
+        applied.ladder = rung.as_ref().map(|rung| rung.level);
+        applied.depth = self.depths.next(kind, rung.as_ref(), floor);
+        applied
     }
 
     /// Run `check` of `run`; V2 and deeper check in `opened`.
@@ -560,7 +586,6 @@ impl GraphTaskDispatcher {
         check: &str,
         calls: &[CheckCall],
     ) {
-        let models = &self.config.models;
         let snapshot = self.pricing_snapshot();
         for (index, call) in calls.iter().enumerate() {
             let cost_usd = call.cost_usd();
@@ -573,9 +598,7 @@ impl GraphTaskDispatcher {
                     "audit check spend not recorded on the plan's cost ledger"
                 );
             }
-            let profile = models.values().find(|profile| profile.slug == call.model);
-            let provider = profile.map_or("unknown", |profile| profile.provider.as_str());
-            let side = SideCall::of_check(provider, profile, call, snapshot.as_deref());
+            let side = SideCall::of_check(&self.config.models, call, snapshot.as_deref());
             let attempt_id = format!("{attempt_key}/audit-{check}-{}", index + 1);
             self.write_side_call_rows(spec, &task.id, attempt_key, &attempt_id, AUDIT_ROLE, &side)
                 .await;
@@ -1075,7 +1098,9 @@ mod tests {
                     .expect("the ladder is written");
                 let spec = make_spec(&task);
                 let attempt = dispatcher.open_attempt(&spec, &task, &ctx);
-                dispatcher.verify_depth(&spec, &task, attempt.harness_params())
+                let applied = dispatcher.verify_depth(&spec, &task, attempt.harness_params());
+                assert_eq!(applied.ladder, Some(level), "the ladder's level");
+                applied.depth
             };
             let depths = [depth(V1, "window:1-10"), depth(V3, "window:11-20")];
             let expected = if held_out { [V1, V3] } else { [V2, V3] };

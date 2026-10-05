@@ -52,13 +52,16 @@ impl GraphTaskDispatcher {
     /// route decision, keyed to the attempt (its trace id too) and stamped
     /// with `task`'s id and the time it is written, one exposure row per item
     /// its prompt retrieved, one content decision per decision point, and an
-    /// access to each knowledge entry it included.
+    /// access to each knowledge entry it included. DP4's own count of the
+    /// exclusions its routing made goes on the attempt's verdict, apart from
+    /// the route row (gap-595e28).
     pub(super) fn record_planned_attempt(
         &self,
         attempt: &mut AttemptContext,
         task: &TaskDef,
         plan: &RunnerDispatchPlan,
     ) {
+        attempt.record_trust_exclusions(plan.trust_exclusions);
         if let Some(mut decision) = plan.route_decision.clone() {
             let attempt_key = attempt.key.attempt_key();
             decision.trace_id.clone_from(&attempt_key);
@@ -139,9 +142,12 @@ impl GraphTaskDispatcher {
             let identity = attempt.identity();
             let mut decision = content_decision(identity, point, &items, &state, draws, shown);
             let draw = (arm_set.as_deref(), times);
-            if let Some((proposals, audit)) =
+            // The prompt read the loop's fault flag for this attempt: the
+            // audit's read is the same decision (bug-9d23ed).
+            let audited = faults::decision(&identity.attempt_key, || {
                 content_audit(point, &items, identity, draw, &request_hash)
-            {
+            });
+            if let Some((proposals, audit)) = audited {
                 decision.proposals = Some(proposals);
                 decision.audit = audit;
             }
@@ -597,6 +603,7 @@ mod tests {
                 },
             },
             route_decision: None,
+            trust_exclusions: None,
         }
     }
 
@@ -657,6 +664,47 @@ mod tests {
             assert!(line.seq < run.verdicts[0].seq, "exposed before settled");
         }
         assert_eq!(run.verdicts[0].record.exposures, Some(counts));
+    }
+
+    /// gap-595e28: an attempt's verdict keeps DP4's own count of the
+    /// exclusions its routing made, though its plan wrote no route row to
+    /// name them, and the verify depth DP3 checked it at.
+    #[tokio::test]
+    async fn verdict_keeps_dp4_count_and_verify_depth() {
+        use roko_core::audit_types::VerifyDepth;
+        use roko_learn::telemetry::records::VerifyDepthRecord;
+
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let mut attempt = dispatcher.open_attempt(&spec, &task, &ctx);
+        let mut plan = planned(Vec::new());
+        plan.trust_exclusions = Some(2);
+        dispatcher.record_planned_attempt(&mut attempt, &task, &plan);
+        let depth = VerifyDepthRecord {
+            task_type: "code".to_string(),
+            depth: VerifyDepth::V2,
+            ladder: Some(VerifyDepth::V2),
+            floor: VerifyDepth::V0,
+        };
+        attempt.record_verify_depth(Some(depth.clone()));
+        let passed = Settlement::verified(&Ok(TaskGateVerdict::Passed));
+        attempt.settle(passed, "stream-model", None);
+        dispatcher.close_run_attempts(RUN);
+
+        let run = RunRecords::load(&runs_dir.join(RUN)).expect("load the run");
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+        assert!(run.decisions.is_empty(), "the plan wrote no route row");
+        let verdict = &run.verdicts[0].record;
+        assert_eq!(verdict.trust_exclusions, Some(2));
+        assert_eq!(verdict.verify_depth, Some(depth));
     }
 
     /// S03 §5 A-DEC (backlog 5125): the knowledge row carries L-know's

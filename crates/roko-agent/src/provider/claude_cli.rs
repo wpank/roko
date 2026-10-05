@@ -329,6 +329,17 @@ impl ProviderAdapter for CodexCliAdapter {
 ///
 /// Without the sandbox the network pins switch off only web search, so a run
 /// whose contract keeps it off the network is logged as unconfined.
+///
+/// Neither mode confines what Codex reads. The sandbox's mode
+/// workspace-write does not confine reads: its settings choose only the roots
+/// Codex may write and its network access. A Codex run can read every file
+/// its user can, the audit vault (`ROKO_AUDIT_HOME`, else `~/.roko/audit`)
+/// included, at every sandbox level (gap-0714c4; checked against codex-cli
+/// 0.152.0). What keeps Codex out of the vault is `ExecAgent`'s operation
+/// broker (`exec.rs`), which stops the run at a command that names the vault,
+/// as roko's bash tool refuses one, but only once the command has started; a
+/// command that reaches the vault without naming it goes unseen. The vault's
+/// canaries (backlog 7117) detect what gets through.
 fn codex_sandbox_args(
     skip_permissions: bool,
     level: SandboxLevel,

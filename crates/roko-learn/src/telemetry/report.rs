@@ -18,7 +18,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use roko_fs::layout::RokoLayout;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::assign::{Arm, Assignment};
@@ -919,7 +919,7 @@ impl SrmReport {
 pub fn srm_check(runs: &[RunRecords]) -> SrmReport {
     let mut tally = SrmTally::default();
     for run in runs {
-        tally.read(run);
+        tally.read(run, u64::MAX);
     }
     let layers = tally
         .draws
@@ -965,11 +965,12 @@ struct SrmTally {
 }
 
 impl SrmTally {
-    /// Gather the draws of `run`'s decision rows: route and content rows
-    /// carry their chain's whole arm set, placebo rows the placebo's draw.
-    fn read(&mut self, run: &RunRecords) {
+    /// Gather the draws of `run`'s decision rows with a `seq` below `below`:
+    /// route and content rows carry their chain's whole arm set, placebo
+    /// rows the placebo's draw.
+    fn read(&mut self, run: &RunRecords, below: u64) {
         let mut rows: Vec<(&str, &ArmSet, Option<&str>)> = Vec::new();
-        for line in &run.decisions {
+        for line in lines_below(&run.decisions, below) {
             match &line.record.arm_set {
                 Some(arms) => {
                     let key = line.record.attempt_key.as_deref().unwrap_or_default();
@@ -978,7 +979,7 @@ impl SrmTally {
                 None => self.unassigned += 1,
             }
         }
-        for line in &run.content_decisions {
+        for line in lines_below(&run.content_decisions, below) {
             let record = &line.record;
             match &record.arm_set {
                 Some(arms) => {
@@ -1022,7 +1023,7 @@ impl SrmTally {
                 }
             }
         }
-        for line in &run.placebo_decisions {
+        for line in lines_below(&run.placebo_decisions, below) {
             let record = &line.record;
             let chain = record.identity.chain_key.as_str();
             let condition = conditions.get(chain).copied().unwrap_or(run_condition);
@@ -1065,6 +1066,11 @@ impl SrmTally {
                 .insert(unit);
         }
     }
+}
+
+/// The lines of `lines` with a `seq` below `below`.
+fn lines_below<T>(lines: &[Stamped<T>], below: u64) -> impl Iterator<Item = &Stamped<T>> {
+    lines.iter().filter(move |line| line.seq < below)
 }
 
 /// The check of `section`'s bandit draws, one per chain: a two-outcome
@@ -1176,6 +1182,71 @@ fn srm_layer(
         mismatch: impossible || srm.rejects(SRM_ALPHA),
         enough_units: units >= SRM_MIN_UNITS,
         problems,
+    }
+}
+
+/// One layer's sample-ratio check folded unit by unit, so that the loop
+/// auditor's tick can carry it from one plan-run close to the next and count
+/// only the units it has not seen (gap-addf2a): the e-value and mismatch
+/// [`srm_check`] gives the layer, without its counts and problems.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SrmFold {
+    srm: SrmEvalue,
+    impossible: bool,
+}
+
+impl Default for SrmFold {
+    fn default() -> Self {
+        Self {
+            srm: SrmEvalue::new(SRM_ARMS.len()),
+            impossible: false,
+        }
+    }
+}
+
+impl SrmFold {
+    /// Count a unit's first draw, `assignment`. An arm outside
+    /// [`SRM_ARMS`] is no unit of the check.
+    fn push(&mut self, assignment: &Assignment) {
+        let Some(index) = SRM_ARMS.iter().position(|arm| *arm == assignment.arm) else {
+            return;
+        };
+        let probabilities = arm_probabilities(assignment);
+        self.impossible |= probabilities[index] <= 0.0;
+        self.srm.push(index, &probabilities);
+    }
+
+    /// The e-value over the units counted, capped at `f64::MAX`.
+    #[must_use]
+    pub fn e_value(&self) -> f64 {
+        self.srm.e_value().min(f64::MAX)
+    }
+
+    /// Whether the e-value reached 1/[`SRM_ALPHA`], or a unit took an arm
+    /// its h and g give no chance.
+    #[must_use]
+    pub fn mismatch(&self) -> bool {
+        self.impossible || self.srm.rejects(SRM_ALPHA)
+    }
+}
+
+/// Fold into `folds`, by layer, the units [`srm_check`] counts in `run`
+/// whose first rows have a `seq` in `from..until`: those its rows below
+/// `until` count and its rows below `from`, which an earlier fold read, do
+/// not. Each unit counts once, with its first draw, as in [`srm_check`].
+pub fn srm_fold(folds: &mut BTreeMap<String, SrmFold>, run: &RunRecords, from: u64, until: u64) {
+    let mut earlier = SrmTally::default();
+    earlier.read(run, from);
+    let mut tally = SrmTally::default();
+    tally.read(run, until);
+    for (layer, draws) in tally.draws {
+        let counted = earlier.draws.get(&layer);
+        let fold = folds.entry(layer).or_default();
+        for (unit, assignment) in &draws {
+            if counted.is_none_or(|counted| !counted.contains_key(unit)) {
+                fold.push(assignment);
+            }
+        }
     }
 }
 
@@ -1799,6 +1870,40 @@ mod tests {
             failures[0].starts_with("knowledge: sample-ratio mismatch over 1000 unit(s)"),
             "{failures:?}"
         );
+    }
+
+    /// gap-addf2a: the loop auditor's tick folds the SRM check window by
+    /// window of a run's rows. Each chain counts once, with its first draw,
+    /// though its retry lands in a later window, and the folded check ends
+    /// where one check of the whole run does.
+    #[test]
+    fn srm_fold_counts_each_unit_once_across_ticks() {
+        // Chain `index` writes its row at seq 2·index + 1 and its retry,
+        // which keeps the draw, at 2·index + 2; 400 of 1,000 take the
+        // default arm at h = 0.5.
+        let mut run = empty_run();
+        for index in 0..1000_u64 {
+            let draw = chain_draw("knowledge", 0.5, index < 400);
+            let task = format!("T{index}");
+            for attempt in 1..=2 {
+                let mut row = knowledge_row(&task, attempt, &[draw.clone()], NORMAL_CONDITION);
+                row.seq = 2 * index + u64::from(attempt);
+                run.content_decisions.push(row);
+            }
+        }
+        let whole = srm_check(std::slice::from_ref(&run));
+        let layer = &whole.layers[0];
+
+        // The first window ends between chain 350's row and its retry.
+        let mut folds = BTreeMap::new();
+        for (from, until) in [(0, 702), (702, 1500), (1500, u64::MAX)] {
+            srm_fold(&mut folds, &run, from, until);
+        }
+        let fold = &folds["knowledge"];
+        assert!(layer.mismatch && fold.mismatch(), "{layer:?} {fold:?}");
+        let (whole_log, folded_log) = (layer.e_value.ln(), fold.e_value().ln());
+        let close = (whole_log - folded_log).abs() < 1e-9 * whole_log.abs();
+        assert!(close, "whole run {whole_log}, folded {folded_log}");
     }
 
     /// Each layer counts at its own decision point: knowledge rows for

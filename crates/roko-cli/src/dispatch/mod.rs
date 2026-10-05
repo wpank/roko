@@ -70,6 +70,17 @@ use crate::dispatch_v2::ProviderRuntime;
 use crate::dispatch_v2::{AgentDispatcherV2, CliProviderConfig, ProviderDispatchResolver};
 use crate::task_parser::TaskDef;
 
+/// Run `plan` as the fault-flag decision of `ctx`'s attempt (bug-9d23ed):
+/// the route and the prompt read each loop's flag as that one decision,
+/// which the attempt's decision records read again. A plan without an
+/// attempt key reads as it always has, each read a decision of its own.
+fn attempt_decision<T>(ctx: &DispatchContext, plan: impl FnOnce() -> T) -> T {
+    match &ctx.attempt_key {
+        Some(key) => roko_learn::loop_audit::faults::decision(&key.attempt_key(), plan),
+        None => plan(),
+    }
+}
+
 /// Durable prompt-experiment identity and root-workspace store location for
 /// one dispatch attempt.
 ///
@@ -347,18 +358,39 @@ impl Dispatcher {
         task: &TaskDef,
         ctx: &DispatchContext,
     ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
-        let inputs = RoutingInputs::from_task(task, ctx);
-        let (choice, mut decision) = self.router.decide(&inputs)?;
-        decision.task_id.clone_from(&task.id);
-        let prompt_ctx = PromptContext::from_task(task, ctx);
-        let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
-        Ok(RunnerDispatchPlan {
-            model: choice.model.clone(),
-            forced: choice.forced(),
-            source: choice.source,
-            prompt: assembled,
-            route_decision: Some(decision),
+        attempt_decision(ctx, || {
+            let inputs = RoutingInputs::from_task(task, ctx);
+            let excluded = self.trust_exclusion_count();
+            let (choice, mut decision) = self.router.decide(&inputs)?;
+            let trust_exclusions = self.trust_exclusions_since(excluded);
+            decision.task_id.clone_from(&task.id);
+            let prompt_ctx = PromptContext::from_task(task, ctx);
+            let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
+            Ok(RunnerDispatchPlan {
+                model: choice.model.clone(),
+                forced: choice.forced(),
+                source: choice.source,
+                prompt: assembled,
+                route_decision: Some(decision),
+                trust_exclusions,
+            })
         })
+    }
+
+    /// The routing decisions DP4 has made in the cascade router so far;
+    /// `None` without a cascade router.
+    fn trust_exclusion_count(&self) -> Option<u64> {
+        self.router
+            .cascade_arc()
+            .map(|router| router.trust_exclusion_count())
+    }
+
+    /// The routing decisions DP4 made since the cascade router's count
+    /// stood at `excluded` (gap-595e28). Routes planned at the same time
+    /// may each count the other's.
+    fn trust_exclusions_since(&self, excluded: Option<u64>) -> Option<u64> {
+        let count = self.trust_exclusion_count()?;
+        Some(count.saturating_sub(excluded.unwrap_or(count)))
     }
 
     /// Like [`plan`](Self::plan) but emits structured routing decision logs.
@@ -370,17 +402,22 @@ impl Dispatcher {
         ctx: &DispatchContext,
         task_id: &str,
     ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
-        let inputs = RoutingInputs::from_task(task, ctx);
-        let (choice, mut decision) = self.router.decide_logged(&inputs, task_id)?;
-        decision.task_id = task_id.to_string();
-        let prompt_ctx = PromptContext::from_task(task, ctx);
-        let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
-        Ok(RunnerDispatchPlan {
-            model: choice.model.clone(),
-            forced: choice.forced(),
-            source: choice.source,
-            prompt: assembled,
-            route_decision: Some(decision),
+        attempt_decision(ctx, || {
+            let inputs = RoutingInputs::from_task(task, ctx);
+            let excluded = self.trust_exclusion_count();
+            let (choice, mut decision) = self.router.decide_logged(&inputs, task_id)?;
+            let trust_exclusions = self.trust_exclusions_since(excluded);
+            decision.task_id = task_id.to_string();
+            let prompt_ctx = PromptContext::from_task(task, ctx);
+            let assembled = self.prompt_assembler.assemble(task, &prompt_ctx)?;
+            Ok(RunnerDispatchPlan {
+                model: choice.model.clone(),
+                forced: choice.forced(),
+                source: choice.source,
+                prompt: assembled,
+                route_decision: Some(decision),
+                trust_exclusions,
+            })
         })
     }
 
@@ -448,6 +485,11 @@ pub struct RunnerDispatchPlan {
     /// The route decision behind `model` (S01 §5.3), not yet keyed to an
     /// attempt: Graph dispatch writes it to the run's `decisions.jsonl`.
     pub route_decision: Option<RoutingDecisionLog>,
+    /// The routing decisions DP4 (S05 §4.6) made while the plan was routed,
+    /// by the cascade router's own count, which the attempt's verdict keeps
+    /// apart from its route row (gap-595e28); `None` without a cascade
+    /// router.
+    pub trust_exclusions: Option<u64>,
 }
 
 // ─── Provider bridge trait (async-trait friendly) ──────────────────────

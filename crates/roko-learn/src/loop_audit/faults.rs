@@ -15,9 +15,16 @@
 //! made inside [`dry_run`], such as a canary's or E1's plans; a live read
 //! sees HARMFUL alone (decision 5101 §9.10), and a read a flag skips is no
 //! decision of it.
+//!
+//! A flag's budget counts logical decisions, not reads (bug-9d23ed). The
+//! reads made inside one [`decision`] scope, such as an attempt's route,
+//! prompt and decision records, are that one decision however many sites
+//! make them; a read outside any scope is a decision of its own. Tests set
+//! their flags inside `isolated`, on a registry of their own, so no other
+//! test meets them.
 
 #[cfg(feature = "fault-injection")]
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 #[cfg(feature = "fault-injection")]
 use std::path::PathBuf;
 #[cfg(feature = "fault-injection")]
@@ -88,6 +95,8 @@ struct Flag {
     spec: FaultSpec,
     armed_at: Instant,
     decisions: u64,
+    /// The named decisions counted so far, at most `spec.max_decisions`.
+    counted: Vec<String>,
     spent_usd: f64,
 }
 
@@ -150,6 +159,7 @@ impl Registry {
             },
             armed_at: now,
             decisions: 0,
+            counted: Vec::new(),
             spent_usd: 0.0,
         };
         self.write(&flag, FaultEvent::Armed)
@@ -159,29 +169,47 @@ impl Registry {
         Ok(fault_id)
     }
 
-    /// The kind of `loop_id`'s flag at `now`. The call is one decision the
-    /// flag affects, and the flag expires after its last.
-    fn active(&mut self, loop_id: &str, now: Instant) -> Option<FaultKind> {
+    /// The kind of `loop_id`'s flag at `now`, for a read of the logical
+    /// decision `decision`. A decision's first read is one the flag affects
+    /// (a `hit` row); its later reads see the same kind and spend nothing. A
+    /// read of no named decision is a decision of its own. Once the flag has
+    /// affected its last decision, the next new one expires it.
+    fn active(&mut self, loop_id: &str, decision: Option<&str>, now: Instant) -> Option<FaultKind> {
         self.expire(now);
         let index = self.index(loop_id)?;
-        self.flags[index].decisions += 1;
-        let flag = self.flags[index].clone();
-        self.record(&flag, FaultEvent::Hit);
-        if flag.decisions >= flag.spec.max_decisions {
-            self.flags.remove(index);
-            self.record(&flag, FaultEvent::Expired);
+        let flag = &self.flags[index];
+        if let Some(decision) = decision
+            && flag.counted.iter().any(|seen| seen == decision)
+        {
+            return Some(flag.spec.kind);
         }
+        if flag.decisions >= flag.spec.max_decisions {
+            let flag = self.flags.remove(index);
+            self.record(&flag, FaultEvent::Expired);
+            return None;
+        }
+        let flag = &mut self.flags[index];
+        flag.decisions += 1;
+        flag.counted.extend(decision.map(str::to_string));
+        let flag = flag.clone();
+        self.record(&flag, FaultEvent::Hit);
         Some(flag.spec.kind)
     }
 
     /// [`Self::active`] for a read made in a dry run or not: a dry-run kind
     /// touches dry runs only, and a read it skips is no decision.
-    fn active_in(&mut self, loop_id: &str, now: Instant, dry_run: bool) -> Option<FaultKind> {
+    fn active_in(
+        &mut self,
+        loop_id: &str,
+        decision: Option<&str>,
+        now: Instant,
+        dry_run: bool,
+    ) -> Option<FaultKind> {
         let harmful = self
             .index(loop_id)
             .is_some_and(|index| self.flags[index].spec.kind == FaultKind::Harmful);
         if dry_run || harmful {
-            self.active(loop_id, now)
+            self.active(loop_id, decision, now)
         } else {
             None
         }
@@ -269,11 +297,52 @@ impl Registry {
     }
 }
 
-/// Run `f` on the registry; `None` while flags are disabled.
+/// Run `f` on this thread's [`isolated`] registry, else the process's;
+/// `None` while flags are disabled.
 #[cfg(feature = "fault-injection")]
 fn with_registry<T>(f: impl FnOnce(&mut Registry) -> T) -> Option<T> {
-    let mut guard = REGISTRY.lock().unwrap_or_else(PoisonError::into_inner);
-    guard.as_mut().map(f)
+    ISOLATED.with(|isolated| {
+        let mut local = isolated.borrow_mut();
+        if let Some(registry) = local.as_mut() {
+            return Some(f(registry));
+        }
+        drop(local);
+        let mut guard = REGISTRY.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.as_mut().map(f)
+    })
+}
+
+#[cfg(feature = "fault-injection")]
+thread_local! {
+    /// This thread's own registry, inside [`isolated`].
+    static ISOLATED: RefCell<Option<Registry>> = const { RefCell::new(None) };
+}
+
+/// Puts back the thread's outer registry when an [`isolated`] scope ends,
+/// on a panic too.
+#[cfg(feature = "fault-injection")]
+struct IsolatedMark(Option<Registry>);
+
+#[cfg(feature = "fault-injection")]
+impl Drop for IsolatedMark {
+    fn drop(&mut self) {
+        let outer = self.0.take();
+        ISOLATED.with(|isolated| *isolated.borrow_mut() = outer);
+    }
+}
+
+/// Run `f` with flags enabled on this thread alone, their ground truth going
+/// to `faults_file` as `actor`: the flags `f` sets, and the reads, clears
+/// and charges it makes on this thread, use a registry of its own, which no
+/// other thread sees and which ends with `f` (bug-9d23ed). A test that sets
+/// flags runs inside one, so tests running at once never meet each other's
+/// flags. A read on another thread, such as a runtime's worker, uses the
+/// process's registry, which [`enable`] and [`disable`] still govern.
+#[cfg(feature = "fault-injection")]
+pub fn isolated<T>(actor: FaultActor, faults_file: impl Into<PathBuf>, f: impl FnOnce() -> T) -> T {
+    let registry = Registry::new(actor, faults_file.into());
+    let _outer = IsolatedMark(ISOLATED.with(|isolated| isolated.replace(Some(registry))));
+    f()
 }
 
 /// Enable flags for this process, their ground truth going to `faults_file`
@@ -336,21 +405,58 @@ pub fn charge(loop_id: &str, usd: f64) {
     with_registry(|registry| registry.charge(loop_id, usd));
 }
 
-/// The fault set on `loop_id`, if any: the only read API. Each call is one
-/// decision the flag affects (a `hit` row), and the flag expires after its
-/// TTL or its last decision, whichever comes first. Outside a [`dry_run`]
-/// only a HARMFUL flag is seen.
+/// The fault set on `loop_id`, if any: the only read API. A read is one
+/// decision the flag affects (a `hit` row), but the reads inside one
+/// [`decision`] scope are that one decision; the flag expires after its TTL
+/// or its last decision, whichever comes first. Outside a [`dry_run`] only a
+/// HARMFUL flag is seen.
 #[cfg(feature = "fault-injection")]
 #[must_use]
 pub fn active(loop_id: &str) -> Option<FaultKind> {
     let dry_run = DRY_RUN.with(Cell::get);
-    with_registry(|registry| registry.active_in(loop_id, Instant::now(), dry_run)).flatten()
+    let decision = DECISION.with(|decision| decision.borrow().clone());
+    with_registry(|registry| {
+        registry.active_in(loop_id, decision.as_deref(), Instant::now(), dry_run)
+    })
+    .flatten()
 }
 
 #[cfg(feature = "fault-injection")]
 thread_local! {
     /// Whether this thread is inside a [`dry_run`].
     static DRY_RUN: Cell<bool> = const { Cell::new(false) };
+    /// The logical decision this thread's reads belong to, inside a
+    /// [`decision`] scope.
+    static DECISION: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Restores the thread's decision when a [`decision`] scope ends, on a
+/// panic too.
+#[cfg(feature = "fault-injection")]
+struct DecisionMark(Option<String>);
+
+#[cfg(feature = "fault-injection")]
+impl Drop for DecisionMark {
+    fn drop(&mut self) {
+        let outer = self.0.take();
+        DECISION.with(|decision| *decision.borrow_mut() = outer);
+    }
+}
+
+/// Run `reads` as the one logical decision `id` (bug-9d23ed): every read of
+/// a loop's flag made inside it on this thread is that decision, so the
+/// flag's budget counts it once however many sites read it, such as an
+/// attempt's route, prompt and decision records keyed by its attempt key. A
+/// read outside any scope counts as a decision of its own.
+pub fn decision<T>(id: &str, reads: impl FnOnce() -> T) -> T {
+    #[cfg(feature = "fault-injection")]
+    let _outer = {
+        let outer = DECISION.with(|decision| decision.replace(Some(id.to_string())));
+        DecisionMark(outer)
+    };
+    #[cfg(not(feature = "fault-injection"))]
+    let _ = id;
+    reads()
 }
 
 /// Restores the thread's dry-run mark when a [`dry_run`] ends, on a panic
@@ -437,17 +543,20 @@ mod tests {
         let busy = registry.arm(spec("L-know", FaultKind::Mask, 600, 3), t0);
         assert_eq!(busy, Err(FaultError::Busy("L-know".to_string())));
         for _ in 0..3 {
-            assert_eq!(registry.active("L-know", t0), Some(FaultKind::Cut));
+            assert_eq!(registry.active("L-know", None, t0), Some(FaultKind::Cut));
         }
-        assert_eq!(registry.active("L-know", t0), None);
+        assert_eq!(registry.active("L-know", None, t0), None);
 
         // By time: the flag is gone once its TTL has passed.
         registry
             .arm(spec("L-play", FaultKind::Stale, 60, 100), t0)
             .expect("arm STALE");
-        assert_eq!(registry.active("L-play", after(30)), Some(FaultKind::Stale));
-        assert_eq!(registry.active("L-play", after(60)), None);
-        assert_eq!(registry.active("L-other", t0), None);
+        assert_eq!(
+            registry.active("L-play", None, after(30)),
+            Some(FaultKind::Stale)
+        );
+        assert_eq!(registry.active("L-play", None, after(60)), None);
+        assert_eq!(registry.active("L-other", None, t0), None);
 
         // The bounds.
         let arm = |registry: &mut Registry, ttl_secs, max_decisions| {
@@ -467,9 +576,16 @@ mod tests {
         harmful.spend_cap_usd = None;
         registry.arm(harmful, t0).expect("arm HARMFUL");
         registry.charge("L-route", 1.0);
-        assert_eq!(registry.active("L-route", t0), Some(FaultKind::Harmful));
+        assert_eq!(
+            registry.active("L-route", None, t0),
+            Some(FaultKind::Harmful)
+        );
         registry.charge("L-route", 0.5);
-        assert_eq!(registry.active("L-route", t0), None, "it spent its cap");
+        assert_eq!(
+            registry.active("L-route", None, t0),
+            None,
+            "it spent its cap"
+        );
         assert!(!registry.clear("L-route"));
 
         // Ground truth: every set, hit and expiry, in order.
@@ -509,6 +625,90 @@ mod tests {
         assert_eq!(rows[8].spend_cap_usd, Some(HARMFUL_SPEND_CAP_USD));
 
         assert_estimators_blind();
+    }
+
+    /// bug-9d23ed: a flag's budget counts logical decisions, not reads. The
+    /// reads of one named decision are one `hit` however many sites make
+    /// them, a read of no named decision is a decision of its own, and once
+    /// the budget is spent the counted decisions still see the flag while
+    /// the next new one expires it. Through the public API a [`decision`]
+    /// scope names the decision, and an [`isolated`] registry keeps the flag
+    /// to this thread: no other thread, and nothing after the scope, sees it.
+    #[cfg(feature = "fault-injection")]
+    #[test]
+    fn fault_budget_counts_decisions_not_reads() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("faults.jsonl");
+        let mut registry = Registry::new(FaultActor::Env, file.clone());
+        let t0 = Instant::now();
+        let mask = Some(FaultKind::Mask);
+        let spec = FaultSpec {
+            loop_id: "L-route".to_string(),
+            kind: FaultKind::Mask,
+            ttl_secs: 600,
+            max_decisions: 3,
+            spend_cap_usd: None,
+        };
+        registry.arm(spec, t0).expect("arm MASK");
+        // One attempt's route, prompt and decision records read it.
+        for _ in 0..3 {
+            assert_eq!(registry.active("L-route", Some("run:plan:t1:1"), t0), mask);
+        }
+        assert_eq!(registry.active("L-route", None, t0), mask, "unnamed");
+        for _ in 0..2 {
+            assert_eq!(registry.active("L-route", Some("run:plan:t2:1"), t0), mask);
+        }
+        // The budget is spent: a counted decision still sees the flag, and a
+        // new one expires it.
+        assert_eq!(registry.active("L-route", Some("run:plan:t1:1"), t0), mask);
+        assert_eq!(registry.active("L-route", Some("run:plan:t3:1"), t0), None);
+        assert_eq!(registry.active("L-route", Some("run:plan:t1:1"), t0), None);
+        let rows: Vec<FaultRecord> = std::fs::read_to_string(&file)
+            .expect("the faults file")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a fault row"))
+            .collect();
+        let events: Vec<(FaultEvent, u64)> = rows
+            .iter()
+            .map(|row| (row.event, row.decisions_affected))
+            .collect();
+        assert_eq!(
+            events,
+            [
+                (FaultEvent::Armed, 0),
+                (FaultEvent::Hit, 1),
+                (FaultEvent::Hit, 2),
+                (FaultEvent::Hit, 3),
+                (FaultEvent::Expired, 3),
+            ]
+        );
+
+        let cut = Some(FaultKind::Cut);
+        let read = || dry_run(|| active("L-know"));
+        isolated(FaultActor::Env, dir.path().join("isolated.jsonl"), || {
+            let spec = FaultSpec {
+                loop_id: "L-know".to_string(),
+                kind: FaultKind::Cut,
+                ttl_secs: 600,
+                max_decisions: 1,
+                spend_cap_usd: None,
+            };
+            set(spec).expect("set CUT on this thread's registry");
+            let elsewhere = std::thread::spawn(read).join().expect("another thread");
+            assert_eq!(elsewhere, None, "another thread");
+            assert_eq!(decision("attempt-1", || [read(), read()]), [cut, cut]);
+            assert_eq!(decision("attempt-1", read), cut, "the same decision");
+            assert_eq!(decision("attempt-2", read), None, "a second decision");
+        });
+        assert_eq!(read(), None, "the scope's registry ended with it");
+    }
+
+    /// Without the feature a [`decision`] scope only runs its reads, and no
+    /// flag is ever seen.
+    #[cfg(not(feature = "fault-injection"))]
+    #[test]
+    fn fault_budget_counts_decisions_not_reads() {
+        assert_eq!(decision("attempt-1", || dry_run(|| active("L-know"))), None);
     }
 
     /// Without the feature, no flag exists, and `active` is a `const fn`.

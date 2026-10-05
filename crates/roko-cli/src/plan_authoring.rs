@@ -894,9 +894,9 @@ impl AuthoringSpend {
             // An `AgentCapture` does not say where its usage came from.
             cost_source: roko_learn::telemetry::CostSource::Unknown,
             priced: Some(priced),
-            // Nor does it carry the agent's API-rate pricing.
-            api_equiv_usd: None,
-            price_snapshot_id: None,
+            // The call at API rates, at the run's price snapshot (gap-d10a97).
+            api_equiv_usd: call.api_equiv_usd,
+            price_snapshot_id: call.price_snapshot_id.clone(),
         };
         self.append("costs.jsonl", &cost_record).await;
 
@@ -915,8 +915,8 @@ impl AuthoringSpend {
             cache_write_tokens,
             cost_usd,
             cost_usd_without_cache: cost_usd,
-            api_equiv_usd: None,
-            price_snapshot_id: None,
+            api_equiv_usd: call.api_equiv_usd,
+            price_snapshot_id: call.price_snapshot_id.clone(),
             prompt_sections: Vec::new(),
             total_prompt_tokens: input_tokens,
             system_prompt_tokens: 0,
@@ -1671,6 +1671,8 @@ command = "echo ok"
                 cost_usd,
                 wall_ms: 0,
             },
+            api_equiv_usd: None,
+            price_snapshot_id: None,
             model: "claude-sonnet-4-6".to_string(),
             provider: "claude_cli".to_string(),
             duration_ms: 20_500,
@@ -1749,6 +1751,8 @@ command = "echo ok"
                     cost_usd: 0.125,
                     ..roko_core::Usage::zero()
                 },
+                api_equiv_usd: None,
+                price_snapshot_id: None,
                 model: "claude-sonnet-4-6".to_string(),
                 provider: "claude_cli".to_string(),
                 duration_ms: 1,

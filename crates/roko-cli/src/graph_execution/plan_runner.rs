@@ -1821,7 +1821,7 @@ async fn run_graph_plan_body(
         shared_pause_flag: &shared_pause_flag,
         interrupt: &interrupt,
         run_manifests: &run_manifests,
-        learning_audit: &roko_config.learning.audit,
+        learning: &roko_config.learning,
         caller_run_id: run_id.as_deref(),
         failure_issues: failure_issues.as_ref(),
         spec_gate: &spec_gate,
@@ -2740,9 +2740,10 @@ struct PlanRunContext<'a> {
     interrupt: &'a PlanRunInterruptHandle,
     /// Each checkpoint run's `manifest.json` (S01 §5.1).
     run_manifests: &'a super::run_manifest::RunManifests,
-    /// `[learning.audit]`, for the loop auditor's tick at each run's close
-    /// (5126).
-    learning_audit: &'a roko_core::config::learning::LearningAuditConfig,
+    /// `[learning]`, for the loop auditor's tick at each run's close (5126):
+    /// its `[learning.audit]`, and whether learning is frozen, which skips
+    /// the tick.
+    learning: &'a roko_core::config::learning::LearningConfig,
     /// The run id the caller already gave this run (`roko run`); a single
     /// plan's fresh checkpoint takes it.
     caller_run_id: Option<&'a str>,
@@ -2809,16 +2810,12 @@ fn plan_cell_context(
 
 /// Close checkpoint run `run_id`'s attempt log, then record in its manifest
 /// that it ended with `status` and how many attempts it opened and settled.
-/// The loop auditor's tick then reads the flushed rows (5126).
+/// The loop auditor's tick then reads the flushed rows (5126), unless
+/// learning is frozen.
 fn close_run_manifest(ctx: &PlanRunContext<'_>, run_id: &str, status: GraphCheckpointStatus) {
     let writer = ctx.graph_task_dispatcher.close_run_attempts(run_id);
     ctx.run_manifests.close(run_id, status, writer);
-    super::loop_audit::audit_tick(
-        ctx.workdir,
-        ctx.learning_audit,
-        run_id,
-        ctx.graph_tui_bridge,
-    );
+    super::loop_audit::audit_tick(ctx.workdir, ctx.learning, run_id, ctx.graph_tui_bridge);
 }
 
 /// Operator controls the plan-set driver routes to one running plan.
@@ -5494,7 +5491,9 @@ max_retries = 0
     /// The files under `.roko/` a frozen run may write (decision 2218): its
     /// telemetry, and the provider circuit breaker. Every other file under
     /// `learn/`, `neuro/` and `daimon/`, and `episodes.jsonl`, is learned
-    /// state.
+    /// state. That includes the loop auditor's ledger and census: attempt
+    /// open draws each chain's arms from the ledger's states (gap-addf2a),
+    /// so a frozen run has no audit tick.
     #[cfg(unix)]
     const FROZEN_RUN_TELEMETRY: &[&str] = &[
         // Each attempt's and helper call's spend: `roko status`, and the
@@ -5515,9 +5514,6 @@ max_retries = 0
         // learned behaviour, so a frozen run still stops calling a provider
         // that fails.
         "learn/provider-health.json",
-        // The loop auditor's ledger (5126): it audits the learning loops and
-        // is no loop's learned state, so a frozen run still writes it.
-        "learn/loop-audit.jsonl",
     ];
 
     /// Whether a frozen run may write `path`, a path under `.roko/`: a file

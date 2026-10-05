@@ -99,3 +99,28 @@ other decision points.
   together while re-reading PK33's own change against `decision_log.rs`.
 - `roko-neuro::context.rs`'s own `task_query_text` (line 1111) is unrelated — a different function, same name, in a
   different crate; do not confuse the two when fixing (3).
+
+## Progress
+
+- 2026-10-05 (w4-length): implemented on `work/gap-a40021` at dc8b4bc99; cargo verification deferred to the
+  batch gate.
+  1. Labels. `content_policy` names the rankings that run since 4209-4213. Knowledge is `topic_overlap_top3`,
+     playbooks `topic_overlap_outcome_top3` (the playbook label was stale too, after 4212), and error patterns
+     `task_or_command_keyed_top<k>`. Sections stay `token_budget_composer`. The doc example in
+     `telemetry/records.rs` follows. Test: `content_policies_name_the_topic_and_key_rankings`.
+  2. One candidate per key.
+     - `FailurePatternSummary::format_entries` renders each pattern's entry, and `format_for_prompt` joins them
+       under its header, byte for byte as before.
+     - `ErrorPatternSelection` carries the entries beside the keys, and `DispatchContext` and `PromptContext`
+       carry the selection (`error_patterns`) in place of `error_patterns_context`.
+     - The prompt builder makes one `ErrorPattern` item per pattern, named by its key and checked against the
+       prompt by its entry, so the block's cap can keep one pattern out while another gets in. A block without
+       keys stays one digest-named item.
+     - Tests: `error_pattern_content_decision_lists_one_candidate_per_key` (a real dispatch whose store holds two
+       patterns of the task; both keys are candidates and chosen), `error_pattern_items_name_each_pattern_by_its_key`
+       and roko-learn's `summary_entries_make_up_its_prompt_text`.
+  3. Topic terms. Group knowledge (`load_group_context`) was the last ranking by the old `task_query_text` (task
+     id, role and path pieces, substring matches). It now ranks by `task_topic_terms` as whole words, and
+     `task_query_text` and `query_keywords` are gone. `task_topic_terms`' doc records which decision points use it
+     and why error patterns (keyed to the task and its verify commands) and sections (the token budget) do not.
+     Test: `group_knowledge_ranks_by_topic_terms_not_ids_roles_or_paths`.

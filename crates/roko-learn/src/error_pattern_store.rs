@@ -275,7 +275,8 @@ pub struct FailurePatternSummary {
 }
 
 impl FailurePatternSummary {
-    /// Render the summary as retry-context text.
+    /// Render the summary as retry-context text: a header, then each
+    /// pattern's entry ([`Self::format_entries`]).
     #[must_use]
     pub fn format_for_prompt(&self) -> String {
         if self.patterns.is_empty() {
@@ -286,32 +287,49 @@ impl FailurePatternSummary {
         out.push_str(
             "Use these concise prior failures as constraints; do not treat them as full logs.\n",
         );
-        for (index, pattern) in self.patterns.iter().enumerate() {
-            let repeated = if pattern.repeated {
-                "repeated"
-            } else {
-                "one-off"
-            };
-            let _ = writeln!(
-                out,
-                "{}. [{}] {} (seen {} time{}, {repeated})",
-                index + 1,
-                pattern.classification,
-                pattern.digest,
-                pattern.occurrences,
-                if pattern.occurrences == 1 { "" } else { "s" },
-            );
-            if let Some(gate) = &pattern.gate {
-                let _ = writeln!(out, "   Verify: {gate}");
-            }
-            if let Some(resolution) = &pattern.resolution {
-                let _ = writeln!(out, "   Fix: {resolution}");
-            }
-            if let Some(suggestion) = &pattern.suggestion {
-                let _ = writeln!(out, "   Hint: {suggestion}");
-            }
+        for entry in self.format_entries() {
+            out.push_str(&entry);
         }
         out
+    }
+
+    /// Each pattern's entry in [`Self::format_for_prompt`]'s text, in display
+    /// order: its numbered line, then its `Verify:`, `Fix:` and `Hint:` lines.
+    /// A prompt's exposure record looks for each entry in the prompt, to tell
+    /// which patterns reached it (gap-a40021).
+    #[must_use]
+    pub fn format_entries(&self) -> Vec<String> {
+        self.patterns
+            .iter()
+            .enumerate()
+            .map(|(index, pattern)| {
+                let repeated = if pattern.repeated {
+                    "repeated"
+                } else {
+                    "one-off"
+                };
+                let mut entry = String::new();
+                let _ = writeln!(
+                    entry,
+                    "{}. [{}] {} (seen {} time{}, {repeated})",
+                    index + 1,
+                    pattern.classification,
+                    pattern.digest,
+                    pattern.occurrences,
+                    if pattern.occurrences == 1 { "" } else { "s" },
+                );
+                if let Some(gate) = &pattern.gate {
+                    let _ = writeln!(entry, "   Verify: {gate}");
+                }
+                if let Some(resolution) = &pattern.resolution {
+                    let _ = writeln!(entry, "   Fix: {resolution}");
+                }
+                if let Some(suggestion) = &pattern.suggestion {
+                    let _ = writeln!(entry, "   Hint: {suggestion}");
+                }
+                entry
+            })
+            .collect()
     }
 }
 
@@ -1474,5 +1492,41 @@ mod tests {
         assert_eq!(summary.patterns.len(), 1);
         assert!(summary.patterns[0].repeated);
         assert!(summary.format_for_prompt().contains("repeated"));
+    }
+
+    /// gap-a40021: a summary's prompt text is its header, then each pattern's
+    /// entry in display order, so a prompt that holds an entry shows that
+    /// pattern.
+    #[test]
+    fn summary_entries_make_up_its_prompt_text() {
+        let mut store = ErrorPatternStore::empty();
+        for (key, digest) in [
+            ("verify::E0425", "E0425 total"),
+            ("verify::E0599", "E0599 len"),
+        ] {
+            store.observe_gate_failure(GateFailureObservation::new(
+                key,
+                "plan-a",
+                Some("task-a".to_string()),
+                "cargo test -p a",
+                "verify",
+                digest,
+                GateFailureSource::GateClassification,
+            ));
+        }
+        let query = FailurePatternQuery {
+            task_id: Some("task-a"),
+            ..FailurePatternQuery::default()
+        };
+
+        let summary = store.bounded_summary_keyed(query, 5, 2_000);
+
+        let entries = summary.format_entries();
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        assert!(entries[0].starts_with("1. [verify] "), "{}", entries[0]);
+        assert!(entries[1].starts_with("2. [verify] "), "{}", entries[1]);
+        let text = summary.format_for_prompt();
+        assert!(text.starts_with("## Prior Verify Failure Patterns"));
+        assert!(text.ends_with(&entries.concat()), "{text}");
     }
 }

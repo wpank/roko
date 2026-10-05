@@ -56,6 +56,7 @@ use roko_learn::telemetry::{Assignment, ExcludedReason, ExposureItemKind};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
+use super::factory::ErrorPatternSelection;
 use super::outcome::RunnerDispatchError;
 use super::prompt_cache::PromptCache;
 use super::{DispatchContext, PromptExperimentContext};
@@ -170,11 +171,12 @@ pub struct PromptContext {
     /// Ported from the legacy `workspace_context()` helper; includes
     /// git state (best-effort, bounded) and crate scan from `crates/*/Cargo.toml`.
     pub workspace_context: String,
-    /// Pre-rendered error patterns from the shared in-memory store.
+    /// Pre-rendered error patterns from the shared in-memory store, with
+    /// their keys and entries.
     ///
-    /// Carried from `DispatchContext::error_patterns_context` so the prompt
+    /// Carried from `DispatchContext::error_patterns` so the prompt
     /// assembler can inject "known pitfalls" without touching the store itself.
-    pub error_patterns_context: String,
+    pub error_patterns: ErrorPatternSelection,
     /// The other plans running in the same working tree now, with the areas
     /// they write ([`DispatchContext::concurrent_plans`]).
     pub concurrent_plans: Vec<(String, Vec<String>)>,
@@ -294,7 +296,7 @@ impl PromptContext {
             tasks_toml,
             dependency_outputs: ctx.dependency_outputs.clone(),
             workspace_context,
-            error_patterns_context: ctx.error_patterns_context.clone(),
+            error_patterns: ctx.error_patterns.clone(),
             concurrent_plans: ctx.concurrent_plans.clone(),
             plan_brief,
             arm_set: ctx.arm_set.clone(),
@@ -1339,13 +1341,13 @@ impl ComposedPrompt<'_> {
         item_diagnostic(item, carrier, excluded_reason)
     }
 
-    /// Every entry `sources` rendered, the `error_patterns` block, and one
+    /// Every entry `sources` rendered, each of the `error_patterns`, and one
     /// item per candidate section, whose candidate content `section_digests`
     /// holds: the bandit's left-out sections, then the composer's.
     fn items(
         &self,
         sources: &[PromptSection],
-        error_patterns: &str,
+        error_patterns: &ErrorPatternSelection,
         section_digests: &HashMap<String, String>,
     ) -> Vec<PromptItemDiagnostic> {
         let mut items: Vec<PromptItemDiagnostic> = sources
@@ -1353,17 +1355,11 @@ impl ComposedPrompt<'_> {
             .flat_map(|section| &section.items)
             .map(|item| self.item(item, SOURCE_SECTION))
             .collect();
-        if !error_patterns.trim().is_empty() {
-            // One item for the block until its formatter passes pattern ids.
-            let block = PromptItem {
-                kind: ExposureItemKind::ErrorPattern,
-                id: b3_digest(error_patterns.as_bytes()),
-                rank: 1,
-                score: None,
-                rendered: error_patterns.to_string(),
-            };
-            items.push(self.item(&block, RUNNER_CONTEXT_SECTION));
-        }
+        items.extend(
+            error_pattern_items(error_patterns)
+                .iter()
+                .map(|item| self.item(item, RUNNER_CONTEXT_SECTION)),
+        );
         for left_out in self.bandit_excluded {
             items.push(PromptItemDiagnostic {
                 kind: ExposureItemKind::Section,
@@ -1412,6 +1408,31 @@ impl ComposedPrompt<'_> {
         }
         items
     }
+}
+
+/// The items of the error patterns a prompt carries: one per pattern, named
+/// by its key and rendered as its entry in the block, so that the
+/// error-pattern decision lists each pattern, and the block's cap can keep
+/// one out while another gets in (gap-a40021). A block whose patterns are not
+/// known is one item, named by its digest. No block, no item.
+fn error_pattern_items(selection: &ErrorPatternSelection) -> Vec<PromptItem> {
+    if selection.text.trim().is_empty() {
+        return Vec::new();
+    }
+    let kind = ExposureItemKind::ErrorPattern;
+    if selection.keys.is_empty() || selection.keys.len() != selection.entries.len() {
+        let id = b3_digest(selection.text.as_bytes());
+        return PromptItem::ranked(kind, &id, 0, None, &selection.text)
+            .into_iter()
+            .collect();
+    }
+    selection
+        .keys
+        .iter()
+        .zip(&selection.entries)
+        .enumerate()
+        .filter_map(|(index, (key, entry))| PromptItem::ranked(kind, key, index, None, entry))
+        .collect()
 }
 
 /// The diagnostic of `item`, rendered into the section `carrier`: kept out of
@@ -1635,8 +1656,8 @@ fn build_runner_context(
         parts.push(ctx.workspace_context.clone());
     }
 
-    if !ctx.error_patterns_context.is_empty() {
-        parts.push(ctx.error_patterns_context.clone());
+    if !ctx.error_patterns.text.is_empty() {
+        parts.push(ctx.error_patterns.text.clone());
     }
 
     Ok(parts.join("\n\n"))
@@ -1943,7 +1964,7 @@ impl PromptAssembler {
         // every entry carries the source Signal's content hash and the exact
         // score result used by selection.
         let section_effectiveness = self.resolve_section_effectiveness(&ctx.workdir);
-        let group_context = load_group_context(&ctx.workdir, &ctx.role, task, ctx);
+        let group_context = load_group_context(&ctx.workdir, &ctx.role, task);
         let has_mcp = task.mcp_servers.as_ref().is_some_and(|s| !s.is_empty());
         let mut spec = RoleSystemPromptSpec::new(role, task_context, tools_csv)
             .with_cache_markers()
@@ -2117,11 +2138,7 @@ impl PromptAssembler {
             prompt: &system_prompt,
             bandit_excluded: &bandit_excluded,
         };
-        let mut items = composed.items(
-            &source_sections,
-            &ctx.error_patterns_context,
-            &section_digests,
-        );
+        let mut items = composed.items(&source_sections, &ctx.error_patterns, &section_digests);
         let withheld = Some(ExcludedReason::WithheldArm);
         items.extend(
             withheld_sections
@@ -2672,6 +2689,12 @@ const GENERIC_TOPIC_TERMS: &[&str] = &[
 /// and its declared files' crate or package names and file stems. Never its
 /// id, its plan's id or its role, nor a stopword, a generic path piece or a
 /// generic verb.
+///
+/// Every content decision point that matches by topic ranks by these terms:
+/// knowledge, episodes and playbooks (backlogs 4211-4213) and group
+/// knowledge (gap-a40021). The others choose by another signal on purpose:
+/// error patterns are keyed to the task and its verify commands (backlogs
+/// 4209, 4210), and sections are cut by the token budget.
 fn task_topic_terms(task: &TaskDef) -> HashSet<String> {
     let mut text = vec![task.title.clone()];
     text.extend(task.description.clone());
@@ -2712,16 +2735,6 @@ fn is_runtime_success_note(entry: &roko_neuro::KnowledgeEntry) -> bool {
         && entry.content.starts_with("Successful runtime episode for")
 }
 
-fn task_query_text(task: &TaskDef, ctx: &PromptContext) -> String {
-    let mut parts = vec![task.id.clone(), task.title.clone(), ctx.role.clone()];
-    if let Some(description) = &task.description {
-        parts.push(description.clone());
-    }
-    parts.extend(task.acceptance.clone());
-    parts.extend(task.files.clone());
-    parts.join(" ")
-}
-
 /// Words that say nothing about a task's topic, so they never match its
 /// context (bug-86117a).
 const QUERY_STOPWORDS: &[&str] = &[
@@ -2743,14 +2756,6 @@ fn query_words(text: &str) -> HashSet<String> {
         .filter(|word| !word.is_empty())
         .map(ToString::to_string)
         .collect()
-}
-
-/// The words of a task's query text that can match its context: longer
-/// than two characters, and not stopwords.
-fn query_keywords(text: &str) -> HashSet<String> {
-    let mut keywords = query_words(text);
-    keywords.retain(|word| word.len() > 2 && !QUERY_STOPWORDS.contains(&word.as_str()));
-    keywords
 }
 
 fn episode_paths(workdir: &Path) -> Vec<PathBuf> {
@@ -2784,12 +2789,7 @@ struct StoredGroupPheromone {
 /// definitions that want prompt injection therefore use that label as the
 /// member `agent_id` (for example `implementer` or `reviewer`). Unknown,
 /// malformed, or oversized state fails closed and contributes no context.
-fn load_group_context(
-    workdir: &Path,
-    agent_id: &str,
-    task: &TaskDef,
-    ctx: &PromptContext,
-) -> Vec<ContextChunk> {
+fn load_group_context(workdir: &Path, agent_id: &str, task: &TaskDef) -> Vec<ContextChunk> {
     let Some(state) = read_group_context_state(workdir) else {
         return Vec::new();
     };
@@ -2846,8 +2846,10 @@ fn load_group_context(
         }
     }
 
-    let query = task_query_text(task, ctx);
-    let keywords = query_keywords(&query);
+    // Group knowledge ranks by the task's topic terms, as knowledge,
+    // playbooks and episodes do: never its id, its role or its path pieces
+    // (backlog 4211, gap-a40021).
+    let terms = task_topic_terms(task);
     let knowledge = roko_neuro::KnowledgeStore::for_workdir(workdir)
         .read_all()
         .unwrap_or_default();
@@ -2866,15 +2868,12 @@ fn load_group_context(
         let Some(group) = accessible.get(group_id) else {
             continue;
         };
-        let haystack = format!("{} {}", entry.content, entry.tags.join(" ")).to_ascii_lowercase();
-        let matches = keywords
-            .iter()
-            .filter(|keyword| haystack.contains(keyword.as_str()))
-            .count();
-        let lexical = if keywords.is_empty() {
+        let words = query_words(&format!("{} {}", entry.content, entry.tags.join(" ")));
+        let matches = terms.intersection(&words).count();
+        let lexical = if terms.is_empty() {
             0.0
         } else {
-            matches as f64 / keywords.len() as f64
+            matches as f64 / terms.len() as f64
         };
         let confidence = entry.confidence.clamp(0.0, 1.0);
         let relevance = (0.25 + lexical * 0.5 + confidence * 0.25).clamp(0.0, 1.0);
@@ -3132,7 +3131,7 @@ mod tests {
             gate_feedback: None,
             routing_context: None,
             dependency_outputs: Vec::new(),
-            error_patterns_context: String::new(),
+            error_patterns: Default::default(),
             cached_workspace_map: String::new(),
             cached_workspace_context: String::new(),
             concurrent_plans: Vec::new(),
@@ -3505,7 +3504,7 @@ mod tests {
         let mut dispatch = ctx();
         dispatch.workdir = temp.path().to_path_buf();
         let prompt_ctx = PromptContext::from_task(&task(), &dispatch);
-        let chunks = load_group_context(temp.path(), "implementer", &task(), &prompt_ctx);
+        let chunks = load_group_context(temp.path(), "implementer", &task());
         let rendered = chunks
             .iter()
             .map(|chunk| chunk.content.as_str())
@@ -3514,11 +3513,115 @@ mod tests {
         assert!(rendered.contains("visible coordination signal"));
         assert!(rendered.contains("visible wiring group knowledge"));
         assert!(!rendered.contains("must remain hidden"));
-        assert!(load_group_context(temp.path(), "outsider", &task(), &prompt_ctx).is_empty());
+        assert!(load_group_context(temp.path(), "outsider", &task()).is_empty());
 
         let ordinary = collect_neuro_knowledge(&task(), &prompt_ctx).expect("public knowledge");
         assert!(ordinary.body.contains("public wiring knowledge"));
         assert!(!ordinary.body.contains("visible wiring group knowledge"));
+    }
+
+    /// gap-a40021: group knowledge ranks by the task's topic terms, as the
+    /// knowledge, playbook and episode sections do, never by its id, its role
+    /// or its path pieces: an entry naming the role and `src`/`lib` gets no
+    /// credit for them, and one on the task's topic outranks it.
+    #[test]
+    fn group_knowledge_ranks_by_topic_terms_not_ids_roles_or_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let now = Utc::now();
+        let group_id = GroupId::new("grp-topic");
+        let group = Group {
+            id: group_id.clone(),
+            name: "topic-room".into(),
+            description: String::new(),
+            owner: "owner-a".into(),
+            members: vec![GroupMember {
+                agent_id: "implementer".into(),
+                owner: "owner-a".into(),
+                role: MemberRole::Member,
+                permissions: MemberPermissions::FULL,
+                joined_at: now,
+            }],
+            coordination: CoordinationMode::Stigmergic,
+            config: GroupConfig::default(),
+            created_at: now,
+            updated_at: now,
+        };
+        let state = serde_json::json!({"groups": {(group_id.as_str()): group}});
+        let group_dir = temp.path().join(".roko/groups");
+        std::fs::create_dir_all(&group_dir).expect("group dir");
+        let state = serde_json::to_vec(&state).expect("state json");
+        std::fs::write(group_dir.join("state.json"), state).expect("write state");
+        let entry = |id: &str, content: &str| {
+            let entry = serde_json::json!({
+                "id": id,
+                "content": content,
+                "confidence": 0.8,
+                "tags": [format!("group:{group_id}")],
+                "created_at": now,
+            });
+            format!("{entry}\n")
+        };
+        let neuro_dir = temp.path().join(".roko/neuro");
+        std::fs::create_dir_all(&neuro_dir).expect("neuro dir");
+        let lines = entry("noise", "implementer notes on t for src and lib")
+            + &entry("topic", "explain the wiring first");
+        std::fs::write(neuro_dir.join("knowledge.jsonl"), lines).expect("write knowledge");
+
+        let chunks = load_group_context(temp.path(), "implementer", &task());
+
+        let relevance = |text: &str| {
+            chunks
+                .iter()
+                .find(|chunk| chunk.content.contains(text))
+                .map(|chunk| chunk.relevance)
+                .unwrap_or_else(|| panic!("no chunk holds {text}: {chunks:?}"))
+        };
+        // The entry's confidence alone: 0.25 + 0.8 × 0.25.
+        let noise = relevance("implementer notes");
+        assert!((noise - 0.45).abs() < 1e-9, "{chunks:?}");
+        assert!(relevance("explain the wiring") > noise, "{chunks:?}");
+    }
+
+    /// gap-a40021: the error patterns a prompt carries are one item each,
+    /// named by the pattern's key and rendered as its entry, ranked in display
+    /// order. A block whose patterns are not known is one item named by its
+    /// digest, and no block is no item.
+    #[test]
+    fn error_pattern_items_name_each_pattern_by_its_key() {
+        let entries = ["1. [verify] E0425\n", "2. [verify] E0599\n"];
+        let selection = ErrorPatternSelection {
+            text: format!("## Prior Verify Failure Patterns\n{}", entries.concat()),
+            keys: vec!["verify::E0425".to_string(), "verify::E0599".to_string()],
+            entries: entries.map(String::from).to_vec(),
+        };
+
+        let items = error_pattern_items(&selection);
+
+        let named: Vec<(&str, u32, &str)> = items
+            .iter()
+            .map(|item| (item.id.as_str(), item.rank, item.rendered.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("verify::E0425", 1, entries[0]),
+                ("verify::E0599", 2, entries[1]),
+            ]
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| item.kind == ExposureItemKind::ErrorPattern)
+        );
+        let unkeyed = ErrorPatternSelection {
+            keys: Vec::new(),
+            entries: Vec::new(),
+            ..selection
+        };
+        let block = error_pattern_items(&unkeyed);
+        assert_eq!(block.len(), 1);
+        assert_eq!(block[0].id, b3_digest(unkeyed.text.as_bytes()));
+        assert!(error_pattern_items(&ErrorPatternSelection::default()).is_empty());
     }
 
     /// Writes `entries` (id and content) to `workdir`'s knowledge store.
@@ -4696,7 +4799,7 @@ covers = ["AC1"]
             tasks_toml: String::new(),
             dependency_outputs: Vec::new(),
             workspace_context: String::new(),
-            error_patterns_context: String::new(),
+            error_patterns: Default::default(),
             concurrent_plans: Vec::new(),
             plan_brief: String::new(),
             arm_set: None,

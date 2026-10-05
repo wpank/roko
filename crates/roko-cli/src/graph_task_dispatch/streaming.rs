@@ -487,6 +487,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     attempt.verify_ended();
                     attempt.record_verify_steps(report.steps);
                     attempt.record_scope_findings(report.scope_findings);
+                    attempt.record_verify_depth(report.verify_depth);
                     Some(report.result)
                 } else {
                     None

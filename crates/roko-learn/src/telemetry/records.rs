@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use roko_core::audit_types::VerifyDepth;
 use roko_core::config::harness_params::HarnessParams;
 use roko_core::config::homeostasis::HomeostasisMode;
 use roko_core::usage::UsageSource;
@@ -911,6 +912,27 @@ pub struct AttemptLadder {
     pub router_pick: Option<String>,
 }
 
+/// DP3's verify depth for one attempt (S05 §4.6, 7132): the depth its checks
+/// ran at and what set it, so that a run's rows show how audit feedback
+/// (L-M4) moved verification (gap-595e28).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifyDepthRecord {
+    /// The task type the strictness ladder keeps a level for.
+    pub task_type: String,
+    /// The depth the attempt was checked at: the ladder's level or M1's
+    /// floor, whichever is higher, held for the ladder's window, and raised
+    /// by an active self-model's request.
+    pub depth: VerifyDepth,
+    /// The level the strictness ladder held for the task type, which audit
+    /// feedback moves; `None` without audits, or when the ladder could not
+    /// be read.
+    #[serde(default)]
+    pub ladder: Option<VerifyDepth>,
+    /// M1's floor request, θ's B3 `extra_rungs`; V0 without M1.
+    #[serde(default)]
+    pub floor: VerifyDepth,
+}
+
 /// `roko.verdict/1` (S01 §5.5): the one settled record per attempt. Not
 /// [`crate::verdict_scorer::VerdictRecord`], which is one gate's pass or fail
 /// held in memory for routing penalties.
@@ -993,6 +1015,18 @@ pub struct AttemptVerdictRecord {
     /// `None` when the run has no M1 sink.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<HarnessStamp>,
+    /// The routing decisions DP4 (S05 §4.6) made while the attempt was
+    /// routed, one per model audit trust left out, by the cascade router's
+    /// own count. The route row names them too; this count stays apart from
+    /// it, so that the census can tell an exclusion lost before logging from
+    /// none (gap-595e28). `None` without a cascade router, or when the
+    /// attempt was not routed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_exclusions: Option<u64>,
+    /// DP3's verify depth for the attempt; `None` when it did not reach DP3,
+    /// its checks having failed first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_depth: Option<VerifyDepthRecord>,
 }
 
 impl AttemptVerdictRecord {
@@ -1030,6 +1064,8 @@ impl AttemptVerdictRecord {
             diff_sha256: None,
             exposures: None,
             harness: None,
+            trust_exclusions: None,
+            verify_depth: None,
         }
     }
 

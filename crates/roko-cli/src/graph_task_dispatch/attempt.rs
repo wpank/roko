@@ -30,7 +30,8 @@ use roko_learn::loop_audit::arm_set::{ArmMode, ArmSet};
 use roko_learn::loop_audit::{LoopAuditor, Registry};
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::records::{
-    AttemptCost, AttemptUsage, CacheWriteClass, PlaceboDecisionRecord, VerifyStepVerdict,
+    AttemptCost, AttemptUsage, CacheWriteClass, PlaceboDecisionRecord, VerifyDepthRecord,
+    VerifyStepVerdict,
 };
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord,
@@ -460,6 +461,8 @@ impl AttemptBook {
             pricing: None,
             arm_set: None,
             harness: None,
+            trust_exclusions: None,
+            verify_depth: None,
             run,
         }
     }
@@ -500,6 +503,13 @@ pub(super) struct AttemptContext {
     /// M1's decision for the attempt (8123): its chain's arm on the
     /// `harness_policy` layer and the θ it runs; `None` without an M1 sink.
     harness: Option<Arc<crate::runtime_feedback::homeostasis::HarnessDecision>>,
+    /// DP4's count of the exclusions the attempt's routing made, for its
+    /// verdict (gap-595e28); `None` until it is routed, or without a cascade
+    /// router.
+    trust_exclusions: Option<u64>,
+    /// DP3's verify depth for the attempt, for its verdict (gap-595e28);
+    /// `None` until verification reaches DP3.
+    verify_depth: Option<VerifyDepthRecord>,
     run: Arc<RunAttempts>,
 }
 
@@ -533,6 +543,19 @@ impl AttemptContext {
     /// verdict lists (backlog 2104).
     pub(super) fn record_verify_steps(&mut self, steps: Vec<VerifyStepVerdict>) {
         self.verify_steps = steps;
+    }
+
+    /// Planning routed the attempt, and DP4 made `count` exclusions while it
+    /// did, by the cascade router's count, which the verdict keeps apart from
+    /// the route row (gap-595e28).
+    pub(super) fn record_trust_exclusions(&mut self, count: Option<u64>) {
+        self.trust_exclusions = count;
+    }
+
+    /// DP3 checked the attempt at `depth` (gap-595e28), which the verdict
+    /// records; `None` when verification did not reach DP3.
+    pub(super) fn record_verify_depth(&mut self, depth: Option<VerifyDepthRecord>) {
+        self.verify_depth = depth;
     }
 
     /// The pre-verify screen found `findings`: paths the attempt changed
@@ -743,6 +766,8 @@ impl AttemptContext {
             .map(sha256_hex);
         verdict.exposures = self.exposures;
         verdict.harness = self.harness.as_ref().map(|decision| decision.stamp());
+        verdict.trust_exclusions = self.trust_exclusions;
+        verdict.verify_depth = self.verify_depth;
         self.run.submit(verdict.clone());
         // DP1: a green attempt draws its audit ticket; the draw is only logged.
         // M1's audit boost of the θ it ran raises its rate (B7, 8127).

@@ -25,12 +25,15 @@
 //! from the route rows its epochs write (`prediction_consumed`: the
 //! attempt's prediction row), and L-M4 from later route rows in which
 //! audit feedback left a candidate out (`audit_penalty_applied`: the
-//! candidate's `audit_trust` reason, S05 DP4).
+//! candidate's `audit_trust` reason, S05 DP4). L-M4's log rule checks those
+//! rows against DP4's own count on each verdict, which tells an exclusion
+//! lost before logging from none (gap-595e28).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use roko_core::audit_types::VerifyDepth;
 use roko_core::config::homeostasis::HomeostasisMode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1171,6 +1174,16 @@ struct Logs {
     playbooks: usize,
     holdout_costs: Option<(f64, f64)>,
     prompt_experiments: Option<usize>,
+    /// Verdicts that carry DP4's own count of the exclusions their routing
+    /// made (gap-595e28).
+    trust_routed: usize,
+    /// Those exclusions, summed.
+    trust_counted: u64,
+    /// Route-row candidates that name audit trust as why they were left
+    /// out (`ineligible_reason audit_trust`).
+    trust_logged: usize,
+    /// Verdicts whose task type the strictness ladder held above V0 (DP3).
+    ladder_deepened: usize,
 }
 
 impl Logs {
@@ -1204,6 +1217,24 @@ impl Logs {
         }
         if logs.exposures == 0 {
             logs.legacy_retrievals = read_jsonl(&paths.root.join(RETRIEVAL_OUTCOMES)).len();
+        }
+        for verdict in runs.iter().flat_map(|run| &run.verdicts) {
+            let verdict = &verdict.record;
+            if let Some(excluded) = verdict.trust_exclusions {
+                logs.trust_routed += 1;
+                logs.trust_counted += excluded;
+            }
+            let depth = verdict.verify_depth.as_ref();
+            let ladder = depth.and_then(|depth| depth.ladder);
+            let deepened = ladder.is_some_and(|level| level > VerifyDepth::V0);
+            logs.ladder_deepened += usize::from(deepened);
+        }
+        let audit_trust = Some(AUDIT_TRUST_REASON);
+        for decision in runs.iter().flat_map(|run| &run.decisions) {
+            let candidates = decision.record.candidates.iter();
+            logs.trust_logged += candidates
+                .filter(|candidate| candidate.ineligible_reason.as_deref() == audit_trust)
+                .count();
         }
         for episode in read_jsonl(&paths.episodes_jsonl) {
             logs.episodes += 1;
@@ -1342,6 +1373,28 @@ impl Logs {
                     reason: None,
                     qualifier: Some(Qualifier::Misspecified),
                 })
+            }
+            "L-M4" => {
+                // DP4 counts its exclusions on each verdict, apart from the
+                // route rows (gap-595e28): some counted and none on a route
+                // row were lost before logging; none counted and none logged
+                // is no opportunity.
+                if self.trust_routed == 0 {
+                    return None;
+                }
+                facts.push(format!(
+                    "DP4 counted {} exclusions on {} verdicts, and route rows name {}; verdicts \
+                     with a strictness-ladder level above V0 (DP3): {}",
+                    self.trust_counted,
+                    self.trust_routed,
+                    self.trust_logged,
+                    self.ladder_deepened
+                ));
+                match (self.trust_counted, self.trust_logged) {
+                    (0, 0) => reason(ReasonCode::NoOpportunity),
+                    (_, 0) => reason(ReasonCode::Unlogged),
+                    _ => None,
+                }
             }
             "L-prompt-exp" => {
                 let registered = self.prompt_experiments?;
@@ -2058,5 +2111,72 @@ mod tests {
         };
         let whole = measure_at(&read_runs(&runs_dir), &params);
         assert_eq!(counts(&census.measurements(&params)), counts(&whole));
+    }
+
+    /// gap-595e28: L-M4's census tells a lost exclusion from none. DP4
+    /// counts the exclusions each attempt's routing made on its verdict,
+    /// apart from the route row. Verdicts that count none, with no route row
+    /// naming audit trust, are no opportunity; verdicts that count some with
+    /// no such route row lost them before logging (`dormant:unlogged`); once
+    /// route rows name them, the log rule has nothing to add. The facts count
+    /// the verdicts whose verify depth the strictness ladder raised (DP3).
+    #[test]
+    fn l_m4_census_distinguishes_unlogged_from_no_opportunity() {
+        use crate::routing_log::CandidateEntry;
+        use crate::telemetry::records::VerifyDepthRecord;
+
+        // L-M4's census row over one run of four routed attempts: each
+        // verdict counts `excluded` DP4 exclusions, the route rows name them
+        // when `logged`, and the strictness ladder held the first attempt's
+        // task type at V2.
+        let l_m4 = |excluded: u64, logged: bool| {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let run_dir = dir.path().join(".roko").join(RUNS_DIR).join("gr-dp4");
+            std::fs::create_dir_all(&run_dir).expect("the run dir");
+            let (mut decisions, mut verdicts) = (String::new(), String::new());
+            for index in 0..4_u64 {
+                let key = AttemptKey::new("gr-dp4", "plan", format!("t{index}"), 1);
+                let mut row = route_row(&key, true);
+                if logged {
+                    let reason = Some(AUDIT_TRUST_REASON.to_string());
+                    row.candidates = vec![CandidateEntry::new("model-x", "", 0.0, reason)];
+                }
+                decisions.push_str(&line(DECISION_SCHEMA, 2 * index + 1, row));
+                let (identity, passed) = (AttemptIdentity::new(&key), AttemptOutcome::Passed);
+                let mut verdict = AttemptVerdictRecord::settle(identity, passed, true);
+                verdict.trust_exclusions = Some(excluded);
+                verdict.verify_depth = (index == 0).then(|| VerifyDepthRecord {
+                    task_type: "code".to_string(),
+                    depth: VerifyDepth::V2,
+                    ladder: Some(VerifyDepth::V2),
+                    floor: VerifyDepth::V0,
+                });
+                verdicts.push_str(&line(VERDICT_SCHEMA, 2 * index + 2, verdict));
+            }
+            std::fs::write(RunFile::Decisions.path_in(&run_dir), decisions).expect("decisions");
+            std::fs::write(RunFile::Attempts.path_in(&run_dir), verdicts).expect("verdicts");
+            let registry = Registry::embedded().expect("the embedded registry");
+            let report = run(dir.path(), &registry, None);
+            report.row("L-M4").cloned().expect("L-M4's row")
+        };
+
+        let none = l_m4(0, false);
+        let no_opportunity = Some(ReasonCode::NoOpportunity);
+        assert_eq!(none.reason, no_opportunity, "{:?}", none.facts);
+        assert_eq!(none.evidence, Some(Evidence::Log));
+
+        let lost = l_m4(2, false);
+        assert_eq!(lost.reason, Some(ReasonCode::Unlogged), "{:?}", lost.facts);
+        assert_eq!(lost.evidence, Some(Evidence::Log));
+        let counted = "DP4 counted 8 exclusions on 4 verdicts, and route rows name 0; verdicts \
+                       with a strictness-ladder level above V0 (DP3): 1";
+        assert!(
+            lost.facts.iter().any(|fact| fact == counted),
+            "{:?}",
+            lost.facts
+        );
+
+        let logged = l_m4(2, true);
+        assert_eq!(logged.reason, None, "{:?}", logged.facts);
     }
 }

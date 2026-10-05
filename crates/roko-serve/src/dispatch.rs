@@ -2145,6 +2145,8 @@ async fn record_template_dispatch_feedback(
                 signal.id.to_hex()
             )),
             prompt_section_ids: Vec::new(),
+            // A template's prompt is its role prompt, output format and
+            // experiment variant: it includes no knowledge entry (bug-eaa318).
             knowledge_ids: Vec::new(),
             model: model_slug.clone(),
             provider: provider_id.clone(),

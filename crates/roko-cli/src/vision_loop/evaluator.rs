@@ -158,6 +158,8 @@ impl VisionEvaluator {
                     chrono::Utc::now().timestamp_millis()
                 )),
                 prompt_section_ids: Vec::new(),
+                // The evaluator's prompt is its goal, the code, the screenshot
+                // and the loop's history: no knowledge entry (bug-eaa318).
                 knowledge_ids: Vec::new(),
                 model: model_slug.clone(),
                 provider: provider_id.clone(),

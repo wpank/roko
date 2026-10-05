@@ -81,14 +81,7 @@ impl GraphTaskDispatcher {
     /// not knowledge entries. A failed count is logged, and the attempt goes
     /// on.
     fn record_knowledge_access(&self, plan: &RunnerDispatchPlan) {
-        let included: Vec<String> = plan
-            .prompt
-            .diagnostics
-            .items
-            .iter()
-            .filter(|item| item.kind == ExposureItemKind::Knowledge && item.included)
-            .map(|item| item.id.clone())
-            .collect();
+        let included = included_knowledge_ids(plan);
         // A frozen run counts no access (decision 2218).
         if included.is_empty() || self.learning_frozen() {
             return;
@@ -179,6 +172,20 @@ impl GraphTaskDispatcher {
             thresholds: thresholds.and_then(digest_file).map(|file| file.digest),
         }
     }
+}
+
+/// The knowledge entries `plan`'s prompt included (S01 P0-9): those it
+/// retrieved that reached the prompt, never a cited episode. The store counts
+/// an access to each, and the attempt's `model_call` row names them
+/// (bug-eaa318).
+pub(super) fn included_knowledge_ids(plan: &RunnerDispatchPlan) -> Vec<String> {
+    plan.prompt
+        .diagnostics
+        .items
+        .iter()
+        .filter(|item| item.kind == ExposureItemKind::Knowledge && item.included)
+        .map(|item| item.id.clone())
+        .collect()
 }
 
 /// The knowledge store's entries: one per line.
@@ -537,8 +544,8 @@ mod tests {
     use super::*;
     use crate::dispatch::{AssembledPrompt, PromptDiagnostics};
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, no_auto_fix_maximize,
-        verify_step,
+        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix,
+        no_auto_fix_maximize, verify_step,
     };
     use crate::runtime_feedback::EpisodeSink;
 
@@ -905,6 +912,55 @@ mod tests {
         assert!(entries[0].last_accessed.is_some());
         let passed = Settlement::verified(&Ok(TaskGateVerdict::Passed));
         attempt.settle(passed, "stream-model", None);
+    }
+
+    /// bug-eaa318: the provider bridge's `model_call` row of an attempt whose
+    /// prompt included a knowledge entry names the entry, so the loop census
+    /// finds knowledge ids on the efficiency log.
+    #[tokio::test]
+    async fn dispatch_with_knowledge_produces_an_efficiency_row_with_knowledge_ids() {
+        use roko_learn::loop_audit::{Registry, census};
+
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        // The task is "Streaming graph task": the entry shares its words.
+        seed_knowledge(
+            temp.path(),
+            &[(
+                "kn-stream",
+                "Streaming graph task output flushes each chunk",
+            )],
+        );
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix_maximize, feedback).await;
+        task.verify = vec![verify_step("structural", "true")];
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verified attempt passes");
+        drop(dispatcher);
+
+        let log = roko.join("learn/efficiency.jsonl");
+        let calls = jsonl_rows_where(&log, 1, |row| row["kind"] == "model_call").await;
+        assert_eq!(
+            calls[0]["knowledge_ids"],
+            serde_json::json!(["kn-stream"]),
+            "{}",
+            calls[0]
+        );
+        let registry = Registry::embedded().expect("the embedded loop registry");
+        let report = census::run(temp.path(), &registry, None);
+        let facts = &report.row("L-know").expect("L-know's census row").facts;
+        let efficiency = facts
+            .iter()
+            .find(|fact| fact.contains("efficiency rows carry"))
+            .expect("L-know's log fact");
+        assert!(!efficiency.contains(" and 0/"), "{efficiency}");
     }
 
     /// G29: a dispatch whose prompt retrieved a matching knowledge entry logs

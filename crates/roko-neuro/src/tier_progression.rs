@@ -22,6 +22,7 @@ use roko_learn::episode_logger::EpisodeGateVerdict;
 use roko_learn::pattern_discovery::{EpisodeView, PatternMiner};
 use serde::{Deserialize, Serialize};
 
+use crate::knowledge_store::{WriteGuard, write_gate_for};
 use crate::{KnowledgeEntry, KnowledgeKind, KnowledgeStore, KnowledgeTier};
 
 const DEFAULT_MIN_SUPPORT: usize = 3;
@@ -363,6 +364,8 @@ pub struct HeuristicStore {
     heuristics_path: PathBuf,
     observations_path: PathBuf,
     demotions_path: PathBuf,
+    /// The heuristic files' write gate, which every heuristic store of this
+    /// process pointed at them shares (bug-d81257).
     write_gate: Arc<Mutex<()>>,
 }
 
@@ -375,11 +378,12 @@ impl HeuristicStore {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+        let write_gate = write_gate_for(&heuristics_path);
         Self {
             heuristics_path,
             observations_path: dir.join(DEFAULT_HEURISTIC_OBSERVATIONS_FILE),
             demotions_path: dir.join(DEFAULT_HEURISTIC_DEMOTIONS_FILE),
-            write_gate: Arc::new(Mutex::new(())),
+            write_gate,
         }
     }
 
@@ -418,6 +422,13 @@ impl HeuristicStore {
         &self.demotions_path
     }
 
+    /// Hold the heuristic files for one write: their gate, which this
+    /// process's heuristic stores share, and the lock among processes on
+    /// the heuristics file's `.lock` sibling (bug-d81257).
+    fn lock_writes(&self) -> WriteGuard<'_> {
+        WriteGuard::hold(&self.write_gate, &self.heuristics_path)
+    }
+
     /// Load all current heuristic snapshots.
     ///
     /// # Errors
@@ -433,7 +444,7 @@ impl HeuristicStore {
     ///
     /// Returns an error if the snapshot cannot be written.
     pub fn save_all(&self, heuristics: &[Heuristic]) -> Result<()> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         rewrite_jsonl(&self.heuristics_path, heuristics)
     }
 
@@ -443,7 +454,7 @@ impl HeuristicStore {
     ///
     /// Returns an error if the snapshot cannot be read or written.
     pub fn upsert(&self, heuristic: Heuristic) -> Result<()> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut heuristics: Vec<Heuristic> = read_jsonl(&self.heuristics_path)?;
         if let Some(existing) = heuristics.iter_mut().find(|item| item.id == heuristic.id) {
             *existing = heuristic;
@@ -465,7 +476,7 @@ impl HeuristicStore {
         gate_output: &str,
         gate_passed: bool,
     ) -> Result<Vec<HeuristicObservation>> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut heuristics: Vec<Heuristic> = read_jsonl(&self.heuristics_path)?;
         let now_ms = Utc::now().timestamp_millis();
         let mut observations = Vec::new();
@@ -523,7 +534,7 @@ impl HeuristicStore {
         &self,
         knowledge_store: &KnowledgeStore,
     ) -> Result<Vec<HeuristicDemotionRecord>> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut heuristics: Vec<Heuristic> = read_jsonl(&self.heuristics_path)?;
         let existing_demotions: BTreeSet<String> =
             read_jsonl::<HeuristicDemotionRecord>(&self.demotions_path)?
@@ -2572,5 +2583,33 @@ mod tests {
             assert!(h.confirmations >= 1);
             assert!(h.confidence > 0.0);
         }
+    }
+
+    /// bug-d81257: heuristic stores of one file share its write gate, so
+    /// upserts through stores of their own all land: none rewrites the file
+    /// over another's.
+    #[test]
+    fn heuristic_stores_of_one_file_do_not_lose_an_upsert() {
+        const UPSERTS: usize = 8;
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let path = tmp.path().join("neuro").join(DEFAULT_HEURISTICS_FILE);
+        let upserters: Vec<_> = (0..UPSERTS)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let heuristic = Heuristic {
+                        id: format!("heuristic-{n}"),
+                        ..Heuristic::default()
+                    };
+                    HeuristicStore::new(path).upsert(heuristic)
+                })
+            })
+            .collect();
+        for upserter in upserters {
+            upserter.join().expect("join").expect("upsert");
+        }
+
+        let stored = HeuristicStore::new(path).load_all().expect("load");
+        assert_eq!(stored.len(), UPSERTS, "an upsert was lost: {stored:?}");
     }
 }

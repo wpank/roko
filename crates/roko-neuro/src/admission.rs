@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::knowledge_store::{WriteGuard, write_gate_for};
 use crate::{KnowledgeEntry, KnowledgeKind, KnowledgeStore, KnowledgeTier};
 
 /// Minimum confidence for positive knowledge admission.
@@ -607,6 +608,8 @@ pub struct KnowledgeAdmissionStore {
     candidates_path: PathBuf,
     decisions_path: PathBuf,
     policy: KnowledgeAdmissionPolicy,
+    /// The admission logs' write gate, which every admission store of this
+    /// process pointed at them shares (bug-d81257).
     write_gate: Arc<Mutex<()>>,
 }
 
@@ -619,12 +622,14 @@ impl KnowledgeAdmissionStore {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+        let candidates_path = dir.join(DEFAULT_KNOWLEDGE_CANDIDATES_FILE);
+        let write_gate = write_gate_for(&candidates_path);
         Self {
             knowledge_store,
-            candidates_path: dir.join(DEFAULT_KNOWLEDGE_CANDIDATES_FILE),
+            candidates_path,
             decisions_path: dir.join(DEFAULT_KNOWLEDGE_ADMISSION_DECISIONS_FILE),
             policy: KnowledgeAdmissionPolicy::default(),
-            write_gate: Arc::new(Mutex::new(())),
+            write_gate,
         }
     }
 
@@ -669,7 +674,7 @@ impl KnowledgeAdmissionStore {
         &self,
         candidate: KnowledgeCandidateRecord,
     ) -> Result<KnowledgeAdmissionDecision> {
-        let _guard = self.write_gate.lock();
+        let _guard = WriteGuard::hold(&self.write_gate, &self.candidates_path);
         append_jsonl(&self.candidates_path, &candidate).context("append knowledge candidate")?;
 
         let (decision, entry) = self.evaluate_candidate(&candidate)?;
@@ -1519,6 +1524,52 @@ mod tests {
             crate_path: Some("crates/roko-neuro".to_string()),
             tags: vec!["memory".to_string()],
         }
+    }
+
+    /// bug-d81257: admission stores of one workspace share the admission
+    /// logs' write gate, so submissions through stores of their own never
+    /// interleave: the decisions log lists the candidates in the order the
+    /// candidates log does.
+    #[test]
+    fn admission_stores_of_one_workspace_keep_each_decision_with_its_candidate() {
+        const SUBMITS: usize = 8;
+        let tmp = TempDir::new().expect("tempdir");
+        let knowledge = tmp.path().join("neuro").join("knowledge.jsonl");
+        let submitters: Vec<_> = (0..SUBMITS)
+            .map(|n| {
+                let knowledge = knowledge.clone();
+                std::thread::spawn(move || {
+                    let store = KnowledgeAdmissionStore::new(KnowledgeStore::new(knowledge));
+                    let candidate = KnowledgeCandidateRecord::new(
+                        format!("candidate-{n}"),
+                        KnowledgeKind::Insight,
+                        "agent-reflection",
+                        format!("Unverified reflection number {n}"),
+                        0.9,
+                    );
+                    store.submit_candidate(candidate)
+                })
+            })
+            .collect();
+        for submitter in submitters {
+            submitter.join().expect("join").expect("submit");
+        }
+
+        let store = KnowledgeAdmissionStore::new(KnowledgeStore::new(knowledge));
+        let candidates: Vec<String> = store
+            .read_candidates()
+            .expect("candidates")
+            .into_iter()
+            .map(|candidate| candidate.candidate_id)
+            .collect();
+        let decisions: Vec<String> = store
+            .read_decisions()
+            .expect("decisions")
+            .into_iter()
+            .map(|decision| decision.candidate_id)
+            .collect();
+        assert_eq!(candidates.len(), SUBMITS);
+        assert_eq!(decisions, candidates);
     }
 
     #[test]

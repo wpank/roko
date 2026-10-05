@@ -20,7 +20,9 @@
 //! A refine-spec or abandon forecast (6133) becomes a dashboard diagnosis and an event-log
 //! entry, and a refine request also a `spec.refine_requested` record in the run's spec ledger
 //! for S07. The self-model never edits a spec or drops a task: the attempt still runs on the
-//! ladder's choice.
+//! ladder's choice. S07's plan-load gate reads the record in later runs (gap-2b0575), and under
+//! `enforce` stops the task until its spec is refined when the request came from a self-model
+//! that routes.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -102,7 +104,7 @@ const ABANDON: &str = "abandon";
 
 /// The event that hands a refine request to S07's plan-load gate, in the run's spec ledger
 /// and its event log (6133).
-const SPEC_REFINE_EVENT: &str = "spec.refine_requested";
+const SPEC_REFINE_EVENT: &str = roko_gate::spec_quality::REFINE_REQUESTED;
 
 /// A plan run's self-model: loaded at plan start when `[self_model] mode` is not off, and shared
 /// by dispatch, which forecasts each routed attempt, and the outcome sink, which teaches it each
@@ -367,6 +369,13 @@ impl SelfModelRuntime {
             target: self.settings.target,
         };
         gate.evaluate(&self.window.lock())
+    }
+
+    /// Whether the self-model routes now: active, with its calibration gate eligible and its
+    /// breaker untripped, as [`active_start`] needs.
+    fn routes(&self) -> bool {
+        let gate = self.gate();
+        self.settings.mode == SelfModelMode::Active && gate.eligible && !gate.breaker_tripped
     }
 
     /// Save the model's state, atomically.
@@ -859,9 +868,11 @@ impl GraphTaskDispatcher {
         let Some(runs) = &self.feedback.runs_dir else {
             return;
         };
-        // A shadow-mode request is the self-model's opinion only, which S07 may ignore.
+        // S07 stops a task only on the request of a self-model that routes (gap-2b0575); a
+        // request in shadow mode, or before the calibration gate holds, is advice.
         let runtime = self.feedback.self_model.as_deref();
         let mode = runtime.map_or("off", |runtime| mode_name(runtime.settings().mode));
+        let acting = runtime.is_some_and(SelfModelRuntime::routes);
         let record = serde_json::json!({
             "ev": SPEC_REFINE_EVENT,
             "run_id": identity.run_id,
@@ -870,6 +881,7 @@ impl GraphTaskDispatcher {
             "attempt_key": identity.attempt_key,
             "source": "self_model",
             "mode": mode,
+            "acting": acting,
             "spec_score": spec_score,
             "p_vs_max": best,
             "recorded_at_ms": chrono::Utc::now().timestamp_millis(),
@@ -1701,5 +1713,12 @@ mod tests {
         assert_eq!(requests[0]["task_id"], "T-REFINE");
         assert_eq!(requests[0]["spec_score"], 0.3);
         assert_eq!(requests[0]["mode"], "active");
+        // A fresh model's calibration gate does not hold yet, so S07 takes the request as
+        // advice (gap-2b0575); its gate reads the record as written here.
+        assert_eq!(requests[0]["acting"], false);
+        let read = roko_gate::spec_quality::refine_requests(&ledger);
+        assert_eq!(read.len(), 1, "{ledger}");
+        assert_eq!(read[0].task_id, "T-REFINE");
+        assert!(!read[0].acting, "{read:?}");
     }
 }

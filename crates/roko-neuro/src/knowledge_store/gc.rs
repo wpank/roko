@@ -16,7 +16,7 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the store cannot be read or rewritten.
     pub fn decay(&self) -> Result<usize> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let now = Utc::now();
         let mut entries = self.read_all()?;
         let decayed = entries.len();
@@ -46,7 +46,7 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the store cannot be read or rewritten.
     pub fn gc(&self, min_confidence: f64) -> Result<usize> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let threshold = min_confidence.max(0.0);
         let before = self.read_all()?;
         let before_len = before.len();
@@ -74,7 +74,7 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the store cannot be read or rewritten.
     pub fn remove_entries(&self, entry_ids: &[&str]) -> Result<usize> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let before = self.read_all()?;
         let before_len = before.len();
         let entries = before
@@ -103,7 +103,7 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the store cannot be read or rewritten.
     pub fn gc_with_freeze(&self, min_confidence: f64) -> Result<usize> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let threshold = min_confidence.max(0.0);
         let before = self.read_all()?;
         let before_len = before.len();
@@ -146,7 +146,7 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the store cannot be read or rewritten.
     pub fn resurrect(&self, entry_id: &str, confirming_episode: &str) -> Result<bool> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let mut found = false;
 
@@ -189,7 +189,7 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the store cannot be read or rewritten.
     pub fn prune_dead(&self) -> Result<usize> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let now = Utc::now();
         let before = self.read_all()?;
         let before_len = before.len();
@@ -227,7 +227,7 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the store cannot be read or rewritten.
     pub fn apply_demurrage(&self) -> Result<usize> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let now = Utc::now();
         let mut entries = self.read_all()?;
         let mut taxed = 0usize;
@@ -287,7 +287,7 @@ impl KnowledgeStore {
     /// Deduplicates by `(id)` and removes entries whose balance is <= 0
     /// and that have been frozen, producing a smaller file.
     pub fn compact(&self) -> Result<usize> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let entries = self.read_all()?;
         let before = entries.len();
         // Deduplicate by id, keeping the latest version.
@@ -316,7 +316,7 @@ impl KnowledgeStore {
         &self,
         config: &crate::tier_progression::TierProgressionConfig,
     ) -> Result<crate::tier_progression::EntryTierProgressionReport> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let report =
             crate::tier_progression::TierProgression::default().evaluate_all(&mut entries, config);
@@ -354,7 +354,7 @@ impl KnowledgeStore {
             return Ok(0);
         }
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let mut updated = 0;
 
@@ -401,7 +401,7 @@ impl KnowledgeStore {
             return Ok(0);
         }
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let mut updated = 0;
 
@@ -477,7 +477,7 @@ impl KnowledgeStore {
         min_confidence: f64,
         min_tag_overlap: usize,
     ) -> Result<usize> {
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let before = self.read_all()?;
         let before_len = before.len();
         let entries =
@@ -504,7 +504,7 @@ impl KnowledgeStore {
         use super::scoring::fingerprint_entry;
         use super::types::HDC_VECTOR_BYTES;
 
-        let _guard = self.write_gate.lock();
+        let _guard = self.lock_writes();
         let mut entries = self.read_all()?;
         let mut changed = 0usize;
         for entry in &mut entries {

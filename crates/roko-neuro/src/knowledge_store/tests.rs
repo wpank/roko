@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Arc;
 
     use chrono::{DateTime, Duration, Utc};
     use roko_core::extension::CamelTaintLevel;
@@ -357,6 +358,50 @@ mod tests {
         assert_eq!((accesses, accessed), (2, true));
         assert!(spaced > half_life, "{spaced} <= {half_life}");
         assert_eq!(state("untouched"), (0, half_life, false));
+    }
+
+    /// bug-c4f0ed: every store of one file shares its write gate, whatever
+    /// the path's spelling, and so does a store built before the file's
+    /// directory existed; another file has a gate of its own.
+    #[test]
+    fn stores_of_one_file_share_one_write_gate() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("neuro").join("knowledge.jsonl");
+        let early = KnowledgeStore::new(&path);
+        std::fs::create_dir_all(tmp.path().join("neuro")).expect("mkdir");
+        let late = KnowledgeStore::new(&path);
+        let spelled = KnowledgeStore::new(tmp.path().join("neuro/../neuro/knowledge.jsonl"));
+        let other = KnowledgeStore::new(tmp.path().join("neuro").join("other.jsonl"));
+
+        assert!(Arc::ptr_eq(&early.write_gate, &late.write_gate));
+        assert!(Arc::ptr_eq(&early.write_gate, &spelled.write_gate));
+        assert!(!Arc::ptr_eq(&early.write_gate, &other.write_gate));
+    }
+
+    /// bug-c4f0ed: a write waits for the file's lock among processes, which
+    /// another process's store holds while it rewrites the file.
+    #[test]
+    fn a_write_waits_for_the_lock_another_process_holds() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(tmp.path().join("neuro").join("knowledge.jsonl"));
+        let (kind, now) = (KnowledgeKind::Insight, Utc::now());
+        let content = "Prompt inclusions count as accesses";
+        let knowledge = entry(kind, "counted", content, &[], 0.9, &["ep1"], now);
+        store.add(knowledge).expect("add knowledge");
+        let accesses = |store: &KnowledgeStore| store.read_all().expect("read")[0].access_count;
+
+        // Another process's write holds the lock.
+        let held = roko_fs::log_rotation::lock_jsonl(store.path()).expect("hold the lock");
+        let writer = {
+            let store = store.clone();
+            std::thread::spawn(move || store.count_access(&["counted"]))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(accesses(&store), 0, "the write waits for the lock");
+        drop(held);
+        let counted = writer.join().expect("the writer").expect("count");
+        assert_eq!(counted, 1);
+        assert_eq!(accesses(&store), 1);
     }
 
     #[test]

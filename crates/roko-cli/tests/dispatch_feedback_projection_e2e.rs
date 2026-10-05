@@ -87,7 +87,7 @@ fn ctx(workdir: std::path::PathBuf) -> DispatchContext {
         gate_feedback: None,
         routing_context: None,
         dependency_outputs: Vec::new(),
-        error_patterns_context: String::new(),
+        error_patterns: Default::default(),
         cached_workspace_map: String::new(),
         cached_workspace_context: String::new(),
         concurrent_plans: Vec::new(),

@@ -87,3 +87,60 @@ or reader exists anywhere for its output.
   `work/gap-dbe8e7`. `gap-dbe8e7`'s own scope (view contract shapes) deliberately left this as
   future work (its Progress note: "claims stay NOT_YET_MEASURED until a results directory
   records S09 verdicts") rather than fixing it, so this is a genuine follow-up, not a duplicate.
+
+## Progress
+
+- gap-2da8ec: implemented. Before designing the record, found the archived empirical paper's own
+  spec for this exact gap: `tmp/cybernetic-harness/paper/archive/2026-10-02-empirical-draft/
+  FIGURES-TABLES.md`'s T6 ("pre-registered primaries and decisions") names `tab_t6_primaries.py`
+  as the never-written script, and `tab_t3_headline.py` (shipped) already has dead code reading
+  a `holm_reject` MetricRecord per hypothesis with a comment, "no holm_reject record in the
+  inputs (T6 holds the decisions)" -- a second, independent confirmation of the same gap from a
+  different angle. T6's own column list ("claim state: SUPPORTED, NOT SUPPORTED, INCONCLUSIVE,
+  NOT RUN") is richer than a bare reject/not-reject bit, which is why this is a small new record
+  rather than just writing `holm_reject` MetricRecords (that reader stays dead; wiring it is a
+  larger, separate change this item did not scope).
+- Added `vb.verdict/1` (one record per S09 primary) and `vb.verdicts/1` (the document,
+  `verdicts.json`, beside `report.py`'s `metrics.json`) to `analysis/holm.py`: `claim_state(primary,
+  result, adverse=False)`, `verdict_records(result, experiment_id, metrics=, run_ids=, adverse=)`
+  and `write_verdicts(out_dir, experiment_id, result, ...)`.
+- Ambiguous rule, picked conservatively (as asked): a directional p-value is already one-sided, so
+  a Holm rejection only ever happens in the hypothesized direction, and failing to reject cannot by
+  itself distinguish "the effect runs the other way" (NOT_SUPPORTED) from "not enough signal either
+  way" (INCONCLUSIVE) -- that needs the point estimate's sign, which Holm's own p-value does not
+  carry. Default with no `adverse` entry for a primary: INCONCLUSIVE. `adverse` lets a future caller
+  (whoever runs the per-hypothesis analysis and has the estimate) say otherwise per primary.
+  `metrics`/`run_ids` are the record's links to what it rests on, both optional per primary: a
+  decision can exist before its inputs are catalogued this way.
+- `showcase/build_bundle.py`: reads `--verdicts`/`<results>/<experiment>/verdicts.json` (same
+  pattern as `--econ`), validates each record (`verdict_problem`, same shape as
+  `econ_report_problem`; no new `schema/validate.py` kind, matching how econ reports are checked
+  too), copies it into the bundle as `data/verdicts.jsonl`, and threads it through
+  `project_views` (new `verdicts` parameter, default `()`): a tile's `claim_state` is copied from
+  the matching verdict record when one exists for its hypothesis, else stays
+  `NOT_YET_MEASURED`; the p1-head-to-head claim's `state` does the same for H1; a
+  `NOT_SUPPORTED` tile also becomes one of the overview's `negatives` (`kind: "other"`, since a
+  verdict record alone cannot say which of contracts.ts's three more specific kinds applies).
+  `verify_bundle.py` reads `data/verdicts.jsonl` the same way and passes it into the same
+  `project_views` call, so "re-derives every view byte for byte" stays true with verdicts in the
+  mix, not just without them.
+- Tests: `analysis/test_holm.py` (new, 3 tests) on `claim_state`/`verdict_records`/
+  `write_verdicts` directly; `showcase/test_bundle.py` gained
+  `test_build_reads_an_s09_verdict_record_into_claim_state` (the named verify test: a verdict
+  record moves a tile's claim_state and the head-to-head claim's state off the default, and a
+  NOT_SUPPORTED one becomes a negative, while an un-recorded hypothesis keeps
+  NOT_YET_MEASURED) and `test_a_verdict_record_of_another_experiment_is_refused` (the builder
+  holds a verdict record to its own experiment, like an econ report).
+- Verified load-bearing twice: reverted `project_views`' tile loop to the old `"claim_state":
+  CLAIM_STATE` literal, confirmed the named test fails exactly on that assertion; separately
+  reverted `claim_state()`'s `adverse` branch to always return `INCONCLUSIVE`, confirmed both new
+  `test_holm.py` tests that exercise `adverse` fail. Restored both and re-confirmed green.
+- Suites run in the benchmark worktree's own fresh venv (none existed in this worktree; built
+  from the main checkout's installed pytest version): the named `[[verify]]` command directly;
+  full `analysis/` + `showcase/` together (139 passed, 1 pre-existing skip unrelated to this
+  change -- the optional numpy/pandas analysis stack is not installed here either).
+- Not done here, left for later: `tab_t6_primaries.py` itself (the full T6 table: estimate, test
+  statistic, replay-validation status, deviation ids, the exploratory and deviations blocks) and
+  wiring real per-hypothesis p-value assembly (H1's envelope chain, H2's pass^3 test, H3-H7's own
+  estimators) into a `decide()` call anywhere live -- this item's writer is exercised by tests and
+  a synthetic `p` mapping, not yet by an actual experiment's numbers.

@@ -353,6 +353,8 @@ pub async fn run_direct_provider_chat(
                 run_id: None,
                 request_id: Some(format!("direct-chat-{agent_id}-{turn_count}")),
                 prompt_section_ids: Vec::new(),
+                // The chat prompt is its history alone: it includes no
+                // knowledge entry (bug-eaa318).
                 knowledge_ids: Vec::new(),
                 model: model_slug.clone(),
                 provider: provider_name.to_string(),

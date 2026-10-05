@@ -63,3 +63,24 @@ Confirmed: the event is written; nothing reads it on the gate side.
 - Related but distinct from bug-78e5ce (the streaming dispatch path skips the self-model's post-pass step
   entirely, so it can't even produce this event there) — that item already has a dated note about this
   connection; this item is about the plan-load gate not consuming the event once it IS produced.
+
+## Progress
+
+- 2026-10-05 (wave 20): implemented at d52ae77bb on `work/gap-2b0575`; cargo verification deferred to the batch
+  gate. roko-gate's `spec_quality::refine` reads `spec.refine_requested` records (`refine_requests`,
+  `read_refine_requests` over `.roko/runs/*/spec.jsonl`), and `refine_verdict` decides per task. Under `enforce`,
+  an open request from a self-model that routed (active, calibration gate eligible, breaker untripped) blocks
+  the task: S07 §4.3 sends a weak spec to REFINE, and with no refiner in roko the task waits for its spec to be
+  refined. Under `advise`, or from a self-model that only forecast (shadow mode, or before its calibration gate
+  holds), the request is advice. A request stays open until the task's spec scores higher than the request's
+  `spec_score`. `spec_gate::gate_plans` applies the verdicts (`apply_refine_requests`): a `refine_requested`
+  finding that blocks, or `advice` on the decision, its `spec.gate` record and its event line; the holdout
+  drops both. The producer now writes `acting`. Tests: `s07_enforce_mode_acts_on_spec_refine_requested`
+  (roko-gate), `spec_gate_acts_on_the_self_models_refine_requests` (roko-cli), and 6133's producer test now
+  reads its record with the gate's reader.
+- Streaming: the request is written at forecast time (`report_self_model_action`, from `forecast_attempt`), not
+  by the post-pass step, so the bug-78e5ce note's cause does not apply. Streaming calls `forecast_attempt`
+  since bug-78e5ce, and reaches post-pass through `settle_task_verification` → `deepen_verification`, so both
+  paths write the request.
+- Left as is: `plan run`'s early pre-check (`spec_gate_before_run`) does not read requests; the plan-load gate,
+  which every run passes before its first dispatch, does.

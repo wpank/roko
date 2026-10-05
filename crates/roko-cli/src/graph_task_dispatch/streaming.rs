@@ -189,7 +189,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             gate_feedback: None,
             routing_context: Some(routing_ctx),
             dependency_outputs: upstream_outputs(&input),
-            error_patterns_context: error_patterns.text,
+            error_patterns,
             cached_workspace_map: cached_workspace_map.clone(),
             cached_workspace_context: cached_workspace_context.clone(),
             concurrent_plans: self.concurrent_plans(&spec.plan_id),
@@ -243,6 +243,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             max_turns: Some(max_turns),
             live_output: None,
             attempt_key: Some(attempt_key.clone()),
+            knowledge_ids: super::decision_log::included_knowledge_ids(&dispatch_plan),
         };
         // FAST lane: fewer turns, a shorter attempt, a patch-only prompt.
         let request = self.fast_bounded(request);

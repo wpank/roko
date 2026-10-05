@@ -30,21 +30,39 @@ exactly when its adjusted p is at most α. Weights are exact fractions, so a p a
 `MULTIPLICITY` is S09 §5's `multiplicity` block, the settings the lock records (task 3341); `test_envelope.py` checks
 the graph against it.
 
+**Verdict records** (`verdict_records`, `write_verdicts`; gap-2da8ec) persist a `decide()` result as one
+`vb.verdict/1` record per primary, in a `vb.verdicts/1` document next to `report.py`'s `metrics.json`, so that
+`showcase/build_bundle.py` has something to read instead of its `NOT_YET_MEASURED` default. `claim_state` picks
+S09's claim state (`SUPPORTED`, `NOT_SUPPORTED` or `INCONCLUSIVE`; `NOT_YET_MEASURED` is a hypothesis with no
+verdict record at all, never this module's to say) for one primary. A directional p-value (above) is already
+one-sided, so a Holm rejection only ever happens in the hypothesized direction; failing to reject is silent on
+which way the true effect lies, and nothing here can tell "the effect runs the other way" (`NOT_SUPPORTED`) from
+"not enough signal either way" (`INCONCLUSIVE`) without a side fact Holm's own p-value cannot supply. `adverse`
+is that fact, supplied per primary by whoever ran the analysis and read the point estimate's sign; the
+conservative default with no `adverse` entry is `INCONCLUSIVE` (an ambiguous rule, picked conservatively,
+gap-2da8ec).
+
 API:
-    MULTIPLICITY; PRIMARIES; H1_LEVELS
+    MULTIPLICITY; PRIMARIES; H1_LEVELS; CLAIM_STATES; VERDICT_SCHEMA; VERDICTS_SCHEMA; VERDICTS_FILE
     directional(one_sided) -> float; iut(*parts) -> float; bonferroni(*parts) -> float; gated(p, passed) -> float
     chain(level_p) -> list[float]
     Graph(weights, edges); s09_graph() -> Graph
     node_p(h1_level_p, others) -> dict[node, float]
     adjust(p, graph=None) -> dict[node, float]
     HolmResult(adjusted, rejected, alpha, e_star, supported); decide(p, alpha=0.05, graph=None) -> HolmResult
+    claim_state(primary, result, adverse=False) -> str
+    verdict_records(result, experiment_id, metrics=None, run_ids=None, adverse=None) -> list[dict]
+    write_verdicts(out_dir, experiment_id, result, metrics=None, run_ids=None, adverse=None, created_at=None) -> Path
 """
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
+from pathlib import Path
 
 PRIMARIES = ("H1", "H2", "H3", "H4", "H5", "H6", "H7")
 H1_LEVELS = tuple(f"H1:l{level}" for level in range(1, 6))
@@ -52,6 +70,12 @@ H1_LEVELS = tuple(f"H1:l{level}" for level in range(1, 6))
 MULTIPLICITY = {"method": "graphical_holm", "weights": "1/7 each", "recycle": "equal", "directional_p": "2*one_sided",
                 "conjunction": "iut_max", "disjunction": "bonferroni_2min", "failed_gate_p": 1,
                 "h1_chain": ["l1", "l2", "l3", "l4", "l5"], "h1_release_after": "l5"}
+# contracts.ts's ClaimState, minus NOT_YET_MEASURED: a hypothesis with no verdict record at all is that one, never
+# one this module writes (gap-2da8ec's module docstring).
+CLAIM_STATES = ("SUPPORTED", "NOT_SUPPORTED", "INCONCLUSIVE")
+VERDICT_SCHEMA = "vb.verdict/1"  # one hypothesis's decision
+VERDICTS_SCHEMA = "vb.verdicts/1"  # the document of all of them, next to report.py's vb.metrics/1
+VERDICTS_FILE = "verdicts.json"
 
 
 def directional(one_sided: float) -> float:
@@ -160,6 +184,61 @@ def decide(p: Mapping[str, float], alpha: float = 0.05, graph: Graph | None = No
         e_star += 1
     supported = {primary: (H1_LEVELS[0] if primary == "H1" else primary) in rejected for primary in PRIMARIES}
     return HolmResult(adjusted=adjusted, rejected=rejected, alpha=alpha, e_star=e_star, supported=supported)
+
+
+def claim_state(primary: str, result: HolmResult, adverse: bool = False) -> str:
+    """S09's claim state for `primary` under `result` (module docstring; gap-2da8ec): ``SUPPORTED`` when Holm
+    rejects `primary`'s null (its first level, for H1), else ``INCONCLUSIVE``, or ``NOT_SUPPORTED`` when `adverse`
+    says the point estimate ran against the hypothesis rather than merely falling short of significance."""
+    if primary not in result.supported:
+        raise ValueError(f"{primary!r} is not one of {', '.join(PRIMARIES)}")
+    if result.supported[primary]:
+        return "SUPPORTED"
+    return "NOT_SUPPORTED" if adverse else "INCONCLUSIVE"
+
+
+def verdict_records(result: HolmResult, experiment_id: str, *, metrics: Mapping[str, Sequence[str]] | None = None,
+                    run_ids: Mapping[str, Sequence[str]] | None = None,
+                    adverse: Mapping[str, bool] | None = None) -> list[dict]:
+    """One `vb.verdict/1` record per primary (module docstring; gap-2da8ec): `result`'s own decision and adjusted
+    p, `claim_state`'s reading of it, and whichever of `metrics` (the S08 metric names) and `run_ids` name what it
+    rests on for that primary -- both default to empty per primary, since a decision can exist before its inputs
+    are catalogued this way."""
+    metrics, run_ids, adverse = metrics or {}, run_ids or {}, adverse or {}
+    records = []
+    for primary in PRIMARIES:
+        node = H1_LEVELS[0] if primary == "H1" else primary
+        records.append({
+            "schema_version": VERDICT_SCHEMA,
+            "experiment_id": experiment_id,
+            "hypothesis": primary,
+            "alpha": result.alpha,
+            "p_adjusted": result.adjusted[node],
+            "rejected": result.supported[primary],
+            "claim_state": claim_state(primary, result, bool(adverse.get(primary, False))),
+            "test": "graphical_holm",
+            "metrics": list(metrics.get(primary, ())),
+            "run_ids": list(run_ids.get(primary, ())),
+        })
+    return records
+
+
+def write_verdicts(out_dir: Path, experiment_id: str, result: HolmResult, *,
+                   metrics: Mapping[str, Sequence[str]] | None = None,
+                   run_ids: Mapping[str, Sequence[str]] | None = None,
+                   adverse: Mapping[str, bool] | None = None, created_at: str | None = None) -> Path:
+    """`verdict_records` written as `out_dir / VERDICTS_FILE` (module docstring; gap-2da8ec), the results
+    directory's own per-experiment document, beside `report.py`'s `metrics.json`. Overwrites a file already
+    there, like `report.py`'s own writer."""
+    document = {
+        "schema_version": VERDICTS_SCHEMA,
+        "experiment_id": experiment_id,
+        "created_at": created_at or dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "records": verdict_records(result, experiment_id, metrics=metrics, run_ids=run_ids, adverse=adverse),
+    }
+    path = Path(out_dir) / VERDICTS_FILE
+    path.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
 
 
 def _reject(node: str, weights: dict[str, Fraction], edges: dict[str, dict[str, Fraction]]) -> None:

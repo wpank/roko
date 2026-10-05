@@ -216,9 +216,11 @@ pub(crate) fn applicable_acp_experiment(
     (Some(assignment), model_override)
 }
 
-/// Settle the receipt of an assignment ACP drew but does not serve as
-/// abandoned: it counts no trial, and it does not stay `Prepared` in the
-/// store (bug-e3bbee). Non-fatal: logs and returns on failure.
+/// Settle as abandoned the receipt of an assignment ACP drew but does not
+/// serve (bug-e3bbee), or whose prompt ended before its outcome was recorded
+/// ([`OpenExperimentReceipt`]): it counts no trial, and it does not stay
+/// `Prepared` or `Dispatched` in the store. Non-fatal: logs and returns on
+/// failure.
 fn abandon_acp_experiment(experiment_path: &Path, assignment: &AcpExperimentAssignment) {
     let Some(attempt_key) = assignment.attempt_key.as_ref() else {
         return;
@@ -231,6 +233,40 @@ fn abandon_acp_experiment(experiment_path: &Path, assignment: &AcpExperimentAssi
             error = %err,
             "ACP experiment receipt abandonment failed (non-fatal)"
         );
+    }
+}
+
+/// The receipt of a prompt's experiment assignment, open until the prompt's
+/// outcome is recorded. Dropped open, by an early return, an error or a panic
+/// between the assignment and its settlement, it settles the receipt as
+/// abandoned, so that no exit leaves it `Prepared` or `Dispatched`
+/// (bug-897879).
+pub(crate) struct OpenExperimentReceipt {
+    path: PathBuf,
+    assignment: Option<AcpExperimentAssignment>,
+}
+
+impl OpenExperimentReceipt {
+    /// The open receipt of `assignment`, in the experiment store at `path`.
+    /// Without an assignment there is none to settle.
+    pub(crate) fn new(path: &Path, assignment: Option<&AcpExperimentAssignment>) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            assignment: assignment.cloned(),
+        }
+    }
+
+    /// The prompt's outcome was recorded, which settled the receipt.
+    pub(crate) fn settled(mut self) {
+        self.assignment = None;
+    }
+}
+
+impl Drop for OpenExperimentReceipt {
+    fn drop(&mut self) {
+        if let Some(assignment) = self.assignment.take() {
+            abandon_acp_experiment(&self.path, &assignment);
+        }
     }
 }
 

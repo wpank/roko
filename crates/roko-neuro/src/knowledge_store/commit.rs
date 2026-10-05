@@ -132,7 +132,7 @@ impl KnowledgeBatch {
     ///
     /// The store's read or rewrite error.
     pub fn discard(&self) -> anyhow::Result<usize> {
-        let _guard = self.store.write_gate.lock();
+        let _guard = self.store.lock_writes();
         let mut entries = self.store.read_all()?;
         let before = entries.len();
         entries.retain(|entry| !self.holds(entry));

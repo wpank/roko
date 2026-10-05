@@ -9,12 +9,19 @@
 //!   full) and the detectors;
 //! - a breach the detectors confirm opens an episode, which keeps θ as the
 //!   last-known-good and makes a first move;
+//! - an EV whose estimate stays outside its inner band for `relax_window`
+//!   resolutions without a breach latches as a slow breach, so an EV
+//!   parked between its bands still opens an episode, or keeps one moving;
 //! - a change dwells `dwell_resolutions` resolutions **and**
 //!   `dwell_min_secs` seconds, then is kept, or rolled back and made tabu
-//!   when the drive did not fall by `improve_delta_frac` of its value or
-//!   another EV newly breached. In shadow mode a change is unevaluable: the
-//!   would-be θ drops it and the move is tabu, so the next proposal
-//!   differs;
+//!   when the drive did not fall by `improve_delta_frac` of D_pre, its
+//!   value before the change, or another EV newly breached. D_pre is the
+//!   window's drive, except that a breached EV whose estimate left its
+//!   inner band inside the window also reads over the resolutions since,
+//!   and counts at the worse reading, so a step whose onset lies inside the
+//!   window is not diluted by the resolutions before it. In shadow mode a
+//!   change is unevaluable: the would-be θ drops it and the move is tabu,
+//!   so the next proposal differs;
 //! - `recover_window` resolutions with D = 0 commit θ and close the
 //!   episode; `max_changes_per_episode` changes, or adaptation spend over
 //!   `adaptation_spend_max_frac` of spend, restore the last-known-good and
@@ -57,7 +64,7 @@ use serde_json::Value;
 use super::catalog::{Effect, Move, Signature, candidates, catalog_move};
 use super::detect::{Baseline, DetectorBank, DetectorTuning, Observation};
 use super::ev::{
-    Drive, Ev, EvBands, EvEstimates, EvWindow, Side, drive, estimate_latency_p90_s,
+    Drive, Estimate, Ev, EvBands, EvEstimates, EvWindow, Side, drive, estimate_latency_p90_s,
     estimate_pass_rate, estimate_usd_per_verified_success,
 };
 use super::policy::{ChangeKind, SafetyBox, SafetyContext, Verdict, ViabilityPolicy};
@@ -330,7 +337,8 @@ pub struct PendingChange {
     pub reason: MoveReason,
     /// θ before it, which a rollback returns to.
     pub previous: HarnessParams,
-    /// D over the window when it was made.
+    /// D_pre: D over the window when it was made, or more when a breached
+    /// EV's shift began inside the window.
     pub drive_before: f64,
     /// The EVs breached when it was made.
     pub breached_before: Vec<Ev>,
@@ -428,7 +436,8 @@ pub enum ControllerEvent {
         ev: Ev,
         /// Its window estimate; `None` when unmeasured.
         value: Option<f64>,
-        /// Its outer bound.
+        /// Its outer bound; for a slow breach, the inner bound it stayed
+        /// outside of.
         bound: f64,
         /// Resolutions since its estimate last left the inner band.
         detect_delay_resolutions: u32,
@@ -474,7 +483,7 @@ pub enum ControllerEvent {
         change_id: String,
         /// The judgement.
         decision: Evaluation,
-        /// D over the dwell minus D over the window before the change.
+        /// D over the dwell minus D_pre, D before the change.
         d_drive: f64,
     },
     /// θ is the new last-known-good: 8113 commits it through the guarded
@@ -796,7 +805,8 @@ impl Controller {
     }
 
     /// The breached EVs, E1 first: past the outer bound and not yet back
-    /// in the inner band, by the window's band or a confirmed detector.
+    /// in the inner band, by the window's band or a confirmed detector, or
+    /// latched as a slow breach.
     #[must_use]
     pub fn breached(&self) -> Vec<Ev> {
         Ev::ALL
@@ -830,13 +840,14 @@ impl Controller {
         self.release(ReleaseReason::Ack)
     }
 
-    /// The S5 policy changed: new bands and detectors, and a HOLD is
-    /// released.
+    /// The S5 policy changed: new bands and detectors, each EV's time
+    /// outside its inner band counted afresh, and a HOLD is released.
     pub fn policy_changed(&mut self, policy: ViabilityPolicy) -> Vec<ControllerEvent> {
         self.safety = SafetyBox::new(self.state.theta0.clone(), self.ladders.clone(), &policy);
         self.bands = EvBands::new(&policy.ev);
         self.detectors = DetectorBank::new(self.baseline, &policy.ev, &self.tuning);
         self.latched.clear();
+        self.left_inner = [None; 4];
         self.policy = policy;
         self.release(ReleaseReason::PolicyChanged)
     }
@@ -961,6 +972,35 @@ impl Controller {
         u32::try_from(self.state.resolutions.saturating_sub(left) + 1).unwrap_or(u32::MAX)
     }
 
+    /// Latch every EV whose estimate has stayed outside its inner band for
+    /// `relax_window` resolutions without a breach: a slow breach, whose
+    /// `ev.breach` names the inner bound. Such an EV keeps D above 0, yet
+    /// its band breaches only past the outer bound and its detector only on
+    /// a shift beyond the drift it allows, so M1 would wait forever: in IDLE
+    /// for a breach, in SEARCH for a recovery (gap-d1ebc1). The wait is
+    /// W_relax, as long as a relaxation waits: two windows of evidence,
+    /// which an in-bounds stream almost never shows.
+    fn latch_slow(&mut self, estimates: &EvEstimates, events: &mut Vec<ControllerEvent>) {
+        let patience = self.config.relax_window.max(1);
+        let breached = self.breached();
+        for ev in Ev::ALL {
+            let estimate = estimates.get(ev);
+            let outside = estimate.is_measured() && !self.bands.get(ev).within_inner(estimate);
+            if !outside || breached.contains(&ev) || self.delay(ev) < patience {
+                continue;
+            }
+            self.latched.push(ev);
+            self.state.calm_streak = 0;
+            events.push(ControllerEvent::Breach {
+                ev,
+                value: estimate.value,
+                bound: self.policy.ev.inner(ev),
+                detect_delay_resolutions: self.delay(ev),
+                episode_id: self.episode().map(|e| e.id.clone()),
+            });
+        }
+    }
+
     /// Count the resolution toward the episode's adaptation spend, the
     /// refractory period and the calm and recovery streaks.
     fn track(&mut self, cost: f64, current: &Drive) {
@@ -1002,8 +1042,9 @@ impl Controller {
         }
     }
 
-    /// IDLE: judge a relaxation whose dwell ended, then open an episode on
-    /// a confirmed breach outside the refractory period, or relax.
+    /// IDLE: judge a relaxation whose dwell ended and latch slow breaches,
+    /// then open an episode on a latched breach outside the refractory
+    /// period, or relax.
     fn idle(
         &mut self,
         estimates: &EvEstimates,
@@ -1015,6 +1056,7 @@ impl Controller {
         {
             self.commit(events);
         }
+        self.latch_slow(estimates, events);
         let refractory = self.state.refractory;
         let triggers: Vec<Ev> = self
             .latched
@@ -1062,8 +1104,9 @@ impl Controller {
         self.make_move(current, events);
     }
 
-    /// SEARCH: judge the last change, then commit on recovery, wait while
-    /// nothing is breached, HOLD at N_max or A_max, or move again.
+    /// SEARCH: judge the last change and latch slow breaches, then commit
+    /// on recovery, wait while nothing is breached, HOLD at N_max or A_max,
+    /// or move again.
     fn search(
         &mut self,
         estimates: &EvEstimates,
@@ -1073,6 +1116,7 @@ impl Controller {
         if let Some(pending) = self.state.pending.take() {
             self.evaluate(pending, estimates, events);
         }
+        self.latch_slow(estimates, events);
         if self.state.recover_streak >= self.config.recover_window {
             self.close_recovered(events);
         } else if self.breached().is_empty() {
@@ -1322,7 +1366,7 @@ impl Controller {
             key: candidate.key,
             reason,
             previous: self.state.theta.clone(),
-            drive_before: current.value,
+            drive_before: self.drive_before(current, breached),
             breached_before: breached.to_vec(),
             after: Vec::new(),
         });
@@ -1430,6 +1474,52 @@ impl Controller {
             latency_p90_s: estimate_latency_p90_s(resolutions),
         };
         drive(&dwell, &self.policy.ev, &self.policy.drive).value
+    }
+
+    /// D_pre, the drive a change made now is judged against: the window's,
+    /// except that each breached EV whose estimate left its inner band
+    /// inside the window also reads over the resolutions since, at the end
+    /// of their 90% interval nearer the band, and counts at the worse of
+    /// its two readings. When a step's onset lies inside the window, the
+    /// window averages in the resolutions before it and understates the
+    /// shift, so a good first move could show too little gain and be rolled
+    /// back (gap-d1ebc1); the interval's end keeps a short, unlucky stretch
+    /// from overstating it instead.
+    fn drive_before(&self, current: &Drive, breached: &[Ev]) -> f64 {
+        let mut adjusted: Option<EvEstimates> = None;
+        for &ev in breached {
+            let Some(since) = self.since_left_inner(ev) else {
+                continue;
+            };
+            let estimates = adjusted.get_or_insert_with(|| self.estimates());
+            let false_green = estimates.false_green.value;
+            let (reading, entry) = match ev {
+                Ev::PassRate => (estimate_pass_rate(since), &mut estimates.pass_rate),
+                Ev::UsdPerVerifiedSuccess => (
+                    estimate_usd_per_verified_success(since, false_green),
+                    &mut estimates.usd_per_verified_success,
+                ),
+                Ev::LatencyP90S => (estimate_latency_p90_s(since), &mut estimates.latency_p90_s),
+                Ev::FalseGreen => continue,
+            };
+            *entry = worse(*entry, favourable(reading));
+        }
+        adjusted.map_or(current.value, |estimates| {
+            drive(&estimates, &self.policy.ev, &self.policy.drive).value
+        })
+    }
+
+    /// The window's resolutions since `ev`'s estimate left its inner band,
+    /// when it left inside the window, after its first resolution.
+    fn since_left_inner(&self, ev: Ev) -> Option<&[TaskResolution]> {
+        let window = self.window.resolutions();
+        let left = self.left_inner[slot(ev)]?;
+        let held = u64::try_from(window.len()).ok()?;
+        let first = (self.state.resolutions + 1).checked_sub(held)?;
+        let start = usize::try_from(left.checked_sub(first)?).ok()?;
+        window
+            .get(start..)
+            .filter(|since| start > 0 && !since.is_empty())
     }
 
     fn make_tabu(&mut self, key: MoveKey) {
@@ -1618,6 +1708,32 @@ fn mean_attempts(resolutions: &[TaskResolution]) -> f64 {
     f64::from(attempts) / resolutions.len().max(1) as f64
 }
 
+/// `estimate` read at the end of its 90% interval nearer the inner band:
+/// the least shift its resolutions allow. Without an interval it has no
+/// reading.
+fn favourable(estimate: Estimate) -> Estimate {
+    let value = estimate
+        .interval
+        .map(|(low, high)| match estimate.ev.side() {
+            Side::Lower => high,
+            Side::Upper => low,
+        });
+    Estimate { value, ..estimate }
+}
+
+/// The one of two readings of an EV farther past its bound's side: the
+/// lower for E1, the higher for the others. A reading without a value
+/// loses.
+fn worse(a: Estimate, b: Estimate) -> Estimate {
+    let badness = |estimate: &Estimate| {
+        estimate.value.map(|value| match estimate.ev.side() {
+            Side::Lower => -value,
+            Side::Upper => value,
+        })
+    };
+    if badness(&b) > badness(&a) { b } else { a }
+}
+
 /// One standard normal draw (Box–Muller).
 fn gaussian(rng: &mut ChaCha8Rng) -> f64 {
     let u1: f64 = rng.gen_range(f64::MIN_POSITIVE..1.0);
@@ -1748,6 +1864,34 @@ mod tests {
         }
     }
 
+    /// The wall time of resolution `index`: 850 s for three in twenty, 300 s
+    /// otherwise. The window's p90 is then 850 s, between E4's inner band
+    /// (810 s) and its bound (900 s), while E4's detector, which reads each
+    /// resolution's log-ratio to the 300 s baseline, sees lone slow tasks
+    /// and never alarms.
+    fn slow_tail(index: u64) -> u64 {
+        if matches!(index % 20, 0 | 7 | 14) {
+            850
+        } else {
+            300
+        }
+    }
+
+    /// `events` hold E4's slow breach: outside its inner bound, 810 s, for
+    /// `delay` resolutions.
+    fn assert_slow_breach(events: &[ControllerEvent], delay: u32) {
+        let found = events.iter().find_map(|event| match event {
+            ControllerEvent::Breach {
+                ev,
+                bound,
+                detect_delay_resolutions,
+                ..
+            } => Some((*ev, *bound, *detect_delay_resolutions)),
+            _ => None,
+        });
+        assert_eq!(found, Some((Ev::LatencyP90S, 810.0, delay)));
+    }
+
     #[test]
     fn no_move_within_dwell() {
         let mut on = controller(HomeostasisMode::On);
@@ -1819,8 +1963,8 @@ mod tests {
             }
         )));
 
-        // The drive fell from 1.0 to about 0.12, so only the collateral
-        // breach rolls the move back.
+        // The drive fell from about 2.3 (D_pre) to about 0.12, so only the
+        // collateral breach rolls the move back.
         let events = on.on_resolution(&resolution(32, true, 950, 60));
         let judged = events.iter().find_map(|event| match event {
             ControllerEvent::Evaluate {
@@ -1932,5 +2076,89 @@ mod tests {
         assert_eq!(shadow.theta().tier_floor[&TaskTier::Mechanical], "cheap");
         let episode = shadow.episode().expect("the episode stays open");
         assert!(episode.tabu.contains(&floor_up(TaskTier::Mechanical)));
+    }
+
+    #[test]
+    fn ev_between_inner_and_outer_bands_eventually_acts() {
+        // IDLE: every task passes, and from resolution 20, the first full
+        // window, E4 sits between its bands with D above 0. Nothing
+        // breaches, so nothing happens until E4 has been outside its inner
+        // band for relax_window (40) resolutions: at 59 it latches as a slow
+        // breach and opens an episode, which moves.
+        let mut idle = controller(HomeostasisMode::On);
+        for index in 1..=58 {
+            let events = idle.on_resolution(&resolution(index, true, slow_tail(index), 60));
+            assert!(events.is_empty(), "{index}: {events:?}");
+        }
+        let events = idle.on_resolution(&resolution(59, true, slow_tail(59), 60));
+        assert_slow_breach(&events, 40);
+        let opened = events.iter().find_map(|event| match event {
+            ControllerEvent::EpisodeOpen { evs, .. } => Some(evs.clone()),
+            _ => None,
+        });
+        assert_eq!(opened, Some(vec![Ev::LatencyP90S]));
+        let first = changes(&events);
+        assert_eq!(first.len(), 1, "{events:?}");
+        assert_eq!(first[0].kind, ChangeKind::Search);
+        assert_eq!(first[0].knob, Knob::TurnCapMult);
+        assert_eq!(idle.phase(), Phase::Search);
+
+        // SEARCH: E1's breach opens an episode at 24, and its first move is
+        // kept at 32 once E1 is back in its inner band. E4 has sat between
+        // its bands since 20: nothing is breached and D stays above 0, so
+        // the episode waits, dwell after dwell, until the decision at 64
+        // finds E4 forty resolutions outside its band and moves on it.
+        let mut search = controller(HomeostasisMode::On);
+        for index in 1..=24 {
+            let passed = index <= 20 && index % 5 != 1;
+            search.on_resolution(&resolution(index, passed, slow_tail(index), 60));
+        }
+        assert_eq!(search.phase(), Phase::Search);
+        let mut waiting = Vec::new();
+        for index in 25..=63 {
+            waiting.extend(search.on_resolution(&resolution(index, true, slow_tail(index), 60)));
+        }
+        assert_eq!(evaluations(&waiting), [Evaluation::Kept]);
+        assert!(changes(&waiting).is_empty(), "{waiting:?}");
+        let events = search.on_resolution(&resolution(64, true, slow_tail(64), 60));
+        assert_slow_breach(&events, 45);
+        let next = changes(&events);
+        assert_eq!(next.len(), 1, "{events:?}");
+        assert_eq!(next[0].kind, ChangeKind::Search);
+        assert_eq!(next[0].knob, Knob::TurnCapMult);
+    }
+
+    #[test]
+    fn onset_inside_the_window_keeps_a_good_first_move() {
+        // The breach's onset, resolution 21, lies inside the window of the
+        // first move, 5 to 24, whose D of 1.0 averages in sixteen
+        // resolutions from before it. Read over 23 and 24, both failed,
+        // since E1 left its inner band, at the top of their 90% interval,
+        // E1 is about 0.575 and D_pre about 2.3.
+        let mut on = controller(HomeostasisMode::On);
+        breach(&mut on, 60);
+
+        // The move helps: five of the eight tasks in its dwell pass, and D
+        // over the dwell is about 1.4. Against the window's 1.0 the move
+        // would be rolled back and made tabu; against D_pre it is kept.
+        let mut dwell = Vec::new();
+        for index in 25..=32 {
+            let passed = !matches!(index, 27 | 29 | 32);
+            dwell.extend(on.on_resolution(&resolution(index, passed, 300, 60)));
+        }
+        let judged = dwell.iter().find_map(|event| match event {
+            ControllerEvent::Evaluate {
+                decision, d_drive, ..
+            } => Some((*decision, *d_drive)),
+            _ => None,
+        });
+        let (decision, d_drive) = judged.expect("the change is judged");
+        assert_eq!(decision, Evaluation::Kept);
+        assert!((-1.0..-0.8).contains(&d_drive), "{d_drive}");
+        let episode = on.episode().expect("the episode stays open");
+        assert!(episode.tabu.is_empty(), "{:?}", episode.tabu);
+        // E1 is still breached, so the search makes its next move.
+        let kinds: Vec<ChangeKind> = changes(&dwell).iter().map(|change| change.kind).collect();
+        assert_eq!(kinds, [ChangeKind::Search]);
     }
 }

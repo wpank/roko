@@ -92,6 +92,10 @@ pub struct FeedbackService {
     costs_path: Option<PathBuf>,
     /// Model-call provenance waiting for a gate/workflow outcome.
     provenance: Mutex<HashMap<String, ProvenanceRecord>>,
+    /// Whether a model call's knowledge ids are remembered, so that outcomes
+    /// reach `knowledge-feedback.jsonl` and the knowledge scores; off for a
+    /// run that holds learned state fixed (decision 2218, bug-eaa318).
+    knowledge_feedback: bool,
     /// Durable score for each knowledge entry.
     knowledge_scores: Mutex<HashMap<String, i64>>,
     /// Prompt-section effectiveness registry consumed by prompt assembly.
@@ -118,6 +122,7 @@ impl FeedbackService {
             cascade_journal: None,
             costs_path: None,
             provenance: Mutex::new(HashMap::new()),
+            knowledge_feedback: true,
             knowledge_scores: Mutex::new(knowledge_scores),
             section_effectiveness: Mutex::new(section_effectiveness),
             scores_changed: AtomicBool::new(false),
@@ -174,6 +179,16 @@ impl FeedbackService {
     #[must_use]
     pub fn with_cost_records(mut self) -> Self {
         self.costs_path = Some(self.data_dir.join("costs.jsonl"));
+        self
+    }
+
+    /// Remember no model call's knowledge ids: each call's efficiency row
+    /// still names them, but no outcome reaches `knowledge-feedback.jsonl` or
+    /// the knowledge scores. For a run that holds learned state fixed
+    /// (decision 2218, bug-eaa318).
+    #[must_use]
+    pub const fn without_knowledge_feedback(mut self) -> Self {
+        self.knowledge_feedback = false;
         self
     }
 
@@ -798,7 +813,7 @@ impl FeedbackSink for FeedbackService {
                 if !*cache_hit {
                     self.observe_model_call(model, *success, role, *latency_ms);
                 }
-                if *success {
+                if *success && self.knowledge_feedback {
                     if let Some(record) = self.remember_model_call_provenance(
                         run_id.as_ref(),
                         request_id.as_ref(),

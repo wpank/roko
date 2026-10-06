@@ -2,6 +2,7 @@
 
     vb campaign --manifest experiments/pilot_a.toml --dry-run          # validate and estimate; nothing runs
     vb campaign --manifest experiments/pilot_a.toml --allow-network    # run it: one `vb run` per unit
+    vb campaign --manifest experiments/pilot_a.toml --allow-network --max-cost-usd 8   # under a hard cap in all
     vb campaign --manifest M --provider-url http://127.0.0.1:P/v1 --results R --work W   # an offline rehearsal
 
 **The manifest** (`vb.experiment/1`, `schema/experiment.schema.json`) is a TOML file in `experiments/`: the
@@ -46,12 +47,16 @@ checks clean against S09 (`--prereg-spec`) and the tree it pins (`analysis/lock.
 
 **Running** (without `--dry-run`). Each unit runs `vb.py run` as a process of its own, with the operator's
 environment, so its own checks and its restart into an allowlisted environment work as when typed by hand. A network
-unit needs `--allow-network` on the campaign, and gets `--allow-network` and its `--max-cost-usd`. An offline
-rehearsal passes `--provider-url` (a loopback URL) to every unit, and `--proxy` to each unit the real run would meter
-through the proxy (a billed arm whose provider names a key, or a disturbance the proxy applies). It may swap an arm's
-file for a rehearsal one of the same arm id (`--arm-file NAME=PATH`) and run each unit on the first N instances of
-its stream (`--limit N`); both are refused without a loopback `--provider-url`. The campaign appends a `start` and a
-`finish` event per unit to `$VB_RESULTS/<experiment>/campaign.jsonl`, with the run id, the secret's fingerprint and
+unit needs `--allow-network` on the campaign, and gets `--allow-network` and its `--max-cost-usd`. The campaign's own
+`--max-cost-usd` is a hard cap on the experiment's billed spend: before each billed unit it counts what the
+experiment's ledger rows and open reservations hold under the results root, and the unit's `--max-cost-usd` becomes
+the smaller of its share and what is left, so no sequence of units can bill past the cap. A unit left less than one
+task's worst case does not start, and the campaign stops there (exit 2); the dry run says what the cap leaves. An
+offline rehearsal passes `--provider-url` (a loopback URL) to every unit, and `--proxy` to each unit the real run would
+meter through the proxy (a billed arm whose provider names a key, or a disturbance the proxy applies). It may swap an
+arm's file for a rehearsal one of the same arm id (`--arm-file NAME=PATH`) and run each unit on the first N instances
+of its stream (`--limit N`); both are refused without a loopback `--provider-url`. The campaign appends a `start` and
+a `finish` event per unit to `$VB_RESULTS/<experiment>/campaign.jsonl`, with the run id, the secret's fingerprint and
 the instances. A block's instance subset becomes a stream file under `<experiment>/.campaign/`, which `vb report`
 skips.
 
@@ -93,6 +98,7 @@ import datetime as dt
 import hashlib
 import importlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -435,6 +441,8 @@ def check(vb, manifest: Manifest, *, budget: ledger.Budget, results_root: Path, 
 def cmd_campaign(vb, args: argparse.Namespace) -> int:
     """`vb campaign` (module docstring). `vb` is the driver module, which this one does not import itself."""
     manifest = load(_manifest_path(args.manifest))
+    if args.max_cost_usd is not None and not args.max_cost_usd > 0:
+        raise CampaignError("--max-cost-usd must be above $0")
     results_root = vb._outside_repo(args.results or os.environ.get("VB_RESULTS") or vb.DEFAULT_RESULTS, "--results")
     arm_files = dict(_pair(item) for item in args.arm_file or [])
     budget = ledger.load_budget()
@@ -448,6 +456,12 @@ def cmd_campaign(vb, args: argparse.Namespace) -> int:
                   finished=finished, limit=args.limit, lock=args.lock, spec=args.prereg_spec)
     if fingerprint is None:
         found.notes.append(f"secret: not checked ({why})")
+    if args.max_cost_usd is not None and not found.problems:
+        held = _held_usd(results_root, manifest.id)
+        worst = sum(entry.get("worst_case_usd") or 0.0 for entry in found.blocks.values() if entry["included"])
+        found.notes.append(f"--max-cost-usd ${args.max_cost_usd:.2f}: {manifest.id}'s books hold ${held:.4f} and "
+                           f"its units still to run could bill ${worst:.2f}, so it bills at most "
+                           f"${min(worst, max(args.max_cost_usd - held, 0.0)):.2f} more")
     if args.dry_run:
         print(json.dumps(found.summary(), indent=2, ensure_ascii=False))
         return 2 if found.problems else 0
@@ -469,8 +483,9 @@ def cmd_campaign(vb, args: argparse.Namespace) -> int:
         if args.units is not None and ran >= args.units:
             print(f"vb campaign: stopped after {ran} unit(s) (--units); run again to go on", file=sys.stderr)
             return 0
+        cap = _unit_cap(args, manifest, found, unit, results_root)
         attempt = _next_attempt(log, events, results_root / manifest.id, unit)
-        code = _run_unit(vb, args, manifest, found, unit, attempt, results_root, arm_files, fingerprint, log)
+        code = _run_unit(vb, args, manifest, found, unit, attempt, results_root, arm_files, fingerprint, log, cap)
         events = _read_log(log)
         ran += 1
         if code != 0:
@@ -503,6 +518,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         "experiment needs (default: experiments/prereg.lock.json); passed to every unit's vb run")
     parser.add_argument("--prereg-spec", type=Path, default=DEFAULT_SPEC, help="S09, which the lock pins (default: "
                         "the untracked spec in tmp/); passed to every unit's vb run")
+    parser.add_argument("--max-cost-usd", type=float, help="a hard cap on the experiment's billed spend: each billed "
+                                                           "unit gets its share, or what is left under this cap")
 
 
 class _Unavailable(Exception):
@@ -642,9 +659,39 @@ def _check_secrets(found: Check, results_root: Path, fingerprint: str | None) ->
                                   f"({len(clash)} instance(s))")
 
 
+def _held_usd(results_root: Path, experiment_id: str) -> float:
+    """What the experiment's ledger rows and open reservations under the results root hold (`Books.sums`)."""
+    spent, reserved = ledger.read_books(results_root).sums(lambda item: item.get("experiment_id") == experiment_id)
+    return spent + reserved
+
+
+def _unit_cap(args: argparse.Namespace, manifest: Manifest, found: Check, unit: Unit,
+              results_root: Path) -> float | None:
+    """The unit's `--max-cost-usd`: its share of its block's `max_cost_usd`, held under what is left of the
+    campaign's `--max-cost-usd` for a billed block (module docstring, Running). Raises CampaignError when what is
+    left cannot afford one task."""
+    block = unit.block
+    if block.max_cost_usd is None:
+        return None
+    share = block.max_cost_usd * len(unit.seeds) / len(block.seeds)
+    plan = found.blocks[block.id]
+    if args.max_cost_usd is None or not plan.get("billed"):
+        return share
+    held = _held_usd(results_root, manifest.id)
+    left = math.floor((args.max_cost_usd - held) * 1e6) / 1e6  # rounded down, so the cap holds to the micro-dollar
+    worst = plan.get("worst_task_usd") or 0.0
+    if left < worst:
+        raise CampaignError(f"unit {unit.key}: ${max(left, 0.0):.4f} is left under --max-cost-usd "
+                            f"${args.max_cost_usd:.2f} ({manifest.id}'s books hold ${held:.4f}), less than one "
+                            f"task's worst case ${worst:.4f}, so it does not start")
+    return min(share, left)
+
+
 def _run_unit(vb, args: argparse.Namespace, manifest: Manifest, found: Check, unit: Unit, run_id: str,
-              results_root: Path, arm_files: dict[str, str], fingerprint: str, log: Path) -> int:
-    """One unit as `vb.py run` in a process of its own; its start and finish go to the campaign log."""
+              results_root: Path, arm_files: dict[str, str], fingerprint: str, log: Path,
+              max_cost_usd: float | None) -> int:
+    """One unit as `vb.py run` in a process of its own, under `max_cost_usd` (`_unit_cap`); its start and finish go
+    to the campaign log."""
     block = unit.block
     plan = found.blocks[block.id]
     stream = block.stream
@@ -655,8 +702,8 @@ def _run_unit(vb, args: argparse.Namespace, manifest: Manifest, found: Check, un
             "--seeds", unit.seeds_text, "--line", block.line]
     if plan["network"]:
         argv.append("--allow-network")
-    if block.max_cost_usd is not None:  # the unit's share of the block's ceiling (module docstring)
-        argv += ["--max-cost-usd", f"{round(block.max_cost_usd * len(unit.seeds) / len(block.seeds), 6):g}"]
+    if max_cost_usd is not None:  # its share of the block's ceiling, or what the campaign's cap leaves
+        argv += ["--max-cost-usd", f"{max_cost_usd:.6f}".rstrip("0").rstrip(".")]  # `:g` could round a cap up
     if args.provider_url:
         argv += ["--provider-url", args.provider_url]
     if args.limit:
